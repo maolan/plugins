@@ -1,5 +1,7 @@
 # Maolan Plugins
 
+[![crates.io](https://img.shields.io/crates/v/rural-modeler.svg)](https://crates.io/crates/rural-modeler)
+
 A collection of audio plugins for the Maolan ecosystem, written in Rust.
 
 ## Plugins

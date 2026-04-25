@@ -2496,31 +2496,4 @@ mod tests {
             "expected reset after SetSlimmableSize, got lingering output {out}"
         );
     }
-
-    #[test]
-    fn wavenet_model_produces_non_silent_output() {
-        let path = std::env::var("RURAL_MODELER_TEST_MODEL")
-            .unwrap_or_else(|_| "/home/meka/Files/NAM/powerball lead 2.nam".to_string());
-        let mut model = NamModel::load(&path).expect("failed to load NAM model");
-        model.reset();
-
-        let sample_rate = 48_000.0_f32;
-        let freq = 220.0_f32;
-        let mut energy = 0.0_f64;
-        let mut peak = 0.0_f32;
-        let frames = 16_384usize;
-
-        for n in 0..frames {
-            let t = n as f32 / sample_rate;
-            let input = (2.0 * std::f32::consts::PI * freq * t).sin() * 0.25;
-            let y = process_one_sample(&mut model, input);
-            energy += (y as f64) * (y as f64);
-            peak = peak.max(y.abs());
-        }
-        let rms = (energy / frames as f64).sqrt() as f32;
-        assert!(
-            rms > 1.0e-6 || peak > 1.0e-5,
-            "model output is effectively silent (rms={rms}, peak={peak})"
-        );
-    }
 }
