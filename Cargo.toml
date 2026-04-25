@@ -1,0 +1,12 @@
+[workspace]
+members = [
+  "rural-modeler",
+  "xtask"
+]
+resolver = "3"
+
+[profile.dev.package.rural-modeler]
+opt-level = 3
+
+[patch."https://github.com/tomoyanonymous/baseview.git"]
+baseview = { git = "https://github.com/maolan/baseview" }
