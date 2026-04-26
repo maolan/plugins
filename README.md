@@ -29,9 +29,8 @@ cargo build -p rural-modeler
 ```
 .
 ├── Cargo.toml          # Workspace manifest
-├── rural-modeler/      # Guitar amp modeler plugin
-│   └── src/
-└── xtask/              # Build automation tasks
+└── rural-modeler/      # Guitar amp modeler plugin
+    └── src/
 ```
 
 ## Platform Support

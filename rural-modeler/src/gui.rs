@@ -13,8 +13,8 @@ use clap_clap::ffi::CLAP_WINDOW_API_COCOA;
 #[cfg(target_os = "windows")]
 use clap_clap::ffi::CLAP_WINDOW_API_WIN32;
 use clap_clap::ffi::CLAP_WINDOW_API_X11;
-use iced_baseview::widget::image::Image;
-use iced_baseview::{
+use maolan_baseview::iced::widget::image::Image;
+use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
     widget::{button, checkbox, column, container, radio, row, scrollable, text, text_input},
@@ -134,7 +134,7 @@ struct State {
     tone_oauth_client_id: String,
     tone_model_query: String,
     tone_model_results: Vec<SearchItem>,
-    tone_model_pictures: Vec<Option<iced_baseview::widget::image::Handle>>,
+    tone_model_pictures: Vec<Option<maolan_baseview::iced::widget::image::Handle>>,
     tone_model_page: u32,
     tone_model_total_pages: u32,
     tone_model_gear_amp: bool,
@@ -144,7 +144,7 @@ struct State {
     tone_model_selected_variation: Option<String>,
     tone_ir_query: String,
     tone_ir_results: Vec<SearchItem>,
-    tone_ir_pictures: Vec<Option<iced_baseview::widget::image::Handle>>,
+    tone_ir_pictures: Vec<Option<maolan_baseview::iced::widget::image::Handle>>,
     tone_ir_page: u32,
     tone_ir_total_pages: u32,
     tone_ir_selected_variation: Option<String>,
@@ -362,7 +362,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .iter()
                 .map(|item| {
                     item.picture.as_ref().map(|bytes: &Vec<u8>| {
-                        iced_baseview::widget::image::Handle::from_bytes(bytes.clone())
+                        maolan_baseview::iced::widget::image::Handle::from_bytes(bytes.clone())
                     })
                 })
                 .collect();
@@ -384,7 +384,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .iter()
                 .map(|item| {
                     item.picture.as_ref().map(|bytes: &Vec<u8>| {
-                        iced_baseview::widget::image::Handle::from_bytes(bytes.clone())
+                        maolan_baseview::iced::widget::image::Handle::from_bytes(bytes.clone())
                     })
                 })
                 .collect();
@@ -764,7 +764,7 @@ fn view(state: &State) -> Element<'_, Message> {
             let variation_widget: Element<'_, Message> = if options.is_empty() {
                 text("No variations").into()
             } else {
-                iced_baseview::widget::pick_list(options, selected, |choice| {
+                maolan_baseview::iced::widget::pick_list(options, selected, |choice| {
                     Message::ToneIrVariationSelected(choice.reference)
                 })
                 .placeholder("Variation")
@@ -829,7 +829,7 @@ fn view(state: &State) -> Element<'_, Message> {
             let variation_widget: Element<'_, Message> = if options.is_empty() {
                 text("No variations").into()
             } else {
-                iced_baseview::widget::pick_list(options, selected, |choice| {
+                maolan_baseview::iced::widget::pick_list(options, selected, |choice| {
                     Message::ToneModelVariationSelected(choice.reference)
                 })
                 .placeholder("Variation")
@@ -944,8 +944,8 @@ fn variation_options(variations: &[SearchVariation]) -> Vec<VariationOption> {
         .collect()
 }
 
-fn build_app(shared: Arc<SharedState>) -> impl iced_baseview::Program {
-    iced_baseview::application(move || init(shared.clone()), update, view)
+fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {
+    maolan_baseview::iced::application(move || init(shared.clone()), update, view)
         .theme(theme)
         .run()
 }
@@ -1009,20 +1009,23 @@ impl GuiBridge {
             return true;
         }
 
-        let settings = iced_baseview::IcedBaseviewSettings {
-            window: iced_baseview::baseview::WindowOpenOptions {
+        let settings = maolan_baseview::iced::IcedBaseviewSettings {
+            window: maolan_baseview::iced::baseview::WindowOpenOptions {
                 title: String::from("Rural Modeler"),
-                size: iced_baseview::baseview::Size::new(EDITOR_WIDTH as f64, EDITOR_HEIGHT as f64),
-                scale: iced_baseview::baseview::WindowScalePolicy::SystemScaleFactor,
+                size: maolan_baseview::iced::baseview::Size::new(
+                    EDITOR_WIDTH as f64,
+                    EDITOR_HEIGHT as f64,
+                ),
+                scale: maolan_baseview::iced::baseview::WindowScalePolicy::SystemScaleFactor,
             },
             ignore_non_modifier_keys: false,
             always_redraw: false,
         };
 
-        let handle = iced_baseview::shell::open_parented(
+        let handle = maolan_baseview::iced::shell::open_parented(
             &parent,
             settings,
-            iced_baseview::PollSubNotifier::new(),
+            maolan_baseview::iced::PollSubNotifier::new(),
             move || build_app(shared),
         );
 
@@ -1048,21 +1051,21 @@ impl GuiBridge {
             let _ = thread::Builder::new()
                 .name("rural-modeler-gui".to_string())
                 .spawn(move || {
-                    let settings = iced_baseview::IcedBaseviewSettings {
-                        window: iced_baseview::baseview::WindowOpenOptions {
+                    let settings = maolan_baseview::iced::IcedBaseviewSettings {
+                        window: maolan_baseview::iced::baseview::WindowOpenOptions {
                             title: String::from("Rural Modeler"),
-                            size: iced_baseview::baseview::Size::new(
+                            size: maolan_baseview::iced::baseview::Size::new(
                                 EDITOR_WIDTH as f64,
                                 EDITOR_HEIGHT as f64,
                             ),
-                            scale: iced_baseview::baseview::WindowScalePolicy::SystemScaleFactor,
+                            scale: maolan_baseview::iced::baseview::WindowScalePolicy::SystemScaleFactor,
                         },
                         ignore_non_modifier_keys: false,
                         always_redraw: false,
                     };
-                    iced_baseview::open_blocking(
+                    maolan_baseview::iced::open_blocking(
                         settings,
-                        iced_baseview::PollSubNotifier::new(),
+                        maolan_baseview::iced::PollSubNotifier::new(),
                         move || build_app(shared),
                     );
                     floating_open.store(false, Ordering::Release);

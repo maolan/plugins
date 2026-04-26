@@ -356,23 +356,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
-name = "baseview"
-version = "0.1.0"
-source = "git+https://github.com/maolan/baseview#5952e0e18e174c8d815aa572aa1df1eba7d9f1b8"
-dependencies = [
- "cocoa",
- "core-foundation 0.9.4",
- "keyboard-types",
- "nix",
- "objc",
- "raw-window-handle 0.5.2",
- "uuid 0.8.2",
- "winapi",
- "x11",
- "x11rb",
-]
-
-[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1031,7 +1014,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1632,28 +1615,6 @@ dependencies = [
  "iced_winit",
  "image",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "iced_baseview"
-version = "0.1.0"
-source = "git+https://codeberg.org/BillyDM/nih-plug.git?branch=main#d9377be3b6f7c380dc947d10389970b324f45e01"
-dependencies = [
- "baseview",
- "iced_core",
- "iced_debug",
- "iced_futures",
- "iced_program",
- "iced_renderer",
- "iced_runtime",
- "iced_widget",
- "image",
- "keyboard-types",
- "raw-window-handle 0.5.2",
- "raw-window-handle 0.6.2",
- "thiserror 2.0.18",
- "tracing",
- "window_clipboard",
 ]
 
 [[package]]
@@ -2366,6 +2327,39 @@ checksum = "62bb907fe88d54d8d9ce32a3cceab4218ed2f6b7d35617cafe9adf84e43919cb"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "maolan-baseview"
+version = "0.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdc772a33841c31c171428944b1dbf8e682e5686feaf9ff2a8ac3882c18c0d31"
+dependencies = [
+ "cocoa",
+ "core-foundation 0.9.4",
+ "iced_core",
+ "iced_debug",
+ "iced_futures",
+ "iced_program",
+ "iced_renderer",
+ "iced_runtime",
+ "iced_widget",
+ "keyboard-types",
+ "nix",
+ "objc",
+ "raw-window-handle 0.5.2",
+ "raw-window-handle 0.6.2",
+ "thiserror 1.0.69",
+ "tracing",
+ "uuid 0.8.2",
+ "winapi",
+ "window_clipboard",
+ "x11",
+ "x11rb",
+]
+
+[[package]]
+name = "maolan-plugins"
+version = "0.0.1"
 
 [[package]]
 name = "maolan-widgets"
@@ -3628,7 +3622,7 @@ dependencies = [
  "base64",
  "clap-clap",
  "hound",
- "iced_baseview",
+ "maolan-baseview",
  "maolan-widgets",
  "parking_lot",
  "rand 0.8.6",
@@ -3686,7 +3680,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4123,7 +4117,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4978,7 +4972,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5575,10 +5569,6 @@ name = "xml-rs"
 version = "0.8.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
-
-[[package]]
-name = "xtask"
-version = "0.1.0"
 
 [[package]]
 name = "y4m"

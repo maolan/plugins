@@ -2,6 +2,12 @@
 name = "rural-modeler"
 version = "0.0.1"
 edition = "2024"
+description = "Rust CLAP Neural Amp Modeler plugin with Tone3000 integration"
+license = "BSD-2-Clause"
+readme = "README.md"
+repository = "https://github.com/maolan/maolan"
+keywords = ["audio", "plugin", "clap", "nam", "guitar"]
+categories = ["multimedia::audio"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -9,7 +15,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 clap-clap = "0.5.0"
 hound = "3.5.1"
-iced_baseview = { git = "https://codeberg.org/BillyDM/nih-plug.git", branch = "main", features = ["image"] }
+maolan-baseview = "0.0.1"
 parking_lot = "0.12.3"
 raw-window-handle = "0.5"
 rfd = "0.17.2"

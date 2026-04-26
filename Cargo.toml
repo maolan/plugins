@@ -1,12 +1,21 @@
+[package]
+name = "maolan-plugins"
+version = "0.0.1"
+edition = "2024"
+description = "Audio plugins for the Maolan ecosystem"
+license = "BSD-2-Clause"
+readme = "README.md"
+repository = "https://github.com/maolan/plugins"
+homepage = "https://maolan.github.io"
+keywords = ["audio", "plugin", "clap"]
+categories = ["multimedia::audio"]
+publish = false
+
 [workspace]
 members = [
-  "rural-modeler",
-  "xtask"
+  "rural-modeler"
 ]
 resolver = "3"
 
 [profile.dev.package.rural-modeler]
 opt-level = 3
-
-[patch."https://github.com/tomoyanonymous/baseview.git"]
-baseview = { git = "https://github.com/maolan/baseview" }
