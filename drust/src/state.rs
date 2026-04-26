@@ -1,0 +1,62 @@
+use crate::params::{ParamId, ParamStore};
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PluginState {
+    pub version: u32,
+    pub kit_path: String,
+    pub midimap_path: String,
+    pub state_id: String,
+    pub params: Vec<(u16, f64)>,
+}
+
+impl Default for PluginState {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            kit_path: String::new(),
+            midimap_path: String::new(),
+            state_id: String::new(),
+            params: Vec::new(),
+        }
+    }
+}
+
+impl PluginState {
+    pub fn from_runtime(
+        params: &ParamStore,
+        kit_path: String,
+        midimap_path: String,
+        state_id: String,
+    ) -> Self {
+        let mut param_values = Vec::new();
+        for i in 0..crate::params::PARAMS.len() {
+            if let Some(id) = ParamId::from_raw(i as u32) {
+                param_values.push((i as u16, params.get(id)));
+            }
+        }
+        Self {
+            version: 1,
+            kit_path,
+            midimap_path,
+            state_id,
+            params: param_values,
+        }
+    }
+
+    pub fn apply(&self, params: &ParamStore) -> (String, String) {
+        for &(raw, value) in &self.params {
+            if let Some(id) = ParamId::from_raw(raw as u32) {
+                params.set(id, crate::params::sanitize_param_value(id, value));
+            }
+        }
+        (self.kit_path.clone(), self.midimap_path.clone())
+    }
+
+    pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
+        serde_json::to_vec(self).map_err(|e| e.to_string())
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        serde_json::from_slice(bytes).map_err(|e| e.to_string())
+    }
+}

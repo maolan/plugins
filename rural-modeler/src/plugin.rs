@@ -1144,10 +1144,6 @@ unsafe extern "C-unwind" fn ext_gui_create(
     }
     let instance = unsafe { instance(plugin) };
     let api = unsafe { CStr::from_ptr(api) };
-    eprintln!(
-        "[rural-modeler] ext_gui_create api={} floating={is_floating}",
-        api.to_string_lossy()
-    );
     instance
         .gui_bridge
         .lock()
@@ -1225,10 +1221,6 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     let instance = unsafe { instance(plugin) };
     let window = unsafe { &*window };
     let api = unsafe { CStr::from_ptr(window.api) };
-    eprintln!(
-        "[rural-modeler] ext_gui_set_parent api={}",
-        api.to_string_lossy()
-    );
 
     let parent = if api == CLAP_WINDOW_API_X11 {
         #[cfg(all(unix, not(target_os = "macos")))]
@@ -1285,7 +1277,6 @@ unsafe extern "C-unwind" fn ext_gui_show(plugin: *const clap_plugin) -> bool {
         return false;
     }
     let instance = unsafe { instance(plugin) };
-    eprintln!("[rural-modeler] ext_gui_show");
     instance.gui_bridge.lock().show()
 }
 

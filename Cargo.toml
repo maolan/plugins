@@ -13,9 +13,13 @@ publish = false
 
 [workspace]
 members = [
+  "drust",
   "rural-modeler"
 ]
 resolver = "3"
+
+[profile.dev.package.drust]
+opt-level = 3
 
 [profile.dev.package.rural-modeler]
 opt-level = 3

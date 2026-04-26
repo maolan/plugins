@@ -1,14 +1,11 @@
 # Maolan Plugins
 
-[![crates.io](https://img.shields.io/crates/v/rural-modeler.svg)](https://crates.io/crates/rural-modeler)
+A collection of audio plugins written in Rust for the Maolan ecosystem.
 
-A collection of audio plugins for the Maolan ecosystem, written in Rust.
-
-## Plugins
-
-| Plugin | Description |
-|--------|-------------|
-| `rural-modeler` | Guitar amp modeler plugin (CLAP) |
+| Plugin | Description | Crates version |
+|--------|-------------|----------------|
+| `rural-modeler` | Guitar amp modeler plugin | [![Rural Modeler](https://img.shields.io/crates/v/rural-modeler.svg)](https://crates.io/crates/rural-modeler) |
+| `drust` | DrumGizmo inspired drum sampler | [![Drust](https://img.shields.io/crates/v/drust.svg)](https://crates.io/crates/drust) |
 
 ## Building
 
@@ -24,19 +21,7 @@ To build a specific plugin:
 cargo build -p rural-modeler
 ```
 
-## Workspace Structure
-
-```
-.
-├── Cargo.toml          # Workspace manifest
-└── rural-modeler/      # Guitar amp modeler plugin
-    └── src/
-```
-
 ## Platform Support
 
-Linux, FreeBSD, macOS, and Windows are supported. The workspace patches `baseview` to include FreeBSD support via the [`maolan/baseview`](https://github.com/maolan/baseview) fork.
-
-## License
-
-See the individual plugin directories for their respective licenses.
+Linux, FreeBSD, macOS, and Windows are supported. The workspace patches `baseview` to include
+FreeBSD support via the [`maolan/baseview`](https://github.com/maolan/baseview) fork.
