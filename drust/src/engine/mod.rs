@@ -8,11 +8,9 @@ use std::{
     },
 };
 
-use parking_lot::{Mutex, RwLock};
-use rayon::prelude::*;
-
 use crate::drumkit::{DrumKit, Midimap, loader};
 use crate::utils::random::LockFreeRandom;
+use parking_lot::{Mutex, RwLock};
 
 pub mod audio_file;
 pub mod filters;
@@ -461,6 +459,8 @@ impl DrumGizmoEngine {
                 Ok(k) => k,
                 Err(e) => {
                     *self.last_load_error.lock() = Some(format!("Failed to parse kit: {e}"));
+                    // Early exit: parsing failed. Mark done so GUI stops polling.
+                    self.loading_progress.store(100, Ordering::Release);
                     self.is_loading.store(false, Ordering::Release);
                     return;
                 }
@@ -571,16 +571,19 @@ impl DrumGizmoEngine {
             self.loading_progress.store(20, Ordering::Release);
             self.kit_ready.store(true, Ordering::Release);
 
-            // Parallel WAV loading + resampling with incremental publishing.
-            let loaded_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let loaded_count_for_jobs = Arc::clone(&loaded_count);
-            let self_clone = Arc::clone(&self);
+            // Sequential WAV loading + resampling with incremental publishing.
+            // We intentionally avoid rayon/into_par_iter() here because the
+            // iced_futures ThreadPool used by the GUI can starve when rayon's
+            // global thread pool competes for CPU, causing the baseview event
+            // loop to stall and the UI to freeze or become unresponsive.
+            let expected = expected_count.max(1);
+            let mut success_count = 0usize;
 
-            files_vec.into_par_iter().for_each(move |(path, channels)| {
-                if self_clone.should_cancel_loading.load(Ordering::Acquire)
-                    || self_clone.load_generation.load(Ordering::Acquire) != generation
+            for (path, channels) in files_vec {
+                if self.should_cancel_loading.load(Ordering::Acquire)
+                    || self.load_generation.load(Ordering::Acquire) != generation
                 {
-                    return;
+                    break;
                 }
                 if let Ok(mut file) = load_wav_channels(Path::new(&path), &channels) {
                     if (file.original_sample_rate as f64 - host_sr as f64).abs() > 0.1 {
@@ -601,10 +604,12 @@ impl DrumGizmoEngine {
                         audio_data_for_jobs.lock_free_entries[idx]
                             .ready
                             .store(true, Ordering::Release);
-                        loaded_count_for_jobs.fetch_add(1, Ordering::Relaxed);
+                        success_count += 1;
+                        let pct = 20 + ((success_count * 80) / expected).min(80) as u8;
+                        self.loading_progress.store(pct, Ordering::Release);
                     }
                 }
-            });
+            }
 
             if self.should_cancel_loading.load(Ordering::Acquire)
                 || self.load_generation.load(Ordering::Acquire) != generation
@@ -612,8 +617,6 @@ impl DrumGizmoEngine {
                 self.is_loading.store(false, Ordering::Release);
                 return;
             }
-
-            let success_count = loaded_count.load(Ordering::Acquire);
             if success_count != expected_count {
                 *self.last_load_error.lock() = Some(format!(
                     "Loaded {}/{} audio files",
@@ -622,6 +625,8 @@ impl DrumGizmoEngine {
             }
 
             self.rebuild_note_cache();
+
+            // Always mark 100% when we reach the end, regardless of per-file errors.
             self.loading_progress.store(100, Ordering::Release);
             self.is_loading.store(false, Ordering::Release);
         });

@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, Ordering};
 
 use clap_clap::ffi::{
     clap_host, clap_host_latency, clap_host_note_name, clap_host_params, clap_host_state,
@@ -21,6 +21,7 @@ pub struct SharedState {
     pub host: AtomicPtr<clap_host>,
     pub active_channels: AtomicU32,
     pub state_id: RwLock<String>,
+    pub loading_progress: AtomicU8,
 }
 
 impl Default for SharedState {
@@ -38,6 +39,7 @@ impl Default for SharedState {
             host: AtomicPtr::new(std::ptr::null_mut()),
             active_channels: AtomicU32::new(0),
             state_id: RwLock::new(String::new()),
+            loading_progress: AtomicU8::new(0),
         }
     }
 }

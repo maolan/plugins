@@ -289,6 +289,8 @@ impl PluginInstance {
         *self.shared.kit_path.write() = path.clone();
         *self.shared.last_error.write() = None;
         self.shared.active_channels.store(0, Ordering::Release);
+        // Reset shared progress so the GUI can detect a new load is starting.
+        self.shared.loading_progress.store(0, Ordering::Release);
         self.shared.mark_dirty();
         self.shared.latency_changed();
 
@@ -508,6 +510,20 @@ unsafe extern "C-unwind" fn plugin_on_main_thread(plugin: *const clap_plugin) {
     }
     let inst = unsafe { instance(plugin) };
     inst.engine.cleanup_retired();
+
+    // Safety net: if a loader thread exited early without reaching 100,
+    // bump progress so the GUI stops polling.
+    if !inst.engine.is_loading.load(Ordering::Acquire) {
+        let ep = inst.engine.loading_progress.load(Ordering::Acquire);
+        if ep < 100 {
+            inst.engine.loading_progress.store(100, Ordering::Release);
+        }
+    }
+
+    inst.shared.loading_progress.store(
+        inst.engine.loading_progress.load(Ordering::Acquire),
+        Ordering::Release,
+    );
 
     // Handle pending kit download/load requests from the GUI.
     if let Some(path) = inst.shared.pending_kit_path.write().take() {
@@ -969,7 +985,9 @@ unsafe extern "C-unwind" fn ext_note_name_count(plugin: *const clap_plugin) -> u
         return 0;
     }
     let inst = unsafe { &*((*plugin).plugin_data as *const PluginInstance) };
-    inst.note_names.lock().len() as u32
+    let count = inst.note_names.lock().len() as u32;
+    eprintln!("[drust] note_name_count={count}");
+    count
 }
 
 unsafe extern "C-unwind" fn ext_note_name_get(

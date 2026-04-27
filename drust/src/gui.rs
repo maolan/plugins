@@ -115,13 +115,17 @@ struct State {
     shared: Arc<SharedState>,
     selected_kit: Option<String>,
     selected_variation: Option<String>,
+    loaded_kit: Option<String>,
+    loaded_variation: Option<String>,
     load_progress: Option<f32>,
     load_progress_arc: Option<Arc<AtomicU32>>,
     load_result_arc: Option<Arc<std::sync::Mutex<LoadResult>>>,
+    load_poll_count: u32,
 }
 
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
     let raw_kit = shared.kit_path.read().clone();
+    let has_kit = !raw_kit.is_empty();
     let selected_kit = if raw_kit.is_empty() {
         Some(KIT_NAMES[0].to_string())
     } else if raw_kit.contains('/') {
@@ -145,20 +149,46 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
     } else {
         Some(selected_variation)
     };
+
+    // Determine actual load state from shared progress.
+    let progress = shared.loading_progress.load(Ordering::Acquire);
+    let (loaded_kit, loaded_variation, initial_task) = if progress >= 100 {
+        // Previous load completed before GUI opened.
+        (
+            selected_kit.clone(),
+            selected_variation.clone(),
+            Task::none(),
+        )
+    } else if has_kit {
+        // Kit path is set but load may be in progress or not yet reflected.
+        // Start polling so the UI discovers the real state.
+        (None, None, poll_engine_load_task(Arc::clone(&shared)))
+    } else {
+        // No kit selected.
+        (None, None, Task::none())
+    };
+
     (
         State {
             shared,
-            selected_kit,
-            selected_variation,
-            load_progress: None,
+            selected_kit: selected_kit.clone(),
+            selected_variation: selected_variation.clone(),
+            loaded_kit,
+            loaded_variation,
+            load_progress: if has_kit && progress < 100 {
+                Some(progress as f32 / 100.0)
+            } else {
+                None
+            },
             load_progress_arc: None,
             load_result_arc: None,
+            load_poll_count: 0,
         },
-        Task::none(),
+        initial_task,
     )
 }
 
-fn poll_load_task(progress: Arc<AtomicU32>) -> Task<Message> {
+fn poll_download_task(progress: Arc<AtomicU32>) -> Task<Message> {
     Task::perform(
         async move {
             thread::sleep(Duration::from_millis(50));
@@ -167,6 +197,23 @@ fn poll_load_task(progress: Arc<AtomicU32>) -> Task<Message> {
                 1.0
             } else {
                 (prog as f32 / 100.0).min(1.0)
+            }
+        },
+        Message::LoadProgress,
+    )
+}
+
+const MAX_ENGINE_LOAD_POLLS: u32 = 600; // ~60s at 100ms intervals
+
+fn poll_engine_load_task(shared: Arc<SharedState>) -> Task<Message> {
+    Task::perform(
+        async move {
+            thread::sleep(Duration::from_millis(100));
+            let prog = shared.loading_progress.load(Ordering::Acquire);
+            if prog >= 100 {
+                1.0
+            } else {
+                (prog as f32 / 100.0).min(0.99)
             }
         },
         Message::LoadProgress,
@@ -213,7 +260,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 if let Some(xml_path) = download::resolve_kit_xml(&kit, &variation) {
                     *state.shared.pending_kit_path.write() =
                         Some(xml_path.to_string_lossy().into_owned());
-                    return Task::none();
+                    state.load_progress = Some(0.0);
+                    state.shared.loading_progress.store(0, Ordering::Release);
+                    return poll_engine_load_task(Arc::clone(&state.shared));
                 }
                 let progress = Arc::new(AtomicU32::new(0));
                 let result = Arc::new(std::sync::Mutex::new(None));
@@ -228,7 +277,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     *result.lock().unwrap() = Some(res);
                     progress2.store(200, Ordering::Release);
                 });
-                return poll_load_task(progress);
+                return poll_download_task(progress);
             }
             Task::none()
         }
@@ -237,29 +286,52 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if let Some(progress_arc) = state.load_progress_arc.clone() {
                 let prog = progress_arc.load(Ordering::Acquire);
                 if prog >= 200 {
-                    state.load_progress = None;
+                    // Download done; transition to engine load.
                     state.load_progress_arc = None;
+                    state.load_progress = Some(0.0);
+                    state.load_poll_count = 0;
                     if let Some(result) = state
                         .load_result_arc
                         .take()
                         .and_then(|arc| arc.lock().unwrap().take())
                     {
-                        return Task::perform(async { result }, Message::LoadFinished);
+                        match result {
+                            Ok(xml_path) => {
+                                *state.shared.pending_kit_path.write() = Some(xml_path);
+                            }
+                            Err(e) => {
+                                *state.shared.last_error.write() = Some(e);
+                            }
+                        }
                     }
+                    return poll_engine_load_task(Arc::clone(&state.shared));
                 } else {
-                    return poll_load_task(progress_arc);
+                    return poll_download_task(progress_arc);
                 }
+            } else if p < 1.0 {
+                // Engine still loading.
+                state.load_poll_count += 1;
+                if state.load_poll_count > MAX_ENGINE_LOAD_POLLS {
+                    state.load_progress = None;
+                    state.load_result_arc = None;
+                    state.load_poll_count = 0;
+                    *state.shared.last_error.write() = Some("Engine load timed out.".to_string());
+                    return Task::none();
+                }
+                return poll_engine_load_task(Arc::clone(&state.shared));
+            } else {
+                // Engine load done.
+                state.load_progress = None;
+                state.load_result_arc = None;
+                state.load_poll_count = 0;
+                state.loaded_kit = state.selected_kit.clone();
+                state.loaded_variation = state.selected_variation.clone();
             }
             Task::none()
         }
         Message::LoadFinished(result) => {
-            match result {
-                Ok(xml_path) => {
-                    *state.shared.pending_kit_path.write() = Some(xml_path);
-                }
-                Err(e) => {
-                    *state.shared.last_error.write() = Some(e);
-                }
+            if let Err(e) = result {
+                *state.shared.last_error.write() = Some(e);
             }
             Task::none()
         }
@@ -340,13 +412,25 @@ fn view(state: &State) -> Element<'_, Message> {
     let load_button: Element<'_, Message> = button("Load").on_press(Message::LoadClicked).into();
 
     let progress_widget: Element<'_, Message> = if let Some(progress) = state.load_progress {
-        column![
-            progress_bar(0.0..=1.0, progress),
-            text(format!("{:.0}%", progress * 100.0)).size(12),
-        ]
-        .spacing(4)
-        .align_x(Alignment::Center)
-        .into()
+        let label = if state.load_progress_arc.is_some() {
+            format!("Downloading... {:.0}%", progress * 100.0)
+        } else {
+            format!("Loading... {:.0}%", progress * 100.0)
+        };
+        column![progress_bar(0.0..=1.0, progress), text(label).size(12),]
+            .spacing(4)
+            .align_x(Alignment::Center)
+            .into()
+    } else {
+        text("").into()
+    };
+
+    let error_widget: Element<'_, Message> = if let Some(ref err) = *state.shared.last_error.read()
+    {
+        text(format!("Error: {err}"))
+            .size(11)
+            .color(maolan_baseview::iced::Color::from_rgb(1.0, 0.4, 0.4))
+            .into()
     } else {
         text("").into()
     };
@@ -494,12 +578,41 @@ fn view(state: &State) -> Element<'_, Message> {
     .spacing(8)
     .align_x(Alignment::Center);
 
+    let loaded_label = {
+        if let Some(ref kit) = state.loaded_kit {
+            let var = state.loaded_variation.as_deref().unwrap_or("-");
+            text(format!("Loaded: {kit}/{var}")).size(12)
+        } else {
+            // Load hasn't completed yet; show what is being loaded (if known).
+            let kit_path = state.shared.kit_path.read();
+            let variation = state.shared.variation.read();
+            let kit_name = if kit_path.is_empty() {
+                "None".to_string()
+            } else {
+                download::kit_display_name_from_path(&kit_path)
+                    .unwrap_or_else(|| "Unknown".to_string())
+            };
+            let var_str = if variation.is_empty() {
+                "-"
+            } else {
+                variation.as_str()
+            };
+            if state.load_progress.is_some() {
+                text(format!("Loading: {kit_name}/{var_str}")).size(12)
+            } else {
+                text(format!("Kit: {kit_name}/{var_str}")).size(12)
+            }
+        }
+    };
+
     let content = column![
         text("Drust").size(20),
+        loaded_label,
         kit_dropdown,
         variation_dropdown,
         load_button,
         progress_widget,
+        error_widget,
         balance_section,
         params_section,
     ]
