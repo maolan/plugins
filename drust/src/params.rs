@@ -9,23 +9,26 @@ use clap_clap::ffi::{
 pub enum ParamId {
     MasterGain = 0,
     EnableResampling = 1,
-    EnableVelocityFilter = 2,
-    VelocityMin = 3,
-    VelocityMax = 4,
-    ResampleQuality = 5,
-    EnableHumanizer = 6,
-    HumanizeAmount = 7,
-    RoundRobinMix = 8,
-    EnableBleedControl = 9,
-    BleedAmount = 10,
-    EnableLimiter = 11,
-    LimiterThreshold = 12,
-    EnableNormalized = 13,
-    RandomSeed = 14,
-    EnableVoiceLimit = 15,
-    VoiceLimitMax = 16,
-    VoiceLimitRampdown = 17,
-    Bypass = 18,
+    VelocityMin = 2,
+    VelocityMax = 3,
+    ResampleQuality = 4,
+    HumanizeAmount = 5,
+    RoundRobinMix = 6,
+    BleedAmount = 7,
+    LimiterThreshold = 8,
+    EnableNormalized = 9,
+    RandomSeed = 10,
+    VoiceLimitMax = 11,
+    VoiceLimitRampdown = 12,
+    Bypass = 13,
+    Balance1 = 14,
+    Balance2 = 15,
+    Balance3 = 16,
+    Balance4 = 17,
+    Balance5 = 18,
+    Balance6 = 19,
+    Balance7 = 20,
+    Balance8 = 21,
 }
 
 impl ParamId {
@@ -41,23 +44,26 @@ impl ParamId {
         match raw {
             0 => Some(ParamId::MasterGain),
             1 => Some(ParamId::EnableResampling),
-            2 => Some(ParamId::EnableVelocityFilter),
-            3 => Some(ParamId::VelocityMin),
-            4 => Some(ParamId::VelocityMax),
-            5 => Some(ParamId::ResampleQuality),
-            6 => Some(ParamId::EnableHumanizer),
-            7 => Some(ParamId::HumanizeAmount),
-            8 => Some(ParamId::RoundRobinMix),
-            9 => Some(ParamId::EnableBleedControl),
-            10 => Some(ParamId::BleedAmount),
-            11 => Some(ParamId::EnableLimiter),
-            12 => Some(ParamId::LimiterThreshold),
-            13 => Some(ParamId::EnableNormalized),
-            14 => Some(ParamId::RandomSeed),
-            15 => Some(ParamId::EnableVoiceLimit),
-            16 => Some(ParamId::VoiceLimitMax),
-            17 => Some(ParamId::VoiceLimitRampdown),
-            18 => Some(ParamId::Bypass),
+            2 => Some(ParamId::VelocityMin),
+            3 => Some(ParamId::VelocityMax),
+            4 => Some(ParamId::ResampleQuality),
+            5 => Some(ParamId::HumanizeAmount),
+            6 => Some(ParamId::RoundRobinMix),
+            7 => Some(ParamId::BleedAmount),
+            8 => Some(ParamId::LimiterThreshold),
+            9 => Some(ParamId::EnableNormalized),
+            10 => Some(ParamId::RandomSeed),
+            11 => Some(ParamId::VoiceLimitMax),
+            12 => Some(ParamId::VoiceLimitRampdown),
+            13 => Some(ParamId::Bypass),
+            14 => Some(ParamId::Balance1),
+            15 => Some(ParamId::Balance2),
+            16 => Some(ParamId::Balance3),
+            17 => Some(ParamId::Balance4),
+            18 => Some(ParamId::Balance5),
+            19 => Some(ParamId::Balance6),
+            20 => Some(ParamId::Balance7),
+            21 => Some(ParamId::Balance8),
             _ => None,
         }
     }
@@ -93,15 +99,6 @@ pub const PARAMS: &[ParamDef] = &[
         default: 1.0,
     },
     ParamDef {
-        id: ParamId::EnableVelocityFilter,
-        name: "Velocity Filter",
-        module: "Input",
-        flags: CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_STEPPED,
-        min: 0.0,
-        max: 1.0,
-        default: 0.0,
-    },
-    ParamDef {
         id: ParamId::VelocityMin,
         name: "Min Velocity",
         module: "Input",
@@ -129,15 +126,6 @@ pub const PARAMS: &[ParamDef] = &[
         default: 1.0,
     },
     ParamDef {
-        id: ParamId::EnableHumanizer,
-        name: "Humanizer",
-        module: "Input",
-        flags: CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_STEPPED,
-        min: 0.0,
-        max: 1.0,
-        default: 0.0,
-    },
-    ParamDef {
         id: ParamId::HumanizeAmount,
         name: "Humanize Amount",
         module: "Input",
@@ -156,15 +144,6 @@ pub const PARAMS: &[ParamDef] = &[
         default: 0.7,
     },
     ParamDef {
-        id: ParamId::EnableBleedControl,
-        name: "Bleed Control",
-        module: "Output",
-        flags: CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_STEPPED,
-        min: 0.0,
-        max: 1.0,
-        default: 1.0,
-    },
-    ParamDef {
         id: ParamId::BleedAmount,
         name: "Bleed Amount",
         module: "Output",
@@ -172,15 +151,6 @@ pub const PARAMS: &[ParamDef] = &[
         min: 0.0,
         max: 100.0,
         default: 100.0,
-    },
-    ParamDef {
-        id: ParamId::EnableLimiter,
-        name: "Limiter",
-        module: "Output",
-        flags: CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_STEPPED,
-        min: 0.0,
-        max: 1.0,
-        default: 1.0,
     },
     ParamDef {
         id: ParamId::LimiterThreshold,
@@ -210,22 +180,13 @@ pub const PARAMS: &[ParamDef] = &[
         default: 0.0,
     },
     ParamDef {
-        id: ParamId::EnableVoiceLimit,
-        name: "Enable Voice Limit",
-        module: "Voices",
-        flags: CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_STEPPED,
-        min: 0.0,
-        max: 1.0,
-        default: 0.0,
-    },
-    ParamDef {
         id: ParamId::VoiceLimitMax,
         name: "Voice Limit Max",
         module: "Voices",
         flags: CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_STEPPED,
         min: 1.0,
         max: 128.0,
-        default: 15.0,
+        default: 128.0,
     },
     ParamDef {
         id: ParamId::VoiceLimitRampdown,
@@ -245,10 +206,88 @@ pub const PARAMS: &[ParamDef] = &[
         max: 1.0,
         default: 0.0,
     },
+    ParamDef {
+        id: ParamId::Balance1,
+        name: "Balance 1-2",
+        module: "Balance",
+        flags: CLAP_PARAM_IS_AUTOMATABLE,
+        min: -1.0,
+        max: 1.0,
+        default: 0.0,
+    },
+    ParamDef {
+        id: ParamId::Balance2,
+        name: "Balance 3-4",
+        module: "Balance",
+        flags: CLAP_PARAM_IS_AUTOMATABLE,
+        min: -1.0,
+        max: 1.0,
+        default: 0.0,
+    },
+    ParamDef {
+        id: ParamId::Balance3,
+        name: "Balance 5-6",
+        module: "Balance",
+        flags: CLAP_PARAM_IS_AUTOMATABLE,
+        min: -1.0,
+        max: 1.0,
+        default: 0.0,
+    },
+    ParamDef {
+        id: ParamId::Balance4,
+        name: "Balance 7-8",
+        module: "Balance",
+        flags: CLAP_PARAM_IS_AUTOMATABLE,
+        min: -1.0,
+        max: 1.0,
+        default: 0.0,
+    },
+    ParamDef {
+        id: ParamId::Balance5,
+        name: "Balance 9-10",
+        module: "Balance",
+        flags: CLAP_PARAM_IS_AUTOMATABLE,
+        min: -1.0,
+        max: 1.0,
+        default: 0.0,
+    },
+    ParamDef {
+        id: ParamId::Balance6,
+        name: "Balance 11-12",
+        module: "Balance",
+        flags: CLAP_PARAM_IS_AUTOMATABLE,
+        min: -1.0,
+        max: 1.0,
+        default: 0.0,
+    },
+    ParamDef {
+        id: ParamId::Balance7,
+        name: "Balance 13-14",
+        module: "Balance",
+        flags: CLAP_PARAM_IS_AUTOMATABLE,
+        min: -1.0,
+        max: 1.0,
+        default: 0.0,
+    },
+    ParamDef {
+        id: ParamId::Balance8,
+        name: "Balance 15-16",
+        module: "Balance",
+        flags: CLAP_PARAM_IS_AUTOMATABLE,
+        min: -1.0,
+        max: 1.0,
+        default: 0.0,
+    },
 ];
 
+pub fn param_def(id: ParamId) -> Option<&'static ParamDef> {
+    PARAMS.iter().find(|d| d.id == id)
+}
+
 pub fn sanitize_param_value(id: ParamId, value: f64) -> f64 {
-    let def = &PARAMS[id.as_index()];
+    let Some(def) = param_def(id) else {
+        return value;
+    };
     let v = value.clamp(def.min, def.max);
     if def.flags & CLAP_PARAM_IS_STEPPED != 0 {
         v.round()
@@ -257,18 +296,19 @@ pub fn sanitize_param_value(id: ParamId, value: f64) -> f64 {
     }
 }
 
+const MAX_PARAM_ID: usize = ParamId::Balance8 as usize;
+
 #[derive(Debug)]
 pub struct ParamStore {
-    values: [AtomicU64; PARAMS.len()],
+    values: Vec<AtomicU64>,
 }
 
 impl Default for ParamStore {
     fn default() -> Self {
-        let store = Self {
-            values: std::array::from_fn(|_| AtomicU64::new(0)),
-        };
-        for (i, def) in PARAMS.iter().enumerate() {
-            store.values[i].store(def.default.to_bits(), Ordering::Release);
+        let values: Vec<AtomicU64> = (0..=MAX_PARAM_ID).map(|_| AtomicU64::new(0)).collect();
+        let store = Self { values };
+        for def in PARAMS.iter() {
+            store.values[def.id.as_index()].store(def.default.to_bits(), Ordering::Release);
         }
         store
     }

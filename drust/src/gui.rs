@@ -20,10 +20,11 @@ use maolan_baseview::iced::{
 };
 use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
 
-use crate::{download, shared::SharedState};
+use crate::{download, params::ParamId, shared::SharedState};
+use maolan_widgets::horizontal_slider::horizontal_slider;
 
-pub const EDITOR_WIDTH: u32 = 300;
-pub const EDITOR_HEIGHT: u32 = 280;
+pub const EDITOR_WIDTH: u32 = 400;
+pub const EDITOR_HEIGHT: u32 = 720;
 
 const KIT_NAMES: &[&str] = &["Crocell", "DRS", "Muldjord", "Aasimonster", "Shitty"];
 
@@ -101,21 +102,22 @@ unsafe impl HasRawWindowHandle for ParentWindowHandle {
 pub enum Message {
     KitSelected(String),
     VariationSelected(String),
-    DownloadClicked,
-    DownloadProgress(f32),
-    DownloadFinished(Result<String, String>),
+    LoadClicked,
+    LoadProgress(f32),
+    LoadFinished(Result<String, String>),
+    BalanceChanged(usize, f32),
+    ParamChanged(ParamId, f64),
 }
 
-type DownloadResult = Option<Result<String, String>>;
+type LoadResult = Option<Result<String, String>>;
 
 struct State {
     shared: Arc<SharedState>,
     selected_kit: Option<String>,
     selected_variation: Option<String>,
-    kit_cached: bool,
-    download_progress: Option<f32>,
-    download_progress_arc: Option<Arc<AtomicU32>>,
-    download_result_arc: Option<Arc<std::sync::Mutex<DownloadResult>>>,
+    load_progress: Option<f32>,
+    load_progress_arc: Option<Arc<AtomicU32>>,
+    load_result_arc: Option<Arc<std::sync::Mutex<LoadResult>>>,
 }
 
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
@@ -143,22 +145,20 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
     } else {
         Some(selected_variation)
     };
-    let kit_cached = download::is_kit_downloaded(selected_kit.as_deref().unwrap_or(""));
     (
         State {
             shared,
             selected_kit,
             selected_variation,
-            kit_cached,
-            download_progress: None,
-            download_progress_arc: None,
-            download_result_arc: None,
+            load_progress: None,
+            load_progress_arc: None,
+            load_result_arc: None,
         },
         Task::none(),
     )
 }
 
-fn poll_download_task(progress: Arc<AtomicU32>) -> Task<Message> {
+fn poll_load_task(progress: Arc<AtomicU32>) -> Task<Message> {
     Task::perform(
         async move {
             thread::sleep(Duration::from_millis(50));
@@ -169,7 +169,7 @@ fn poll_download_task(progress: Arc<AtomicU32>) -> Task<Message> {
                 (prog as f32 / 100.0).min(1.0)
             }
         },
-        Message::DownloadProgress,
+        Message::LoadProgress,
     )
 }
 
@@ -178,7 +178,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::KitSelected(kit) => {
             state.selected_kit = Some(kit.clone());
             *state.shared.kit_path.write() = kit.clone();
-            state.kit_cached = download::is_kit_downloaded(&kit);
 
             let variations = variations_for_kit(&kit);
             let current_var = state.selected_variation.as_deref().unwrap_or("");
@@ -197,7 +196,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.shared.mark_dirty();
             Task::none()
         }
-        Message::DownloadClicked => {
+        Message::LoadClicked => {
+            if state.load_progress.is_some() {
+                return Task::none();
+            }
             if let Some(kit) = state.selected_kit.as_ref() {
                 let kit = kit.clone();
                 let variation = state.selected_variation.clone().unwrap_or_else(|| {
@@ -207,11 +209,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .unwrap_or("")
                         .to_string()
                 });
+                // If already cached, load immediately without spawning a thread.
+                if let Some(xml_path) = download::resolve_kit_xml(&kit, &variation) {
+                    *state.shared.pending_kit_path.write() =
+                        Some(xml_path.to_string_lossy().into_owned());
+                    return Task::none();
+                }
                 let progress = Arc::new(AtomicU32::new(0));
                 let result = Arc::new(std::sync::Mutex::new(None));
-                state.download_progress = Some(0.0);
-                state.download_progress_arc = Some(progress.clone());
-                state.download_result_arc = Some(result.clone());
+                state.load_progress = Some(0.0);
+                state.load_progress_arc = Some(progress.clone());
+                state.load_result_arc = Some(result.clone());
                 let progress2 = progress.clone();
                 thread::spawn(move || {
                     let res = download::download_kit_with_progress(&kit, &variation, |p| {
@@ -220,35 +228,34 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     *result.lock().unwrap() = Some(res);
                     progress2.store(200, Ordering::Release);
                 });
-                return poll_download_task(progress);
+                return poll_load_task(progress);
             }
             Task::none()
         }
-        Message::DownloadProgress(p) => {
-            state.download_progress = Some(p);
-            if let Some(progress_arc) = state.download_progress_arc.clone() {
+        Message::LoadProgress(p) => {
+            state.load_progress = Some(p);
+            if let Some(progress_arc) = state.load_progress_arc.clone() {
                 let prog = progress_arc.load(Ordering::Acquire);
                 if prog >= 200 {
-                    state.download_progress = None;
-                    state.download_progress_arc = None;
+                    state.load_progress = None;
+                    state.load_progress_arc = None;
                     if let Some(result) = state
-                        .download_result_arc
+                        .load_result_arc
                         .take()
                         .and_then(|arc| arc.lock().unwrap().take())
                     {
-                        return Task::perform(async { result }, Message::DownloadFinished);
+                        return Task::perform(async { result }, Message::LoadFinished);
                     }
                 } else {
-                    return poll_download_task(progress_arc);
+                    return poll_load_task(progress_arc);
                 }
             }
             Task::none()
         }
-        Message::DownloadFinished(result) => {
+        Message::LoadFinished(result) => {
             match result {
                 Ok(xml_path) => {
                     *state.shared.pending_kit_path.write() = Some(xml_path);
-                    state.kit_cached = true;
                 }
                 Err(e) => {
                     *state.shared.last_error.write() = Some(e);
@@ -256,6 +263,43 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             Task::none()
         }
+        Message::BalanceChanged(pair, value) => {
+            let id = balance_param_id(pair);
+            state.shared.set_param(id, value as f64);
+            Task::none()
+        }
+        Message::ParamChanged(id, value) => {
+            state.shared.set_param(id, value);
+            Task::none()
+        }
+    }
+}
+
+fn balance_param_id(pair: usize) -> ParamId {
+    match pair {
+        0 => ParamId::Balance1,
+        1 => ParamId::Balance2,
+        2 => ParamId::Balance3,
+        3 => ParamId::Balance4,
+        4 => ParamId::Balance5,
+        5 => ParamId::Balance6,
+        6 => ParamId::Balance7,
+        7 => ParamId::Balance8,
+        _ => ParamId::Balance1,
+    }
+}
+
+fn balance_label(pair: usize) -> &'static str {
+    match pair {
+        0 => "Kick",
+        1 => "Snare",
+        2 => "HiHat",
+        3 => "Toms",
+        4 => "Ride",
+        5 => "Crash",
+        6 => "China/Splash",
+        7 => "Ambience",
+        _ => "Out",
     }
 }
 
@@ -293,13 +337,9 @@ fn view(state: &State) -> Element<'_, Message> {
         .into()
     };
 
-    let download_button: Element<'_, Message> = if state.kit_cached {
-        button("Load").into()
-    } else {
-        button("Load").on_press(Message::DownloadClicked).into()
-    };
+    let load_button: Element<'_, Message> = button("Load").on_press(Message::LoadClicked).into();
 
-    let progress_widget: Element<'_, Message> = if let Some(progress) = state.download_progress {
+    let progress_widget: Element<'_, Message> = if let Some(progress) = state.load_progress {
         column![
             progress_bar(0.0..=1.0, progress),
             text(format!("{:.0}%", progress * 100.0)).size(12),
@@ -311,22 +351,167 @@ fn view(state: &State) -> Element<'_, Message> {
         text("").into()
     };
 
+    let mut balance_rows = Vec::new();
+    for row in 0..4 {
+        let left_pair = row * 2;
+        let right_pair = left_pair + 1;
+        let left_label = balance_label(left_pair);
+        let right_label = balance_label(right_pair);
+        let left_value = state.shared.params.get(balance_param_id(left_pair)) as f32;
+        let right_value = state.shared.params.get(balance_param_id(right_pair)) as f32;
+
+        let left_slider = horizontal_slider(-1.0..=1.0, left_value, move |v| {
+            Message::BalanceChanged(left_pair, v)
+        })
+        .step(0.01)
+        .double_click_reset(0.0)
+        .width(Length::Fixed(140.0))
+        .height(Length::Fixed(12.0));
+
+        let right_slider = horizontal_slider(-1.0..=1.0, right_value, move |v| {
+            Message::BalanceChanged(right_pair, v)
+        })
+        .step(0.01)
+        .double_click_reset(0.0)
+        .width(Length::Fixed(140.0))
+        .height(Length::Fixed(12.0));
+
+        let left_col = column![text(left_label).size(11), left_slider]
+            .spacing(2)
+            .align_x(Alignment::Center)
+            .width(Length::Fixed(160.0));
+        let right_col = column![text(right_label).size(11), right_slider]
+            .spacing(2)
+            .align_x(Alignment::Center)
+            .width(Length::Fixed(160.0));
+
+        balance_rows.push(
+            maolan_baseview::iced::widget::row![left_col, right_col]
+                .spacing(8)
+                .align_y(Alignment::Center)
+                .into(),
+        );
+    }
+
+    let balance_section = maolan_baseview::iced::widget::column(balance_rows)
+        .spacing(6)
+        .align_x(Alignment::Center);
+
+    fn param_slider<'a>(
+        label: &'static str,
+        id: ParamId,
+        range: std::ops::RangeInclusive<f32>,
+        step: f32,
+        reset: f32,
+        state: &State,
+    ) -> Element<'a, Message> {
+        let value = state.shared.params.get(id) as f32;
+        column![
+            text(label).size(11),
+            horizontal_slider(range, value, move |v| Message::ParamChanged(id, v as f64))
+                .fill_from_start()
+                .step(step)
+                .double_click_reset(reset)
+                .width(Length::Fixed(170.0))
+                .height(Length::Fixed(12.0)),
+        ]
+        .spacing(2)
+        .align_x(Alignment::Center)
+        .width(Length::Fixed(180.0))
+        .into()
+    }
+
+    let params_left = column![
+        param_slider(
+            "Master Gain",
+            ParamId::MasterGain,
+            -60.0..=12.0,
+            1.0,
+            0.0,
+            state
+        ),
+        param_slider(
+            "Humanize",
+            ParamId::HumanizeAmount,
+            0.0..=100.0,
+            1.0,
+            8.0,
+            state
+        ),
+        param_slider(
+            "Round Robin",
+            ParamId::RoundRobinMix,
+            0.0..=1.0,
+            0.01,
+            0.7,
+            state
+        ),
+        param_slider(
+            "Bleed",
+            ParamId::BleedAmount,
+            0.0..=100.0,
+            1.0,
+            100.0,
+            state
+        ),
+    ]
+    .spacing(6)
+    .align_x(Alignment::Center);
+
+    let params_right = column![
+        param_slider(
+            "Limiter Thr",
+            ParamId::LimiterThreshold,
+            -48.0..=0.0,
+            1.0,
+            -3.0,
+            state
+        ),
+        param_slider(
+            "Voice Limit",
+            ParamId::VoiceLimitMax,
+            1.0..=128.0,
+            1.0,
+            128.0,
+            state
+        ),
+        param_slider(
+            "Rampdown",
+            ParamId::VoiceLimitRampdown,
+            0.01..=2.0,
+            0.01,
+            0.5,
+            state
+        ),
+    ]
+    .spacing(6)
+    .align_x(Alignment::Center);
+
+    let params_section = column![
+        text("Parameters").size(14),
+        maolan_baseview::iced::widget::row![params_left, params_right].spacing(8),
+    ]
+    .spacing(8)
+    .align_x(Alignment::Center);
+
     let content = column![
         text("Drust").size(20),
         kit_dropdown,
         variation_dropdown,
-        download_button,
+        load_button,
         progress_widget,
+        balance_section,
+        params_section,
     ]
-    .spacing(12)
+    .spacing(10)
     .align_x(Alignment::Center);
 
     container(content)
-        .padding(16)
+        .padding(12)
         .width(Length::Fill)
         .height(Length::Fill)
         .align_x(Horizontal::Center)
-        .align_y(Vertical::Center)
+        .align_y(Vertical::Top)
         .into()
 }
 

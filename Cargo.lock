@@ -985,6 +985,7 @@ dependencies = [
  "dirs",
  "hound",
  "maolan-baseview",
+ "maolan-widgets",
  "parking_lot",
  "quick-xml 0.37.5",
  "rand 0.8.6",

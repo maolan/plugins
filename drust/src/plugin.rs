@@ -176,8 +176,9 @@ impl AudioProcessor {
             }
             if let Ok(param) = header.param_value() {
                 let raw: u32 = param.param_id().into();
+                let incoming_val = param.value();
                 if let Some(id) = ParamId::from_raw(raw) {
-                    let incoming = sanitize_param_value(id, param.value());
+                    let incoming = sanitize_param_value(id, incoming_val);
                     if self.shared.has_local_param_override(id) {
                         let current = self.shared.params.get(id);
                         if (incoming - current).abs() > 1.0e-9 {
@@ -205,6 +206,39 @@ impl AudioProcessor {
             }
         }
 
+        // Apply balance per output pair.
+        for pair in 0..(MAX_CHANNELS / 2) {
+            let left = pair * 2;
+            let right = left + 1;
+            let balance_id = match pair {
+                0 => ParamId::Balance1,
+                1 => ParamId::Balance2,
+                2 => ParamId::Balance3,
+                3 => ParamId::Balance4,
+                4 => ParamId::Balance5,
+                5 => ParamId::Balance6,
+                6 => ParamId::Balance7,
+                7 => ParamId::Balance8,
+                _ => continue,
+            };
+            let balance = self.shared.params.get(balance_id) as f32;
+            let (left_gain, right_gain) = if balance < 0.0 {
+                (1.0, 1.0 + balance)
+            } else {
+                (1.0 - balance, 1.0)
+            };
+            if let Some(Some(buf)) = out_outputs.get_mut(left) {
+                for s in buf.iter_mut() {
+                    *s *= left_gain;
+                }
+            }
+            if let Some(Some(buf)) = out_outputs.get_mut(right) {
+                for s in buf.iter_mut() {
+                    *s *= right_gain;
+                }
+            }
+        }
+
         // Build flat slice list for the limiter from output buffers.
         let mut flat_slices: Vec<&mut [f32]> = Vec::with_capacity(MAX_CHANNELS);
         for buf in out_outputs.iter_mut().flatten() {
@@ -212,9 +246,8 @@ impl AudioProcessor {
         }
 
         // Apply limiter to all output channels.
-        let limiter_enabled = self.shared.params.get(ParamId::EnableLimiter) >= 0.5;
         let limiter_threshold = self.shared.params.get(ParamId::LimiterThreshold) as f32;
-        self.limiter.set_enabled(limiter_enabled);
+        self.limiter.set_enabled(limiter_threshold < 0.0);
         self.limiter.set_threshold_db(limiter_threshold);
         self.limiter.process_slices(&mut flat_slices, frames);
 
@@ -265,12 +298,12 @@ impl PluginInstance {
 
         // Auto-discover MIDI map using variation-aware resolution.
         let variation = self.shared.variation.read().clone();
-        if let Some(kit_name) = download::kit_display_name_from_path(&path) {
-            if let Some(midimap_path) = download::resolve_midimap_xml(&kit_name, &variation) {
-                let _ = self.engine.load_midimap(&midimap_path.to_string_lossy());
-                *self.shared.midimap_path.write() = midimap_path.to_string_lossy().into_owned();
-                self.shared.mark_dirty();
-            }
+        if let Some(kit_name) = download::kit_display_name_from_path(&path)
+            && let Some(midimap_path) = download::resolve_midimap_xml(&kit_name, &variation)
+        {
+            let _ = self.engine.load_midimap(&midimap_path.to_string_lossy());
+            *self.shared.midimap_path.write() = midimap_path.to_string_lossy().into_owned();
+            self.shared.mark_dirty();
         }
 
         self.rebuild_note_names();
@@ -331,42 +364,7 @@ fn param_text(id: ParamId, value: f64) -> String {
                 "Off".into()
             }
         }
-        ParamId::EnableVelocityFilter => {
-            if value >= 0.5 {
-                "On".into()
-            } else {
-                "Off".into()
-            }
-        }
-        ParamId::EnableHumanizer => {
-            if value >= 0.5 {
-                "On".into()
-            } else {
-                "Off".into()
-            }
-        }
-        ParamId::EnableBleedControl => {
-            if value >= 0.5 {
-                "On".into()
-            } else {
-                "Off".into()
-            }
-        }
-        ParamId::EnableLimiter => {
-            if value >= 0.5 {
-                "On".into()
-            } else {
-                "Off".into()
-            }
-        }
         ParamId::EnableNormalized => {
-            if value >= 0.5 {
-                "On".into()
-            } else {
-                "Off".into()
-            }
-        }
-        ParamId::EnableVoiceLimit => {
             if value >= 0.5 {
                 "On".into()
             } else {
@@ -387,18 +385,13 @@ fn param_text(id: ParamId, value: f64) -> String {
 
 fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
     match id {
-        ParamId::EnableResampling
-        | ParamId::EnableVelocityFilter
-        | ParamId::EnableHumanizer
-        | ParamId::EnableBleedControl
-        | ParamId::EnableLimiter
-        | ParamId::EnableNormalized
-        | ParamId::EnableVoiceLimit
-        | ParamId::Bypass => match text.to_ascii_lowercase().as_str() {
-            "on" | "true" | "1" => Some(1.0),
-            "off" | "false" | "0" => Some(0.0),
-            _ => None,
-        },
+        ParamId::EnableResampling | ParamId::EnableNormalized | ParamId::Bypass => {
+            match text.to_ascii_lowercase().as_str() {
+                "on" | "true" | "1" => Some(1.0),
+                "off" | "false" | "0" => Some(0.0),
+                _ => None,
+            }
+        }
         _ => text.parse().ok(),
     }
 }
@@ -560,38 +553,22 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
     info.port_type = CLAP_PORT_MONO.as_ptr();
     info.in_place_pair = u32::MAX; // CLAP_INVALID_ID
     let name = match index {
-        0 => "Kick",
-        1 => "Snare",
-        2 => "HiHat",
-        3 => "Toms",
-        4 => "Ride",
-        5 => "Crash",
-        6 => "China/Splash",
-        7 => "Ambience",
-        8 => "Out 9",
-        9 => "Out 10",
-        10 => "Out 11",
-        11 => "Out 12",
-        12 => "Out 13",
-        13 => "Out 14",
-        14 => "Out 15",
-        15 => "Out 16",
-        16 => "Out 17",
-        17 => "Out 18",
-        18 => "Out 19",
-        19 => "Out 20",
-        20 => "Out 21",
-        21 => "Out 22",
-        22 => "Out 23",
-        23 => "Out 24",
-        24 => "Out 25",
-        25 => "Out 26",
-        26 => "Out 27",
-        27 => "Out 28",
-        28 => "Out 29",
-        29 => "Out 30",
-        30 => "Out 31",
-        31 => "Out 32",
+        0 => "Kick L",
+        1 => "Kick R",
+        2 => "Snare L",
+        3 => "Snare R",
+        4 => "HiHat L",
+        5 => "HiHat R",
+        6 => "Toms L",
+        7 => "Toms R",
+        8 => "Ride L",
+        9 => "Ride R",
+        10 => "Crash L",
+        11 => "Crash R",
+        12 => "China/Splash L",
+        13 => "China/Splash R",
+        14 => "Ambience L",
+        15 => "Ambience R",
         _ => "Out",
     };
     copy_str_to_array(name, &mut info.name);
@@ -661,8 +638,10 @@ unsafe extern "C-unwind" fn ext_params_get_value(
         return false;
     }
     let inst = unsafe { instance(plugin) };
+    let v = inst.shared.params.get(id);
+
     unsafe {
-        *out_value = inst.shared.params.get(id);
+        *out_value = v;
     }
     true
 }
@@ -792,7 +771,6 @@ unsafe extern "C-unwind" fn ext_state_load(
     let Ok(state) = PluginState::from_bytes(&bytes) else {
         return false;
     };
-
     // Detect project/session changes via state_id.
     let saved_state_id = state.state_id.clone();
     let current_state_id = inst.shared.state_id.read().clone();

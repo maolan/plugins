@@ -23,7 +23,7 @@ pub use audio_file::{LoadedAudioFile, load_kit_audio, load_wav_channels, resampl
 pub use filters::{LatencyFilter, PowermapFilter, StaminaFilter, VelocityFilter};
 pub use voice::{ChannelSide, EventType, Voice, VoiceEvent};
 
-pub const MAX_CHANNELS: usize = 32;
+pub const MAX_CHANNELS: usize = 16;
 pub const MAX_VOICES: usize = 128;
 pub const MIDI_NOTE_COUNT: usize = 128;
 
@@ -161,13 +161,9 @@ pub struct DrumGizmoEngine {
     pub sample_rate: AtomicU32,
     pub kit_sample_rate: AtomicU32,
     pub enable_resampling: RwLock<bool>,
-    pub enable_velocity_filter: RwLock<bool>,
-    pub enable_humanizer: RwLock<bool>,
     pub humanize_amount: RwLock<f32>,
     pub round_robin_mix: RwLock<f32>,
-    pub enable_bleed_control: RwLock<bool>,
     pub bleed_amount: RwLock<f32>,
-    pub enable_voice_limit: RwLock<bool>,
     pub voice_limit_max: RwLock<usize>,
     pub voice_limit_rampdown: RwLock<f32>,
     pub resample_quality: RwLock<u32>,
@@ -197,13 +193,9 @@ impl Default for DrumGizmoEngine {
             sample_rate: AtomicU32::new(44100.0f32.to_bits()),
             kit_sample_rate: AtomicU32::new(44100),
             enable_resampling: RwLock::new(true),
-            enable_velocity_filter: RwLock::new(false),
-            enable_humanizer: RwLock::new(false),
             humanize_amount: RwLock::new(0.0),
             round_robin_mix: RwLock::new(0.7),
-            enable_bleed_control: RwLock::new(true),
             bleed_amount: RwLock::new(1.0),
-            enable_voice_limit: RwLock::new(false),
             voice_limit_max: RwLock::new(15),
             voice_limit_rampdown: RwLock::new(0.5),
             resample_quality: RwLock::new(1),
@@ -721,11 +713,8 @@ impl DrumGizmoEngine {
     pub fn sync_params(&self, params: &crate::params::ParamStore) {
         use crate::params::ParamId;
         *self.enable_resampling.write() = params.get(ParamId::EnableResampling) >= 0.5;
-        *self.enable_velocity_filter.write() = params.get(ParamId::EnableVelocityFilter) >= 0.5;
-        *self.enable_humanizer.write() = params.get(ParamId::EnableHumanizer) >= 0.5;
         *self.humanize_amount.write() = params.get(ParamId::HumanizeAmount) as f32;
         *self.round_robin_mix.write() = params.get(ParamId::RoundRobinMix) as f32;
-        *self.enable_bleed_control.write() = params.get(ParamId::EnableBleedControl) >= 0.5;
         *self.bleed_amount.write() =
             (params.get(ParamId::BleedAmount) as f32 / 100.0).clamp(0.0, 1.0);
         *self.resample_quality.write() = params.get(ParamId::ResampleQuality) as u32;
@@ -733,7 +722,6 @@ impl DrumGizmoEngine {
         let new_seed = params.get(ParamId::RandomSeed) as u64;
         self.random_seed
             .store(new_seed, std::sync::atomic::Ordering::Release);
-        *self.enable_voice_limit.write() = params.get(ParamId::EnableVoiceLimit) >= 0.5;
         *self.voice_limit_max.write() = params.get(ParamId::VoiceLimitMax) as usize;
         *self.voice_limit_rampdown.write() = params.get(ParamId::VoiceLimitRampdown) as f32;
     }
@@ -754,14 +742,10 @@ impl DrumGizmoEngine {
         let lock_free_entries = &audio_data.lock_free_entries;
 
         let sr = f32::from_bits(self.sample_rate.load(Ordering::Acquire));
-        let enable_velocity_filter = *self.enable_velocity_filter.read();
-        let enable_humanizer = *self.enable_humanizer.read();
         let humanize_amount = *self.humanize_amount.read();
         let round_robin_mix = *self.round_robin_mix.read();
-        let enable_voice_limit = *self.enable_voice_limit.read();
         let voice_limit_max = *self.voice_limit_max.read();
         let voice_limit_rampdown = *self.voice_limit_rampdown.read();
-        let enable_bleed = *self.enable_bleed_control.read();
         let bleed_amount = *self.bleed_amount.read();
 
         let mut state = self.audio_state.lock();
@@ -788,20 +772,18 @@ impl DrumGizmoEngine {
                 if let Some(instr) = kit.instruments.get(event.instrument_index) {
                     let enable_normalized = *self.enable_normalized.read();
                     let out_map = self.out_map.read();
-                    let out_index = out_map.get(&instr.name).copied().unwrap_or(8);
+                    let out_index = out_map.get(&instr.name).copied().unwrap_or(0);
                     drop(out_map);
 
                     let mut velocity = event.velocity;
 
-                    if enable_velocity_filter {
-                        state.velocity_filter.set_amount(humanize_amount / 100.0);
-                        velocity = state.velocity_filter.process(velocity);
-                    }
+                    state.velocity_filter.set_amount(humanize_amount / 100.0);
+                    velocity = state.velocity_filter.process(velocity);
 
                     velocity = state.powermap_filter.process(velocity);
                     velocity = state.stamina_filter.process(velocity, 0);
 
-                    let delay_samples = if enable_humanizer && humanize_amount > 0.0 {
+                    let delay_samples = if humanize_amount > 0.0 {
                         state
                             .latency_filter
                             .set_amount(humanize_amount / 100.0 * 20.0);
@@ -845,11 +827,7 @@ impl DrumGizmoEngine {
                                     .channelmaps
                                     .iter()
                                     .any(|cm| cm.in_channel == af.channel && cm.main);
-                                let bleed_gain = if !is_main && enable_bleed {
-                                    bleed_amount
-                                } else {
-                                    1.0
-                                };
+                                let bleed_gain = if !is_main { bleed_amount } else { 1.0 };
 
                                 let amplitude = if enable_normalized && sample.normalized {
                                     velocity
@@ -870,7 +848,7 @@ impl DrumGizmoEngine {
                                     rampdown_total: 0,
                                     delay_remaining: delay_samples,
                                     out_index,
-                                    side: channel_name_to_side(&af.channel),
+                                    side: channel_name_to_side(&instr.name, &af.channel),
                                     cached_buffer: buffer.as_ptr(),
                                     cached_buffer_len: buffer.len(),
                                 });
@@ -916,36 +894,32 @@ impl DrumGizmoEngine {
                             }
                         }
 
-                        if enable_voice_limit {
-                            let same_instr_count = state
-                                .voices
-                                .iter()
-                                .filter(|v| {
-                                    v.active && v.instrument_index == event.instrument_index
-                                })
-                                .count();
-                            if same_instr_count >= voice_limit_max {
-                                let to_ramp = same_instr_count - voice_limit_max + 1;
-                                let ramp_samples = (voice_limit_rampdown * sr) as usize;
-                                let mut ramped = 0;
-                                for voice in &mut state.voices {
-                                    if !voice.active {
-                                        continue;
-                                    }
-                                    if voice.instrument_index != event.instrument_index {
-                                        continue;
-                                    }
-                                    if ramped >= to_ramp {
-                                        break;
-                                    }
-                                    for pb in &mut voice.playbacks {
-                                        if pb.rampdown_samples.is_none() {
-                                            pb.rampdown_total = ramp_samples.max(1);
-                                            pb.rampdown_samples = Some(pb.rampdown_total);
-                                        }
-                                    }
-                                    ramped += 1;
+                        let same_instr_count = state
+                            .voices
+                            .iter()
+                            .filter(|v| v.active && v.instrument_index == event.instrument_index)
+                            .count();
+                        if same_instr_count >= voice_limit_max {
+                            let to_ramp = same_instr_count - voice_limit_max + 1;
+                            let ramp_samples = (voice_limit_rampdown * sr) as usize;
+                            let mut ramped = 0;
+                            for voice in &mut state.voices {
+                                if !voice.active {
+                                    continue;
                                 }
+                                if voice.instrument_index != event.instrument_index {
+                                    continue;
+                                }
+                                if ramped >= to_ramp {
+                                    break;
+                                }
+                                for pb in &mut voice.playbacks {
+                                    if pb.rampdown_samples.is_none() {
+                                        pb.rampdown_total = ramp_samples.max(1);
+                                        pb.rampdown_samples = Some(pb.rampdown_total);
+                                    }
+                                }
+                                ramped += 1;
                             }
                         }
 
@@ -1003,6 +977,8 @@ impl DrumGizmoEngine {
     }
 
     /// Render directly to per-output mono output slices.
+    /// Separates render and advance passes like DrumCracker for
+    /// sample-accurate overlaps and consistent sub-sample interpolation.
     pub fn render_outputs(&self, frames: usize, outputs: &mut [Option<&mut [f32]>]) {
         if !self.kit_ready.load(Ordering::Acquire) {
             return;
@@ -1011,6 +987,117 @@ impl DrumGizmoEngine {
         let quality = *self.resample_quality.read();
         let mut state = self.audio_state.lock();
 
+        // ------------------------------------------------------------------
+        // Pass 1: Render all voices at their current positions.
+        // No state is advanced here — every voice reads from the same
+        // starting position for the entire block.
+        // ------------------------------------------------------------------
+        for voice in state.voices.iter_mut() {
+            if !voice.active {
+                continue;
+            }
+
+            for playback in &mut voice.playbacks {
+                if playback.cached_buffer.is_null() {
+                    continue;
+                }
+                let audio_len = playback.cached_buffer_len;
+                if playback.position as usize >= audio_len {
+                    continue;
+                }
+
+                let left_idx = playback.out_index * 2;
+                let right_idx = left_idx + 1;
+
+                let (mut out_left, mut out_right) = match playback.side {
+                    crate::engine::voice::ChannelSide::Left => {
+                        let buf = if left_idx < outputs.len() {
+                            outputs[left_idx].take()
+                        } else {
+                            None
+                        };
+                        (buf, None)
+                    }
+                    crate::engine::voice::ChannelSide::Right => {
+                        let buf = if right_idx < outputs.len() {
+                            outputs[right_idx].take()
+                        } else {
+                            None
+                        };
+                        (None, buf)
+                    }
+                    crate::engine::voice::ChannelSide::Both => {
+                        let l = if left_idx < outputs.len() {
+                            outputs[left_idx].take()
+                        } else {
+                            None
+                        };
+                        let r = if right_idx < outputs.len() {
+                            outputs[right_idx].take()
+                        } else {
+                            None
+                        };
+                        (l, r)
+                    }
+                };
+                if out_left.is_none() && out_right.is_none() {
+                    continue;
+                }
+
+                // How many samples are skipped due to delay?
+                let delay_skip = playback.delay_remaining.min(frames);
+                let renderable = frames - delay_skip;
+                let audio_remaining = audio_len.saturating_sub(playback.position as usize);
+                let mut render_count = renderable.min(audio_remaining);
+
+                if let Some(r) = playback.rampdown_samples {
+                    render_count = render_count.min(r);
+                }
+
+                if render_count > 0 {
+                    let audio =
+                        unsafe { std::slice::from_raw_parts(playback.cached_buffer, audio_len) };
+
+                    for i in 0..render_count {
+                        let sample = read_sample(audio, playback.position + i as f64, quality);
+
+                        let gain = match playback.rampdown_samples {
+                            Some(r) => {
+                                let remaining = r - i;
+                                let ramp = remaining as f32 / playback.rampdown_total as f32;
+                                playback.gain * ramp
+                            }
+                            None => playback.gain,
+                        };
+
+                        let out_idx = i + delay_skip;
+                        if let Some(out) = out_left.as_mut()
+                            && out_idx < out.len()
+                        {
+                            out[out_idx] += sample * gain;
+                        }
+                        if let Some(out) = out_right.as_mut()
+                            && out_idx < out.len()
+                        {
+                            out[out_idx] += sample * gain;
+                        }
+                    }
+                }
+
+                if left_idx < outputs.len() {
+                    outputs[left_idx] = out_left;
+                }
+                if right_idx < outputs.len() {
+                    outputs[right_idx] = out_right;
+                }
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // Pass 2: Advance all voices.
+        // Every voice moves forward by the same block duration, so
+        // overlapping voices remain sample-aligned.
+        // ------------------------------------------------------------------
         for voice in state.voices.iter_mut() {
             if !voice.active {
                 continue;
@@ -1021,50 +1108,36 @@ impl DrumGizmoEngine {
                 if playback.cached_buffer.is_null() {
                     continue;
                 }
-                let audio = unsafe {
-                    std::slice::from_raw_parts(playback.cached_buffer, playback.cached_buffer_len)
-                };
-                let audio_len = audio.len();
+                let audio_len = playback.cached_buffer_len;
                 if playback.position as usize >= audio_len {
                     continue;
                 }
-                all_finished = false;
 
-                let out = match outputs.get_mut(playback.out_index) {
-                    Some(Some(b)) => b,
-                    _ => continue,
-                };
+                let delay_consumed = playback.delay_remaining.min(frames);
+                playback.delay_remaining -= delay_consumed;
 
-                for i in 0..frames {
-                    if playback.delay_remaining > 0 {
-                        playback.delay_remaining -= 1;
-                        continue;
-                    }
+                if playback.delay_remaining == 0 {
+                    let renderable = frames - delay_consumed;
+                    let audio_remaining = audio_len.saturating_sub(playback.position as usize);
+                    let mut render_count = renderable.min(audio_remaining);
 
-                    let pos = playback.position as usize;
-                    if pos >= audio_len {
-                        break;
-                    }
-
-                    let sample = read_sample(audio, playback.position, quality);
-
-                    let gain = if let Some(remaining) = playback.rampdown_samples {
-                        if remaining == 0 {
+                    if let Some(r) = playback.rampdown_samples {
+                        render_count = render_count.min(r);
+                        let new_r = r.saturating_sub(render_count);
+                        if new_r == 0 {
                             playback.position = audio_len as f64;
-                            break;
+                            playback.rampdown_samples = None;
+                        } else {
+                            playback.rampdown_samples = Some(new_r);
+                            playback.position += render_count as f64;
                         }
-                        let ramp = remaining as f32 / playback.rampdown_total as f32;
-                        playback.rampdown_samples = Some(remaining - 1);
-                        playback.gain * ramp
                     } else {
-                        playback.gain
-                    };
-
-                    if i < out.len() {
-                        out[i] += sample * gain;
+                        playback.position += render_count as f64;
                     }
+                }
 
-                    playback.position += 1.0;
+                if (playback.position as usize) < audio_len {
+                    all_finished = false;
                 }
             }
 
@@ -1204,12 +1277,23 @@ fn instrument_to_out(name: &str) -> usize {
     if n.contains("room") || n.contains("amb") {
         return 7;
     }
-    8
+    0
 }
 
-fn channel_name_to_side(name: &str) -> ChannelSide {
-    let upper = name.to_uppercase();
-    let last = name.chars().last().unwrap_or(' ');
+fn channel_name_to_side(instr_name: &str, channel_name: &str) -> ChannelSide {
+    let instr_lower = instr_name.to_lowercase();
+    let is_kick = instr_lower.contains("kick") || instr_lower.contains("kdrum");
+    if is_kick {
+        let ch_lower = channel_name.to_lowercase();
+        let is_room =
+            ch_lower.contains("amb") || ch_lower.contains("oh") || ch_lower.contains("room");
+        let is_kick_mic = ch_lower.contains("kick") || ch_lower.contains("kdrum");
+        if is_kick_mic && !is_room {
+            return ChannelSide::Both;
+        }
+    }
+    let upper = channel_name.to_uppercase();
+    let last = channel_name.chars().last().unwrap_or(' ');
     if last == 'L' || upper.contains("LEFT") {
         ChannelSide::Left
     } else if last == 'R' || upper.contains("RIGHT") {

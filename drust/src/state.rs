@@ -33,10 +33,8 @@ impl PluginState {
         state_id: String,
     ) -> Self {
         let mut param_values = Vec::new();
-        for i in 0..crate::params::PARAMS.len() {
-            if let Some(id) = ParamId::from_raw(i as u32) {
-                param_values.push((i as u16, params.get(id)));
-            }
+        for def in crate::params::PARAMS.iter() {
+            param_values.push((def.id.as_u16(), params.get(def.id)));
         }
         Self {
             version: 1,
