@@ -214,12 +214,6 @@ impl Buffer {
         let idx = self.input_buffer_offset as isize + relative_index;
         self.input_buffer[idx as usize]
     }
-
-    #[allow(dead_code)]
-    pub fn slice(&self, start: isize, len: usize) -> &[f32] {
-        let s = (self.input_buffer_offset as isize + start) as usize;
-        &self.input_buffer[s..s + len]
-    }
 }
 
 #[derive(Debug, Clone)]

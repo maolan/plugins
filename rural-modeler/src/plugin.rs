@@ -56,7 +56,6 @@ const FEATURE_GATE: *const c_char = CLAP_PLUGIN_FEATURE_GATE.as_ptr();
 const FEATURE_MONO: *const c_char = CLAP_PLUGIN_FEATURE_MONO.as_ptr();
 const NAM_NOISE_GATE_TRIGGER_PARAMS: TriggerParams = TriggerParams {
     time: 0.01,
-    threshold: -80.0,
     ratio: 0.1,
     open_time: 0.005,
     hold_time: 0.01,

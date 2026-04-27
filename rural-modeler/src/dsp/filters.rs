@@ -43,25 +43,6 @@ impl Biquad {
         self.coeffs = coeffs;
     }
 
-    #[allow(dead_code)]
-    pub fn reset(&mut self) {
-        self.state = BiquadState::default();
-    }
-
-    #[allow(dead_code)]
-    #[allow(dead_code)]
-    pub fn process(&mut self, x: f32) -> f32 {
-        let y =
-            self.coeffs.b0 * x + self.coeffs.b1 * self.state.x1 + self.coeffs.b2 * self.state.x2
-                - self.coeffs.a1 * self.state.y1
-                - self.coeffs.a2 * self.state.y2;
-        self.state.x2 = self.state.x1;
-        self.state.x1 = x;
-        self.state.y2 = self.state.y1;
-        self.state.y1 = y;
-        y
-    }
-
     pub fn process_block(&mut self, block: &mut [f32]) {
         for x in block.iter_mut() {
             let y = self.coeffs.b0 * *x
@@ -156,20 +137,6 @@ impl OnePoleHighPass {
     pub fn set_frequency(&mut self, sample_rate: f32, frequency: f32) {
         let c = 2.0 * PI * frequency / sample_rate.max(1.0);
         self.alpha = 1.0 / (c + 1.0);
-    }
-
-    #[allow(dead_code)]
-    pub fn reset(&mut self) {
-        self.x1 = 0.0;
-        self.y1 = 0.0;
-    }
-
-    #[allow(dead_code)]
-    pub fn process(&mut self, x: f32) -> f32 {
-        let y = self.alpha * self.y1 + self.alpha * (x - self.x1);
-        self.x1 = x;
-        self.y1 = y;
-        y
     }
 
     pub fn process_block(&mut self, block: &mut [f32]) {

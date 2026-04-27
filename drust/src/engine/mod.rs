@@ -23,8 +23,7 @@ pub use audio_file::{LoadedAudioFile, load_kit_audio, load_wav_channels, resampl
 pub use filters::{LatencyFilter, PowermapFilter, StaminaFilter, VelocityFilter};
 pub use voice::{ChannelSide, EventType, Voice, VoiceEvent};
 
-pub const MAX_STEREO_BUSES: usize = 16;
-pub const MAX_CHANNELS: usize = MAX_STEREO_BUSES * 2;
+pub const MAX_CHANNELS: usize = 32;
 pub const MAX_VOICES: usize = 128;
 pub const MIDI_NOTE_COUNT: usize = 128;
 
@@ -71,7 +70,7 @@ pub struct ChannelPlayback {
     pub rampdown_samples: Option<usize>,
     pub rampdown_total: usize,
     pub delay_remaining: usize,
-    pub bus_index: usize,
+    pub out_index: usize,
     pub side: crate::engine::voice::ChannelSide,
     /// Pre-cached pointer to audio buffer (valid because old audio is retired, not dropped).
     pub cached_buffer: *const f32,
@@ -90,7 +89,7 @@ impl Default for ChannelPlayback {
             rampdown_samples: None,
             rampdown_total: 0,
             delay_remaining: 0,
-            bus_index: 0,
+            out_index: 0,
             side: ChannelSide::Both,
             cached_buffer: null_mut(),
             cached_buffer_len: 0,
@@ -176,7 +175,7 @@ pub struct DrumGizmoEngine {
     pub random_seed: std::sync::atomic::AtomicU64,
     pub current_seed: std::sync::atomic::AtomicU64,
     pub retired: Mutex<Vec<RetiredData>>,
-    pub bus_map: RwLock<HashMap<String, usize>>,
+    pub out_map: RwLock<HashMap<String, usize>>,
     pub kit_ready: AtomicBool,
     pub is_loading: AtomicBool,
     pub loading_progress: AtomicU8,
@@ -212,7 +211,7 @@ impl Default for DrumGizmoEngine {
             random_seed: std::sync::atomic::AtomicU64::new(0),
             current_seed: std::sync::atomic::AtomicU64::new(0),
             retired: Mutex::new(Vec::new()),
-            bus_map: RwLock::new(HashMap::new()),
+            out_map: RwLock::new(HashMap::new()),
             kit_ready: AtomicBool::new(false),
             is_loading: AtomicBool::new(false),
             loading_progress: AtomicU8::new(0),
@@ -410,9 +409,9 @@ impl DrumGizmoEngine {
         {
             let mut map = HashMap::new();
             for instr in &kit.instruments {
-                map.insert(instr.name.clone(), instrument_to_bus(&instr.name));
+                map.insert(instr.name.clone(), instrument_to_out(&instr.name));
             }
-            *self.bus_map.write() = map;
+            *self.out_map.write() = map;
         }
 
         let new_kit = Arc::new(kit);
@@ -490,9 +489,9 @@ impl DrumGizmoEngine {
             {
                 let mut map = HashMap::new();
                 for instr in &kit.instruments {
-                    map.insert(instr.name.clone(), instrument_to_bus(&instr.name));
+                    map.insert(instr.name.clone(), instrument_to_out(&instr.name));
                 }
-                *self.bus_map.write() = map;
+                *self.out_map.write() = map;
             }
 
             let new_kit = Arc::new(kit);
@@ -788,9 +787,9 @@ impl DrumGizmoEngine {
             EventType::OnSet => {
                 if let Some(instr) = kit.instruments.get(event.instrument_index) {
                     let enable_normalized = *self.enable_normalized.read();
-                    let bus_map = self.bus_map.read();
-                    let bus_index = bus_map.get(&instr.name).copied().unwrap_or(8);
-                    drop(bus_map);
+                    let out_map = self.out_map.read();
+                    let out_index = out_map.get(&instr.name).copied().unwrap_or(8);
+                    drop(out_map);
 
                     let mut velocity = event.velocity;
 
@@ -870,7 +869,7 @@ impl DrumGizmoEngine {
                                     rampdown_samples: None,
                                     rampdown_total: 0,
                                     delay_remaining: delay_samples,
-                                    bus_index,
+                                    out_index,
                                     side: channel_name_to_side(&af.channel),
                                     cached_buffer: buffer.as_ptr(),
                                     cached_buffer_len: buffer.len(),
@@ -1003,8 +1002,8 @@ impl DrumGizmoEngine {
         }
     }
 
-    /// Render directly to per-bus output slices. Each bus is (left, right).
-    pub fn render_buses(&self, frames: usize, buses: &mut [Option<(&mut [f32], &mut [f32])>]) {
+    /// Render directly to per-output mono output slices.
+    pub fn render_outputs(&self, frames: usize, outputs: &mut [Option<&mut [f32]>]) {
         if !self.kit_ready.load(Ordering::Acquire) {
             return;
         }
@@ -1031,7 +1030,7 @@ impl DrumGizmoEngine {
                 }
                 all_finished = false;
 
-                let bus = match buses.get_mut(playback.bus_index) {
+                let out = match outputs.get_mut(playback.out_index) {
                     Some(Some(b)) => b,
                     _ => continue,
                 };
@@ -1061,25 +1060,8 @@ impl DrumGizmoEngine {
                         playback.gain
                     };
 
-                    match playback.side {
-                        ChannelSide::Left => {
-                            if i < bus.0.len() {
-                                bus.0[i] += sample * gain;
-                            }
-                        }
-                        ChannelSide::Right => {
-                            if i < bus.1.len() {
-                                bus.1[i] += sample * gain;
-                            }
-                        }
-                        ChannelSide::Both => {
-                            if i < bus.0.len() {
-                                bus.0[i] += sample * gain;
-                            }
-                            if i < bus.1.len() {
-                                bus.1[i] += sample * gain;
-                            }
-                        }
+                    if i < out.len() {
+                        out[i] += sample * gain;
                     }
 
                     playback.position += 1.0;
@@ -1124,8 +1106,8 @@ impl DrumGizmoEngine {
                 }
                 all_finished = false;
 
-                let bus_l = playback.bus_index * 2;
-                let bus_r = bus_l + 1;
+                let out_l = playback.out_index * 2;
+                let out_r = out_l + 1;
 
                 for i in 0..frames {
                     if playback.delay_remaining > 0 {
@@ -1154,21 +1136,21 @@ impl DrumGizmoEngine {
 
                     match playback.side {
                         ChannelSide::Left => {
-                            if bus_l < outputs.len() {
-                                outputs[bus_l][i] += sample * gain;
+                            if out_l < outputs.len() {
+                                outputs[out_l][i] += sample * gain;
                             }
                         }
                         ChannelSide::Right => {
-                            if bus_r < outputs.len() {
-                                outputs[bus_r][i] += sample * gain;
+                            if out_r < outputs.len() {
+                                outputs[out_r][i] += sample * gain;
                             }
                         }
                         ChannelSide::Both => {
-                            if bus_l < outputs.len() {
-                                outputs[bus_l][i] += sample * gain;
+                            if out_l < outputs.len() {
+                                outputs[out_l][i] += sample * gain;
                             }
-                            if bus_r < outputs.len() {
-                                outputs[bus_r][i] += sample * gain;
+                            if out_r < outputs.len() {
+                                outputs[out_r][i] += sample * gain;
                             }
                         }
                     }
@@ -1196,7 +1178,7 @@ fn playback_position_max(playbacks: &[ChannelPlayback]) -> usize {
         .unwrap_or(0)
 }
 
-fn instrument_to_bus(name: &str) -> usize {
+fn instrument_to_out(name: &str) -> usize {
     let n = name.to_lowercase();
     if n.contains("kick") || n.contains("kdrum") {
         return 0;

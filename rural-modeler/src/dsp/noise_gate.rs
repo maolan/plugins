@@ -11,10 +11,8 @@ enum GateState {
 
 /// Noise gate trigger parameters, matching the NAM C++ reference defaults.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct TriggerParams {
     pub time: f32,
-    pub threshold: f32,
     pub ratio: f32,
     pub open_time: f32,
     pub hold_time: f32,
@@ -25,7 +23,6 @@ impl Default for TriggerParams {
     fn default() -> Self {
         Self {
             time: 0.05,
-            threshold: -60.0,
             ratio: 1.5,
             open_time: 0.002,
             hold_time: 0.05,
@@ -83,7 +80,6 @@ impl NoiseGateTrigger {
         }
     }
 
-    #[allow(dead_code)]
     pub fn set_params(&mut self, params: TriggerParams) {
         self.params = params;
     }
@@ -229,15 +225,6 @@ impl NoiseGateGain {
         }
     }
 
-    /// Apply gain reduction to a single sample.  `gain_reduction_db` is
-    /// expected to be the value produced by the trigger for the corresponding
-    /// input sample.  The C++ reference uses power-ratio conversion
-    /// (`10^(db/10)`) rather than amplitude (`10^(db/20)`).
-    #[allow(dead_code)]
-    pub fn apply(&self, sample: f32, gain_reduction_db: f32) -> f32 {
-        10.0_f32.powf(gain_reduction_db * 0.1) * sample
-    }
-
     /// Apply the stored gain reduction to a multi-channel block in-place.
     /// `blocks` is indexed as `[channel][frame]`.
     pub fn apply_blocks(&self, blocks: &mut [&mut [f32]]) {
@@ -270,23 +257,6 @@ mod tests {
             gain_db[0].last().copied().unwrap_or(0.0) < -1.0,
             "expected meaningful gain reduction for silent input"
         );
-    }
-
-    #[test]
-    fn gain_applies_reduction() {
-        let gain = NoiseGateGain::default();
-        let reduced = gain.apply(1.0, -10.0);
-        assert!(reduced < 1.0 && reduced > 0.0);
-    }
-
-    #[test]
-    fn two_stage_gate_attenuates_more_than_amplitude_ratio() {
-        // The C++ reference uses 10^(db/10) (power ratio) instead of
-        // 10^(db/20) (amplitude ratio).  For a -40 dB reduction this means
-        // 0.0001x instead of 0.01x.
-        let gain = NoiseGateGain::default();
-        let reduced = gain.apply(1.0, -40.0);
-        assert!((reduced - 1.0e-4).abs() < 1.0e-6);
     }
 
     #[test]

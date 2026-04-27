@@ -63,13 +63,6 @@ impl ToneStack {
             .set_coeffs(high_shelf(self.sample_rate, 1800.0, 0.707, treble_gain_db));
     }
 
-    #[allow(dead_code)]
-    pub fn process(&mut self, x: f32) -> f32 {
-        let y = self.bass_filter.process(x);
-        let y = self.mid_filter.process(y);
-        self.treble_filter.process(y)
-    }
-
     pub fn process_block(&mut self, block: &mut [f32]) {
         self.bass_filter.process_block(block);
         self.mid_filter.process_block(block);

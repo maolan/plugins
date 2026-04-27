@@ -129,20 +129,6 @@ impl ImpulseResponse {
         };
     }
 
-    #[allow(dead_code)]
-    pub fn process(&mut self, x: f32) -> f32 {
-        let Some(buffer) = self.buffer.as_mut() else {
-            return x;
-        };
-        buffer.update_buffers(&[x]);
-        let mut sum = 0.0;
-        for (j, weight) in self.weights.iter().enumerate() {
-            sum += *weight * buffer.get(-(j as isize));
-        }
-        buffer.advance(1);
-        sum
-    }
-
     pub fn process_block(&mut self, block: &mut [f32]) {
         let Some(buffer) = self.buffer.as_mut() else {
             return;

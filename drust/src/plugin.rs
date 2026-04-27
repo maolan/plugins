@@ -13,7 +13,7 @@ use clap_clap::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_CHOKE,
         CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_VALUE, CLAP_EXT_NOTE_NAME,
         CLAP_NOTE_DIALECT_MIDI, CLAP_PARAM_REQUIRES_PROCESS, CLAP_PLUGIN_FACTORY_ID,
-        CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_MONO, CLAP_PORT_STEREO,
+        CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_MONO, CLAP_PORT_MONO,
         CLAP_PROCESS_CONTINUE, CLAP_VERSION, clap_audio_port_info, clap_gui_resize_hints,
         clap_host, clap_id, clap_input_events, clap_istream, clap_note_name, clap_note_port_info,
         clap_ostream, clap_output_events, clap_param_info, clap_plugin, clap_plugin_audio_ports,
@@ -27,9 +27,7 @@ use clap_clap::{
 use parking_lot::Mutex;
 
 use crate::{
-    engine::{
-        DrumGizmoEngine, EventType, MAX_CHANNELS, MAX_STEREO_BUSES, VoiceEvent, limiter::Limiter,
-    },
+    engine::{DrumGizmoEngine, EventType, MAX_CHANNELS, VoiceEvent, limiter::Limiter},
     gui::GuiBridge,
     params::{PARAMS, ParamId, sanitize_param_value},
     shared::SharedState,
@@ -97,22 +95,19 @@ impl AudioProcessor {
         // and renders silence until the main thread release-stores true.
         let kit_ready = self.engine.kit_ready.load(Ordering::Acquire);
 
-        // Collect connected bus output slices and clear them.
-        let mut bus_outputs: Vec<Option<(&mut [f32], &mut [f32])>> =
-            Vec::with_capacity(MAX_STEREO_BUSES);
+        // Collect connected output slices and clear them.
+        let mut out_outputs: Vec<Option<&mut [f32]>> = Vec::with_capacity(MAX_CHANNELS);
         let output_count = process.audio_outputs_count() as usize;
-        for bus in 0..output_count.min(MAX_STEREO_BUSES) {
-            let mut port = process.audio_outputs(bus as u32);
-            if port.channel_count() >= 2 {
+        for out in 0..output_count.min(MAX_CHANNELS) {
+            let mut port = process.audio_outputs(out as u32);
+            if port.channel_count() >= 1 {
                 unsafe {
-                    let l = std::slice::from_raw_parts_mut(port.data32(0).as_mut_ptr(), frames);
-                    let r = std::slice::from_raw_parts_mut(port.data32(1).as_mut_ptr(), frames);
-                    l.fill(0.0);
-                    r.fill(0.0);
-                    bus_outputs.push(Some((l, r)));
+                    let buf = std::slice::from_raw_parts_mut(port.data32(0).as_mut_ptr(), frames);
+                    buf.fill(0.0);
+                    out_outputs.push(Some(buf));
                 }
             } else {
-                bus_outputs.push(None);
+                out_outputs.push(None);
             }
         }
 
@@ -198,28 +193,24 @@ impl AudioProcessor {
         let bypass = self.shared.params.get(ParamId::Bypass) >= 0.5;
         if !bypass && kit_ready {
             self.engine.sync_params(&self.shared.params);
-            self.engine.render_buses(frames, &mut bus_outputs);
+            self.engine.render_outputs(frames, &mut out_outputs);
         }
 
-        // Apply master gain per bus.
+        // Apply master gain per output.
         let gain = 10.0_f32.powf(self.shared.params.get(ParamId::MasterGain) as f32 * 0.05);
-        for (l, r) in bus_outputs.iter_mut().flatten() {
-            for s in l.iter_mut() {
-                *s *= gain;
-            }
-            for s in r.iter_mut() {
+        for buf in out_outputs.iter_mut().flatten() {
+            for s in buf.iter_mut() {
                 *s *= gain;
             }
         }
 
-        // Build flat slice list for the limiter from bus outputs.
+        // Build flat slice list for the limiter from output buffers.
         let mut flat_slices: Vec<&mut [f32]> = Vec::with_capacity(MAX_CHANNELS);
-        for (l, r) in bus_outputs.iter_mut().flatten() {
-            flat_slices.push(l);
-            flat_slices.push(r);
+        for buf in out_outputs.iter_mut().flatten() {
+            flat_slices.push(buf);
         }
 
-        // Apply limiter to all bus channels.
+        // Apply limiter to all output channels.
         let limiter_enabled = self.shared.params.get(ParamId::EnableLimiter) >= 0.5;
         let limiter_threshold = self.shared.params.get(ParamId::LimiterThreshold) as f32;
         self.limiter.set_enabled(limiter_enabled);
@@ -543,7 +534,7 @@ unsafe extern "C-unwind" fn ext_audio_ports_count(
     _plugin: *const clap_plugin,
     is_input: bool,
 ) -> u32 {
-    if is_input { 0 } else { MAX_STEREO_BUSES as u32 }
+    if is_input { 0 } else { MAX_CHANNELS as u32 }
 }
 
 unsafe extern "C-unwind" fn ext_audio_ports_get(
@@ -552,18 +543,14 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
     is_input: bool,
     info: *mut clap_audio_port_info,
 ) -> bool {
-    if is_input || index >= MAX_STEREO_BUSES as u32 || info.is_null() {
+    if is_input || index >= MAX_CHANNELS as u32 || info.is_null() {
         return false;
     }
     let info = unsafe { &mut *info };
     info.id = index;
-    info.flags = if index == 0 {
-        CLAP_AUDIO_PORT_IS_MAIN
-    } else {
-        0
-    };
-    info.channel_count = 2;
-    info.port_type = CLAP_PORT_STEREO.as_ptr();
+    info.flags = CLAP_AUDIO_PORT_IS_MAIN;
+    info.channel_count = 1;
+    info.port_type = CLAP_PORT_MONO.as_ptr();
     info.in_place_pair = u32::MAX; // CLAP_INVALID_ID
     let name = match index {
         0 => "Kick",
@@ -574,15 +561,31 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
         5 => "Crash",
         6 => "China/Splash",
         7 => "Ambience",
-        8 => "Aux 9",
-        9 => "Aux 10",
-        10 => "Aux 11",
-        11 => "Aux 12",
-        12 => "Aux 13",
-        13 => "Aux 14",
-        14 => "Aux 15",
-        15 => "Aux 16",
-        _ => "Aux",
+        8 => "Out 9",
+        9 => "Out 10",
+        10 => "Out 11",
+        11 => "Out 12",
+        12 => "Out 13",
+        13 => "Out 14",
+        14 => "Out 15",
+        15 => "Out 16",
+        16 => "Out 17",
+        17 => "Out 18",
+        18 => "Out 19",
+        19 => "Out 20",
+        20 => "Out 21",
+        21 => "Out 22",
+        22 => "Out 23",
+        23 => "Out 24",
+        24 => "Out 25",
+        25 => "Out 26",
+        26 => "Out 27",
+        27 => "Out 28",
+        28 => "Out 29",
+        29 => "Out 30",
+        30 => "Out 31",
+        31 => "Out 32",
+        _ => "Out",
     };
     copy_str_to_array(name, &mut info.name);
     true
@@ -854,7 +857,9 @@ unsafe extern "C-unwind" fn ext_gui_create(
     }
     let inst = unsafe { instance(plugin) };
     let api = unsafe { CStr::from_ptr(api) };
-    inst.gui_bridge.lock().create(api, is_floating)
+    inst.gui_bridge
+        .lock()
+        .create(Arc::clone(&inst.shared), api, is_floating)
 }
 
 unsafe extern "C-unwind" fn ext_gui_destroy(plugin: *const clap_plugin) {
@@ -928,10 +933,35 @@ unsafe extern "C-unwind" fn ext_gui_set_size(
 }
 
 unsafe extern "C-unwind" fn ext_gui_set_parent(
-    _plugin: *const clap_plugin,
-    _window: *const clap_window,
+    plugin: *const clap_plugin,
+    window: *const clap_window,
 ) -> bool {
-    false
+    if plugin.is_null() || window.is_null() {
+        return false;
+    }
+    let inst = unsafe { instance(plugin) };
+    let window = unsafe { &*window };
+    let api = unsafe { CStr::from_ptr(window.api) };
+
+    let parent = if api == crate::gui::preferred_api() {
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            crate::gui::ParentWindowHandle::X11(unsafe { window.clap_window__.x11 })
+        }
+        #[cfg(target_os = "macos")]
+        {
+            crate::gui::ParentWindowHandle::Cocoa(unsafe { window.clap_window__.cocoa })
+        }
+        #[cfg(target_os = "windows")]
+        {
+            crate::gui::ParentWindowHandle::Win32(unsafe { window.clap_window__.win32 })
+        }
+    } else {
+        return false;
+    };
+    inst.gui_bridge
+        .lock()
+        .set_parent(Arc::clone(&inst.shared), parent)
 }
 
 unsafe extern "C-unwind" fn ext_gui_set_transient(

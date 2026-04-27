@@ -355,40 +355,6 @@ pub fn oauth_login_with_browser(client_id: &str) -> Result<(), String> {
     complete_oauth_callback_and_save(&callback_query?)
 }
 
-#[allow(dead_code)]
-fn resolve_oauth_listener_target(redirect_uri: Option<&str>) -> Result<(String, String), String> {
-    let redirect_uri = redirect_uri.map(str::trim).unwrap_or_default();
-    let rest = redirect_uri.strip_prefix("http://").ok_or_else(|| {
-        "Tone3000 OAuth Browser Login requires redirect_uri with http://".to_string()
-    })?;
-    let (host_port, path) = rest.split_once('/').ok_or_else(|| {
-        "Tone3000 OAuth redirect_uri must include a path, e.g. /callback".to_string()
-    })?;
-    if path.is_empty() {
-        return Err("Tone3000 OAuth redirect_uri path cannot be empty".to_string());
-    }
-    let (host, port_str) = host_port
-        .rsplit_once(':')
-        .ok_or_else(|| "Tone3000 OAuth redirect_uri must include an explicit port".to_string())?;
-    let host = host.trim();
-    let port: u16 = port_str
-        .trim()
-        .parse()
-        .map_err(|_| "Tone3000 OAuth redirect_uri has invalid port".to_string())?;
-    if port == 0 {
-        return Err("Tone3000 OAuth redirect_uri port must be > 0".to_string());
-    }
-    let canonical_redirect_uri = match host {
-        "localhost" => redirect_uri.to_string(),
-        _ => {
-            return Err(
-                "Tone3000 OAuth Browser Login supports only localhost redirect host".to_string(),
-            );
-        }
-    };
-    Ok((format!("localhost:{port}"), canonical_redirect_uri))
-}
-
 fn generate_pkce_verifier() -> String {
     let mut rng = OsRng;
     let mut verifier = String::with_capacity(64);
@@ -1480,7 +1446,6 @@ fn unix_ms_now() -> u128 {
         .as_millis()
 }
 
-#[allow(dead_code)]
 fn _is_probably_audio(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
@@ -1644,22 +1609,6 @@ mod tests {
     fn extract_redirect_uri_from_callback_query_only_returns_none() {
         let uri = extract_redirect_uri_from_callback("?code=abc&state=xyz");
         assert_eq!(uri, None);
-    }
-
-    #[test]
-    fn resolve_oauth_listener_target_accepts_localhost_with_port() {
-        let (bind, redirect) =
-            resolve_oauth_listener_target(Some("http://localhost:45678/callback/path"))
-                .expect("valid localhost redirect");
-        assert_eq!(bind, "localhost:45678");
-        assert_eq!(redirect, "http://localhost:45678/callback/path");
-    }
-
-    #[test]
-    fn resolve_oauth_listener_target_rejects_non_local_host() {
-        let err = resolve_oauth_listener_target(Some("http://192.168.1.2:45678/callback"))
-            .expect_err("must reject non-local");
-        assert!(err.contains("localhost"));
     }
 
     #[test]

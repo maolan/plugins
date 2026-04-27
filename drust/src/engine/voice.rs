@@ -6,7 +6,7 @@ pub enum EventType {
     Choke,
 }
 
-/// Which side(s) of a stereo bus a channel plays on.
+/// Which side(s) of a stereo output a channel plays on.
 #[derive(Debug, Clone, Copy)]
 pub enum ChannelSide {
     Left,
