@@ -5,6 +5,8 @@ pub struct PluginState {
     pub version: u32,
     pub kit_path: String,
     pub midimap_path: String,
+    #[serde(default)]
+    pub variation: String,
     pub state_id: String,
     pub params: Vec<(u16, f64)>,
 }
@@ -15,6 +17,7 @@ impl Default for PluginState {
             version: 1,
             kit_path: String::new(),
             midimap_path: String::new(),
+            variation: String::new(),
             state_id: String::new(),
             params: Vec::new(),
         }
@@ -26,6 +29,7 @@ impl PluginState {
         params: &ParamStore,
         kit_path: String,
         midimap_path: String,
+        variation: String,
         state_id: String,
     ) -> Self {
         let mut param_values = Vec::new();
@@ -38,18 +42,23 @@ impl PluginState {
             version: 1,
             kit_path,
             midimap_path,
+            variation,
             state_id,
             params: param_values,
         }
     }
 
-    pub fn apply(&self, params: &ParamStore) -> (String, String) {
+    pub fn apply(&self, params: &ParamStore) -> (String, String, String) {
         for &(raw, value) in &self.params {
             if let Some(id) = ParamId::from_raw(raw as u32) {
                 params.set(id, crate::params::sanitize_param_value(id, value));
             }
         }
-        (self.kit_path.clone(), self.midimap_path.clone())
+        (
+            self.kit_path.clone(),
+            self.midimap_path.clone(),
+            self.variation.clone(),
+        )
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, String> {

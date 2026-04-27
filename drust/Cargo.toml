@@ -24,3 +24,6 @@ thiserror = "1.0.69"
 rand = "0.8.5"
 rayon = "1.10"
 quick-xml = { version = "0.37.0", features = ["serialize"] }
+dirs = "6"
+ureq = "2.12.1"
+zip = { version = "2.4", default-features = false, features = ["deflate"] }

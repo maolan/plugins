@@ -27,6 +27,7 @@ use clap_clap::{
 use parking_lot::Mutex;
 
 use crate::{
+    download,
     engine::{DrumGizmoEngine, EventType, MAX_CHANNELS, VoiceEvent, limiter::Limiter},
     gui::GuiBridge,
     params::{PARAMS, ParamId, sanitize_param_value},
@@ -262,13 +263,14 @@ impl PluginInstance {
         let engine = Arc::clone(&self.engine);
         engine.load_kit_async(path.clone());
 
-        // Auto-discover MIDI map from kit filename heuristic.
-        if let Some(midimap_path) = discover_midimap(&path)
-            && std::fs::metadata(&midimap_path).is_ok()
-        {
-            let _ = self.engine.load_midimap(&midimap_path);
-            *self.shared.midimap_path.write() = midimap_path;
-            self.shared.mark_dirty();
+        // Auto-discover MIDI map using variation-aware resolution.
+        let variation = self.shared.variation.read().clone();
+        if let Some(kit_name) = download::kit_display_name_from_path(&path) {
+            if let Some(midimap_path) = download::resolve_midimap_xml(&kit_name, &variation) {
+                let _ = self.engine.load_midimap(&midimap_path.to_string_lossy());
+                *self.shared.midimap_path.write() = midimap_path.to_string_lossy().into_owned();
+                self.shared.mark_dirty();
+            }
         }
 
         self.rebuild_note_names();
@@ -513,6 +515,11 @@ unsafe extern "C-unwind" fn plugin_on_main_thread(plugin: *const clap_plugin) {
     }
     let inst = unsafe { instance(plugin) };
     inst.engine.cleanup_retired();
+
+    // Handle pending kit download/load requests from the GUI.
+    if let Some(path) = inst.shared.pending_kit_path.write().take() {
+        inst.load_kit(path);
+    }
 
     // Poll async loading completion and update shared state.
     if !inst.engine.is_loading.load(Ordering::Acquire) {
@@ -759,6 +766,7 @@ unsafe extern "C-unwind" fn ext_state_save(
         &inst.shared.params,
         inst.shared.kit_path.read().clone(),
         inst.shared.midimap_path.read().clone(),
+        inst.shared.variation.read().clone(),
         state_id,
     );
     let Ok(bytes) = state.to_bytes() else {
@@ -790,7 +798,8 @@ unsafe extern "C-unwind" fn ext_state_load(
     let current_state_id = inst.shared.state_id.read().clone();
     let is_different_state = !saved_state_id.is_empty() && saved_state_id != current_state_id;
 
-    let (kit_path, midimap_path) = state.apply(&inst.shared.params);
+    let (kit_path, midimap_path, variation) = state.apply(&inst.shared.params);
+    *inst.shared.variation.write() = variation;
 
     if !kit_path.is_empty() && (is_different_state || current_state_id.is_empty()) {
         // Always reload kit when switching projects.
@@ -1173,43 +1182,6 @@ pub static clap_entry: clap_plugin_entry = clap_plugin_entry {
     deinit: Some(entry_deinit),
     get_factory: Some(entry_get_factory),
 };
-
-/// Auto-discover MIDI map from kit filename using DrumCraker heuristic.
-/// Replaces "Kit" with "Midimap" in the filename stem, then falls back to
-/// a plain "Midimap.xml" in the same directory.
-fn discover_midimap(kit_path: &str) -> Option<String> {
-    let path = std::path::Path::new(kit_path);
-    let parent = path.parent()?;
-    let stem = path.file_stem()?.to_str()?;
-
-    // Heuristic 1: replace "Kit" with "Midimap" (e.g. DRSKit -> DRSMidimap).
-    let candidate1 = parent.join(format!("{}Midimap.xml", stem.replace("Kit", "")));
-    if candidate1.exists() {
-        return candidate1.to_str().map(|s| s.to_string());
-    }
-
-    // Heuristic 2: plain Midimap.xml in same directory.
-    let candidate2 = parent.join("Midimap.xml");
-    if candidate2.exists() {
-        return candidate2.to_str().map(|s| s.to_string());
-    }
-
-    // Heuristic 3: any XML file containing "midimap" in the name.
-    if let Ok(entries) = std::fs::read_dir(parent) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name_lower = name.to_string_lossy().to_lowercase();
-            if name_lower.contains("midimap")
-                && name_lower.ends_with(".xml")
-                && let Some(p) = entry.path().to_str()
-            {
-                return Some(p.to_string());
-            }
-        }
-    }
-
-    None
-}
 
 fn copy_str_to_array<const N: usize>(source: &str, target: &mut [c_char; N]) {
     target.fill(0);

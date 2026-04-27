@@ -28,6 +28,7 @@
 //!
 //! BSD-2-Clause
 
+pub mod download;
 pub mod drumkit;
 pub mod engine;
 pub mod gui;
