@@ -114,6 +114,22 @@ pub fn kit_display_name_from_path(xml_path: &str) -> Option<String> {
     }
 }
 
+/// Try to infer the kit variation from the XML file path.
+/// E.g. `/cache/CrocellKit/CrocellKit_full.xml` -> `"full"`.
+pub fn kit_variation_from_path(xml_path: &str) -> Option<String> {
+    let path = std::path::Path::new(xml_path);
+    let folder = path.parent()?.file_name()?.to_str()?;
+    let file_stem = path.file_stem()?.to_str()?;
+    match folder.to_lowercase().as_str() {
+        "crocellkit" => file_stem.strip_prefix("CrocellKit_").map(|s| s.to_string()),
+        "drskit" => file_stem.strip_prefix("DRSKit_").map(|s| s.to_string()),
+        "aasimonster2" => file_stem
+            .strip_prefix("aasimonster-")
+            .map(|s| s.to_string()),
+        _ => None,
+    }
+}
+
 pub fn is_kit_downloaded(kit_name: &str) -> bool {
     let folder = cache_dir().join(kit_folder_name(kit_name));
     folder.exists()

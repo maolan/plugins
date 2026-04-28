@@ -152,8 +152,11 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
 
     // Determine actual load state from shared progress.
     let progress = shared.loading_progress.load(Ordering::Acquire);
-    let (loaded_kit, loaded_variation, initial_task) = if progress >= 100 {
-        // Previous load completed before GUI opened.
+    let active_channels = shared.active_channels.load(Ordering::Acquire);
+    let kit_already_known = progress >= 100 || active_channels > 0;
+    let (loaded_kit, loaded_variation, initial_task) = if kit_already_known {
+        // Previous load completed before GUI opened or active_channels was
+        // restored from state (UI-only instance doesn't load the kit itself).
         (
             selected_kit.clone(),
             selected_variation.clone(),
@@ -175,7 +178,7 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             selected_variation: selected_variation.clone(),
             loaded_kit,
             loaded_variation,
-            load_progress: if has_kit && progress < 100 {
+            load_progress: if has_kit && !kit_already_known {
                 Some(progress as f32 / 100.0)
             } else {
                 None

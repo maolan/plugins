@@ -299,7 +299,16 @@ impl PluginInstance {
         engine.load_kit_async(path.clone());
 
         // Auto-discover MIDI map using variation-aware resolution.
-        let variation = self.shared.variation.read().clone();
+        let mut variation = self.shared.variation.read().clone();
+        if variation.is_empty() {
+            // Session state may have an empty variation string; try to infer it
+            // from the kit XML filename (e.g. CrocellKit_full.xml -> "full").
+            if let Some(inferred) = download::kit_variation_from_path(&path) {
+                variation = inferred;
+                *self.shared.variation.write() = variation.clone();
+                self.shared.mark_dirty();
+            }
+        }
         if let Some(kit_name) = download::kit_display_name_from_path(&path)
             && let Some(midimap_path) = download::resolve_midimap_xml(&kit_name, &variation)
         {
@@ -447,6 +456,12 @@ unsafe extern "C-unwind" fn plugin_activate(
         inst.retired_processors.lock().push(old);
     }
     inst.active.store(true, Ordering::Release);
+    // If a kit was restored before activation but never loaded, start loading now.
+    let kit_path = inst.shared.kit_path.read().clone();
+    let kit_loaded = !inst.engine.kit.load(Ordering::Acquire).is_null();
+    if !kit_path.is_empty() && !kit_loaded {
+        inst.load_kit(kit_path);
+    }
     inst.shared.latency_changed();
     true
 }
@@ -747,22 +762,31 @@ unsafe extern "C-unwind" fn ext_state_save(
         return false;
     }
     let inst = unsafe { instance(plugin) };
-    // Generate unique state ID (timestamp + random) to detect project changes.
-    let state_id = format!(
-        "{}_{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis(),
-        rand::random::<u32>()
-    );
-    *inst.shared.state_id.write() = state_id.clone();
+    // Generate unique state ID (timestamp + random) to detect project changes,
+    // but only if one isn't already set. Reusing the existing ID prevents
+    // spurious kit reloads when the host snapshots state (e.g. on UI close).
+    let current_state_id = inst.shared.state_id.read().clone();
+    let state_id = if current_state_id.is_empty() {
+        let new_id = format!(
+            "{}_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+            rand::random::<u32>()
+        );
+        *inst.shared.state_id.write() = new_id.clone();
+        new_id
+    } else {
+        current_state_id
+    };
     let state = PluginState::from_runtime(
         &inst.shared.params,
         inst.shared.kit_path.read().clone(),
         inst.shared.midimap_path.read().clone(),
         inst.shared.variation.read().clone(),
         state_id,
+        inst.shared.active_channels.load(Ordering::Acquire),
     );
     let Ok(bytes) = state.to_bytes() else {
         return false;
@@ -789,20 +813,29 @@ unsafe extern "C-unwind" fn ext_state_load(
     };
     // Detect project/session changes via state_id.
     let saved_state_id = state.state_id.clone();
-    let current_state_id = inst.shared.state_id.read().clone();
-    let is_different_state = !saved_state_id.is_empty() && saved_state_id != current_state_id;
 
-    let (kit_path, midimap_path, variation) = state.apply(&inst.shared.params);
+    let (kit_path, midimap_path, variation, active_channels) = state.apply(&inst.shared.params);
     *inst.shared.variation.write() = variation;
+    inst.shared
+        .active_channels
+        .store(active_channels, Ordering::Release);
 
-    if !kit_path.is_empty() && (is_different_state || current_state_id.is_empty()) {
-        // Always reload kit when switching projects.
+    let current_kit_path = inst.shared.kit_path.read().clone();
+    let kit_changed = kit_path != current_kit_path;
+    // Only load the kit on instances that will actually process audio.
+    // UI-only instances never call plugin_activate, so their processor
+    // pointer stays null. They get active_channels from the saved state
+    // and don't need to spawn an expensive async load.
+    let is_audio_instance = !inst.processor.load(Ordering::Acquire).is_null();
+
+    if !kit_path.is_empty() && kit_changed && is_audio_instance {
         inst.load_kit(kit_path);
         if !midimap_path.is_empty() {
             inst.load_midimap(midimap_path);
         }
-        *inst.shared.state_id.write() = saved_state_id;
     }
+    // Always sync state_id so it stays matched with the saved state.
+    *inst.shared.state_id.write() = saved_state_id;
     true
 }
 

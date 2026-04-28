@@ -8,6 +8,8 @@ pub struct PluginState {
     #[serde(default)]
     pub variation: String,
     pub state_id: String,
+    #[serde(default)]
+    pub active_channels: u32,
     pub params: Vec<(u16, f64)>,
 }
 
@@ -19,6 +21,7 @@ impl Default for PluginState {
             midimap_path: String::new(),
             variation: String::new(),
             state_id: String::new(),
+            active_channels: 0,
             params: Vec::new(),
         }
     }
@@ -31,6 +34,7 @@ impl PluginState {
         midimap_path: String,
         variation: String,
         state_id: String,
+        active_channels: u32,
     ) -> Self {
         let mut param_values = Vec::new();
         for def in crate::params::PARAMS.iter() {
@@ -42,11 +46,12 @@ impl PluginState {
             midimap_path,
             variation,
             state_id,
+            active_channels,
             params: param_values,
         }
     }
 
-    pub fn apply(&self, params: &ParamStore) -> (String, String, String) {
+    pub fn apply(&self, params: &ParamStore) -> (String, String, String, u32) {
         for &(raw, value) in &self.params {
             if let Some(id) = ParamId::from_raw(raw as u32) {
                 params.set(id, crate::params::sanitize_param_value(id, value));
@@ -56,6 +61,7 @@ impl PluginState {
             self.kit_path.clone(),
             self.midimap_path.clone(),
             self.variation.clone(),
+            self.active_channels,
         )
     }
 
