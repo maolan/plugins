@@ -66,11 +66,5 @@ pub fn verify_config_version(version_str: &str) -> Result<(), NamError> {
             version_str, current
         )));
     }
-    if version > current {
-        eprintln!(
-            "[rural-modeler] Warning: model version {} is partially supported. Latest fully supported is {}.",
-            version_str, current
-        );
-    }
     Ok(())
 }

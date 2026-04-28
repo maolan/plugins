@@ -1018,9 +1018,7 @@ unsafe extern "C-unwind" fn ext_note_name_count(plugin: *const clap_plugin) -> u
         return 0;
     }
     let inst = unsafe { &*((*plugin).plugin_data as *const PluginInstance) };
-    let count = inst.note_names.lock().len() as u32;
-    eprintln!("[drust] note_name_count={count}");
-    count
+    inst.note_names.lock().len() as u32
 }
 
 unsafe extern "C-unwind" fn ext_note_name_get(

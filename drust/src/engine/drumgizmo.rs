@@ -49,7 +49,6 @@ impl DrumGizmoEngine {
                                 files.insert(full_path.clone(), af);
                             }
                             Err(e) => {
-                                eprintln!("drust: failed to load {}: {}", full_path, e);
                             }
                         }
                     }

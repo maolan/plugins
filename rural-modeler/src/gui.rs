@@ -454,7 +454,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         match tone3000::download_to_temp(AssetKind::Nam, &reference) {
                             Ok(path) => shared.load_model(path.display().to_string()),
                             Err(err) => {
-                                eprintln!("rural-modeler: {err}");
                                 *shared.last_error.write() = Some(err);
                             }
                         }
@@ -528,7 +527,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         match tone3000::download_to_temp(AssetKind::Ir, &reference) {
                             Ok(path) => shared.load_ir(path.display().to_string()),
                             Err(err) => {
-                                eprintln!("rural-modeler: {err}");
                                 *shared.last_error.write() = Some(err);
                             }
                         }
