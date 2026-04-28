@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use std::{collections::HashMap, path::Path};
 
 /// Loaded and deinterleaved audio data from a WAV file.
@@ -144,16 +145,32 @@ pub fn load_kit_audio(
         channels.dedup();
     }
 
-    // Load each file and resample to host rate.
-    let mut loaded = HashMap::new();
-    for (path, channels) in files {
-        let mut file = load_wav_channels(Path::new(&path), &channels).map_err(|e| e.to_string())?;
-        if (file.original_sample_rate as f64 - host_rate as f64).abs() > 0.1 {
-            for ch in &mut file.channels {
-                *ch = resample_buffer(ch, file.original_sample_rate as f64, host_rate as f64);
-            }
-            file.sample_rate = host_rate as u32;
-        }
+    // Load each file and resample to host rate in parallel.
+    let results: Vec<Result<(String, LoadedAudioFile), String>> =
+        super::load_pool().install(|| {
+            files
+                .into_par_iter()
+                .map(|(path, channels)| {
+                    let mut file = load_wav_channels(Path::new(&path), &channels)
+                        .map_err(|e| e.to_string())?;
+                    if (file.original_sample_rate as f64 - host_rate as f64).abs() > 0.1 {
+                        for ch in &mut file.channels {
+                            *ch = resample_buffer(
+                                ch,
+                                file.original_sample_rate as f64,
+                                host_rate as f64,
+                            );
+                        }
+                        file.sample_rate = host_rate as u32;
+                    }
+                    Ok((path, file))
+                })
+                .collect()
+        });
+
+    let mut loaded = HashMap::with_capacity(results.len());
+    for result in results {
+        let (path, file) = result?;
         loaded.insert(path, file);
     }
 

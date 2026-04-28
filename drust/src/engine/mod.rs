@@ -11,6 +11,7 @@ use std::{
 use crate::drumkit::{DrumKit, Midimap, loader};
 use crate::utils::random::LockFreeRandom;
 use parking_lot::{Mutex, RwLock};
+use rayon::prelude::*;
 
 pub mod audio_file;
 pub mod filters;
@@ -23,6 +24,24 @@ pub use voice::{ChannelSide, EventType, Voice, VoiceEvent};
 
 pub const MAX_CHANNELS: usize = 16;
 pub const MAX_VOICES: usize = 128;
+/// Dedicated thread pool for parallel audio loading.
+/// We use our own pool instead of rayon's global pool so that the GUI's
+/// iced_futures thread pool never competes with us for CPU.
+pub(crate) fn load_pool() -> &'static rayon::ThreadPool {
+    use std::sync::OnceLock;
+    static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+    POOL.get_or_init(|| {
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .thread_name(|i| format!("drust-load-{}", i))
+            .build()
+            .expect("Failed to build load thread pool")
+    })
+}
+
 pub const MIDI_NOTE_COUNT: usize = 128;
 
 /// Lock-free per-file entry for incremental loading.
@@ -441,7 +460,8 @@ impl DrumGizmoEngine {
         Ok(())
     }
 
-    /// Asynchronous kit load. Parses XML on calling thread, loads WAVs in parallel via rayon.
+    /// Asynchronous kit load. Parses XML on calling thread, then loads WAVs in parallel
+    /// via a dedicated rayon thread pool so the GUI thread pool is never starved.
     /// Individual files become playable as they finish loading (lock-free per-file ready cache).
     pub fn load_kit_async(self: Arc<Self>, path: String) {
         self.kit_ready.store(false, Ordering::Release);
@@ -571,45 +591,47 @@ impl DrumGizmoEngine {
             self.loading_progress.store(20, Ordering::Release);
             self.kit_ready.store(true, Ordering::Release);
 
-            // Sequential WAV loading + resampling with incremental publishing.
-            // We intentionally avoid rayon/into_par_iter() here because the
-            // iced_futures ThreadPool used by the GUI can starve when rayon's
-            // global thread pool competes for CPU, causing the baseview event
-            // loop to stall and the UI to freeze or become unresponsive.
+            // Parallel WAV loading + resampling with incremental publishing.
+            // A dedicated thread pool is used so the GUI's iced_futures pool
+            // never competes with us for CPU.
             let expected = expected_count.max(1);
-            let mut success_count = 0usize;
+            let success_count = std::sync::atomic::AtomicUsize::new(0);
 
-            for (path, channels) in files_vec {
-                if self.should_cancel_loading.load(Ordering::Acquire)
-                    || self.load_generation.load(Ordering::Acquire) != generation
-                {
-                    break;
-                }
-                if let Ok(mut file) = load_wav_channels(Path::new(&path), &channels) {
-                    if (file.original_sample_rate as f64 - host_sr as f64).abs() > 0.1 {
-                        for ch in &mut file.channels {
-                            *ch = resample_buffer(
-                                ch,
-                                file.original_sample_rate as f64,
-                                host_sr as f64,
-                            );
+            load_pool().install(|| {
+                files_vec.into_par_iter().for_each(|(path, channels)| {
+                    if self.should_cancel_loading.load(Ordering::Acquire)
+                        || self.load_generation.load(Ordering::Acquire) != generation
+                    {
+                        return;
+                    }
+                    if let Ok(mut file) = load_wav_channels(Path::new(&path), &channels) {
+                        if (file.original_sample_rate as f64 - host_sr as f64).abs() > 0.1 {
+                            for ch in &mut file.channels {
+                                *ch = resample_buffer(
+                                    ch,
+                                    file.original_sample_rate as f64,
+                                    host_sr as f64,
+                                );
+                            }
+                            file.sample_rate = host_sr as u32;
                         }
-                        file.sample_rate = host_sr as u32;
+                        if let Some(&idx) = audio_data_for_jobs.index.get(&path) {
+                            let ptr = Box::into_raw(Box::new(file));
+                            audio_data_for_jobs.lock_free_entries[idx]
+                                .file
+                                .store(ptr, Ordering::Release);
+                            audio_data_for_jobs.lock_free_entries[idx]
+                                .ready
+                                .store(true, Ordering::Release);
+                            let count = success_count.fetch_add(1, Ordering::Relaxed) + 1;
+                            let pct = 20 + ((count * 80) / expected).min(80) as u8;
+                            self.loading_progress.store(pct, Ordering::Release);
+                        }
                     }
-                    if let Some(&idx) = audio_data_for_jobs.index.get(&path) {
-                        let ptr = Box::into_raw(Box::new(file));
-                        audio_data_for_jobs.lock_free_entries[idx]
-                            .file
-                            .store(ptr, Ordering::Release);
-                        audio_data_for_jobs.lock_free_entries[idx]
-                            .ready
-                            .store(true, Ordering::Release);
-                        success_count += 1;
-                        let pct = 20 + ((success_count * 80) / expected).min(80) as u8;
-                        self.loading_progress.store(pct, Ordering::Release);
-                    }
-                }
-            }
+                });
+            });
+
+            let success_count = success_count.load(Ordering::Relaxed);
 
             if self.should_cancel_loading.load(Ordering::Acquire)
                 || self.load_generation.load(Ordering::Acquire) != generation
@@ -1089,10 +1111,10 @@ impl DrumGizmoEngine {
                     }
                 }
 
-                if left_idx < outputs.len() {
+                if left_idx < outputs.len() && out_left.is_some() {
                     outputs[left_idx] = out_left;
                 }
-                if right_idx < outputs.len() {
+                if right_idx < outputs.len() && out_right.is_some() {
                     outputs[right_idx] = out_right;
                 }
             }
