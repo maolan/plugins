@@ -2386,9 +2386,9 @@ dependencies = [
 
 [[package]]
 name = "maolan-baseview"
-version = "0.0.1"
+version = "0.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdc772a33841c31c171428944b1dbf8e682e5686feaf9ff2a8ac3882c18c0d31"
+checksum = "fba1371ea2506fe7082ec966b26021698999bf091a06658780c45675534032a0"
 dependencies = [
  "cocoa",
  "core-foundation 0.9.4",
@@ -2411,6 +2411,32 @@ dependencies = [
  "window_clipboard",
  "x11",
  "x11rb",
+]
+
+[[package]]
+name = "maolan-compressor"
+version = "0.0.1"
+dependencies = [
+ "clap-clap",
+ "maolan-baseview",
+ "maolan-widgets",
+ "parking_lot",
+ "raw-window-handle 0.5.2",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "maolan-eq"
+version = "0.0.1"
+dependencies = [
+ "clap-clap",
+ "maolan-baseview",
+ "maolan-widgets",
+ "parking_lot",
+ "raw-window-handle 0.5.2",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

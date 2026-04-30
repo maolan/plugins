@@ -13,7 +13,9 @@ publish = false
 
 [workspace]
 members = [
+  "compressor",
   "drust",
+  "eq",
   "rural-modeler"
 ]
 resolver = "3"
