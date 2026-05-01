@@ -1,1 +1,116 @@
-//! Audio plugins for the Maolan ecosystem.
+use std::{
+    ffi::{CStr, c_char, c_void},
+    ptr::null,
+};
+
+use clap_clap::ffi::{
+    CLAP_PLUGIN_FACTORY_ID, CLAP_VERSION, clap_host, clap_plugin, clap_plugin_descriptor,
+    clap_plugin_entry, clap_plugin_factory,
+};
+
+pub mod compressor;
+pub mod drust;
+pub mod eq;
+pub mod rural_modeler;
+
+type DescriptorFn = unsafe fn() -> *const clap_plugin_descriptor;
+type CreateFn = unsafe fn(*const clap_host, *const c_char) -> *const clap_plugin;
+
+struct PluginApi {
+    descriptor: DescriptorFn,
+    create: CreateFn,
+}
+
+static PLUGINS: [PluginApi; 4] = [
+    PluginApi {
+        descriptor: eq::clap_descriptor_ptr,
+        create: eq::clap_create_plugin,
+    },
+    PluginApi {
+        descriptor: compressor::clap_descriptor_ptr,
+        create: compressor::clap_create_plugin,
+    },
+    PluginApi {
+        descriptor: drust::clap_descriptor_ptr,
+        create: drust::clap_create_plugin,
+    },
+    PluginApi {
+        descriptor: rural_modeler::clap_descriptor_ptr,
+        create: rural_modeler::clap_create_plugin,
+    },
+];
+
+unsafe extern "C-unwind" fn factory_get_plugin_count(_factory: *const clap_plugin_factory) -> u32 {
+    PLUGINS.len() as u32
+}
+
+unsafe extern "C-unwind" fn factory_get_plugin_descriptor(
+    _factory: *const clap_plugin_factory,
+    index: u32,
+) -> *const clap_plugin_descriptor {
+    PLUGINS
+        .get(index as usize)
+        .map(|p| unsafe { (p.descriptor)() })
+        .unwrap_or(null())
+}
+
+unsafe extern "C-unwind" fn factory_create_plugin(
+    _factory: *const clap_plugin_factory,
+    host: *const clap_host,
+    plugin_id: *const c_char,
+) -> *const clap_plugin {
+    if host.is_null() || plugin_id.is_null() {
+        return null();
+    }
+
+    let requested = unsafe { CStr::from_ptr(plugin_id) };
+    for plugin in &PLUGINS {
+        let desc = unsafe { (plugin.descriptor)() };
+        if desc.is_null() {
+            continue;
+        }
+        let id_ptr = unsafe { (*desc).id };
+        if id_ptr.is_null() {
+            continue;
+        }
+        let this_id = unsafe { CStr::from_ptr(id_ptr) };
+        if this_id == requested {
+            return unsafe { (plugin.create)(host, plugin_id) };
+        }
+    }
+    null()
+}
+
+static FACTORY: clap_plugin_factory = clap_plugin_factory {
+    get_plugin_count: Some(factory_get_plugin_count),
+    get_plugin_descriptor: Some(factory_get_plugin_descriptor),
+    create_plugin: Some(factory_create_plugin),
+};
+
+unsafe extern "C-unwind" fn entry_init(_plugin_path: *const c_char) -> bool {
+    true
+}
+
+unsafe extern "C-unwind" fn entry_deinit() {}
+
+unsafe extern "C-unwind" fn entry_get_factory(factory_id: *const c_char) -> *const c_void {
+    if factory_id.is_null() {
+        return null();
+    }
+    let factory_id = unsafe { CStr::from_ptr(factory_id) };
+    if factory_id == CLAP_PLUGIN_FACTORY_ID {
+        &raw const FACTORY as *const _ as *const c_void
+    } else {
+        null()
+    }
+}
+
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+#[used]
+pub static clap_entry: clap_plugin_entry = clap_plugin_entry {
+    clap_version: CLAP_VERSION,
+    init: Some(entry_init),
+    deinit: Some(entry_deinit),
+    get_factory: Some(entry_get_factory),
+};
