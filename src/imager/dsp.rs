@@ -4,7 +4,7 @@ use std::f64::consts::PI;
 // ImagerMild
 // ---------------------------------------------------------------------------
 pub struct ImagerMild {
-    p: [f64; 4099],
+    p: Vec<f64>,
     count: i32,
     fpd_l: u32,
     fpd_r: u32,
@@ -14,7 +14,7 @@ pub struct ImagerMild {
 impl Default for ImagerMild {
     fn default() -> Self {
         Self {
-            p: [0.0; 4099],
+            p: vec![0.0; 4099],
             count: 2048,
             fpd_l: rand::random(),
             fpd_r: rand::random(),

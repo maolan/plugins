@@ -15,6 +15,7 @@ pub mod drust;
 pub mod eq;
 pub mod imager;
 pub mod maximizer;
+pub mod monitoring;
 pub mod rural_modeler;
 pub mod saturator;
 
@@ -26,7 +27,7 @@ struct PluginApi {
     create: CreateFn,
 }
 
-static PLUGINS: [PluginApi; 11] = [
+static PLUGINS: [PluginApi; 12] = [
     PluginApi {
         descriptor: eq::parametric::clap_mono_descriptor_ptr,
         create: eq::parametric::clap_mono_create_plugin,
@@ -58,6 +59,10 @@ static PLUGINS: [PluginApi; 11] = [
     PluginApi {
         descriptor: imager::clap_descriptor_ptr,
         create: imager::clap_create_plugin,
+    },
+    PluginApi {
+        descriptor: monitoring::clap_descriptor_ptr,
+        create: monitoring::clap_create_plugin,
     },
     PluginApi {
         descriptor: saturator::clap_descriptor_ptr,

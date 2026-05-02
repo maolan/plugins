@@ -9,8 +9,8 @@ const HALF_BUFFER: usize = 11_020;
 pub struct MaximizerVintage {
     last_sample_l: f64,
     last_sample_r: f64,
-    b_l: [f32; BUFFER_SIZE],
-    b_r: [f32; BUFFER_SIZE],
+    b_l: Vec<f32>,
+    b_r: Vec<f32>,
     gcount: i32,
     lows_l: f64,
     lows_r: f64,
@@ -30,8 +30,8 @@ impl Default for MaximizerVintage {
         Self {
             last_sample_l: 0.0,
             last_sample_r: 0.0,
-            b_l: [0.0; BUFFER_SIZE],
-            b_r: [0.0; BUFFER_SIZE],
+            b_l: vec![0.0; BUFFER_SIZE],
+            b_r: vec![0.0; BUFFER_SIZE],
             gcount: HALF_BUFFER as i32,
             lows_l: 0.0,
             lows_r: 0.0,
@@ -54,10 +54,21 @@ impl MaximizerVintage {
     }
 
     pub fn reset(&mut self) {
-        *self = Self {
-            sample_rate: self.sample_rate,
-            ..Default::default()
-        };
+        self.last_sample_l = 0.0;
+        self.last_sample_r = 0.0;
+        self.b_l.fill(0.0);
+        self.b_r.fill(0.0);
+        self.gcount = HALF_BUFFER as i32;
+        self.lows_l = 0.0;
+        self.lows_r = 0.0;
+        self.refclip_l = 0.99;
+        self.refclip_r = 0.99;
+        self.iir_lows_al = 0.0;
+        self.iir_lows_ar = 0.0;
+        self.iir_lows_bl = 0.0;
+        self.iir_lows_br = 0.0;
+        self.fpd_l = rand::random();
+        self.fpd_r = rand::random();
     }
 
     pub fn process_stereo(

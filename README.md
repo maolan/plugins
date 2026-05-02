@@ -1,4 +1,5 @@
 # Maolan Plugins
+[![crates.io](https://img.shields.io/crates/v/maolan-plugins.svg)](https://crates.io/crates/maolan-plugins)
 
 A collection of audio plugins written in Rust for the Maolan ecosystem.
 
@@ -11,25 +12,11 @@ A collection of audio plugins written in Rust for the Maolan ecosystem.
 | `Maolan EQ — Graphic` | 32-band graphic EQ | Mono / Stereo |
 | `Maolan Maximizer` | Adaptive clipper/limiter with Vintage and Modern variants | Stereo |
 | `Maolan Imager` | Stereo width processor with Mild, Wide, and Aggressive algorithms | Stereo |
+| `Maolan Monitoring` | Monitoring toolbox with 17 modes (dither, peaks, slew, subs, mono, side, vinyl, aurat, phone, cans, etc.) | Stereo |
 | `Maolan Saturator` | Waveshape saturation | Stereo |
 | `Rural Modeler` | Guitar amp modeler plugin | Mono |
 | `Drust` | DrumGizmo-inspired drum sampler | — |
 
-## Building
-
-This is a Cargo workspace. To build all plugins:
-
-```bash
-cargo build --workspace
-```
-
-To build a specific plugin:
-
-```bash
-cargo build -p rural-modeler
-```
-
 ## Platform Support
 
-Linux, FreeBSD, macOS, and Windows are supported. The workspace patches `baseview` to include
-FreeBSD support via the [`maolan/baseview`](https://github.com/maolan/baseview) fork.
+Linux, FreeBSD, macOS, and Windows are supported.

@@ -9,7 +9,6 @@ repository = "https://github.com/maolan/plugins"
 homepage = "https://maolan.github.io"
 keywords = ["audio", "plugin", "clap"]
 categories = ["multimedia::audio"]
-publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
