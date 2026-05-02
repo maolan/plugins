@@ -15,19 +15,18 @@ use clap_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{checkbox, column, container, row, scrollable, text},
+    widget::{column, container, row, scrollable, text},
 };
 use maolan_widgets::arch_slider::arch_slider;
-use maolan_widgets::slider::slider;
 use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
 
-use crate::eq::{
+use crate::imager::{
     params::{PARAMS, ParamId},
     plugin::SharedState,
 };
 
-pub const EDITOR_WIDTH: u32 = 1024;
-pub const EDITOR_HEIGHT: u32 = 780;
+pub const EDITOR_WIDTH: u32 = 800;
+pub const EDITOR_HEIGHT: u32 = 420;
 
 pub fn preferred_api() -> &'static CStr {
     #[cfg(target_os = "windows")]
@@ -83,9 +82,10 @@ unsafe impl HasRawWindowHandle for ParentWindowHandle {
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
 pub enum Message {
     SetParam(ParamId, f32),
-    SetBoolParam(ParamId, bool),
+    SetMode(u8),
 }
 
 struct State {
@@ -99,72 +99,54 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::SetParam(id, value) => state.shared.set_param(id, value as f64),
-        Message::SetBoolParam(id, value) => {
-            state.shared.set_param(id, if value { 1.0 } else { 0.0 })
-        }
+        Message::SetMode(mode) => state.shared.set_param(ParamId::Mode, mode as f64),
     }
     Task::none()
 }
 
 fn view(state: &State) -> Element<'_, Message> {
     let p = |id: ParamId| state.shared.params.get(id) as f32;
-    let b = |id: ParamId| state.shared.params.get_bool(id);
 
-    let mut content = column![text("Maolan Equalizer x32 Stereo").size(24)]
-        .spacing(10)
+    let mut content = column![text("Maolan Imager (Stereo)").size(24)]
+        .spacing(16)
         .align_x(Alignment::Start);
 
+    let mode = state.shared.params.get_enum(ParamId::Mode).min(2);
     content = content.push(
         row![
-            knob(
-                "Input".to_string(),
-                ParamId::InputGain,
-                p(ParamId::InputGain),
-                "dB",
-                0.1
+            text("Algorithm").size(16),
+            maolan_baseview::iced::widget::radio("Mild", 0u8, Some(mode as u8), Message::SetMode),
+            maolan_baseview::iced::widget::radio("Wide", 1u8, Some(mode as u8), Message::SetMode),
+            maolan_baseview::iced::widget::radio(
+                "Aggressive",
+                2u8,
+                Some(mode as u8),
+                Message::SetMode
             ),
-            knob(
-                "Output".to_string(),
-                ParamId::OutputGain,
-                p(ParamId::OutputGain),
-                "dB",
-                0.1
-            ),
-            checkbox(b(ParamId::ParametricBypass))
-                .label("Bypass Parametric")
-                .on_toggle(|v| Message::SetBoolParam(ParamId::ParametricBypass, v)),
-            checkbox(b(ParamId::GraphicBypass))
-                .label("Bypass Graphic")
-                .on_toggle(|v| Message::SetBoolParam(ParamId::GraphicBypass, v)),
         ]
-        .spacing(14)
+        .spacing(12)
         .align_y(Alignment::Center),
     );
 
-    content = content.push(text("Top: Parametric EQ (32 bands)").size(18));
-    let mut parametric_bands = row![].spacing(10);
-    for i in 0..32 {
-        parametric_bands = parametric_bands.push(parametric_band(state, i));
-    }
     content = content.push(
-        scrollable(parametric_bands)
-            .direction(scrollable::Direction::Horizontal(Default::default()))
-            .height(Length::Fixed(350.0)),
-    );
-
-    content = content.push(text("Bottom: Graphic EQ (32 bands)").size(18));
-    let mut graphic_bands = row![].spacing(10);
-    for i in 0..32 {
-        graphic_bands = graphic_bands.push(graphic_band(state, i));
-    }
-    content = content.push(
-        scrollable(graphic_bands)
-            .direction(scrollable::Direction::Horizontal(Default::default()))
-            .height(Length::Fixed(150.0)),
+        row![
+            knob("Width", ParamId::Width, p(ParamId::Width), "", 0.01),
+            knob("Focus", ParamId::Focus, p(ParamId::Focus), "", 0.01),
+            knob("Amount", ParamId::Amount, p(ParamId::Amount), "", 0.01),
+            knob(
+                "Resonance",
+                ParamId::Resonance,
+                p(ParamId::Resonance),
+                "",
+                0.01
+            ),
+            knob("Mix", ParamId::Mix, p(ParamId::Mix), "", 0.01),
+        ]
+        .spacing(16),
     );
 
     container(scrollable(content))
-        .padding(16)
+        .padding(24)
         .width(Length::Fill)
         .height(Length::Fill)
         .align_x(Horizontal::Left)
@@ -172,65 +154,12 @@ fn view(state: &State) -> Element<'_, Message> {
         .into()
 }
 
-fn parametric_band(state: &State, index: usize) -> Element<'_, Message> {
-    let p = |id: ParamId| state.shared.params.get(id) as f32;
-    let fid = ParamId::para_freq(index);
-    let gid = ParamId::para_gain(index);
-    let qid = ParamId::para_q(index);
-    let label = format!("P{:02}", index + 1);
-
-    column![
-        text(label).size(14),
-        knob("Freq".to_string(), fid, p(fid), "Hz", 1.0),
-        knob("Gain".to_string(), gid, p(gid), "dB", 0.1),
-        knob("Q".to_string(), qid, p(qid), "", 0.01),
-    ]
-    .spacing(5)
-    .align_x(Alignment::Center)
-    .into()
-}
-
-fn graphic_band(state: &State, index: usize) -> Element<'_, Message> {
-    let p = |id: ParamId| state.shared.params.get(id) as f32;
-    let id = ParamId::graphic_gain(index);
-    let label = format!("G{:02}", index + 1);
-
-    vertical_knob(label, id, p(id), "dB", 0.1)
-}
-
 fn theme(_state: &State) -> Theme {
     Theme::TokyoNight
 }
 
-fn vertical_knob(
-    label: String,
-    id: ParamId,
-    value: f32,
-    _units: &'static str,
-    step: f32,
-) -> Element<'static, Message> {
-    let def = PARAMS[id.as_index()];
-    let slider = slider(def.min as f32..=def.max as f32, value, move |v| {
-        Message::SetParam(id, v)
-    })
-    .step(step)
-    .double_click_reset(def.default as f32)
-    .width(Length::Fixed(20.0))
-    .height(Length::Fixed(100.0));
-
-    let value_text = format!("{value:.1}");
-
-    container(
-        column![text(label).size(12), slider, text(value_text).size(11)]
-            .spacing(3)
-            .align_x(Alignment::Center),
-    )
-    .width(Length::Fixed(40.0))
-    .into()
-}
-
 fn knob(
-    label: String,
+    label: &'static str,
     id: ParamId,
     value: f32,
     units: &'static str,
@@ -243,23 +172,21 @@ fn knob(
     .step(step)
     .double_click_reset(def.default as f32)
     .fill_from_start()
-    .width(Length::Fixed(41.0))
-    .height(Length::Fixed(41.0));
+    .width(Length::Fixed(86.0))
+    .height(Length::Fixed(86.0));
 
     let value_text = if units.is_empty() {
         format!("{value:.2}")
-    } else if units == "Hz" {
-        format!("{value:.0} {units}")
     } else {
         format!("{value:.1} {units}")
     };
 
     container(
-        column![text(label).size(11), slider, text(value_text).size(10)]
-            .spacing(2)
+        column![text(label).size(14), slider, text(value_text).size(13)]
+            .spacing(4)
             .align_x(Alignment::Center),
     )
-    .width(Length::Fixed(50.0))
+    .width(Length::Fixed(96.0))
     .into()
 }
 
@@ -324,7 +251,7 @@ impl GuiBridge {
 
         let settings = maolan_baseview::iced::IcedBaseviewSettings {
             window: maolan_baseview::iced::baseview::WindowOpenOptions {
-                title: String::from("Maolan Equalizer"),
+                title: String::from("Maolan Imager"),
                 size: maolan_baseview::iced::baseview::Size::new(
                     EDITOR_WIDTH as f64,
                     EDITOR_HEIGHT as f64,
@@ -364,7 +291,7 @@ impl GuiBridge {
             thread::spawn(move || {
                 let settings = maolan_baseview::iced::IcedBaseviewSettings {
                     window: maolan_baseview::iced::baseview::WindowOpenOptions {
-                        title: String::from("Maolan Equalizer"),
+                        title: String::from("Maolan Imager"),
                         size: maolan_baseview::iced::baseview::Size::new(
                             EDITOR_WIDTH as f64,
                             EDITOR_HEIGHT as f64,

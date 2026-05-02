@@ -539,5 +539,4 @@ impl ParamStore {
     pub fn get_enum(&self, id: ParamId) -> u32 {
         self.get(id).round().clamp(0.0, 1024.0) as u32
     }
-
 }

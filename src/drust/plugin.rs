@@ -12,14 +12,14 @@ use clap_clap::{
     ffi::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_CHOKE,
         CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_VALUE, CLAP_EXT_NOTE_NAME,
-        CLAP_NOTE_DIALECT_MIDI, CLAP_PARAM_REQUIRES_PROCESS,
-        CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_MONO, CLAP_PORT_MONO,
-        CLAP_PROCESS_CONTINUE, CLAP_VERSION, clap_audio_port_info, clap_gui_resize_hints,
-        clap_host, clap_id, clap_input_events, clap_istream, clap_note_name, clap_note_port_info,
-        clap_ostream, clap_output_events, clap_param_info, clap_plugin, clap_plugin_audio_ports,
-        clap_plugin_descriptor, clap_plugin_factory, clap_plugin_gui,
-        clap_plugin_latency, clap_plugin_note_name, clap_plugin_note_ports, clap_plugin_params,
-        clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status, clap_window,
+        CLAP_NOTE_DIALECT_MIDI, CLAP_PARAM_REQUIRES_PROCESS, CLAP_PLUGIN_FEATURE_INSTRUMENT,
+        CLAP_PLUGIN_FEATURE_MONO, CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION,
+        clap_audio_port_info, clap_gui_resize_hints, clap_host, clap_id, clap_input_events,
+        clap_istream, clap_note_name, clap_note_port_info, clap_ostream, clap_output_events,
+        clap_param_info, clap_plugin, clap_plugin_audio_ports, clap_plugin_descriptor,
+        clap_plugin_factory, clap_plugin_gui, clap_plugin_latency, clap_plugin_note_name,
+        clap_plugin_note_ports, clap_plugin_params, clap_plugin_state, clap_plugin_tail,
+        clap_process, clap_process_status, clap_window,
     },
     process::Process,
     stream::{IStream, OStream},
@@ -1203,7 +1203,6 @@ pub unsafe fn create_plugin(
 ) -> *const clap_plugin {
     unsafe { factory_create_plugin(&raw const FACTORY, host, plugin_id) }
 }
-
 
 fn copy_str_to_array<const N: usize>(source: &str, target: &mut [c_char; N]) {
     target.fill(0);

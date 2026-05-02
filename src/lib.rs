@@ -1,3 +1,5 @@
+#![deny(dead_code)]
+
 use std::{
     ffi::{CStr, c_char, c_void},
     ptr::null,
@@ -11,7 +13,10 @@ use clap_clap::ffi::{
 pub mod compressor;
 pub mod drust;
 pub mod eq;
+pub mod imager;
+pub mod maximizer;
 pub mod rural_modeler;
+pub mod saturator;
 
 type DescriptorFn = unsafe fn() -> *const clap_plugin_descriptor;
 type CreateFn = unsafe fn(*const clap_host, *const c_char) -> *const clap_plugin;
@@ -21,14 +26,42 @@ struct PluginApi {
     create: CreateFn,
 }
 
-static PLUGINS: [PluginApi; 4] = [
+static PLUGINS: [PluginApi; 11] = [
     PluginApi {
-        descriptor: eq::clap_descriptor_ptr,
-        create: eq::clap_create_plugin,
+        descriptor: eq::parametric::clap_mono_descriptor_ptr,
+        create: eq::parametric::clap_mono_create_plugin,
     },
     PluginApi {
-        descriptor: compressor::clap_descriptor_ptr,
-        create: compressor::clap_create_plugin,
+        descriptor: eq::parametric::clap_stereo_descriptor_ptr,
+        create: eq::parametric::clap_stereo_create_plugin,
+    },
+    PluginApi {
+        descriptor: eq::graphic::clap_mono_descriptor_ptr,
+        create: eq::graphic::clap_mono_create_plugin,
+    },
+    PluginApi {
+        descriptor: eq::graphic::clap_stereo_descriptor_ptr,
+        create: eq::graphic::clap_stereo_create_plugin,
+    },
+    PluginApi {
+        descriptor: compressor::clap_mono_descriptor_ptr,
+        create: compressor::clap_mono_create_plugin,
+    },
+    PluginApi {
+        descriptor: compressor::clap_stereo_descriptor_ptr,
+        create: compressor::clap_stereo_create_plugin,
+    },
+    PluginApi {
+        descriptor: maximizer::clap_descriptor_ptr,
+        create: maximizer::clap_create_plugin,
+    },
+    PluginApi {
+        descriptor: imager::clap_descriptor_ptr,
+        create: imager::clap_create_plugin,
+    },
+    PluginApi {
+        descriptor: saturator::clap_descriptor_ptr,
+        create: saturator::clap_create_plugin,
     },
     PluginApi {
         descriptor: drust::clap_descriptor_ptr,

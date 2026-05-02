@@ -2,10 +2,18 @@
 
 A collection of audio plugins written in Rust for the Maolan ecosystem.
 
-| Plugin | Description | Crates version |
-|--------|-------------|----------------|
-| `rural-modeler` | Guitar amp modeler plugin | [![Rural Modeler](https://img.shields.io/crates/v/rural-modeler.svg)](https://crates.io/crates/rural-modeler) |
-| `drust` | DrumGizmo inspired drum sampler | [![Drust](https://img.shields.io/crates/v/drust.svg)](https://crates.io/crates/drust) |
+## Plugins
+
+| Plugin | Description | I/O |
+|--------|-------------|-----|
+| `Maolan Compressor` | Dynamics processor with threshold, ratio, attack, release, and makeup gain | Mono / Stereo |
+| `Maolan EQ — Parametric` | 32-band parametric EQ with bell, shelf, and cut filters | Mono / Stereo |
+| `Maolan EQ — Graphic` | 32-band graphic EQ | Mono / Stereo |
+| `Maolan Maximizer` | Adaptive clipper/limiter with Vintage and Modern variants | Stereo |
+| `Maolan Imager` | Stereo width processor with Mild, Wide, and Aggressive algorithms | Stereo |
+| `Maolan Saturator` | Waveshape saturation | Stereo |
+| `Rural Modeler` | Guitar amp modeler plugin | Mono |
+| `Drust` | DrumGizmo-inspired drum sampler | — |
 
 ## Building
 

@@ -2180,7 +2180,9 @@ mod tests {
     use serde_json::json;
 
     use super::{NamError, NamFile, NamModel};
-    use crate::rural_modeler::dsp::activations::{disable_fast_tanh, enable_fast_tanh, is_fast_tanh_enabled};
+    use crate::rural_modeler::dsp::activations::{
+        disable_fast_tanh, enable_fast_tanh, is_fast_tanh_enabled,
+    };
 
     fn process_one_sample(model: &mut NamModel, input: f32) -> f32 {
         let in_buf = [input];

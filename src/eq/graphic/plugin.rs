@@ -13,14 +13,13 @@ use clap_clap::{
     ffi::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE,
         CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL,
-        CLAP_INVALID_ID, CLAP_PARAM_REQUIRES_PROCESS, CLAP_PLUGIN_FEATURE_AUDIO_EFFECT,
-        CLAP_PLUGIN_FEATURE_COMPRESSOR, CLAP_PLUGIN_FEATURE_MONO, CLAP_PLUGIN_FEATURE_STEREO,
-        CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_COCOA,
-        CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info, clap_gui_resize_hints,
-        clap_host, clap_host_gui, clap_host_params, clap_host_state, clap_id, clap_istream,
-        clap_ostream, clap_param_info, clap_plugin, clap_plugin_audio_ports,
-        clap_plugin_descriptor, clap_plugin_factory, clap_plugin_gui, clap_plugin_params,
-        clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status, clap_window,
+        CLAP_INVALID_ID, CLAP_PLUGIN_FEATURE_AUDIO_EFFECT, CLAP_PLUGIN_FEATURE_EQUALIZER,
+        CLAP_PLUGIN_FEATURE_MONO, CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_MONO,
+        CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_COCOA, CLAP_WINDOW_API_WIN32,
+        CLAP_WINDOW_API_X11, clap_audio_port_info, clap_host, clap_id, clap_istream, clap_ostream,
+        clap_param_info, clap_plugin, clap_plugin_audio_ports, clap_plugin_descriptor,
+        clap_plugin_factory, clap_plugin_gui, clap_plugin_params, clap_plugin_state,
+        clap_plugin_tail, clap_process, clap_process_status, clap_window,
     },
     id::ClapId,
     process::Process,
@@ -28,23 +27,25 @@ use clap_clap::{
 };
 use parking_lot::Mutex;
 
-use crate::compressor::{
-    dsp::Compressor,
-    gui::GuiBridge,
-    params::{PARAMS, ParamId, ParamStore, sanitize_param_value},
-    state::PluginState,
-};
+use crate::eq::common::gui::{ParentWindowHandle, is_api_supported, preferred_api};
+use crate::eq::common::params::{ParamIdExt, ParamStore, copy_str_to_array, sanitize_param_value};
+use crate::eq::common::plugin::SharedState;
+use crate::eq::common::state::PluginState;
+use crate::eq::graphic::dsp::GraphicEqualizer;
+use crate::eq::graphic::gui::{EDITOR_HEIGHT, EDITOR_WIDTH, GuiBridge};
+use crate::eq::graphic::params::{PARAMS, ParamId};
 
-const PLUGIN_ID_MONO: &[u8] = b"com.maolan.compressor.mono\0";
-const PLUGIN_NAME_MONO: &[u8] = b"Maolan Compressor Mono\0";
-const PLUGIN_ID_STEREO: &[u8] = b"com.maolan.compressor.stereo\0";
-const PLUGIN_NAME_STEREO: &[u8] = b"Maolan Compressor Stereo\0";
+const PLUGIN_ID_MONO: &[u8] = b"com.maolan.equalizer.graphic.mono\0";
+const PLUGIN_NAME_MONO: &[u8] = b"Maolan Graphic EQ Mono\0";
+const PLUGIN_ID_STEREO: &[u8] = b"com.maolan.equalizer.graphic.stereo\0";
+const PLUGIN_NAME_STEREO: &[u8] = b"Maolan Graphic EQ Stereo\0";
 const PLUGIN_VENDOR: &[u8] = b"Maolan\0";
 const PLUGIN_URL: &[u8] = b"\0";
 const PLUGIN_VERSION: &[u8] = b"0.1.0\0";
-const PLUGIN_DESCRIPTION: &[u8] = b"Rust CLAP Compressor based on LSP\0";
+const PLUGIN_DESCRIPTION: &[u8] = b"Rust CLAP Graphic Equalizer\0";
+
 const FEATURE_AUDIO_EFFECT: *const c_char = CLAP_PLUGIN_FEATURE_AUDIO_EFFECT.as_ptr();
-const FEATURE_COMPRESSOR: *const c_char = CLAP_PLUGIN_FEATURE_COMPRESSOR.as_ptr();
+const FEATURE_EQUALIZER: *const c_char = CLAP_PLUGIN_FEATURE_EQUALIZER.as_ptr();
 const FEATURE_MONO: *const c_char = CLAP_PLUGIN_FEATURE_MONO.as_ptr();
 const FEATURE_STEREO: *const c_char = CLAP_PLUGIN_FEATURE_STEREO.as_ptr();
 
@@ -56,14 +57,14 @@ unsafe impl Sync for SyncDescriptor {}
 
 static FEATURES_MONO: SyncFeatureList = SyncFeatureList([
     FEATURE_AUDIO_EFFECT,
-    FEATURE_COMPRESSOR,
+    FEATURE_EQUALIZER,
     FEATURE_MONO,
     null(),
 ]);
 
 static FEATURES_STEREO: SyncFeatureList = SyncFeatureList([
     FEATURE_AUDIO_EFFECT,
-    FEATURE_COMPRESSOR,
+    FEATURE_EQUALIZER,
     FEATURE_STEREO,
     null(),
 ]);
@@ -94,154 +95,8 @@ static DESCRIPTOR_STEREO: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor
     features: FEATURES_STEREO.0.as_ptr(),
 });
 
-#[derive(Debug)]
-pub struct SharedState {
-    pub params: ParamStore,
-    sample_rate_bits: std::sync::atomic::AtomicU64,
-    pending_param_notifications: std::sync::atomic::AtomicU32,
-    local_param_overrides: std::sync::atomic::AtomicU32,
-    host: AtomicPtr<clap_host>,
-}
-
-impl Default for SharedState {
-    fn default() -> Self {
-        Self {
-            params: ParamStore::default(),
-            sample_rate_bits: std::sync::atomic::AtomicU64::new(48_000.0f64.to_bits()),
-            pending_param_notifications: std::sync::atomic::AtomicU32::new(0),
-            local_param_overrides: std::sync::atomic::AtomicU32::new(0),
-            host: AtomicPtr::new(null_mut()),
-        }
-    }
-}
-
-impl SharedState {
-    fn sample_rate(&self) -> f32 {
-        f64::from_bits(self.sample_rate_bits.load(Ordering::Acquire)) as f32
-    }
-
-    fn set_host(&self, host: *const clap_host) {
-        self.host.store(host.cast_mut(), Ordering::Release);
-    }
-
-    fn set_sample_rate(&self, sample_rate: f64) {
-        self.sample_rate_bits
-            .store(sample_rate.to_bits(), Ordering::Release);
-    }
-
-    fn set_param_internal(&self, id: ParamId, value: f64, notify_host: bool) {
-        self.params.set(id, sanitize_param_value(id, value));
-        if notify_host {
-            self.mark_local_param_override(id);
-            self.mark_param_notification_pending(id);
-            self.request_flush();
-            self.mark_dirty();
-        }
-    }
-
-    fn mark_param_notification_pending(&self, id: ParamId) {
-        let bit = 1_u32 << (id.as_index() as u32);
-        self.pending_param_notifications
-            .fetch_or(bit, Ordering::AcqRel);
-    }
-
-    fn take_pending_param_notifications(&self) -> u32 {
-        self.pending_param_notifications.swap(0, Ordering::AcqRel)
-    }
-
-    fn requeue_pending_param_notifications(&self, bits: u32) {
-        if bits != 0 {
-            self.pending_param_notifications
-                .fetch_or(bits, Ordering::AcqRel);
-        }
-    }
-
-    fn mark_local_param_override(&self, id: ParamId) {
-        let bit = 1_u32 << (id.as_index() as u32);
-        self.local_param_overrides.fetch_or(bit, Ordering::AcqRel);
-    }
-
-    fn has_local_param_override(&self, id: ParamId) -> bool {
-        let bit = 1_u32 << (id.as_index() as u32);
-        (self.local_param_overrides.load(Ordering::Acquire) & bit) != 0
-    }
-
-    fn clear_local_param_override(&self, id: ParamId) {
-        let bit = !(1_u32 << (id.as_index() as u32));
-        self.local_param_overrides.fetch_and(bit, Ordering::AcqRel);
-    }
-
-    pub fn set_param(&self, id: ParamId, value: f64) {
-        self.set_param_internal(id, value, true);
-    }
-
-    pub fn set_param_from_host(&self, id: ParamId, value: f64) {
-        self.set_param_internal(id, value, false);
-    }
-
-    pub fn request_gui_closed(&self) {
-        let host = self.host.load(Ordering::Acquire);
-        if host.is_null() {
-            return;
-        }
-        unsafe {
-            let Some(get_extension) = (*host).get_extension else {
-                return;
-            };
-            let ext = get_extension(host, c"clap.host.gui".as_ptr());
-            if ext.is_null() {
-                return;
-            }
-            let gui = &*(ext as *const clap_host_gui);
-            if let Some(closed) = gui.closed {
-                closed(host, false);
-            }
-        }
-    }
-
-    fn request_flush(&self) {
-        let host = self.host.load(Ordering::Acquire);
-        if host.is_null() {
-            return;
-        }
-        unsafe {
-            let Some(get_extension) = (*host).get_extension else {
-                return;
-            };
-            let ext = get_extension(host, c"clap.host.params".as_ptr());
-            if ext.is_null() {
-                return;
-            }
-            let params = &*(ext as *const clap_host_params);
-            if let Some(request_flush) = params.request_flush {
-                request_flush(host);
-            }
-        }
-    }
-
-    fn mark_dirty(&self) {
-        let host = self.host.load(Ordering::Acquire);
-        if host.is_null() {
-            return;
-        }
-        unsafe {
-            let Some(get_extension) = (*host).get_extension else {
-                return;
-            };
-            let ext = get_extension(host, c"clap.host.state".as_ptr());
-            if ext.is_null() {
-                return;
-            }
-            let state = &*(ext as *const clap_host_state);
-            if let Some(mark_dirty) = state.mark_dirty {
-                mark_dirty(host);
-            }
-        }
-    }
-}
-
 struct AudioProcessor {
-    compressor: Compressor,
+    equalizer: GraphicEqualizer,
     temp_left: Vec<f32>,
     temp_right: Vec<f32>,
 }
@@ -249,96 +104,36 @@ struct AudioProcessor {
 impl AudioProcessor {
     fn new(sample_rate: f64, max_frames: u32) -> Self {
         let sr = sample_rate as f32;
-        let compressor = Compressor::new(sr);
+        let equalizer = GraphicEqualizer::new(sr);
         Self {
-            compressor,
+            equalizer,
             temp_left: vec![0.0; max_frames as usize],
             temp_right: vec![0.0; max_frames as usize],
         }
     }
 
     fn reset(&mut self) {
-        self.compressor.reset();
+        self.equalizer.reset();
     }
 
-    fn apply_params(&mut self, shared: &SharedState) {
-        self.compressor
+    fn apply_params(&mut self, shared: &SharedState<ParamId>) {
+        self.equalizer
             .set_input_gain_db(shared.params.get(ParamId::InputGain) as f32);
-        self.compressor
+        self.equalizer
             .set_output_gain_db(shared.params.get(ParamId::OutputGain) as f32);
-        self.compressor
-            .set_dry_gain(shared.params.get(ParamId::DryGain) as f32);
-        self.compressor
-            .set_wet_gain(shared.params.get(ParamId::WetGain) as f32);
-        self.compressor
-            .set_split_hz(0, shared.params.get(ParamId::Split1) as f32);
-        self.compressor
-            .set_split_hz(1, shared.params.get(ParamId::Split2) as f32);
-        self.compressor
-            .set_split_hz(2, shared.params.get(ParamId::Split3) as f32);
-        self.compressor
-            .set_band_threshold_db(0, shared.params.get(ParamId::B1Threshold) as f32);
-        self.compressor
-            .set_band_ratio(0, shared.params.get(ParamId::B1Ratio) as f32);
-        self.compressor
-            .set_band_attack_ms(0, shared.params.get(ParamId::B1Attack) as f32);
-        self.compressor
-            .set_band_release_ms(0, shared.params.get(ParamId::B1Release) as f32);
-        self.compressor
-            .set_band_knee_db(0, shared.params.get(ParamId::B1Knee) as f32);
-        self.compressor
-            .set_band_makeup_db(0, shared.params.get(ParamId::B1Makeup) as f32);
-        self.compressor
-            .set_band_threshold_db(1, shared.params.get(ParamId::B2Threshold) as f32);
-        self.compressor
-            .set_band_ratio(1, shared.params.get(ParamId::B2Ratio) as f32);
-        self.compressor
-            .set_band_attack_ms(1, shared.params.get(ParamId::B2Attack) as f32);
-        self.compressor
-            .set_band_release_ms(1, shared.params.get(ParamId::B2Release) as f32);
-        self.compressor
-            .set_band_knee_db(1, shared.params.get(ParamId::B2Knee) as f32);
-        self.compressor
-            .set_band_makeup_db(1, shared.params.get(ParamId::B2Makeup) as f32);
-        self.compressor
-            .set_band_threshold_db(2, shared.params.get(ParamId::B3Threshold) as f32);
-        self.compressor
-            .set_band_ratio(2, shared.params.get(ParamId::B3Ratio) as f32);
-        self.compressor
-            .set_band_attack_ms(2, shared.params.get(ParamId::B3Attack) as f32);
-        self.compressor
-            .set_band_release_ms(2, shared.params.get(ParamId::B3Release) as f32);
-        self.compressor
-            .set_band_knee_db(2, shared.params.get(ParamId::B3Knee) as f32);
-        self.compressor
-            .set_band_makeup_db(2, shared.params.get(ParamId::B3Makeup) as f32);
-        self.compressor
-            .set_band_threshold_db(3, shared.params.get(ParamId::B4Threshold) as f32);
-        self.compressor
-            .set_band_ratio(3, shared.params.get(ParamId::B4Ratio) as f32);
-        self.compressor
-            .set_band_attack_ms(3, shared.params.get(ParamId::B4Attack) as f32);
-        self.compressor
-            .set_band_release_ms(3, shared.params.get(ParamId::B4Release) as f32);
-        self.compressor
-            .set_band_knee_db(3, shared.params.get(ParamId::B4Knee) as f32);
-        self.compressor
-            .set_band_makeup_db(3, shared.params.get(ParamId::B4Makeup) as f32);
-        self.compressor
-            .set_sc_mode(shared.params.get_enum(ParamId::ScMode));
-        self.compressor
-            .set_mode(shared.params.get_enum(ParamId::Mode));
-        self.compressor
-            .set_topology_mode(shared.params.get_enum(ParamId::Topology));
-        self.compressor
-            .set_lookahead_ms(shared.params.get(ParamId::Lookahead) as f32);
-        self.compressor
-            .set_sc_boost(shared.params.get_enum(ParamId::ScBoost));
-        self.compressor
+        self.equalizer
             .set_bypass(shared.params.get_bool(ParamId::Bypass));
+        for i in 0..32 {
+            self.equalizer
+                .set_graphic_gain(i, shared.params.get(ParamId::graphic_gain(i)) as f32);
+        }
     }
 
-    fn process(&mut self, shared: &SharedState, process: &mut Process) -> clap_process_status {
+    fn process(
+        &mut self,
+        shared: &SharedState<ParamId>,
+        process: &mut Process,
+    ) -> clap_process_status {
         self.apply_params(shared);
         apply_param_events(shared, &process.in_events());
         {
@@ -361,7 +156,7 @@ impl AudioProcessor {
             self.temp_left[..frames].copy_from_slice(input_l.data32(0));
             self.temp_right[..frames].copy_from_slice(input_r.data32(0));
 
-            self.compressor.process_stereo(
+            self.equalizer.process_stereo(
                 &mut self.temp_left[..frames],
                 &mut self.temp_right[..frames],
             );
@@ -377,7 +172,7 @@ impl AudioProcessor {
         } else if inputs_count >= 1 && outputs_count >= 1 {
             let input_port = process.audio_inputs(0);
             self.temp_left[..frames].copy_from_slice(input_port.data32(0));
-            self.compressor.process_mono(&mut self.temp_left[..frames]);
+            self.equalizer.process_mono(&mut self.temp_left[..frames]);
 
             let mut output_port = process.audio_outputs(0);
             output_port.data32(0)[..frames].copy_from_slice(&self.temp_left[..frames]);
@@ -388,7 +183,7 @@ impl AudioProcessor {
 }
 
 struct PluginInstance {
-    shared: Arc<SharedState>,
+    shared: Arc<SharedState<ParamId>>,
     active: AtomicBool,
     processor: AtomicPtr<AudioProcessor>,
     retired_processors: Mutex<Vec<*mut AudioProcessor>>,
@@ -398,8 +193,8 @@ struct PluginInstance {
 
 impl PluginInstance {
     fn new(host: *const clap_host, channels: u32) -> Self {
-        let shared = Arc::new(SharedState::default());
-        shared.set_host(host);
+        let params = ParamStore::new(&PARAMS);
+        let shared = Arc::new(SharedState::new(params, host));
         Self {
             shared,
             active: AtomicBool::new(false),
@@ -430,113 +225,7 @@ unsafe fn instance<'a>(plugin: *const clap_plugin) -> &'a mut PluginInstance {
     unsafe { &mut *((*plugin).plugin_data as *mut PluginInstance) }
 }
 
-fn copy_str_to_array<const N: usize>(source: &str, target: &mut [c_char; N]) {
-    target.fill(0);
-    for (dst, src) in target.iter_mut().zip(source.as_bytes().iter().copied()) {
-        *dst = src as c_char;
-    }
-}
-
-fn param_text(id: ParamId, value: f64) -> String {
-    match id {
-        ParamId::ScMode => match value.round() as i32 {
-            0 => "Peak".into(),
-            1 => "RMS".into(),
-            _ => format!("{value:.0}"),
-        },
-        ParamId::Mode => match value.round() as i32 {
-            0 => "Downward".into(),
-            1 => "Upward".into(),
-            2 => "Boosting".into(),
-            _ => format!("{value:.0}"),
-        },
-        ParamId::ScBoost => match value.round() as i32 {
-            0 => "Off".into(),
-            1 => "BT +3dB".into(),
-            2 => "MT +3dB".into(),
-            3 => "BT +6dB".into(),
-            4 => "MT +6dB".into(),
-            _ => format!("{value:.0}"),
-        },
-        ParamId::Topology => match value.round() as i32 {
-            0 => "Classic".into(),
-            1 => "Modern".into(),
-            _ => format!("{value:.0}"),
-        },
-        ParamId::Bypass => {
-            if value >= 0.5 {
-                "On".into()
-            } else {
-                "Off".into()
-            }
-        }
-        ParamId::B1Attack
-        | ParamId::B1Release
-        | ParamId::B2Attack
-        | ParamId::B2Release
-        | ParamId::B3Attack
-        | ParamId::B3Release
-        | ParamId::B4Attack
-        | ParamId::B4Release => format!("{value:.1} ms"),
-        ParamId::InputGain
-        | ParamId::OutputGain
-        | ParamId::B1Threshold
-        | ParamId::B1Knee
-        | ParamId::B1Makeup
-        | ParamId::B2Threshold
-        | ParamId::B2Knee
-        | ParamId::B2Makeup
-        | ParamId::B3Threshold
-        | ParamId::B3Knee
-        | ParamId::B3Makeup
-        | ParamId::B4Threshold
-        | ParamId::B4Knee
-        | ParamId::B4Makeup => format!("{value:.1} dB"),
-        ParamId::Split1 | ParamId::Split2 | ParamId::Split3 => format!("{value:.0} Hz"),
-        ParamId::Lookahead => format!("{value:.2} ms"),
-        ParamId::B1Ratio | ParamId::B2Ratio | ParamId::B3Ratio | ParamId::B4Ratio => {
-            format!("{value:.1}:1")
-        }
-        _ => format!("{value:.2}"),
-    }
-}
-
-fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
-    match id {
-        ParamId::ScMode => match text.to_ascii_lowercase().as_str() {
-            "peak" => Some(0.0),
-            "rms" => Some(1.0),
-            _ => text.parse().ok(),
-        },
-        ParamId::Mode => match text.to_ascii_lowercase().as_str() {
-            "downward" => Some(0.0),
-            "upward" => Some(1.0),
-            "boosting" => Some(2.0),
-            _ => text.parse().ok(),
-        },
-        ParamId::ScBoost => match text.to_ascii_lowercase().as_str() {
-            "off" => Some(0.0),
-            "bt +3db" | "bt3" => Some(1.0),
-            "mt +3db" | "mt3" => Some(2.0),
-            "bt +6db" | "bt6" => Some(3.0),
-            "mt +6db" | "mt6" => Some(4.0),
-            _ => text.parse().ok(),
-        },
-        ParamId::Topology => match text.to_ascii_lowercase().as_str() {
-            "classic" => Some(0.0),
-            "modern" => Some(1.0),
-            _ => text.parse().ok(),
-        },
-        ParamId::Bypass => match text.to_ascii_lowercase().as_str() {
-            "on" | "true" | "1" => Some(1.0),
-            "off" | "false" | "0" => Some(0.0),
-            _ => None,
-        },
-        _ => text.parse().ok(),
-    }
-}
-
-fn apply_param_events(shared: &SharedState, events: &InputEvents<'_>) {
+fn apply_param_events(shared: &SharedState<ParamId>, events: &InputEvents<'_>) {
     for index in 0..events.size() {
         let header = events.get(index);
         if header.space_id() != CLAP_CORE_EVENT_SPACE_ID {
@@ -548,7 +237,7 @@ fn apply_param_events(shared: &SharedState, events: &InputEvents<'_>) {
         if let Ok(param) = header.param_value() {
             let raw: u32 = param.param_id().into();
             if let Some(id) = ParamId::from_raw(raw) {
-                let incoming = sanitize_param_value(id, param.value());
+                let incoming = sanitize_param_value(id, param.value(), &PARAMS);
                 if shared.has_local_param_override(id) {
                     let current = shared.params.get(id);
                     if (incoming - current).abs() > 1.0e-9 {
@@ -556,22 +245,31 @@ fn apply_param_events(shared: &SharedState, events: &InputEvents<'_>) {
                     }
                     shared.clear_local_param_override(id);
                 }
-                shared.set_param_from_host(id, incoming);
+                shared.params.set(id, incoming);
             }
         }
     }
 }
 
-fn emit_pending_param_events_to_host(shared: &SharedState, out_events: &mut OutputEvents<'_>) {
-    let pending = shared.take_pending_param_notifications();
-    if pending == 0 {
+fn emit_pending_param_events_to_host(
+    shared: &SharedState<ParamId>,
+    out_events: &mut OutputEvents<'_>,
+) {
+    let mut pending = vec![0_u32; shared.pending_param_notifications.len()];
+    for (i, atomic) in shared.pending_param_notifications.iter().enumerate() {
+        pending[i] = atomic.swap(0, Ordering::AcqRel);
+    }
+
+    if pending.iter().all(|&bits| bits == 0) {
         return;
     }
 
-    let mut failed = 0_u32;
+    let mut failed = vec![0_u32; pending.len()];
     for id in ParamId::all() {
-        let bit = 1_u32 << (id.as_index() as u32);
-        if pending & bit == 0 {
+        let idx = id.as_index();
+        let word = idx / 32;
+        let bit = 1_u32 << (idx % 32);
+        if pending[word] & bit == 0 {
             continue;
         }
         let event_builder = ParamValue::build()
@@ -579,17 +277,20 @@ fn emit_pending_param_events_to_host(shared: &SharedState, out_events: &mut Outp
             .value(shared.params.get(id));
         let event = event_builder.event();
         if out_events.try_push(event).is_err() {
-            failed |= bit;
+            failed[word] |= bit;
         }
     }
 
-    shared.requeue_pending_param_notifications(failed);
+    for (i, bit) in failed.iter().enumerate() {
+        if *bit != 0 {
+            shared.pending_param_notifications[i].fetch_or(*bit, Ordering::AcqRel);
+        }
+    }
 }
 
-unsafe extern "C-unwind" fn plugin_init(plugin: *const clap_plugin) -> bool {
-    !plugin.is_null()
+unsafe extern "C-unwind" fn plugin_init(_plugin: *const clap_plugin) -> bool {
+    true
 }
-
 unsafe extern "C-unwind" fn plugin_destroy(plugin: *const clap_plugin) {
     if plugin.is_null() {
         return;
@@ -604,11 +305,11 @@ unsafe extern "C-unwind" fn plugin_activate(
     _min_frames: u32,
     max_frames: u32,
 ) -> bool {
-    if plugin.is_null() {
-        return false;
-    }
     let instance = unsafe { instance(plugin) };
-    instance.shared.set_sample_rate(sample_rate);
+    instance
+        .shared
+        .sample_rate_bits
+        .store(sample_rate.to_bits(), Ordering::Release);
     let next = Box::into_raw(Box::new(AudioProcessor::new(sample_rate, max_frames)));
     let old = instance.processor.swap(next, Ordering::AcqRel);
     if !old.is_null() {
@@ -619,9 +320,6 @@ unsafe extern "C-unwind" fn plugin_activate(
 }
 
 unsafe extern "C-unwind" fn plugin_deactivate(plugin: *const clap_plugin) {
-    if plugin.is_null() {
-        return;
-    }
     let instance = unsafe { instance(plugin) };
     let old = instance.processor.swap(null_mut(), Ordering::AcqRel);
     if !old.is_null() {
@@ -633,13 +331,8 @@ unsafe extern "C-unwind" fn plugin_deactivate(plugin: *const clap_plugin) {
 unsafe extern "C-unwind" fn plugin_start_processing(_plugin: *const clap_plugin) -> bool {
     true
 }
-
 unsafe extern "C-unwind" fn plugin_stop_processing(_plugin: *const clap_plugin) {}
-
 unsafe extern "C-unwind" fn plugin_reset(plugin: *const clap_plugin) {
-    if plugin.is_null() {
-        return;
-    }
     let instance = unsafe { instance(plugin) };
     let ptr = instance.processor.load(Ordering::Acquire);
     if !ptr.is_null() {
@@ -651,9 +344,6 @@ unsafe extern "C-unwind" fn plugin_process(
     plugin: *const clap_plugin,
     process: *const clap_process,
 ) -> clap_process_status {
-    if plugin.is_null() || process.is_null() {
-        return CLAP_PROCESS_CONTINUE;
-    }
     let instance = unsafe { instance(plugin) };
     let processor_ptr = instance.processor.load(Ordering::Acquire);
     if processor_ptr.is_null() {
@@ -703,7 +393,6 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
 unsafe extern "C-unwind" fn ext_params_count(_plugin: *const clap_plugin) -> u32 {
     PARAMS.len() as u32
 }
-
 unsafe extern "C-unwind" fn ext_params_get_info(
     _plugin: *const clap_plugin,
     index: u32,
@@ -716,13 +405,13 @@ unsafe extern "C-unwind" fn ext_params_get_info(
         return false;
     }
     let info = unsafe { &mut *info };
-    info.id = def.id as clap_id;
-    info.flags = def.flags | CLAP_PARAM_REQUIRES_PROCESS;
+    info.id = def.id as u16 as clap_id;
+    info.flags = def.flags;
     info.cookie = null_mut();
     info.min_value = def.min;
     info.max_value = def.max;
     info.default_value = def.default;
-    copy_str_to_array(def.name, &mut info.name);
+    info.name = def.name_array;
     copy_str_to_array(def.module, &mut info.module);
     true
 }
@@ -752,13 +441,13 @@ unsafe extern "C-unwind" fn ext_params_value_to_text(
     out_buffer: *mut c_char,
     out_buffer_capacity: u32,
 ) -> bool {
-    let Some(id) = ParamId::from_raw(param_id) else {
+    let Some(_id) = ParamId::from_raw(param_id) else {
         return false;
     };
     if out_buffer.is_null() || out_buffer_capacity == 0 {
         return false;
     }
-    let text = param_text(id, value);
+    let text = format!("{value:.2}");
     let bytes = text.as_bytes();
     let cap = out_buffer_capacity as usize;
     unsafe {
@@ -781,7 +470,7 @@ unsafe extern "C-unwind" fn ext_params_text_to_value(
     text: *const c_char,
     out_value: *mut f64,
 ) -> bool {
-    let Some(id) = ParamId::from_raw(param_id) else {
+    let Some(_id) = ParamId::from_raw(param_id) else {
         return false;
     };
     if text.is_null() || out_value.is_null() {
@@ -790,7 +479,7 @@ unsafe extern "C-unwind" fn ext_params_text_to_value(
     let Ok(text) = unsafe { CStr::from_ptr(text) }.to_str() else {
         return false;
     };
-    let Some(value) = parse_param_text(id, text) else {
+    let Ok(value) = text.parse::<f64>() else {
         return false;
     };
     unsafe {
@@ -804,9 +493,6 @@ unsafe extern "C-unwind" fn ext_params_flush(
     in_events: *const clap_clap::ffi::clap_input_events,
     out_events: *const clap_clap::ffi::clap_output_events,
 ) {
-    if plugin.is_null() {
-        return;
-    }
     let instance = unsafe { instance(plugin) };
     if !in_events.is_null() {
         let input = unsafe { InputEvents::new_unchecked(&*in_events) };
@@ -822,11 +508,8 @@ unsafe extern "C-unwind" fn ext_state_save(
     plugin: *const clap_plugin,
     stream: *const clap_ostream,
 ) -> bool {
-    if plugin.is_null() || stream.is_null() {
-        return false;
-    }
     let instance = unsafe { instance(plugin) };
-    let state = PluginState::from_runtime(&instance.shared.params);
+    let state = PluginState::from_runtime(&instance.shared.params, &PARAMS);
     let Ok(bytes) = state.to_bytes() else {
         return false;
     };
@@ -838,9 +521,6 @@ unsafe extern "C-unwind" fn ext_state_load(
     plugin: *const clap_plugin,
     stream: *const clap_istream,
 ) -> bool {
-    if plugin.is_null() || stream.is_null() {
-        return false;
-    }
     let instance = unsafe { instance(plugin) };
     let mut stream = unsafe { IStream::new_unchecked(stream) };
     let mut bytes = Vec::new();
@@ -850,8 +530,14 @@ unsafe extern "C-unwind" fn ext_state_load(
     let Ok(state) = PluginState::from_bytes(&bytes) else {
         return false;
     };
-    state.apply(&instance.shared.params);
+    state.apply(&instance.shared.params, &PARAMS);
     true
+}
+
+unsafe extern "C-unwind" fn ext_tail_get(plugin: *const clap_plugin) -> u32 {
+    let instance = unsafe { instance(plugin) };
+    let sample_rate = instance.shared.sample_rate();
+    (0.02 * sample_rate) as u32
 }
 
 static AUDIO_PORTS_EXT: clap_plugin_audio_ports = clap_plugin_audio_ports {
@@ -873,25 +559,6 @@ static STATE_EXT: clap_plugin_state = clap_plugin_state {
     load: Some(ext_state_load),
 };
 
-unsafe extern "C-unwind" fn ext_tail_get(plugin: *const clap_plugin) -> u32 {
-    if plugin.is_null() {
-        return 0;
-    }
-    let instance = unsafe { instance(plugin) };
-    let sample_rate = instance.shared.sample_rate();
-    // Tail from release time: approximate 5 time constants
-    let release_ms = [
-        instance.shared.params.get(ParamId::B1Release) as f32,
-        instance.shared.params.get(ParamId::B2Release) as f32,
-        instance.shared.params.get(ParamId::B3Release) as f32,
-        instance.shared.params.get(ParamId::B4Release) as f32,
-    ]
-    .into_iter()
-    .fold(0.0f32, f32::max);
-    let lookahead_ms = instance.shared.params.get(ParamId::Lookahead) as f32;
-    ((release_ms * 0.005 + lookahead_ms * 0.001) * sample_rate) as u32
-}
-
 static TAIL_EXT: clap_plugin_tail = clap_plugin_tail {
     get: Some(ext_tail_get),
 };
@@ -904,8 +571,7 @@ unsafe extern "C-unwind" fn ext_gui_is_api_supported(
     if api.is_null() {
         return false;
     }
-    let api = unsafe { CStr::from_ptr(api) };
-    crate::compressor::gui::is_api_supported(api, is_floating)
+    is_api_supported(unsafe { CStr::from_ptr(api) }, is_floating)
 }
 
 unsafe extern "C-unwind" fn ext_gui_get_preferred_api(
@@ -916,9 +582,8 @@ unsafe extern "C-unwind" fn ext_gui_get_preferred_api(
     if api.is_null() || is_floating.is_null() {
         return false;
     }
-    let preferred = crate::compressor::gui::preferred_api();
     unsafe {
-        *api = preferred.as_ptr();
+        *api = preferred_api().as_ptr();
         *is_floating = false;
     }
     true
@@ -929,31 +594,17 @@ unsafe extern "C-unwind" fn ext_gui_create(
     api: *const c_char,
     is_floating: bool,
 ) -> bool {
-    if plugin.is_null() {
-        return false;
-    }
     let instance = unsafe { instance(plugin) };
-    let api = unsafe { CStr::from_ptr(api) };
-    instance
-        .gui_bridge
-        .lock()
-        .create(instance.shared.clone(), api, is_floating)
+    instance.gui_bridge.lock().create(
+        instance.shared.clone(),
+        unsafe { CStr::from_ptr(api) },
+        is_floating,
+    )
 }
 
 unsafe extern "C-unwind" fn ext_gui_destroy(plugin: *const clap_plugin) {
-    if plugin.is_null() {
-        return;
-    }
     let instance = unsafe { instance(plugin) };
     instance.gui_bridge.lock().destroy();
-    instance
-        .shared
-        .host
-        .store(std::ptr::null_mut(), Ordering::Release);
-}
-
-unsafe extern "C-unwind" fn ext_gui_set_scale(_plugin: *const clap_plugin, _scale: f64) -> bool {
-    false
 }
 
 unsafe extern "C-unwind" fn ext_gui_get_size(
@@ -965,37 +616,10 @@ unsafe extern "C-unwind" fn ext_gui_get_size(
         return false;
     }
     unsafe {
-        *width = crate::compressor::gui::EDITOR_WIDTH;
-        *height = crate::compressor::gui::EDITOR_HEIGHT;
+        *width = EDITOR_WIDTH;
+        *height = EDITOR_HEIGHT;
     }
     true
-}
-
-unsafe extern "C-unwind" fn ext_gui_can_resize(_plugin: *const clap_plugin) -> bool {
-    false
-}
-
-unsafe extern "C-unwind" fn ext_gui_get_resize_hints(
-    _plugin: *const clap_plugin,
-    _hints: *mut clap_gui_resize_hints,
-) -> bool {
-    false
-}
-
-unsafe extern "C-unwind" fn ext_gui_adjust_size(
-    _plugin: *const clap_plugin,
-    _width: *mut u32,
-    _height: *mut u32,
-) -> bool {
-    false
-}
-
-unsafe extern "C-unwind" fn ext_gui_set_size(
-    _plugin: *const clap_plugin,
-    _width: u32,
-    _height: u32,
-) -> bool {
-    false
 }
 
 #[allow(clippy::needless_bool)]
@@ -1003,9 +627,6 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     plugin: *const clap_plugin,
     window: *const clap_window,
 ) -> bool {
-    if plugin.is_null() || window.is_null() {
-        return false;
-    }
     let instance = unsafe { instance(plugin) };
     let window = unsafe { &*window };
     let api = unsafe { CStr::from_ptr(window.api) };
@@ -1013,7 +634,7 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     let parent = if api == CLAP_WINDOW_API_X11 {
         #[cfg(all(unix, not(target_os = "macos")))]
         {
-            crate::compressor::gui::ParentWindowHandle::X11(unsafe { window.clap_window__.x11 })
+            ParentWindowHandle::X11(unsafe { window.clap_window__.x11 })
         }
         #[cfg(not(all(unix, not(target_os = "macos"))))]
         {
@@ -1022,7 +643,7 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     } else if api == CLAP_WINDOW_API_COCOA {
         #[cfg(target_os = "macos")]
         {
-            crate::compressor::gui::ParentWindowHandle::Cocoa(unsafe { window.clap_window__.cocoa })
+            ParentWindowHandle::Cocoa(unsafe { window.clap_window__.cocoa })
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -1031,7 +652,7 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     } else if api == CLAP_WINDOW_API_WIN32 {
         #[cfg(target_os = "windows")]
         {
-            crate::compressor::gui::ParentWindowHandle::Win32(unsafe { window.clap_window__.win32 })
+            ParentWindowHandle::Win32(unsafe { window.clap_window__.win32 })
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1047,31 +668,12 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
         .set_parent(instance.shared.clone(), parent)
 }
 
-unsafe extern "C-unwind" fn ext_gui_set_transient(
-    _plugin: *const clap_plugin,
-    _window: *const clap_window,
-) -> bool {
-    false
-}
-
-unsafe extern "C-unwind" fn ext_gui_suggest_title(
-    _plugin: *const clap_plugin,
-    _title: *const c_char,
-) {
-}
-
 unsafe extern "C-unwind" fn ext_gui_show(plugin: *const clap_plugin) -> bool {
-    if plugin.is_null() {
-        return false;
-    }
     let instance = unsafe { instance(plugin) };
     instance.gui_bridge.lock().show()
 }
 
 unsafe extern "C-unwind" fn ext_gui_hide(plugin: *const clap_plugin) -> bool {
-    if plugin.is_null() {
-        return false;
-    }
     let instance = unsafe { instance(plugin) };
     instance.gui_bridge.lock().hide(instance.shared.clone())
 }
@@ -1081,15 +683,15 @@ static GUI_EXT: clap_plugin_gui = clap_plugin_gui {
     get_preferred_api: Some(ext_gui_get_preferred_api),
     create: Some(ext_gui_create),
     destroy: Some(ext_gui_destroy),
-    set_scale: Some(ext_gui_set_scale),
+    set_scale: None,
     get_size: Some(ext_gui_get_size),
-    can_resize: Some(ext_gui_can_resize),
-    get_resize_hints: Some(ext_gui_get_resize_hints),
-    adjust_size: Some(ext_gui_adjust_size),
-    set_size: Some(ext_gui_set_size),
+    can_resize: None,
+    get_resize_hints: None,
+    adjust_size: None,
+    set_size: None,
     set_parent: Some(ext_gui_set_parent),
-    set_transient: Some(ext_gui_set_transient),
-    suggest_title: Some(ext_gui_suggest_title),
+    set_transient: None,
+    suggest_title: None,
     show: Some(ext_gui_show),
     hide: Some(ext_gui_hide),
 };
@@ -1098,7 +700,7 @@ fn clap_gui_extension_enabled() -> bool {
     #[cfg(target_os = "freebsd")]
     {
         !matches!(
-            std::env::var("MAOLAN_COMPRESSOR_DISABLE_GUI")
+            std::env::var("MAOLAN_EQUALIZER_DISABLE_GUI")
                 .ok()
                 .as_deref(),
             Some("1") | Some("true") | Some("TRUE") | Some("True")
@@ -1111,12 +713,9 @@ fn clap_gui_extension_enabled() -> bool {
 }
 
 unsafe extern "C-unwind" fn plugin_get_extension(
-    plugin: *const clap_plugin,
+    _plugin: *const clap_plugin,
     id: *const c_char,
 ) -> *const c_void {
-    if plugin.is_null() || id.is_null() {
-        return null();
-    }
     let id = unsafe { CStr::from_ptr(id) };
     if id == CLAP_EXT_AUDIO_PORTS {
         &raw const AUDIO_PORTS_EXT as *const _ as *const c_void
@@ -1232,7 +831,6 @@ static FACTORY_STEREO: clap_plugin_factory = clap_plugin_factory {
 pub unsafe fn descriptor_mono_ptr() -> *const clap_plugin_descriptor {
     &raw const DESCRIPTOR_MONO.0
 }
-
 /// # Safety
 /// Caller must ensure valid host and plugin_id pointers.
 pub unsafe fn create_plugin_mono(
@@ -1241,13 +839,11 @@ pub unsafe fn create_plugin_mono(
 ) -> *const clap_plugin {
     unsafe { factory_create_plugin_mono(&raw const FACTORY_MONO, host, plugin_id) }
 }
-
 /// # Safety
 /// Caller must ensure valid host pointer.
 pub unsafe fn descriptor_stereo_ptr() -> *const clap_plugin_descriptor {
     &raw const DESCRIPTOR_STEREO.0
 }
-
 /// # Safety
 /// Caller must ensure valid host and plugin_id pointers.
 pub unsafe fn create_plugin_stereo(

@@ -19,9 +19,9 @@ use clap_clap::{
         CLAP_WINDOW_API_COCOA, CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info,
         clap_gui_resize_hints, clap_host, clap_host_gui, clap_host_latency, clap_host_params,
         clap_host_state, clap_id, clap_istream, clap_ostream, clap_param_info, clap_plugin,
-        clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_factory,
-        clap_plugin_gui, clap_plugin_latency, clap_plugin_params, clap_plugin_state,
-        clap_plugin_tail, clap_process, clap_process_status, clap_window,
+        clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_factory, clap_plugin_gui,
+        clap_plugin_latency, clap_plugin_params, clap_plugin_state, clap_plugin_tail, clap_process,
+        clap_process_status, clap_window,
     },
     id::ClapId,
     process::Process,
@@ -1233,7 +1233,9 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     } else if api == CLAP_WINDOW_API_COCOA {
         #[cfg(target_os = "macos")]
         {
-            crate::rural_modeler::gui::ParentWindowHandle::Cocoa(unsafe { window.clap_window__.cocoa })
+            crate::rural_modeler::gui::ParentWindowHandle::Cocoa(unsafe {
+                window.clap_window__.cocoa
+            })
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -1242,7 +1244,9 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     } else if api == CLAP_WINDOW_API_WIN32 {
         #[cfg(target_os = "windows")]
         {
-            crate::rural_modeler::gui::ParentWindowHandle::Win32(unsafe { window.clap_window__.win32 })
+            crate::rural_modeler::gui::ParentWindowHandle::Win32(unsafe {
+                window.clap_window__.win32
+            })
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1420,7 +1424,6 @@ pub unsafe fn create_plugin(
 ) -> *const clap_plugin {
     unsafe { factory_create_plugin(&raw const FACTORY, host, plugin_id) }
 }
-
 
 #[cfg(test)]
 mod tests {

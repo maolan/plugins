@@ -1,8 +1,7 @@
-mod dsp;
+pub mod dsp;
 pub mod gui;
-mod params;
-mod plugin;
-mod state;
+pub mod params;
+pub mod plugin;
 
 pub use plugin::{
     create_plugin_mono as clap_mono_create_plugin,
