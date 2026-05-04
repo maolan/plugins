@@ -12,6 +12,7 @@ use clap_clap::ffi::{
 
 pub mod common;
 pub mod compressor;
+pub mod deesser;
 pub mod delay;
 pub mod drust;
 pub mod eq;
@@ -30,7 +31,7 @@ struct PluginApi {
     create: CreateFn,
 }
 
-static PLUGINS: [PluginApi; 16] = [
+static PLUGINS: [PluginApi; 17] = [
     PluginApi {
         descriptor: eq::parametric::clap_mono_descriptor_ptr,
         create: eq::parametric::clap_mono_create_plugin,
@@ -94,6 +95,10 @@ static PLUGINS: [PluginApi; 16] = [
     PluginApi {
         descriptor: delay::clap_stereo_descriptor_ptr,
         create: delay::clap_stereo_create_plugin,
+    },
+    PluginApi {
+        descriptor: deesser::clap_descriptor_ptr,
+        create: deesser::clap_create_plugin,
     },
 ];
 

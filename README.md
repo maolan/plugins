@@ -12,6 +12,7 @@ theme.
 |--------|-----|-----|-------------|
 | **Maolan Compressor** | `rs.maolan.compressor.{mono,stereo}` | Mono / Stereo | 4-band multiband compressor with lookahead and sidechain boost |
 | **Maolan Delay** | `rs.maolan.delay.{mono,stereo}` | Mono / Stereo | Delay with ms / note-sync modes and smooth chasing |
+| **Maolan DeEsser** | `rs.maolan.deesser.stereo` | Stereo | Sibilance reduction processor |
 | **Maolan EQ — Parametric** | `rs.maolan.equalizer.parametric.{mono,stereo}` | Mono / Stereo | 32-band parametric EQ with peaking biquad filters |
 | **Maolan EQ — Graphic** | `rs.maolan.equalizer.graphic.{mono,stereo}` | Mono / Stereo | 32-band graphic EQ with fixed frequencies |
 | **Maolan Imager** | `rs.maolan.imager.stereo` | Stereo | Stereo width processor with Mild, Wide, and Aggressive algorithms |
@@ -74,6 +75,25 @@ time changes.
 1/4d, 1/8d
 
 In **Note** mode the plugin reads the host BPM from the CLAP transport each process call.
+
+---
+
+## Maolan DeEsser
+
+A sibilance reduction processor that detects ess sounds by analyzing slew-rate patterns across a
+configurable sample window. Uses IIR smoothing and dynamic ratio reduction to attenuate sibilance
+while preserving the rest of the signal. Includes a monitor mode for hearing exactly what is being
+removed.
+
+**Parameters**
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Intensity | 0.0 … 1.0 | 0.5 | Sensitivity / threshold |
+| Sharpness | 0.0 … 1.0 | 0.5 | Detection window size (2–40 samples) |
+| Depth | 0.0 … 1.0 | 0.5 | Maximum reduction amount |
+| Filter | 0.0 … 1.0 | 0.5 | IIR smoothing amount |
+| Monitor | 0 / 1 | 0 | Output delta (removed signal) when enabled |
 
 ---
 
