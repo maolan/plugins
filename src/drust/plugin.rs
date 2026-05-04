@@ -35,7 +35,7 @@ use crate::drust::{
     state::PluginState,
 };
 
-const PLUGIN_ID: &[u8] = b"com.drust.drumgizmo\0";
+const PLUGIN_ID: &[u8] = b"rs.maolan.drust\0";
 const PLUGIN_NAME: &[u8] = b"Drust\0";
 const PLUGIN_VENDOR: &[u8] = b"maolan\0";
 const PLUGIN_URL: &[u8] = b"\0";

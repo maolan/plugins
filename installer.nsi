@@ -1,5 +1,6 @@
 ; Maolan Plugins Installer
 ; Run with: makensis.exe installer.nsi
+; Requires all binaries to be staged in C:\maolan-staging\plugins
 
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
@@ -54,11 +55,10 @@ VIAddVersionKey "LegalCopyright" "BSD-2-Clause"
 Section "Install"
     SetOutPath "$INSTDIR"
 
-    ; CLAP plugin DLL
-    File "C:\cargo-target\x86_64-pc-windows-msvc\release\maolan_plugins.dll"
+    ; Copy all staged binaries
+    File "C:\maolan-staging\plugins\*.*"
 
-    ; VC++ Redistributable installer (bundled)
-    File "..\vc_redist.x64.exe"
+    ; Run VC++ Redistributable installer
     ExecWait '"$INSTDIR\vc_redist.x64.exe" /install /quiet /norestart' $0
     Delete "$INSTDIR\vc_redist.x64.exe"
 

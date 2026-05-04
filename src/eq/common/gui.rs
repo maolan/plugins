@@ -5,6 +5,7 @@ use std::ffi::CStr;
 use clap_clap::ffi::CLAP_WINDOW_API_COCOA;
 #[cfg(target_os = "windows")]
 use clap_clap::ffi::CLAP_WINDOW_API_WIN32;
+#[cfg(all(unix, not(target_os = "macos")))]
 use clap_clap::ffi::CLAP_WINDOW_API_X11;
 
 pub fn preferred_api() -> &'static CStr {

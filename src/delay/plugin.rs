@@ -9,17 +9,18 @@ use std::{
 };
 
 use clap_clap::{
-    events::{EventBuilder, InputEvents, OutputEvents, ParamValue},
+    events::{EventBuilder, InputEvents, OutputEvents, ParamValue, TransportFlags},
     ffi::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE,
         CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL,
         CLAP_INVALID_ID, CLAP_PARAM_REQUIRES_PROCESS, CLAP_PLUGIN_FEATURE_AUDIO_EFFECT,
-        CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION,
-        CLAP_WINDOW_API_COCOA, CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info,
-        clap_gui_resize_hints, clap_host, clap_host_gui, clap_host_params, clap_host_state,
-        clap_id, clap_istream, clap_ostream, clap_param_info, clap_plugin, clap_plugin_audio_ports,
-        clap_plugin_descriptor, clap_plugin_factory, clap_plugin_gui, clap_plugin_params,
-        clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status, clap_window,
+        CLAP_PLUGIN_FEATURE_MONO, CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_MONO,
+        CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_COCOA, CLAP_WINDOW_API_WIN32,
+        CLAP_WINDOW_API_X11, clap_audio_port_info, clap_gui_resize_hints, clap_host, clap_host_gui,
+        clap_host_params, clap_host_state, clap_id, clap_istream, clap_ostream, clap_param_info,
+        clap_plugin, clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_factory,
+        clap_plugin_gui, clap_plugin_params, clap_plugin_state, clap_plugin_tail, clap_process,
+        clap_process_status, clap_window,
     },
     id::ClapId,
     process::Process,
@@ -27,20 +28,23 @@ use clap_clap::{
 };
 use parking_lot::Mutex;
 
-use crate::imager::{
-    dsp::{Imager, ImagerParams},
+use crate::delay::{
+    dsp::Delay,
     gui::GuiBridge,
     params::{PARAMS, ParamId, ParamStore, sanitize_param_value},
     state::PluginState,
 };
 
-const PLUGIN_ID: &[u8] = b"rs.maolan.imager.stereo\0";
-const PLUGIN_NAME: &[u8] = b"Maolan Imager\0";
+const PLUGIN_ID_MONO: &[u8] = b"rs.maolan.delay.mono\0";
+const PLUGIN_NAME_MONO: &[u8] = b"Maolan Delay Mono\0";
+const PLUGIN_ID_STEREO: &[u8] = b"rs.maolan.delay.stereo\0";
+const PLUGIN_NAME_STEREO: &[u8] = b"Maolan Delay Stereo\0";
 const PLUGIN_VENDOR: &[u8] = b"Maolan\0";
 const PLUGIN_URL: &[u8] = b"\0";
 const PLUGIN_VERSION: &[u8] = b"0.1.0\0";
-const PLUGIN_DESCRIPTION: &[u8] = b"Rust CLAP Imager with ImagerMild, ImagerWide and Aggressive\0";
+const PLUGIN_DESCRIPTION: &[u8] = b"Rust CLAP delay with ms/note sync\0";
 const FEATURE_AUDIO_EFFECT: *const c_char = CLAP_PLUGIN_FEATURE_AUDIO_EFFECT.as_ptr();
+const FEATURE_MONO: *const c_char = CLAP_PLUGIN_FEATURE_MONO.as_ptr();
 const FEATURE_STEREO: *const c_char = CLAP_PLUGIN_FEATURE_STEREO.as_ptr();
 
 struct SyncFeatureList([*const c_char; 3]);
@@ -49,19 +53,36 @@ unsafe impl Sync for SyncFeatureList {}
 struct SyncDescriptor(clap_plugin_descriptor);
 unsafe impl Sync for SyncDescriptor {}
 
-static FEATURES: SyncFeatureList = SyncFeatureList([FEATURE_AUDIO_EFFECT, FEATURE_STEREO, null()]);
+static FEATURES_MONO: SyncFeatureList =
+    SyncFeatureList([FEATURE_AUDIO_EFFECT, FEATURE_MONO, null()]);
 
-static DESCRIPTOR: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor {
+static FEATURES_STEREO: SyncFeatureList =
+    SyncFeatureList([FEATURE_AUDIO_EFFECT, FEATURE_STEREO, null()]);
+
+static DESCRIPTOR_MONO: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor {
     clap_version: CLAP_VERSION,
-    id: PLUGIN_ID.as_ptr().cast(),
-    name: PLUGIN_NAME.as_ptr().cast(),
+    id: PLUGIN_ID_MONO.as_ptr().cast(),
+    name: PLUGIN_NAME_MONO.as_ptr().cast(),
     vendor: PLUGIN_VENDOR.as_ptr().cast(),
     url: PLUGIN_URL.as_ptr().cast(),
     manual_url: PLUGIN_URL.as_ptr().cast(),
     support_url: PLUGIN_URL.as_ptr().cast(),
     version: PLUGIN_VERSION.as_ptr().cast(),
     description: PLUGIN_DESCRIPTION.as_ptr().cast(),
-    features: FEATURES.0.as_ptr(),
+    features: FEATURES_MONO.0.as_ptr(),
+});
+
+static DESCRIPTOR_STEREO: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor {
+    clap_version: CLAP_VERSION,
+    id: PLUGIN_ID_STEREO.as_ptr().cast(),
+    name: PLUGIN_NAME_STEREO.as_ptr().cast(),
+    vendor: PLUGIN_VENDOR.as_ptr().cast(),
+    url: PLUGIN_URL.as_ptr().cast(),
+    manual_url: PLUGIN_URL.as_ptr().cast(),
+    support_url: PLUGIN_URL.as_ptr().cast(),
+    version: PLUGIN_VERSION.as_ptr().cast(),
+    description: PLUGIN_DESCRIPTION.as_ptr().cast(),
+    features: FEATURES_STEREO.0.as_ptr(),
 });
 
 #[derive(Debug)]
@@ -86,10 +107,6 @@ impl Default for SharedState {
 }
 
 impl SharedState {
-    fn _sample_rate(&self) -> f32 {
-        f64::from_bits(self.sample_rate_bits.load(Ordering::Acquire)) as f32
-    }
-
     fn set_host(&self, host: *const clap_host) {
         self.host.store(host.cast_mut(), Ordering::Release);
     }
@@ -97,6 +114,10 @@ impl SharedState {
     fn set_sample_rate(&self, sample_rate: f64) {
         self.sample_rate_bits
             .store(sample_rate.to_bits(), Ordering::Release);
+    }
+
+    fn _sample_rate(&self) -> f64 {
+        f64::from_bits(self.sample_rate_bits.load(Ordering::Acquire))
     }
 
     fn set_param_internal(&self, id: ParamId, value: f64, notify_host: bool) {
@@ -211,14 +232,14 @@ impl SharedState {
 }
 
 struct AudioProcessor {
-    dsp: Imager,
+    dsp: Delay,
     temp_left: Vec<f32>,
     temp_right: Vec<f32>,
 }
 
 impl AudioProcessor {
     fn new(sample_rate: f64, max_frames: u32) -> Self {
-        let mut dsp = Imager::default();
+        let mut dsp = Delay::default();
         dsp.set_sample_rate(sample_rate);
         Self {
             dsp,
@@ -244,6 +265,15 @@ impl AudioProcessor {
             self.temp_right.resize(frames, 0.0);
         }
 
+        // Read transport tempo for note-sync mode
+        let mut tempo: Option<f64> = None;
+        if let Some(transport) = process.transport() {
+            let flags = transport.flags();
+            if TransportFlags::HasTempo.is_set(flags) {
+                tempo = Some(transport.tempo());
+            }
+        }
+
         let inputs_count = process.audio_inputs_count();
         let outputs_count = process.audio_outputs_count();
 
@@ -256,13 +286,13 @@ impl AudioProcessor {
             self.dsp.process_stereo(
                 &mut self.temp_left[..frames],
                 &mut self.temp_right[..frames],
-                shared.params.get_enum(ParamId::Mode),
-                &ImagerParams {
-                    width: shared.params.get(ParamId::Width),
-                    focus: shared.params.get(ParamId::Focus),
-                    amount: shared.params.get(ParamId::Amount),
-                    resonance: shared.params.get(ParamId::Resonance),
-                    mix: shared.params.get(ParamId::Mix),
+                &crate::delay::dsp::DelayParams {
+                    time_mode: shared.params.get(ParamId::TimeMode),
+                    time_ms: shared.params.get(ParamId::TimeMs),
+                    time_note: shared.params.get(ParamId::TimeNote),
+                    feedback: shared.params.get(ParamId::Feedback),
+                    dry_wet: shared.params.get(ParamId::DryWet),
+                    tempo,
                 },
             );
 
@@ -277,17 +307,18 @@ impl AudioProcessor {
         } else if inputs_count >= 1 && outputs_count >= 1 {
             let input_port = process.audio_inputs(0);
             self.temp_left[..frames].copy_from_slice(input_port.data32(0));
+            self.temp_right[..frames].fill(0.0);
 
             self.dsp.process_stereo(
                 &mut self.temp_left[..frames],
                 &mut self.temp_right[..frames],
-                shared.params.get_enum(ParamId::Mode),
-                &ImagerParams {
-                    width: shared.params.get(ParamId::Width),
-                    focus: shared.params.get(ParamId::Focus),
-                    amount: shared.params.get(ParamId::Amount),
-                    resonance: shared.params.get(ParamId::Resonance),
-                    mix: shared.params.get(ParamId::Mix),
+                &crate::delay::dsp::DelayParams {
+                    time_mode: shared.params.get(ParamId::TimeMode),
+                    time_ms: shared.params.get(ParamId::TimeMs),
+                    time_note: shared.params.get(ParamId::TimeNote),
+                    feedback: shared.params.get(ParamId::Feedback),
+                    dry_wet: shared.params.get(ParamId::DryWet),
+                    tempo,
                 },
             );
 
@@ -305,10 +336,11 @@ struct PluginInstance {
     processor: AtomicPtr<AudioProcessor>,
     retired_processors: Mutex<Vec<*mut AudioProcessor>>,
     gui_bridge: Mutex<GuiBridge>,
+    channels: u32,
 }
 
 impl PluginInstance {
-    fn new(host: *const clap_host) -> Self {
+    fn new(host: *const clap_host, channels: u32) -> Self {
         let shared = Arc::new(SharedState::default());
         shared.set_host(host);
         Self {
@@ -317,6 +349,7 @@ impl PluginInstance {
             processor: AtomicPtr::new(null_mut()),
             retired_processors: Mutex::new(Vec::new()),
             gui_bridge: Mutex::new(GuiBridge::default()),
+            channels,
         }
     }
 }
@@ -348,26 +381,55 @@ fn copy_str_to_array<const N: usize>(source: &str, target: &mut [c_char; N]) {
 }
 
 fn param_text(id: ParamId, value: f64) -> String {
+    use crate::delay::params::NOTE_DIVISIONS;
     match id {
-        ParamId::Mode => match value.round() as i32 {
-            0 => "Mild".into(),
-            1 => "Wide".into(),
-            2 => "Aggressive".into(),
-            _ => format!("{value:.0}"),
-        },
-        _ => format!("{value:.2}"),
+        ParamId::TimeMode => {
+            if value >= 0.5 {
+                "Note".to_string()
+            } else {
+                "ms".to_string()
+            }
+        }
+        ParamId::TimeMs => format!("{value:.1} ms"),
+        ParamId::TimeNote => {
+            let idx = ((value.clamp(0.0, 1.0) * (NOTE_DIVISIONS.len() - 1) as f64).round()
+                as usize)
+                .min(NOTE_DIVISIONS.len() - 1);
+            NOTE_DIVISIONS[idx].0.to_string()
+        }
+        ParamId::Feedback | ParamId::DryWet => format!("{:.1}%", value * 100.0),
     }
 }
 
 fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
     match id {
-        ParamId::Mode => match text.to_ascii_lowercase().as_str() {
-            "mild" => Some(0.0),
-            "wide" => Some(1.0),
-            "aggressive" => Some(2.0),
+        ParamId::TimeMode => match text.trim() {
+            "ms" | "MS" | "Ms" => Some(0.0),
+            "note" | "Note" | "NOTE" => Some(1.0),
             _ => text.parse().ok(),
         },
-        _ => text.parse().ok(),
+        ParamId::TimeMs => {
+            let cleaned = text
+                .trim()
+                .trim_end_matches("ms")
+                .trim_end_matches("MS")
+                .trim();
+            cleaned.parse().ok()
+        }
+        ParamId::TimeNote => {
+            use crate::delay::params::NOTE_DIVISIONS;
+            let text = text.trim();
+            for (i, &(name, _)) in NOTE_DIVISIONS.iter().enumerate() {
+                if name.eq_ignore_ascii_case(text) {
+                    return Some(i as f64 / (NOTE_DIVISIONS.len() - 1) as f64);
+                }
+            }
+            text.parse().ok()
+        }
+        ParamId::Feedback | ParamId::DryWet => {
+            let cleaned = text.trim().trim_end_matches('%').trim();
+            cleaned.parse::<f64>().ok().map(|v| v / 100.0)
+        }
     }
 }
 
@@ -503,10 +565,14 @@ unsafe extern "C-unwind" fn plugin_process(
 unsafe extern "C-unwind" fn plugin_on_main_thread(_plugin: *const clap_plugin) {}
 
 unsafe extern "C-unwind" fn ext_audio_ports_count(
-    _plugin: *const clap_plugin,
+    plugin: *const clap_plugin,
     _is_input: bool,
 ) -> u32 {
-    2
+    if plugin.is_null() {
+        return 0;
+    }
+    let instance = unsafe { instance(plugin) };
+    instance.channels
 }
 
 unsafe extern "C-unwind" fn ext_audio_ports_get(
@@ -515,7 +581,11 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
     _is_input: bool,
     info: *mut clap_audio_port_info,
 ) -> bool {
-    if plugin.is_null() || index >= 2 || info.is_null() {
+    if plugin.is_null() || info.is_null() {
+        return false;
+    }
+    let instance = unsafe { instance(plugin) };
+    if index >= instance.channels {
         return false;
     }
     let info = unsafe { &mut *info };
@@ -524,7 +594,13 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
     info.channel_count = 1;
     info.port_type = CLAP_PORT_MONO.as_ptr();
     info.in_place_pair = CLAP_INVALID_ID;
-    let name = if index == 0 { "Left" } else { "Right" };
+    let name = if instance.channels == 1 {
+        "Mono"
+    } else if index == 0 {
+        "Left"
+    } else {
+        "Right"
+    };
     copy_str_to_array(name, &mut info.name);
     true
 }
@@ -707,7 +783,8 @@ static TAIL_EXT: clap_plugin_tail = clap_plugin_tail {
 };
 
 unsafe extern "C-unwind" fn ext_tail_get(_plugin: *const clap_plugin) -> u32 {
-    0
+    // Maximum delay is 5 seconds. At 192kHz that's 960,000 samples.
+    960_000
 }
 
 unsafe extern "C-unwind" fn ext_gui_is_api_supported(
@@ -719,7 +796,7 @@ unsafe extern "C-unwind" fn ext_gui_is_api_supported(
         return false;
     }
     let api = unsafe { CStr::from_ptr(api) };
-    crate::imager::gui::is_api_supported(api, is_floating)
+    crate::delay::gui::is_api_supported(api, is_floating)
 }
 
 unsafe extern "C-unwind" fn ext_gui_get_preferred_api(
@@ -730,7 +807,7 @@ unsafe extern "C-unwind" fn ext_gui_get_preferred_api(
     if api.is_null() || is_floating.is_null() {
         return false;
     }
-    let preferred = crate::imager::gui::preferred_api();
+    let preferred = crate::delay::gui::preferred_api();
     unsafe {
         *api = preferred.as_ptr();
         *is_floating = false;
@@ -779,8 +856,8 @@ unsafe extern "C-unwind" fn ext_gui_get_size(
         return false;
     }
     unsafe {
-        *width = crate::imager::gui::EDITOR_WIDTH;
-        *height = crate::imager::gui::EDITOR_HEIGHT;
+        *width = crate::delay::gui::EDITOR_WIDTH;
+        *height = crate::delay::gui::EDITOR_HEIGHT;
     }
     true
 }
@@ -827,7 +904,7 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     let parent = if api == CLAP_WINDOW_API_X11 {
         #[cfg(all(unix, not(target_os = "macos")))]
         {
-            crate::imager::gui::ParentWindowHandle::X11(unsafe { window.clap_window__.x11 })
+            crate::delay::gui::ParentWindowHandle::X11(unsafe { window.clap_window__.x11 })
         }
         #[cfg(not(all(unix, not(target_os = "macos"))))]
         {
@@ -836,7 +913,7 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     } else if api == CLAP_WINDOW_API_COCOA {
         #[cfg(target_os = "macos")]
         {
-            crate::imager::gui::ParentWindowHandle::Cocoa(unsafe { window.clap_window__.cocoa })
+            crate::delay::gui::ParentWindowHandle::Cocoa(unsafe { window.clap_window__.cocoa })
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -845,7 +922,7 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     } else if api == CLAP_WINDOW_API_WIN32 {
         #[cfg(target_os = "windows")]
         {
-            crate::imager::gui::ParentWindowHandle::Win32(unsafe { window.clap_window__.win32 })
+            crate::delay::gui::ParentWindowHandle::Win32(unsafe { window.clap_window__.win32 })
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -935,14 +1012,21 @@ unsafe extern "C-unwind" fn factory_get_plugin_count(_factory: *const clap_plugi
     1
 }
 
-unsafe extern "C-unwind" fn factory_get_plugin_descriptor(
+unsafe extern "C-unwind" fn factory_get_plugin_descriptor_mono(
     _factory: *const clap_plugin_factory,
     _index: u32,
 ) -> *const clap_plugin_descriptor {
-    &raw const DESCRIPTOR.0
+    &raw const DESCRIPTOR_MONO.0
 }
 
-unsafe extern "C-unwind" fn factory_create_plugin(
+unsafe extern "C-unwind" fn factory_get_plugin_descriptor_stereo(
+    _factory: *const clap_plugin_factory,
+    _index: u32,
+) -> *const clap_plugin_descriptor {
+    &raw const DESCRIPTOR_STEREO.0
+}
+
+unsafe extern "C-unwind" fn factory_create_plugin_mono(
     _factory: *const clap_plugin_factory,
     host: *const clap_host,
     plugin_id: *const c_char,
@@ -951,12 +1035,12 @@ unsafe extern "C-unwind" fn factory_create_plugin(
         return null();
     }
     let plugin_id = unsafe { CStr::from_ptr(plugin_id) };
-    if plugin_id != unsafe { CStr::from_ptr(PLUGIN_ID.as_ptr().cast()) } {
+    if plugin_id != unsafe { CStr::from_ptr(PLUGIN_ID_MONO.as_ptr().cast()) } {
         return null();
     }
-    let instance = Box::new(PluginInstance::new(host));
+    let instance = Box::new(PluginInstance::new(host, 1));
     let plugin = Box::new(clap_plugin {
-        desc: &raw const DESCRIPTOR.0,
+        desc: &raw const DESCRIPTOR_MONO.0,
         plugin_data: Box::into_raw(instance).cast(),
         init: Some(plugin_init),
         destroy: Some(plugin_destroy),
@@ -972,23 +1056,74 @@ unsafe extern "C-unwind" fn factory_create_plugin(
     Box::into_raw(plugin)
 }
 
-static FACTORY: clap_plugin_factory = clap_plugin_factory {
+unsafe extern "C-unwind" fn factory_create_plugin_stereo(
+    _factory: *const clap_plugin_factory,
+    host: *const clap_host,
+    plugin_id: *const c_char,
+) -> *const clap_plugin {
+    if host.is_null() || plugin_id.is_null() {
+        return null();
+    }
+    let plugin_id = unsafe { CStr::from_ptr(plugin_id) };
+    if plugin_id != unsafe { CStr::from_ptr(PLUGIN_ID_STEREO.as_ptr().cast()) } {
+        return null();
+    }
+    let instance = Box::new(PluginInstance::new(host, 2));
+    let plugin = Box::new(clap_plugin {
+        desc: &raw const DESCRIPTOR_STEREO.0,
+        plugin_data: Box::into_raw(instance).cast(),
+        init: Some(plugin_init),
+        destroy: Some(plugin_destroy),
+        activate: Some(plugin_activate),
+        deactivate: Some(plugin_deactivate),
+        start_processing: Some(plugin_start_processing),
+        stop_processing: Some(plugin_stop_processing),
+        reset: Some(plugin_reset),
+        process: Some(plugin_process),
+        get_extension: Some(plugin_get_extension),
+        on_main_thread: Some(plugin_on_main_thread),
+    });
+    Box::into_raw(plugin)
+}
+
+static FACTORY_MONO: clap_plugin_factory = clap_plugin_factory {
     get_plugin_count: Some(factory_get_plugin_count),
-    get_plugin_descriptor: Some(factory_get_plugin_descriptor),
-    create_plugin: Some(factory_create_plugin),
+    get_plugin_descriptor: Some(factory_get_plugin_descriptor_mono),
+    create_plugin: Some(factory_create_plugin_mono),
+};
+
+static FACTORY_STEREO: clap_plugin_factory = clap_plugin_factory {
+    get_plugin_count: Some(factory_get_plugin_count),
+    get_plugin_descriptor: Some(factory_get_plugin_descriptor_stereo),
+    create_plugin: Some(factory_create_plugin_stereo),
 };
 
 /// # Safety
 /// Caller must ensure valid host pointer.
-pub unsafe fn descriptor_ptr() -> *const clap_plugin_descriptor {
-    &raw const DESCRIPTOR.0
+pub unsafe fn descriptor_mono_ptr() -> *const clap_plugin_descriptor {
+    &raw const DESCRIPTOR_MONO.0
 }
 
 /// # Safety
 /// Caller must ensure valid host and plugin_id pointers.
-pub unsafe fn create_plugin(
+pub unsafe fn create_plugin_mono(
     host: *const clap_host,
     plugin_id: *const c_char,
 ) -> *const clap_plugin {
-    unsafe { factory_create_plugin(&raw const FACTORY, host, plugin_id) }
+    unsafe { factory_create_plugin_mono(&raw const FACTORY_MONO, host, plugin_id) }
+}
+
+/// # Safety
+/// Caller must ensure valid host pointer.
+pub unsafe fn descriptor_stereo_ptr() -> *const clap_plugin_descriptor {
+    &raw const DESCRIPTOR_STEREO.0
+}
+
+/// # Safety
+/// Caller must ensure valid host and plugin_id pointers.
+pub unsafe fn create_plugin_stereo(
+    host: *const clap_host,
+    plugin_id: *const c_char,
+) -> *const clap_plugin {
+    unsafe { factory_create_plugin_stereo(&raw const FACTORY_STEREO, host, plugin_id) }
 }

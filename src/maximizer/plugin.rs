@@ -34,7 +34,7 @@ use crate::maximizer::{
     state::PluginState,
 };
 
-const PLUGIN_ID: &[u8] = b"com.maolan.maximizer.stereo\0";
+const PLUGIN_ID: &[u8] = b"rs.maolan.maximizer.stereo\0";
 const PLUGIN_NAME: &[u8] = b"Maolan Maximizer\0";
 const PLUGIN_VENDOR: &[u8] = b"Maolan\0";
 const PLUGIN_URL: &[u8] = b"\0";

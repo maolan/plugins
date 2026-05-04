@@ -35,9 +35,9 @@ use crate::compressor::{
     state::PluginState,
 };
 
-const PLUGIN_ID_MONO: &[u8] = b"com.maolan.compressor.mono\0";
+const PLUGIN_ID_MONO: &[u8] = b"rs.maolan.compressor.mono\0";
 const PLUGIN_NAME_MONO: &[u8] = b"Maolan Compressor Mono\0";
-const PLUGIN_ID_STEREO: &[u8] = b"com.maolan.compressor.stereo\0";
+const PLUGIN_ID_STEREO: &[u8] = b"rs.maolan.compressor.stereo\0";
 const PLUGIN_NAME_STEREO: &[u8] = b"Maolan Compressor Stereo\0";
 const PLUGIN_VENDOR: &[u8] = b"Maolan\0";
 const PLUGIN_URL: &[u8] = b"\0";

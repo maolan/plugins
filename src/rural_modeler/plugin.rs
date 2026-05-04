@@ -44,7 +44,7 @@ use crate::rural_modeler::{
     state::PluginState,
 };
 
-const PLUGIN_ID: &[u8] = b"com.ruralmodeler.nam\0";
+const PLUGIN_ID: &[u8] = b"rs.maolan.ruralmodeler\0";
 const PLUGIN_NAME: &[u8] = b"Rural Modeler\0";
 const PLUGIN_VENDOR: &[u8] = b"Rural Modeler\0";
 const PLUGIN_URL: &[u8] = b"\0";

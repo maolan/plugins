@@ -16,18 +16,18 @@ use clap_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{column, container, row, scrollable, text},
+    widget::{column, container, row, text},
 };
 use maolan_widgets::arch_slider::arch_slider;
 use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
 
-use crate::imager::{
+use crate::reverb::{
     params::{PARAMS, ParamId},
     plugin::SharedState,
 };
 
-pub const EDITOR_WIDTH: u32 = 800;
-pub const EDITOR_HEIGHT: u32 = 420;
+pub const EDITOR_WIDTH: u32 = 540;
+pub const EDITOR_HEIGHT: u32 = 340;
 
 pub fn preferred_api() -> &'static CStr {
     #[cfg(target_os = "windows")]
@@ -86,7 +86,6 @@ unsafe impl HasRawWindowHandle for ParentWindowHandle {
 #[allow(clippy::enum_variant_names)]
 pub enum Message {
     SetParam(ParamId, f32),
-    SetMode(u8),
 }
 
 struct State {
@@ -100,53 +99,50 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::SetParam(id, value) => state.shared.set_param(id, value as f64),
-        Message::SetMode(mode) => state.shared.set_param(ParamId::Mode, mode as f64),
     }
     Task::none()
 }
 
 fn view(state: &State) -> Element<'_, Message> {
-    let p = |id: ParamId| state.shared.params.get(id) as f32;
+    fn knob<'a>(id: ParamId, label: &'a str, state: &'a State) -> Element<'a, Message> {
+        let value = state.shared.params.get(id) as f32;
+        let def = &PARAMS[id.as_index()];
+        let slider = arch_slider(def.min as f32..=def.max as f32, value, move |v| {
+            Message::SetParam(id, v)
+        })
+        .step(0.01)
+        .double_click_reset(def.default as f32)
+        .fill_from_start()
+        .width(Length::Fixed(86.0))
+        .height(Length::Fixed(86.0));
 
-    let mut content = column![text("Maolan Imager (Stereo)").size(24)]
-        .spacing(16)
-        .align_x(Alignment::Start);
+        let value_text = format!("{value:.2}");
 
-    let mode = state.shared.params.get_enum(ParamId::Mode).min(2);
-    content = content.push(
+        container(
+            column![text(label).size(14), slider, text(value_text).size(13)]
+                .spacing(4)
+                .align_x(Alignment::Center),
+        )
+        .width(Length::Fixed(96.0))
+        .into()
+    }
+
+    let content = column![
+        text("Maolan Reverb (Stereo)").size(24),
         row![
-            text("Algorithm").size(16),
-            maolan_baseview::iced::widget::radio("Mild", 0u8, Some(mode as u8), Message::SetMode),
-            maolan_baseview::iced::widget::radio("Wide", 1u8, Some(mode as u8), Message::SetMode),
-            maolan_baseview::iced::widget::radio(
-                "Aggressive",
-                2u8,
-                Some(mode as u8),
-                Message::SetMode
-            ),
+            knob(ParamId::Replace, "Replace", state),
+            knob(ParamId::Brightness, "Brightness", state),
+            knob(ParamId::Detune, "Detune", state),
+            knob(ParamId::Bigness, "Bigness", state),
+            knob(ParamId::DryWet, "Dry/Wet", state),
         ]
-        .spacing(12)
+        .spacing(8)
         .align_y(Alignment::Center),
-    );
+    ]
+    .spacing(16)
+    .align_x(Alignment::Start);
 
-    content = content.push(
-        row![
-            knob("Width", ParamId::Width, p(ParamId::Width), "", 0.01),
-            knob("Focus", ParamId::Focus, p(ParamId::Focus), "", 0.01),
-            knob("Amount", ParamId::Amount, p(ParamId::Amount), "", 0.01),
-            knob(
-                "Resonance",
-                ParamId::Resonance,
-                p(ParamId::Resonance),
-                "",
-                0.01
-            ),
-            knob("Mix", ParamId::Mix, p(ParamId::Mix), "", 0.01),
-        ]
-        .spacing(16),
-    );
-
-    container(scrollable(content))
+    container(content)
         .padding(24)
         .width(Length::Fill)
         .height(Length::Fill)
@@ -157,38 +153,6 @@ fn view(state: &State) -> Element<'_, Message> {
 
 fn theme(_state: &State) -> Theme {
     Theme::TokyoNight
-}
-
-fn knob(
-    label: &'static str,
-    id: ParamId,
-    value: f32,
-    units: &'static str,
-    step: f32,
-) -> Element<'static, Message> {
-    let def = PARAMS[id.as_index()];
-    let slider = arch_slider(def.min as f32..=def.max as f32, value, move |v| {
-        Message::SetParam(id, v)
-    })
-    .step(step)
-    .double_click_reset(def.default as f32)
-    .fill_from_start()
-    .width(Length::Fixed(86.0))
-    .height(Length::Fixed(86.0));
-
-    let value_text = if units.is_empty() {
-        format!("{value:.2}")
-    } else {
-        format!("{value:.1} {units}")
-    };
-
-    container(
-        column![text(label).size(14), slider, text(value_text).size(13)]
-            .spacing(4)
-            .align_x(Alignment::Center),
-    )
-    .width(Length::Fixed(96.0))
-    .into()
 }
 
 fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {
@@ -203,24 +167,13 @@ struct AnyWindowHandle {
 
 unsafe impl Send for AnyWindowHandle {}
 
+#[derive(Default)]
 pub struct GuiBridge {
     created: bool,
     floating: bool,
     shared: Option<Arc<SharedState>>,
     floating_open: Arc<AtomicBool>,
     window_handle: Option<AnyWindowHandle>,
-}
-
-impl Default for GuiBridge {
-    fn default() -> Self {
-        Self {
-            created: false,
-            floating: false,
-            shared: None,
-            floating_open: Arc::new(AtomicBool::new(false)),
-            window_handle: None,
-        }
-    }
 }
 
 impl GuiBridge {
@@ -246,13 +199,15 @@ impl GuiBridge {
             return false;
         }
         if self.floating {
-            self.shared = Some(shared);
+            return false;
+        }
+        if self.window_handle.is_some() {
             return true;
         }
 
         let settings = maolan_baseview::iced::IcedBaseviewSettings {
             window: maolan_baseview::iced::baseview::WindowOpenOptions {
-                title: String::from("Maolan Imager"),
+                title: String::from("Maolan Reverb"),
                 size: maolan_baseview::iced::baseview::Size::new(
                     EDITOR_WIDTH as f64,
                     EDITOR_HEIGHT as f64,
@@ -280,37 +235,35 @@ impl GuiBridge {
         if !self.created {
             return false;
         }
-        if self.floating {
-            if self.floating_open.swap(true, Ordering::AcqRel) {
-                return true;
-            }
-            let Some(shared) = self.shared.clone() else {
-                self.floating_open.store(false, Ordering::Release);
-                return false;
-            };
-            let open_flag = self.floating_open.clone();
-            thread::spawn(move || {
-                let settings = maolan_baseview::iced::IcedBaseviewSettings {
-                    window: maolan_baseview::iced::baseview::WindowOpenOptions {
-                        title: String::from("Maolan Imager"),
-                        size: maolan_baseview::iced::baseview::Size::new(
-                            EDITOR_WIDTH as f64,
-                            EDITOR_HEIGHT as f64,
-                        ),
-                        scale:
-                            maolan_baseview::iced::baseview::WindowScalePolicy::SystemScaleFactor,
-                    },
-                    ignore_non_modifier_keys: false,
-                    always_redraw: false,
-                };
-                maolan_baseview::iced::shell::open_blocking(
-                    settings,
-                    maolan_baseview::iced::PollSubNotifier::new(),
-                    move || build_app(shared),
-                );
-                open_flag.store(false, Ordering::Release);
-            });
+        if !self.floating {
+            return self.window_handle.is_some();
         }
+        if self.window_handle.is_some() {
+            return true;
+        }
+        let shared = self.shared.clone().unwrap();
+        let open_flag = self.floating_open.clone();
+        open_flag.store(true, Ordering::Release);
+        thread::spawn(move || {
+            let settings = maolan_baseview::iced::IcedBaseviewSettings {
+                window: maolan_baseview::iced::baseview::WindowOpenOptions {
+                    title: String::from("Maolan Reverb"),
+                    size: maolan_baseview::iced::baseview::Size::new(
+                        EDITOR_WIDTH as f64,
+                        EDITOR_HEIGHT as f64,
+                    ),
+                    scale: maolan_baseview::iced::baseview::WindowScalePolicy::SystemScaleFactor,
+                },
+                ignore_non_modifier_keys: false,
+                always_redraw: false,
+            };
+            maolan_baseview::iced::shell::open_blocking(
+                settings,
+                maolan_baseview::iced::PollSubNotifier::new(),
+                move || build_app(shared),
+            );
+            open_flag.store(false, Ordering::Release);
+        });
         true
     }
 

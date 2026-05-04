@@ -35,9 +35,9 @@ use crate::eq::parametric::dsp::ParametricEqualizer;
 use crate::eq::parametric::gui::{EDITOR_HEIGHT, EDITOR_WIDTH, GuiBridge};
 use crate::eq::parametric::params::{PARAMS, ParamId};
 
-const PLUGIN_ID_MONO: &[u8] = b"com.maolan.equalizer.parametric.mono\0";
+const PLUGIN_ID_MONO: &[u8] = b"rs.maolan.equalizer.parametric.mono\0";
 const PLUGIN_NAME_MONO: &[u8] = b"Maolan Parametric EQ Mono\0";
-const PLUGIN_ID_STEREO: &[u8] = b"com.maolan.equalizer.parametric.stereo\0";
+const PLUGIN_ID_STEREO: &[u8] = b"rs.maolan.equalizer.parametric.stereo\0";
 const PLUGIN_NAME_STEREO: &[u8] = b"Maolan Parametric EQ Stereo\0";
 const PLUGIN_VENDOR: &[u8] = b"Maolan\0";
 const PLUGIN_URL: &[u8] = b"\0";
