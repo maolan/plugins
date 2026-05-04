@@ -86,3 +86,15 @@ impl ParamStore {
         self.values[id.as_index()].store(value.to_bits(), Ordering::Release);
     }
 }
+
+impl crate::common::ClapParamId for ParamId {
+    const COUNT: usize = Self::COUNT;
+
+    fn as_index(self) -> usize {
+        self.as_index()
+    }
+
+    fn from_raw(id: u32) -> Option<Self> {
+        Self::from_raw(id)
+    }
+}

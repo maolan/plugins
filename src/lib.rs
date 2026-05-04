@@ -10,6 +10,7 @@ use clap_clap::ffi::{
     clap_plugin_entry, clap_plugin_factory,
 };
 
+pub mod common;
 pub mod compressor;
 pub mod delay;
 pub mod drust;
@@ -29,7 +30,7 @@ struct PluginApi {
     create: CreateFn,
 }
 
-static PLUGINS: [PluginApi; 15] = [
+static PLUGINS: [PluginApi; 16] = [
     PluginApi {
         descriptor: eq::parametric::clap_mono_descriptor_ptr,
         create: eq::parametric::clap_mono_create_plugin,
@@ -79,8 +80,12 @@ static PLUGINS: [PluginApi; 15] = [
         create: rural_modeler::clap_create_plugin,
     },
     PluginApi {
-        descriptor: reverb::clap_descriptor_ptr,
-        create: reverb::clap_create_plugin,
+        descriptor: reverb::clap_mono_descriptor_ptr,
+        create: reverb::clap_mono_create_plugin,
+    },
+    PluginApi {
+        descriptor: reverb::clap_stereo_descriptor_ptr,
+        create: reverb::clap_stereo_create_plugin,
     },
     PluginApi {
         descriptor: delay::clap_mono_descriptor_ptr,

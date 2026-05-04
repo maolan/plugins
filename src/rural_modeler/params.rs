@@ -276,3 +276,15 @@ impl ParamStore {
         self.get(id).round().clamp(0.0, 1024.0) as u32
     }
 }
+
+impl crate::common::ClapParamId for ParamId {
+    const COUNT: usize = Self::COUNT;
+
+    fn as_index(self) -> usize {
+        self.as_index()
+    }
+
+    fn from_raw(id: u32) -> Option<Self> {
+        Self::from_raw(id)
+    }
+}

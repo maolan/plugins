@@ -38,6 +38,18 @@ impl ParamId {
     }
 }
 
+impl crate::common::ClapParamId for ParamId {
+    const COUNT: usize = 5;
+
+    fn as_index(self) -> usize {
+        self as usize
+    }
+
+    fn from_raw(id: u32) -> Option<Self> {
+        ParamId::from_raw(id)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ParamDef {
     pub id: ParamId,

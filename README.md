@@ -17,7 +17,7 @@ theme.
 | **Maolan Imager** | `rs.maolan.imager.stereo` | Stereo | Stereo width processor with Mild, Wide, and Aggressive algorithms |
 | **Maolan Maximizer** | `rs.maolan.maximizer.stereo` | Stereo | Adaptive clipper/limiter with Vintage and Modern variants |
 | **Maolan Monitoring** | `rs.maolan.monitoring.stereo` | Stereo | Monitoring toolbox with 17 reference modes |
-| **Maolan Reverb** | `rs.maolan.reverb.stereo` | Stereo | Stereo reverb based on Airwindows Reverb |
+| **Maolan Reverb** | `rs.maolan.reverb.{mono,stereo}` | Mono / Stereo | Stereo reverb |
 | **Maolan Saturator** | `rs.maolan.saturator.stereo` | Stereo | Waveshape saturation with sine-based distortion |
 | **Drust** | `rs.maolan.drust` | 16× Mono | DrumGizmo-inspired drum sampler |
 | **Rural Modeler** | `rs.maolan.ruralmodeler` | Mono | Neural Amp Modeler with IR convolution |

@@ -9,25 +9,26 @@ use std::{
 };
 
 use clap_clap::{
-    events::{EventBuilder, InputEvents, OutputEvents, ParamValue, TransportFlags},
+    events::{InputEvents, OutputEvents, TransportFlags},
     ffi::{
-        CLAP_AUDIO_PORT_IS_MAIN, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE,
-        CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL,
-        CLAP_INVALID_ID, CLAP_PARAM_REQUIRES_PROCESS, CLAP_PLUGIN_FEATURE_AUDIO_EFFECT,
-        CLAP_PLUGIN_FEATURE_MONO, CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_MONO,
-        CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_COCOA, CLAP_WINDOW_API_WIN32,
-        CLAP_WINDOW_API_X11, clap_audio_port_info, clap_gui_resize_hints, clap_host, clap_host_gui,
-        clap_host_params, clap_host_state, clap_id, clap_istream, clap_ostream, clap_param_info,
-        clap_plugin, clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_factory,
-        clap_plugin_gui, clap_plugin_params, clap_plugin_state, clap_plugin_tail, clap_process,
-        clap_process_status, clap_window,
+        CLAP_AUDIO_PORT_IS_MAIN, CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI, CLAP_EXT_PARAMS,
+        CLAP_EXT_STATE, CLAP_EXT_TAIL, CLAP_INVALID_ID, CLAP_PARAM_REQUIRES_PROCESS,
+        CLAP_PLUGIN_FEATURE_AUDIO_EFFECT, CLAP_PLUGIN_FEATURE_MONO, CLAP_PLUGIN_FEATURE_STEREO,
+        CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_COCOA,
+        CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info, clap_gui_resize_hints,
+        clap_host, clap_host_gui, clap_host_params, clap_host_state, clap_id, clap_istream,
+        clap_ostream, clap_param_info, clap_plugin, clap_plugin_audio_ports,
+        clap_plugin_descriptor, clap_plugin_factory, clap_plugin_gui, clap_plugin_params,
+        clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status, clap_window,
     },
-    id::ClapId,
     process::Process,
     stream::{IStream, OStream},
 };
 use parking_lot::Mutex;
 
+use crate::common::{
+    SharedStateExt, apply_param_events, copy_str_to_array, emit_pending_param_events_to_host,
+};
 use crate::delay::{
     dsp::Delay,
     gui::GuiBridge,
@@ -231,6 +232,27 @@ impl SharedState {
     }
 }
 
+impl SharedStateExt<ParamId> for SharedState {
+    fn params_get(&self, id: ParamId) -> f64 {
+        self.params.get(id)
+    }
+    fn has_local_param_override(&self, id: ParamId) -> bool {
+        self.has_local_param_override(id)
+    }
+    fn clear_local_param_override(&self, id: ParamId) {
+        self.clear_local_param_override(id);
+    }
+    fn set_param_from_host(&self, id: ParamId, value: f64) {
+        self.set_param_from_host(id, value);
+    }
+    fn take_pending_param_notifications(&self) -> u32 {
+        self.take_pending_param_notifications()
+    }
+    fn requeue_pending_param_notifications(&self, bits: u32) {
+        self.requeue_pending_param_notifications(bits);
+    }
+}
+
 struct AudioProcessor {
     dsp: Delay,
     temp_left: Vec<f32>,
@@ -253,7 +275,7 @@ impl AudioProcessor {
     }
 
     fn process(&mut self, shared: &SharedState, process: &mut Process) -> clap_process_status {
-        apply_param_events(shared, &process.in_events());
+        apply_param_events(shared, &process.in_events(), sanitize_param_value);
         {
             let mut out_events = process.out_events();
             emit_pending_param_events_to_host(shared, &mut out_events);
@@ -373,13 +395,6 @@ unsafe fn instance<'a>(plugin: *const clap_plugin) -> &'a mut PluginInstance {
     unsafe { &mut *((*plugin).plugin_data as *mut PluginInstance) }
 }
 
-fn copy_str_to_array<const N: usize>(source: &str, target: &mut [c_char; N]) {
-    target.fill(0);
-    for (dst, src) in target.iter_mut().zip(source.as_bytes().iter().copied()) {
-        *dst = src as c_char;
-    }
-}
-
 fn param_text(id: ParamId, value: f64) -> String {
     use crate::delay::params::NOTE_DIVISIONS;
     match id {
@@ -431,56 +446,6 @@ fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
             cleaned.parse::<f64>().ok().map(|v| v / 100.0)
         }
     }
-}
-
-fn apply_param_events(shared: &SharedState, events: &InputEvents<'_>) {
-    for index in 0..events.size() {
-        let header = events.get(index);
-        if header.space_id() != CLAP_CORE_EVENT_SPACE_ID {
-            continue;
-        }
-        if header.r#type() != CLAP_EVENT_PARAM_VALUE as u16 {
-            continue;
-        }
-        if let Ok(param) = header.param_value() {
-            let raw: u32 = param.param_id().into();
-            if let Some(id) = ParamId::from_raw(raw) {
-                let incoming = sanitize_param_value(id, param.value());
-                if shared.has_local_param_override(id) {
-                    let current = shared.params.get(id);
-                    if (incoming - current).abs() > 1.0e-9 {
-                        continue;
-                    }
-                    shared.clear_local_param_override(id);
-                }
-                shared.set_param_from_host(id, incoming);
-            }
-        }
-    }
-}
-
-fn emit_pending_param_events_to_host(shared: &SharedState, out_events: &mut OutputEvents<'_>) {
-    let pending = shared.take_pending_param_notifications();
-    if pending == 0 {
-        return;
-    }
-
-    let mut failed = 0_u32;
-    for id in ParamId::all() {
-        let bit = 1_u32 << (id.as_index() as u32);
-        if pending & bit == 0 {
-            continue;
-        }
-        let event_builder = ParamValue::build()
-            .param_id(ClapId::from(id as u16))
-            .value(shared.params.get(id));
-        let event = event_builder.event();
-        if out_events.try_push(event).is_err() {
-            failed |= bit;
-        }
-    }
-
-    shared.requeue_pending_param_notifications(failed);
 }
 
 unsafe extern "C-unwind" fn plugin_init(plugin: *const clap_plugin) -> bool {
@@ -715,7 +680,7 @@ unsafe extern "C-unwind" fn ext_params_flush(
     let instance = unsafe { instance(plugin) };
     if !in_events.is_null() {
         let input = unsafe { InputEvents::new_unchecked(&*in_events) };
-        apply_param_events(&instance.shared, &input);
+        apply_param_events(&instance.shared, &input, sanitize_param_value);
     }
     if !out_events.is_null() {
         let mut output = unsafe { OutputEvents::new_unchecked(&*out_events) };
