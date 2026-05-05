@@ -1,3 +1,4 @@
+pub mod modulated_delay;
 pub mod param_events;
 
 pub use param_events::{

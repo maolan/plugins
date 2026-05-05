@@ -11,6 +11,7 @@ theme.
 | Plugin | ID | I/O | Description |
 |--------|-----|-----|-------------|
 | **Maolan Compressor** | `rs.maolan.compressor.{mono,stereo}` | Mono / Stereo | 4-band multiband compressor with lookahead and sidechain boost |
+| **Maolan Bandwidth** | `rs.maolan.bandwidth` | Stereo | Tri-band M/S spatial processor |
 | **Maolan Delay** | `rs.maolan.delay.{mono,stereo}` | Mono / Stereo | Delay with ms / note-sync modes and smooth chasing |
 | **Maolan DeEsser** | `rs.maolan.deesser.stereo` | Stereo | Sibilance reduction processor |
 | **Maolan EQ — Parametric** | `rs.maolan.equalizer.parametric.{mono,stereo}` | Mono / Stereo | 32-band parametric EQ with peaking biquad filters |
@@ -75,6 +76,43 @@ time changes.
 1/4d, 1/8d
 
 In **Note** mode the plugin reads the host BPM from the CLAP transport each process call.
+
+---
+
+## Maolan Bandwidth
+
+A tri-band M/S spatial processor with psychoacoustic decorrelation. Splits the stereo signal
+into three frequency bands using LR4 Linkwitz-Riley crossovers (300 Hz and 5 kHz), processes
+each band in the mid/side domain with all-pass diffusion, band-specific saturation, and a
+subtle global side-channel chorus, then recombines with energy-compensated summation and a
+dry/wet mix control.
+
+**Parameters**
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Low Width | 0.0 … 1.0 | 0.0 | Low-band side gain with 100 Hz side HPF |
+| Mid Width | 0.0 … 1.0 | 0.0 | Mid-band all-pass diffusion + side saturation |
+| High Width | 0.0 … 1.0 | 0.0 | High-band all-pass diffusion + side shelf |
+| Mix | 0.0 … 1.0 | 1.0 | Dry/wet blend (0 = bypass, 1 = full effect) |
+
+**Band processing**
+- **Low (< 300 Hz):** Side gain boost with a 100 Hz high-pass (12 dB/oct) on the side channel to
+  keep sub frequencies mono-compatible. Bass stays clean — no saturation.
+- **Mid (300 Hz – 5 kHz):** 3-stage all-pass cascade on left and right with offset coefficients
+  to generate stereo width from mono sources through phase decorrelation. Side channel receives
+  subtle `tanh` saturation (1.5× drive) before M/S decode, adding analog-style harmonic density.
+- **High (> 5 kHz):** 3-stage all-pass on left and right with different coefficients, then M/S
+  encode. The side channel passes through a 0–+3 dB high-shelf boost above 10 kHz for shimmer
+  and air, followed by subtle `tanh` saturation for density.
+- **Global side chorus:** After band summation, the global side signal passes through a modulated
+  delay (0.5 Hz LFO, 0.5 ms depth) for a ~3-cent pitch shimmer that adds an enveloping 3D feel
+  without comb filtering. Fully mono-compatible — the effect cancels when summed to mono.
+- **Dry/wet mix:** Blend between the original input and the fully processed + chorused signal.
+- **Energy compensation:** M/S is encoded with the unitary transform (1/√2). Mid gain is scaled
+  by `√(2 − side_gain²)` so that `M² + S²` stays constant — no loudness illusion when widening.
+- **Phase compensation:** The low band passes through an allpass filter matching the 5 kHz
+  crossover phase, ensuring flat magnitude when the three bands are recombined.
 
 ---
 
