@@ -175,18 +175,8 @@ impl Imager {
         self.imager_mild.reset();
     }
 
-    pub fn process_stereo(
-        &mut self,
-        left: &mut [f32],
-        right: &mut [f32],
-        params: &ImagerParams,
-    ) {
-        self.imager_mild.process_stereo(
-            left,
-            right,
-            params.width,
-            params.focus,
-            params.amount,
-        );
+    pub fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32], params: &ImagerParams) {
+        self.imager_mild
+            .process_stereo(left, right, params.width, params.focus, params.amount);
     }
 }

@@ -1,8 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use clap_clap::ffi::{
-    CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_REQUIRES_PROCESS,
-};
+use clap_clap::ffi::{CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_REQUIRES_PROCESS};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
@@ -16,11 +14,7 @@ impl ParamId {
     pub const COUNT: usize = 3;
 
     pub const fn all() -> [ParamId; Self::COUNT] {
-        [
-            ParamId::Width,
-            ParamId::Focus,
-            ParamId::Amount,
-        ]
+        [ParamId::Width, ParamId::Focus, ParamId::Amount]
     }
 
     pub const fn as_index(self) -> usize {

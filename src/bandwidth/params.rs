@@ -16,7 +16,13 @@ impl ParamId {
     pub const COUNT: usize = 5;
 
     pub const fn all() -> [ParamId; Self::COUNT] {
-        [ParamId::Low, ParamId::Mid, ParamId::High, ParamId::Depth, ParamId::Mix]
+        [
+            ParamId::Low,
+            ParamId::Mid,
+            ParamId::High,
+            ParamId::Depth,
+            ParamId::Mix,
+        ]
     }
 
     pub const fn as_index(self) -> usize {

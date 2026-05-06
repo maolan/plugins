@@ -23,6 +23,7 @@ pub mod monitoring;
 pub mod reverb;
 pub mod rural_modeler;
 pub mod saturator;
+pub mod widener;
 
 type DescriptorFn = unsafe fn() -> *const clap_plugin_descriptor;
 type CreateFn = unsafe fn(*const clap_host, *const c_char) -> *const clap_plugin;
@@ -32,7 +33,7 @@ struct PluginApi {
     create: CreateFn,
 }
 
-static PLUGINS: [PluginApi; 18] = [
+static PLUGINS: [PluginApi; 19] = [
     PluginApi {
         descriptor: eq::parametric::clap_mono_descriptor_ptr,
         create: eq::parametric::clap_mono_create_plugin,
@@ -104,6 +105,10 @@ static PLUGINS: [PluginApi; 18] = [
     PluginApi {
         descriptor: bandwidth::clap_descriptor_ptr,
         create: bandwidth::clap_create_plugin,
+    },
+    PluginApi {
+        descriptor: widener::clap_descriptor_ptr,
+        create: widener::clap_create_plugin,
     },
 ];
 
