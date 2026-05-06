@@ -10,19 +10,49 @@ theme.
 
 | Plugin | ID | I/O | Description |
 |--------|-----|-----|-------------|
-| **Maolan Compressor** | `rs.maolan.compressor.{mono,stereo}` | Mono / Stereo | 4-band multiband compressor with lookahead and sidechain boost |
-| **Maolan Bandwidth** | `rs.maolan.bandwidth` | Stereo | Tri-band M/S spatial processor |
-| **Maolan Delay** | `rs.maolan.delay.{mono,stereo}` | Mono / Stereo | Delay with ms / note-sync modes and smooth chasing |
-| **Maolan DeEsser** | `rs.maolan.deesser.stereo` | Stereo | Sibilance reduction processor |
-| **Maolan EQ — Parametric** | `rs.maolan.equalizer.parametric.{mono,stereo}` | Mono / Stereo | 32-band parametric EQ with peaking biquad filters |
-| **Maolan EQ — Graphic** | `rs.maolan.equalizer.graphic.{mono,stereo}` | Mono / Stereo | 32-band graphic EQ with fixed frequencies |
-| **Maolan Imager** | `rs.maolan.imager.stereo` | Stereo | Stereo width processor |
-| **Maolan Maximizer** | `rs.maolan.maximizer.stereo` | Stereo | Adaptive clipper/limiter with Vintage and Modern variants |
-| **Maolan Monitoring** | `rs.maolan.monitoring.stereo` | Stereo | Monitoring toolbox with 17 reference modes |
-| **Maolan Reverb** | `rs.maolan.reverb.{mono,stereo}` | Mono / Stereo | Stereo reverb |
-| **Maolan Saturator** | `rs.maolan.saturator.stereo` | Stereo | Waveshape saturation with sine-based distortion |
 | **Drust** | `rs.maolan.drust` | 16× Mono | DrumGizmo-inspired drum sampler |
+| **Maolan Compressor** | `rs.maolan.compressor.{mono,stereo}` | Mono / Stereo | 4-band multiband compressor with lookahead and sidechain boost |
+| **Maolan DeEsser** | `rs.maolan.deesser` | Stereo | Sibilance reduction processor |
+| **Maolan Delay** | `rs.maolan.delay.{mono,stereo}` | Mono / Stereo | Delay with ms / note-sync modes and smooth chasing |
+| **Maolan EQ — Graphic** | `rs.maolan.equalizer.graphic.{mono,stereo}` | Mono / Stereo | 32-band graphic EQ with fixed frequencies |
+| **Maolan EQ — Parametric** | `rs.maolan.equalizer.parametric.{mono,stereo}` | Mono / Stereo | 32-band parametric EQ with peaking biquad filters |
+| **Maolan Limiter** | `rs.maolan.maximizer` | Stereo | Adaptive clipper/limiter with Vintage and Modern variants |
+| **Maolan Monitoring** | `rs.maolan.monitoring` | Stereo | Monitoring toolbox with 17 reference modes |
+| **Maolan Reverb** | `rs.maolan.reverb.{mono,stereo}` | Mono / Stereo | Stereo reverb |
+| **Maolan Saturator** | `rs.maolan.saturator` | Stereo | Waveshape saturation with sine-based distortion |
+| **Maolan Stereo** | `rs.maolan.imager` | Stereo | Stereo width processor |
+| **Maolan Widener** | `rs.maolan.widener` | Stereo | Multiband stereo width processor |
 | **Rural Modeler** | `rs.maolan.ruralmodeler` | Mono | Neural Amp Modeler with IR convolution |
+
+---
+
+## Drust
+
+A drum sampler plugin based on DrumGizmo. Supports loading drum kits asynchronously, MIDI note
+triggering with velocity mapping, round-robin sample selection, humanization, and per-output
+channel balancing. Includes a built-in limiter and 16 mono outputs.
+
+**Parameters**
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Master Gain | −60.0 … 12.0 dB | 0.0 | Output gain |
+| Enable Resampling | 0 / 1 | 1 | Enable sample-rate conversion |
+| Min Velocity | 0 … 127 | 0 | Minimum input velocity |
+| Max Velocity | 0 … 127 | 127 | Maximum input velocity |
+| Resample Quality | 0 … 3 | 1 | Resampler quality level |
+| Humanize Amount | 0.0 … 100.0 | 8.0 | Timing humanization |
+| Round Robin Mix | 0.0 … 1.0 | 0.7 | Round-robin blend |
+| Bleed Amount | 0.0 … 100.0 | 100.0 | Mic bleed level |
+| Limiter Threshold | −48.0 … 0.0 dB | −3.0 | Limiter threshold |
+| Normalize Samples | 0 / 1 | 1 | Auto-normalize loaded samples |
+| Random Seed | 0 … 1000 | 0 | Humanization seed |
+| Voice Limit Max | 1 … 128 | 128 | Max simultaneous voices |
+| Voice Limit Rampdown | 0.01 … 2.0 | 0.5 | Voice release rampdown |
+| Balance 1–2 … 15–16 | −1.0 … 1.0 | 0.0 | Per-output stereo balance |
+
+**Output channels:** Kick L/R, Snare L/R, HiHat L/R, Toms L/R, Ride L/R, Crash L/R, China/Splash
+L/R, Ambience L/R
 
 ---
 
@@ -56,6 +86,25 @@ compressor design.
 
 ---
 
+## Maolan DeEsser
+
+A sibilance reduction processor that detects ess sounds by analyzing slew-rate patterns across a
+configurable sample window. Uses IIR smoothing and dynamic ratio reduction to attenuate sibilance
+while preserving the rest of the signal. Includes a monitor mode for hearing exactly what is being
+removed.
+
+**Parameters**
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Intensity | 0.0 … 1.0 | 0.5 | Sensitivity / threshold |
+| Sharpness | 0.0 … 1.0 | 0.5 | Detection window size (2–40 samples) |
+| Depth | 0.0 … 1.0 | 0.5 | Maximum reduction amount |
+| Filter | 0.0 … 1.0 | 0.5 | IIR smoothing amount |
+| Monitor | 0 / 1 | 0 | Output delta (removed signal) when enabled |
+
+---
+
 ## Maolan Delay
 
 A stereo delay with two time modes: fixed milliseconds or tempo-synced note divisions. Uses
@@ -79,57 +128,19 @@ In **Note** mode the plugin reads the host BPM from the CLAP transport each proc
 
 ---
 
-## Maolan Bandwidth
+## Maolan EQ — Graphic
 
-A tri-band stereo enhancer. Splits the signal into three frequency bands using LR4
-Linkwitz-Riley crossovers (300 Hz and 5 kHz), then generates subtle modulated delay
-"voices" per band to create stereo width — even from mono sources. The original signal
-is preserved; width is purely additive.
+A 32-band graphic equalizer. Band 1 is a low-shelf, band 32 is a high-shelf, and bands 2–31 are
+peaking filters at fixed center frequencies (Q = 1.2).
 
 **Parameters**
 
 | Parameter | Range | Default | Description |
 |-----------|-------|---------|-------------|
-| Low Width | 0.0 … 1.0 | 0.0 | Blend of stereo voice in low band |
-| Mid Width | 0.0 … 1.0 | 0.0 | Blend of stereo voice in mid band |
-| High Width | 0.0 … 1.0 | 0.0 | Blend of stereo voice in high band |
-| Depth | 0.0 … 1.0 | 0.0 | Global modulation intensity (0–1.5 ms) |
-| Mix | 0.0 … 1.0 | 1.0 | Dry/wet blend (0 = bypass, 1 = full effect) |
-
-**Band processing**
-- **Tri-band crossovers:** LR4 Linkwitz-Riley splits at 300 Hz and 5 kHz. The low band is
-  phase-compensated to match the high crossover, ensuring flat recombination.
-- **Voice generation:** Each band runs independent modulated delay lines on L and R with
-  different LFO phases. This creates stereo width by introducing subtle pitch/movement
-  differences between channels — the same principle as voice-doubling or micro-chorus.
-- **Low / Mid / High Width:** Per-band blend of the generated stereo voice (0 = original
-  only, 1 = full voice blend).
-- **Depth:** Global intensity of the modulation. Controls delay depth from 0 ms to 1.5 ms
-  at 0.3 Hz — slow enough to be imperceptible as modulation, but enough to create a
-  stable stereo image.
-- **Dry/wet mix:** Blend between the original input and the fully processed signal.
-- **Mono behavior:** On mono sources, the L/R modulation phases differ, so the output
-  becomes naturally stereo. When summed to mono, the detuned voices add slight thickening
-  rather than causing cancellation. The original signal is always preserved.
-
----
-
-## Maolan DeEsser
-
-A sibilance reduction processor that detects ess sounds by analyzing slew-rate patterns across a
-configurable sample window. Uses IIR smoothing and dynamic ratio reduction to attenuate sibilance
-while preserving the rest of the signal. Includes a monitor mode for hearing exactly what is being
-removed.
-
-**Parameters**
-
-| Parameter | Range | Default | Description |
-|-----------|-------|---------|-------------|
-| Intensity | 0.0 … 1.0 | 0.5 | Sensitivity / threshold |
-| Sharpness | 0.0 … 1.0 | 0.5 | Detection window size (2–40 samples) |
-| Depth | 0.0 … 1.0 | 0.5 | Maximum reduction amount |
-| Filter | 0.0 … 1.0 | 0.5 | IIR smoothing amount |
-| Monitor | 0 / 1 | 0 | Output delta (removed signal) when enabled |
+| Input Gain | −24.0 … 24.0 dB | 0.0 | Input gain staging |
+| Output Gain | −24.0 … 24.0 dB | 0.0 | Output gain staging |
+| Bypass | 0 / 1 | 0 | Global bypass |
+| G1–G32 Gain | −24.0 … 24.0 dB | 0.0 | Band gain |
 
 ---
 
@@ -151,39 +162,7 @@ gain, and Q controls.
 
 ---
 
-## Maolan EQ — Graphic
-
-A 32-band graphic equalizer. Band 1 is a low-shelf, band 32 is a high-shelf, and bands 2–31 are
-peaking filters at fixed center frequencies (Q = 1.2).
-
-**Parameters**
-
-| Parameter | Range | Default | Description |
-|-----------|-------|---------|-------------|
-| Input Gain | −24.0 … 24.0 dB | 0.0 | Input gain staging |
-| Output Gain | −24.0 … 24.0 dB | 0.0 | Output gain staging |
-| Bypass | 0 / 1 | 0 | Global bypass |
-| G1–G32 Gain | −24.0 … 24.0 dB | 0.0 | Band gain |
-
----
-
-## Maolan Imager
-
-Stereo width processor.
-
-**Parameters**
-
-| Parameter | Range | Default | Description |
-|-----------|-------|---------|-------------|
-| Width | 0.0 … 1.0 | 0.5 | Stereo width |
-| Focus | 0.0 … 1.0 | 0.5 | Focus / center control |
-| Amount | 0.0 … 1.0 | 1.0 | Effect amount |
-
-Mid/side processing with density controls and delay-based focus.
-
----
-
-## Maolan Maximizer
+## Maolan Limiter
 
 Adaptive clipper/limiter with two distinct variants.
 
@@ -250,33 +229,43 @@ Simple but effective stereo saturator using sine-wave distortion with an intensi
 
 ---
 
-## Drust
+## Maolan Stereo
 
-A drum sampler plugin based on DrumGizmo. Supports loading drum kits asynchronously, MIDI note
-triggering with velocity mapping, round-robin sample selection, humanization, and per-output
-channel balancing. Includes a built-in limiter and 16 mono outputs.
+Stereo width processor.
 
 **Parameters**
 
 | Parameter | Range | Default | Description |
 |-----------|-------|---------|-------------|
-| Master Gain | −60.0 … 12.0 dB | 0.0 | Output gain |
-| Enable Resampling | 0 / 1 | 1 | Enable sample-rate conversion |
-| Min Velocity | 0 … 127 | 0 | Minimum input velocity |
-| Max Velocity | 0 … 127 | 127 | Maximum input velocity |
-| Resample Quality | 0 … 3 | 1 | Resampler quality level |
-| Humanize Amount | 0.0 … 100.0 | 8.0 | Timing humanization |
-| Round Robin Mix | 0.0 … 1.0 | 0.7 | Round-robin blend |
-| Bleed Amount | 0.0 … 100.0 | 100.0 | Mic bleed level |
-| Limiter Threshold | −48.0 … 0.0 dB | −3.0 | Limiter threshold |
-| Normalize Samples | 0 / 1 | 1 | Auto-normalize loaded samples |
-| Random Seed | 0 … 1000 | 0 | Humanization seed |
-| Voice Limit Max | 1 … 128 | 128 | Max simultaneous voices |
-| Voice Limit Rampdown | 0.01 … 2.0 | 0.5 | Voice release rampdown |
-| Balance 1–2 … 15–16 | −1.0 … 1.0 | 0.0 | Per-output stereo balance |
+| Width | 0.0 … 1.0 | 0.5 | Stereo width |
+| Focus | 0.0 … 1.0 | 0.5 | Focus / center control |
+| Amount | 0.0 … 1.0 | 1.0 | Effect amount |
 
-**Output channels:** Kick L/R, Snare L/R, HiHat L/R, Toms L/R, Ride L/R, Crash L/R, China/Splash
-L/R, Ambience L/R
+Mid/side processing with density controls and delay-based focus.
+
+---
+
+## Maolan Widener
+
+A multiband stereo width processor with independent Low, Mid, and High band controls. Uses LR4
+crossover filters and mid/side processing per band.
+
+**Parameters**
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Output Gain | −4.0 … 4.0 dB | 0.0 | Output gain staging |
+| Boost | 0.0 … 4.0x | 1.0 | Global side boost |
+| Low | 0.0 … 200.0 % | 100.0 | Low-band width |
+| Mid | 0.0 … 200.0 % | 100.0 | Mid-band width |
+| High | 0.0 … 200.0 % | 100.0 | High-band width |
+| Solo Low | 0 / 1 | 0 | Solo low band |
+| Solo Mid | 0 / 1 | 0 | Solo mid band |
+| Solo High | 0 / 1 | 0 | Solo high band |
+| X1 | 40.0 … 1000.0 Hz | 400.0 | Low/mid crossover |
+| X2 | 1000.0 … 18000.0 Hz | 4000.0 | Mid/high crossover |
+| Strength | 1.0 … 20.0 ms | 5.0 | Width strength |
+| Monitor Mode | 0=Stereo, 1=Mono, 2=Side | 0 | Output monitor mode |
 
 ---
 

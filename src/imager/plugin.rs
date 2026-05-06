@@ -37,7 +37,7 @@ use crate::imager::{
 };
 
 const PLUGIN_ID: &[u8] = b"rs.maolan.imager.stereo\0";
-const PLUGIN_NAME: &[u8] = b"Maolan Imager\0";
+const PLUGIN_NAME: &[u8] = b"Maolan Stereo\0";
 const PLUGIN_VENDOR: &[u8] = b"Maolan\0";
 const PLUGIN_URL: &[u8] = b"\0";
 const PLUGIN_VERSION: &[u8] = b"0.1.0\0";

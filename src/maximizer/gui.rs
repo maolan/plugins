@@ -110,7 +110,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
 fn view(state: &State) -> Element<'_, Message> {
     let p = |id: ParamId| state.shared.params.get(id) as f32;
 
-    let mut content = column![text("Maolan Maximizer (Stereo)").size(24)]
+    let mut content = column![text("Maolan Limiter (Stereo)").size(24)]
         .spacing(12)
         .align_x(Alignment::Start);
 
@@ -308,7 +308,7 @@ impl GuiBridge {
 
         let settings = maolan_baseview::iced::IcedBaseviewSettings {
             window: maolan_baseview::iced::baseview::WindowOpenOptions {
-                title: String::from("Maolan Maximizer"),
+                title: String::from("Maolan Limiter"),
                 size: maolan_baseview::iced::baseview::Size::new(
                     EDITOR_WIDTH as f64,
                     EDITOR_HEIGHT as f64,
@@ -348,7 +348,7 @@ impl GuiBridge {
             thread::spawn(move || {
                 let settings = maolan_baseview::iced::IcedBaseviewSettings {
                     window: maolan_baseview::iced::baseview::WindowOpenOptions {
-                        title: String::from("Maolan Maximizer"),
+                        title: String::from("Maolan Limiter"),
                         size: maolan_baseview::iced::baseview::Size::new(
                             EDITOR_WIDTH as f64,
                             EDITOR_HEIGHT as f64,
