@@ -111,11 +111,12 @@ fn view(state: &State) -> Element<'_, Message> {
         row![
             knob("Low Width", ParamId::Low, p(ParamId::Low), "", 0.01),
             knob("Mid Width", ParamId::Mid, p(ParamId::Mid), "", 0.01),
+            knob("High Width", ParamId::High, p(ParamId::High), "", 0.01),
         ]
         .spacing(16)
         .align_y(Alignment::Center),
         row![
-            knob("High Width", ParamId::High, p(ParamId::High), "", 0.01),
+            knob("Depth", ParamId::Depth, p(ParamId::Depth), "", 0.01),
             knob("Mix", ParamId::Mix, p(ParamId::Mix), "", 0.01),
         ]
         .spacing(16)

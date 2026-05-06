@@ -8,14 +8,15 @@ pub enum ParamId {
     Low = 0,
     Mid = 1,
     High = 2,
-    Mix = 3,
+    Depth = 3,
+    Mix = 4,
 }
 
 impl ParamId {
-    pub const COUNT: usize = 4;
+    pub const COUNT: usize = 5;
 
     pub const fn all() -> [ParamId; Self::COUNT] {
-        [ParamId::Low, ParamId::Mid, ParamId::High, ParamId::Mix]
+        [ParamId::Low, ParamId::Mid, ParamId::High, ParamId::Depth, ParamId::Mix]
     }
 
     pub const fn as_index(self) -> usize {
@@ -52,7 +53,7 @@ pub const PARAMS: [ParamDef; ParamId::COUNT] = [
         module: "Bandwidth",
         min: 0.0,
         max: 1.0,
-        default: 0.0,
+        default: 0.5,
         step: 0.01,
         flags: AUTOMATABLE,
     },
@@ -62,7 +63,7 @@ pub const PARAMS: [ParamDef; ParamId::COUNT] = [
         module: "Bandwidth",
         min: 0.0,
         max: 1.0,
-        default: 0.0,
+        default: 0.6,
         step: 0.01,
         flags: AUTOMATABLE,
     },
@@ -73,6 +74,16 @@ pub const PARAMS: [ParamDef; ParamId::COUNT] = [
         min: 0.0,
         max: 1.0,
         default: 0.0,
+        step: 0.01,
+        flags: AUTOMATABLE,
+    },
+    ParamDef {
+        id: ParamId::Depth,
+        name: "Depth",
+        module: "Bandwidth",
+        min: 0.0,
+        max: 1.0,
+        default: 0.5,
         step: 0.01,
         flags: AUTOMATABLE,
     },

@@ -1,32 +1,25 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use clap_clap::ffi::{
-    CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_IS_ENUM, CLAP_PARAM_IS_STEPPED,
-    CLAP_PARAM_REQUIRES_PROCESS,
+    CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_REQUIRES_PROCESS,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum ParamId {
-    Mode = 0,
-    Width = 1,
-    Focus = 2,
-    Amount = 3,
-    Resonance = 4,
-    Mix = 5,
+    Width = 0,
+    Focus = 1,
+    Amount = 2,
 }
 
 impl ParamId {
-    pub const COUNT: usize = 6;
+    pub const COUNT: usize = 3;
 
     pub const fn all() -> [ParamId; Self::COUNT] {
         [
-            ParamId::Mode,
             ParamId::Width,
             ParamId::Focus,
             ParamId::Amount,
-            ParamId::Resonance,
-            ParamId::Mix,
         ]
     }
 
@@ -56,19 +49,8 @@ pub struct ParamDef {
 }
 
 const AUTOMATABLE: u32 = CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_REQUIRES_PROCESS;
-const ENUM_FLAGS: u32 = AUTOMATABLE | CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM;
 
 pub const PARAMS: [ParamDef; ParamId::COUNT] = [
-    ParamDef {
-        id: ParamId::Mode,
-        name: "Mode",
-        module: "Global",
-        min: 0.0,
-        max: 2.0,
-        default: 0.0,
-        step: 1.0,
-        flags: ENUM_FLAGS,
-    },
     ParamDef {
         id: ParamId::Width,
         name: "Width",
@@ -92,26 +74,6 @@ pub const PARAMS: [ParamDef; ParamId::COUNT] = [
     ParamDef {
         id: ParamId::Amount,
         name: "Amount",
-        module: "Imager",
-        min: 0.0,
-        max: 1.0,
-        default: 1.0,
-        step: 0.01,
-        flags: AUTOMATABLE,
-    },
-    ParamDef {
-        id: ParamId::Resonance,
-        name: "Resonance",
-        module: "Imager",
-        min: 0.0,
-        max: 1.0,
-        default: 0.5,
-        step: 0.01,
-        flags: AUTOMATABLE,
-    },
-    ParamDef {
-        id: ParamId::Mix,
-        name: "Mix",
         module: "Imager",
         min: 0.0,
         max: 1.0,
@@ -152,10 +114,6 @@ impl ParamStore {
 
     pub fn set(&self, id: ParamId, value: f64) {
         self.values[id.as_index()].store(value.to_bits(), Ordering::Release);
-    }
-
-    pub fn get_enum(&self, id: ParamId) -> u32 {
-        self.get(id).round().clamp(0.0, 1024.0) as u32
     }
 }
 

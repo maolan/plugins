@@ -16,7 +16,7 @@ theme.
 | **Maolan DeEsser** | `rs.maolan.deesser.stereo` | Stereo | Sibilance reduction processor |
 | **Maolan EQ — Parametric** | `rs.maolan.equalizer.parametric.{mono,stereo}` | Mono / Stereo | 32-band parametric EQ with peaking biquad filters |
 | **Maolan EQ — Graphic** | `rs.maolan.equalizer.graphic.{mono,stereo}` | Mono / Stereo | 32-band graphic EQ with fixed frequencies |
-| **Maolan Imager** | `rs.maolan.imager.stereo` | Stereo | Stereo width processor with Mild, Wide, and Aggressive algorithms |
+| **Maolan Imager** | `rs.maolan.imager.stereo` | Stereo | Stereo width processor |
 | **Maolan Maximizer** | `rs.maolan.maximizer.stereo` | Stereo | Adaptive clipper/limiter with Vintage and Modern variants |
 | **Maolan Monitoring** | `rs.maolan.monitoring.stereo` | Stereo | Monitoring toolbox with 17 reference modes |
 | **Maolan Reverb** | `rs.maolan.reverb.{mono,stereo}` | Mono / Stereo | Stereo reverb |
@@ -81,38 +81,36 @@ In **Note** mode the plugin reads the host BPM from the CLAP transport each proc
 
 ## Maolan Bandwidth
 
-A tri-band M/S spatial processor with psychoacoustic decorrelation. Splits the stereo signal
-into three frequency bands using LR4 Linkwitz-Riley crossovers (300 Hz and 5 kHz), processes
-each band in the mid/side domain with all-pass diffusion, band-specific saturation, and a
-subtle global side-channel chorus, then recombines with energy-compensated summation and a
-dry/wet mix control.
+A tri-band stereo enhancer. Splits the signal into three frequency bands using LR4
+Linkwitz-Riley crossovers (300 Hz and 5 kHz), then generates subtle modulated delay
+"voices" per band to create stereo width — even from mono sources. The original signal
+is preserved; width is purely additive.
 
 **Parameters**
 
 | Parameter | Range | Default | Description |
 |-----------|-------|---------|-------------|
-| Low Width | 0.0 … 1.0 | 0.0 | Low-band side gain with 100 Hz side HPF |
-| Mid Width | 0.0 … 1.0 | 0.0 | Mid-band all-pass diffusion + side saturation |
-| High Width | 0.0 … 1.0 | 0.0 | High-band all-pass diffusion + side shelf |
+| Low Width | 0.0 … 1.0 | 0.0 | Blend of stereo voice in low band |
+| Mid Width | 0.0 … 1.0 | 0.0 | Blend of stereo voice in mid band |
+| High Width | 0.0 … 1.0 | 0.0 | Blend of stereo voice in high band |
+| Depth | 0.0 … 1.0 | 0.0 | Global modulation intensity (0–1.5 ms) |
 | Mix | 0.0 … 1.0 | 1.0 | Dry/wet blend (0 = bypass, 1 = full effect) |
 
 **Band processing**
-- **Low (< 300 Hz):** Side gain boost with a 100 Hz high-pass (12 dB/oct) on the side channel to
-  keep sub frequencies mono-compatible. Bass stays clean — no saturation.
-- **Mid (300 Hz – 5 kHz):** 3-stage all-pass cascade on left and right with offset coefficients
-  to generate stereo width from mono sources through phase decorrelation. Side channel receives
-  subtle `tanh` saturation (1.5× drive) before M/S decode, adding analog-style harmonic density.
-- **High (> 5 kHz):** 3-stage all-pass on left and right with different coefficients, then M/S
-  encode. The side channel passes through a 0–+3 dB high-shelf boost above 10 kHz for shimmer
-  and air, followed by subtle `tanh` saturation for density.
-- **Global side chorus:** After band summation, the global side signal passes through a modulated
-  delay (0.5 Hz LFO, 0.5 ms depth) for a ~3-cent pitch shimmer that adds an enveloping 3D feel
-  without comb filtering. Fully mono-compatible — the effect cancels when summed to mono.
-- **Dry/wet mix:** Blend between the original input and the fully processed + chorused signal.
-- **Energy compensation:** M/S is encoded with the unitary transform (1/√2). Mid gain is scaled
-  by `√(2 − side_gain²)` so that `M² + S²` stays constant — no loudness illusion when widening.
-- **Phase compensation:** The low band passes through an allpass filter matching the 5 kHz
-  crossover phase, ensuring flat magnitude when the three bands are recombined.
+- **Tri-band crossovers:** LR4 Linkwitz-Riley splits at 300 Hz and 5 kHz. The low band is
+  phase-compensated to match the high crossover, ensuring flat recombination.
+- **Voice generation:** Each band runs independent modulated delay lines on L and R with
+  different LFO phases. This creates stereo width by introducing subtle pitch/movement
+  differences between channels — the same principle as voice-doubling or micro-chorus.
+- **Low / Mid / High Width:** Per-band blend of the generated stereo voice (0 = original
+  only, 1 = full voice blend).
+- **Depth:** Global intensity of the modulation. Controls delay depth from 0 ms to 1.5 ms
+  at 0.3 Hz — slow enough to be imperceptible as modulation, but enough to create a
+  stable stereo image.
+- **Dry/wet mix:** Blend between the original input and the fully processed signal.
+- **Mono behavior:** On mono sources, the L/R modulation phases differ, so the output
+  becomes naturally stereo. When summed to mono, the detuned voices add slight thickening
+  rather than causing cancellation. The original signal is always preserved.
 
 ---
 
@@ -171,23 +169,17 @@ peaking filters at fixed center frequencies (Q = 1.2).
 
 ## Maolan Imager
 
-Stereo width processor with three selectable algorithms.
+Stereo width processor.
 
 **Parameters**
 
 | Parameter | Range | Default | Description |
 |-----------|-------|---------|-------------|
-| Mode | 0=Mild, 1=Wide, 2=Aggressive | 0 | Algorithm selector |
 | Width | 0.0 … 1.0 | 0.5 | Stereo width |
 | Focus | 0.0 … 1.0 | 0.5 | Focus / center control |
 | Amount | 0.0 … 1.0 | 1.0 | Effect amount |
-| Resonance | 0.0 … 1.0 | 0.5 | Q control (Wide mode) |
-| Mix | 0.0 … 1.0 | 1.0 | Dry/wet mix |
 
-**Algorithms**
-- **Mild** — Mid/side processing with density controls and delay-based focus
-- **Wide** — Biquad-filter-based M/S processor with center/space controls and sine-based saturation
-- **Aggressive** — Heavy mid/side saturation with high-impact side processing and variable highpass
+Mid/side processing with density controls and delay-based focus.
 
 ---
 

@@ -281,6 +281,7 @@ impl AudioProcessor {
                     low_width: shared.params.get(ParamId::Low),
                     mid_width: shared.params.get(ParamId::Mid),
                     high_width: shared.params.get(ParamId::High),
+                    depth: shared.params.get(ParamId::Depth),
                     mix: shared.params.get(ParamId::Mix),
                 },
             );
@@ -304,6 +305,7 @@ impl AudioProcessor {
                     low_width: shared.params.get(ParamId::Low),
                     mid_width: shared.params.get(ParamId::Mid),
                     high_width: shared.params.get(ParamId::High),
+                    depth: shared.params.get(ParamId::Depth),
                     mix: shared.params.get(ParamId::Mix),
                 },
             );

@@ -41,7 +41,7 @@ const PLUGIN_NAME: &[u8] = b"Maolan Imager\0";
 const PLUGIN_VENDOR: &[u8] = b"Maolan\0";
 const PLUGIN_URL: &[u8] = b"\0";
 const PLUGIN_VERSION: &[u8] = b"0.1.0\0";
-const PLUGIN_DESCRIPTION: &[u8] = b"Rust CLAP Imager with ImagerMild, ImagerWide and Aggressive\0";
+const PLUGIN_DESCRIPTION: &[u8] = b"Rust CLAP Imager\0";
 const FEATURE_AUDIO_EFFECT: *const c_char = CLAP_PLUGIN_FEATURE_AUDIO_EFFECT.as_ptr();
 const FEATURE_STEREO: *const c_char = CLAP_PLUGIN_FEATURE_STEREO.as_ptr();
 
@@ -279,13 +279,10 @@ impl AudioProcessor {
             self.dsp.process_stereo(
                 &mut self.temp_left[..frames],
                 &mut self.temp_right[..frames],
-                shared.params.get_enum(ParamId::Mode),
                 &ImagerParams {
                     width: shared.params.get(ParamId::Width),
                     focus: shared.params.get(ParamId::Focus),
                     amount: shared.params.get(ParamId::Amount),
-                    resonance: shared.params.get(ParamId::Resonance),
-                    mix: shared.params.get(ParamId::Mix),
                 },
             );
 
@@ -304,13 +301,10 @@ impl AudioProcessor {
             self.dsp.process_stereo(
                 &mut self.temp_left[..frames],
                 &mut self.temp_right[..frames],
-                shared.params.get_enum(ParamId::Mode),
                 &ImagerParams {
                     width: shared.params.get(ParamId::Width),
                     focus: shared.params.get(ParamId::Focus),
                     amount: shared.params.get(ParamId::Amount),
-                    resonance: shared.params.get(ParamId::Resonance),
-                    mix: shared.params.get(ParamId::Mix),
                 },
             );
 
@@ -363,28 +357,12 @@ unsafe fn instance<'a>(plugin: *const clap_plugin) -> &'a mut PluginInstance {
     unsafe { &mut *((*plugin).plugin_data as *mut PluginInstance) }
 }
 
-fn param_text(id: ParamId, value: f64) -> String {
-    match id {
-        ParamId::Mode => match value.round() as i32 {
-            0 => "Mild".into(),
-            1 => "Wide".into(),
-            2 => "Aggressive".into(),
-            _ => format!("{value:.0}"),
-        },
-        _ => format!("{value:.2}"),
-    }
+fn param_text(_id: ParamId, value: f64) -> String {
+    format!("{value:.2}")
 }
 
-fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
-    match id {
-        ParamId::Mode => match text.to_ascii_lowercase().as_str() {
-            "mild" => Some(0.0),
-            "wide" => Some(1.0),
-            "aggressive" => Some(2.0),
-            _ => text.parse().ok(),
-        },
-        _ => text.parse().ok(),
-    }
+fn parse_param_text(_id: ParamId, text: &str) -> Option<f64> {
+    text.parse().ok()
 }
 
 unsafe extern "C-unwind" fn plugin_init(plugin: *const clap_plugin) -> bool {

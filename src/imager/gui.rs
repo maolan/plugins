@@ -86,7 +86,6 @@ unsafe impl HasRawWindowHandle for ParentWindowHandle {
 #[allow(clippy::enum_variant_names)]
 pub enum Message {
     SetParam(ParamId, f32),
-    SetMode(u8),
 }
 
 struct State {
@@ -100,7 +99,6 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::SetParam(id, value) => state.shared.set_param(id, value as f64),
-        Message::SetMode(mode) => state.shared.set_param(ParamId::Mode, mode as f64),
     }
     Task::none()
 }
@@ -112,36 +110,11 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(16)
         .align_x(Alignment::Start);
 
-    let mode = state.shared.params.get_enum(ParamId::Mode).min(2);
-    content = content.push(
-        row![
-            text("Algorithm").size(16),
-            maolan_baseview::iced::widget::radio("Mild", 0u8, Some(mode as u8), Message::SetMode),
-            maolan_baseview::iced::widget::radio("Wide", 1u8, Some(mode as u8), Message::SetMode),
-            maolan_baseview::iced::widget::radio(
-                "Aggressive",
-                2u8,
-                Some(mode as u8),
-                Message::SetMode
-            ),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center),
-    );
-
     content = content.push(
         row![
             knob("Width", ParamId::Width, p(ParamId::Width), "", 0.01),
             knob("Focus", ParamId::Focus, p(ParamId::Focus), "", 0.01),
             knob("Amount", ParamId::Amount, p(ParamId::Amount), "", 0.01),
-            knob(
-                "Resonance",
-                ParamId::Resonance,
-                p(ParamId::Resonance),
-                "",
-                0.01
-            ),
-            knob("Mix", ParamId::Mix, p(ParamId::Mix), "", 0.01),
         ]
         .spacing(16),
     );
