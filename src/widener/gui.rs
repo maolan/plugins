@@ -16,7 +16,7 @@ use clap_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{column, container, row, scrollable, text},
+    widget::{checkbox, column, container, radio, row, scrollable, text},
 };
 use maolan_widgets::arch_slider::arch_slider;
 use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -26,8 +26,8 @@ use crate::widener::{
     plugin::SharedState,
 };
 
-pub const EDITOR_WIDTH: u32 = 800;
-pub const EDITOR_HEIGHT: u32 = 420;
+pub const EDITOR_WIDTH: u32 = 600;
+pub const EDITOR_HEIGHT: u32 = 500;
 
 pub fn preferred_api() -> &'static CStr {
     #[cfg(target_os = "windows")]
@@ -105,6 +105,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
 
 fn view(state: &State) -> Element<'_, Message> {
     let p = |id: ParamId| state.shared.params.get(id) as f32;
+    let b = |id: ParamId| state.shared.params.get(id) >= 0.5;
 
     let mut content = column![text("Maolan Widener (Stereo)").size(24)]
         .spacing(16)
@@ -112,9 +113,39 @@ fn view(state: &State) -> Element<'_, Message> {
 
     content = content.push(
         row![
-            knob("Low", ParamId::Low, p(ParamId::Low), "", 1.0),
-            knob("Mid", ParamId::Mid, p(ParamId::Mid), "", 1.0),
-            knob("High", ParamId::High, p(ParamId::High), "", 1.0),
+            container(
+                column![
+                    knob("Low", ParamId::Low, p(ParamId::Low), "", 1.0),
+                    checkbox(b(ParamId::SoloLow)).label("Solo").on_toggle(|v| {
+                        Message::SetParam(ParamId::SoloLow, if v { 1.0 } else { 0.0 })
+                    })
+                ]
+                .spacing(6)
+                .align_x(Alignment::Center),
+            )
+            .width(Length::Fixed(96.0)),
+            container(
+                column![
+                    knob("Mid", ParamId::Mid, p(ParamId::Mid), "", 1.0),
+                    checkbox(b(ParamId::SoloMid)).label("Solo").on_toggle(|v| {
+                        Message::SetParam(ParamId::SoloMid, if v { 1.0 } else { 0.0 })
+                    })
+                ]
+                .spacing(6)
+                .align_x(Alignment::Center),
+            )
+            .width(Length::Fixed(96.0)),
+            container(
+                column![
+                    knob("High", ParamId::High, p(ParamId::High), "", 1.0),
+                    checkbox(b(ParamId::SoloHigh)).label("Solo").on_toggle(|v| {
+                        Message::SetParam(ParamId::SoloHigh, if v { 1.0 } else { 0.0 })
+                    })
+                ]
+                .spacing(6)
+                .align_x(Alignment::Center),
+            )
+            .width(Length::Fixed(96.0)),
             knob(
                 "Strength",
                 ParamId::Strength,
@@ -137,30 +168,32 @@ fn view(state: &State) -> Element<'_, Message> {
                 "dB",
                 0.1
             ),
-            knob(
-                "Monitor",
-                ParamId::MonitorMode,
-                p(ParamId::MonitorMode),
-                "",
-                1.0
-            ),
         ]
         .spacing(16),
     );
+    let monitor_selected = match p(ParamId::MonitorMode) as i32 {
+        1 => Some(1u8),
+        2 => Some(2u8),
+        _ => Some(0u8),
+    };
     content = content.push(
         row![
-            knob("Solo Low", ParamId::SoloLow, p(ParamId::SoloLow), "", 1.0),
-            knob("Solo Mid", ParamId::SoloMid, p(ParamId::SoloMid), "", 1.0),
-            knob(
-                "Solo High",
-                ParamId::SoloHigh,
-                p(ParamId::SoloHigh),
-                "",
-                1.0
-            ),
-            knob("Bypass", ParamId::Bypass, p(ParamId::Bypass), "", 1.0),
+            text("Monitor").size(14),
+            radio("Stereo", 0u8, monitor_selected, |v| Message::SetParam(
+                ParamId::MonitorMode,
+                v as f32
+            )),
+            radio("Mono", 1u8, monitor_selected, |v| Message::SetParam(
+                ParamId::MonitorMode,
+                v as f32
+            )),
+            radio("Side", 2u8, monitor_selected, |v| Message::SetParam(
+                ParamId::MonitorMode,
+                v as f32
+            )),
         ]
-        .spacing(16),
+        .spacing(16)
+        .align_y(Alignment::Center),
     );
 
     container(scrollable(content))
@@ -206,7 +239,7 @@ fn knob(
 
 fn pretty_value(id: ParamId, value: f32, _units: &'static str) -> String {
     match id {
-        ParamId::SoloLow | ParamId::SoloMid | ParamId::SoloHigh | ParamId::Bypass => {
+        ParamId::SoloLow | ParamId::SoloMid | ParamId::SoloHigh => {
             if value >= 0.5 {
                 "On".to_string()
             } else {

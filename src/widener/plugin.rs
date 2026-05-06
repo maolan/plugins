@@ -104,30 +104,30 @@ impl SharedState {
     fn set_param_internal(&self, id: ParamId, value: f64, notify_host: bool) {
         let value = sanitize_param_value(id, value);
         self.params.set(id, value);
-        let mut coupled: Option<(ParamId, f64)> = None;
+        let mut coupled: Vec<(ParamId, f64)> = Vec::new();
         match id {
             ParamId::X1 => {
                 let x2 = self.params.get(ParamId::X2);
                 if x2 < value {
-                    coupled = Some((ParamId::X2, sanitize_param_value(ParamId::X2, value)));
+                    coupled.push((ParamId::X2, sanitize_param_value(ParamId::X2, value)));
                 }
             }
             ParamId::X2 => {
                 let x1 = self.params.get(ParamId::X1);
                 if value < x1 {
-                    coupled = Some((ParamId::X1, sanitize_param_value(ParamId::X1, value)));
+                    coupled.push((ParamId::X1, sanitize_param_value(ParamId::X1, value)));
                 }
             }
             _ => {}
         }
-        if let Some((other_id, other_value)) = coupled {
-            self.params.set(other_id, other_value);
+        for (other_id, other_value) in &coupled {
+            self.params.set(*other_id, *other_value);
         }
 
         if notify_host {
             self.mark_local_param_override(id);
             self.mark_param_notification_pending(id);
-            if let Some((other_id, _)) = coupled {
+            for (other_id, _) in coupled {
                 self.mark_local_param_override(other_id);
                 self.mark_param_notification_pending(other_id);
             }
@@ -317,7 +317,6 @@ impl AudioProcessor {
                     x2: shared.params.get(ParamId::X2),
                     strength: shared.params.get(ParamId::Strength),
                     monitor_mode: shared.params.get(ParamId::MonitorMode) as u8,
-                    bypass: shared.params.get(ParamId::Bypass) >= 0.5,
                 },
             );
 
@@ -349,7 +348,6 @@ impl AudioProcessor {
                     x2: shared.params.get(ParamId::X2),
                     strength: shared.params.get(ParamId::Strength),
                     monitor_mode: shared.params.get(ParamId::MonitorMode) as u8,
-                    bypass: shared.params.get(ParamId::Bypass) >= 0.5,
                 },
             );
 
@@ -409,7 +407,7 @@ fn param_text(id: ParamId, value: f64) -> String {
             2 => "Side".to_string(),
             _ => "Stereo".to_string(),
         },
-        ParamId::SoloLow | ParamId::SoloMid | ParamId::SoloHigh | ParamId::Bypass => {
+        ParamId::SoloLow | ParamId::SoloMid | ParamId::SoloHigh => {
             if value >= 0.5 {
                 "On".to_string()
             } else {
@@ -433,13 +431,11 @@ fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
             "side" | "2" => Some(2.0),
             _ => t.parse::<f64>().ok(),
         },
-        ParamId::SoloLow | ParamId::SoloMid | ParamId::SoloHigh | ParamId::Bypass => {
-            match t.as_str() {
-                "on" | "true" | "yes" | "1" => Some(1.0),
-                "off" | "false" | "no" | "0" => Some(0.0),
-                _ => t.parse::<f64>().ok(),
-            }
-        }
+        ParamId::SoloLow | ParamId::SoloMid | ParamId::SoloHigh => match t.as_str() {
+            "on" | "true" | "yes" | "1" => Some(1.0),
+            "off" | "false" | "no" | "0" => Some(0.0),
+            _ => t.parse::<f64>().ok(),
+        },
         ParamId::OutputGain => t.trim_end_matches("db").trim().parse::<f64>().ok(),
         ParamId::Boost => t.trim_end_matches('x').trim().parse::<f64>().ok(),
         ParamId::X1 | ParamId::X2 => t.trim_end_matches("hz").trim().parse::<f64>().ok(),
@@ -1011,9 +1007,16 @@ static FACTORY: clap_plugin_factory = clap_plugin_factory {
     get_plugin_descriptor: Some(factory_get_plugin_descriptor),
     create_plugin: Some(factory_create_plugin),
 };
+/// # Safety
+/// The returned pointer is a static reference to the plugin descriptor.
+/// It must not be dereferenced after the library is unloaded.
 pub unsafe fn descriptor_ptr() -> *const clap_plugin_descriptor {
     &raw const DESCRIPTOR.0
 }
+
+/// # Safety
+/// `host` must be a valid, non-null pointer to a `clap_host`.
+/// `plugin_id` must be a valid C string matching a supported plugin ID.
 pub unsafe fn create_plugin(
     host: *const clap_host,
     plugin_id: *const c_char,

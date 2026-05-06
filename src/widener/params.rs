@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use clap_clap::ffi::{
-    CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_IS_BYPASS, CLAP_PARAM_IS_ENUM, CLAP_PARAM_IS_STEPPED,
+    CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_IS_ENUM, CLAP_PARAM_IS_STEPPED,
     CLAP_PARAM_REQUIRES_PROCESS,
 };
 
@@ -20,11 +20,10 @@ pub enum ParamId {
     X2 = 9,
     Strength = 10,
     MonitorMode = 11,
-    Bypass = 12,
 }
 
 impl ParamId {
-    pub const COUNT: usize = 13;
+    pub const COUNT: usize = 12;
 
     pub const fn all() -> [ParamId; Self::COUNT] {
         [
@@ -40,7 +39,6 @@ impl ParamId {
             ParamId::X2,
             ParamId::Strength,
             ParamId::MonitorMode,
-            ParamId::Bypass,
         ]
     }
 
@@ -72,7 +70,6 @@ pub struct ParamDef {
 const AUTOMATABLE: u32 = CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_REQUIRES_PROCESS;
 const STEPPED: u32 = AUTOMATABLE | CLAP_PARAM_IS_STEPPED;
 const ENUM_FLAGS: u32 = AUTOMATABLE | CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM;
-const BYPASS_FLAGS: u32 = AUTOMATABLE | CLAP_PARAM_IS_BYPASS | CLAP_PARAM_IS_STEPPED;
 
 pub const PARAMS: [ParamDef; ParamId::COUNT] = [
     ParamDef {
@@ -194,16 +191,6 @@ pub const PARAMS: [ParamDef; ParamId::COUNT] = [
         default: 0.0,
         step: 1.0,
         flags: ENUM_FLAGS,
-    },
-    ParamDef {
-        id: ParamId::Bypass,
-        name: "Bypass",
-        module: "Bandwidth",
-        min: 0.0,
-        max: 1.0,
-        default: 0.0,
-        step: 1.0,
-        flags: BYPASS_FLAGS,
     },
 ];
 

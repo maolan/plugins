@@ -10,7 +10,6 @@ use clap_clap::ffi::{
     clap_plugin_entry, clap_plugin_factory,
 };
 
-pub mod bandwidth;
 pub mod common;
 pub mod compressor;
 pub mod deesser;
@@ -33,7 +32,7 @@ struct PluginApi {
     create: CreateFn,
 }
 
-static PLUGINS: [PluginApi; 19] = [
+static PLUGINS: [PluginApi; 18] = [
     PluginApi {
         descriptor: eq::parametric::clap_mono_descriptor_ptr,
         create: eq::parametric::clap_mono_create_plugin,
@@ -101,10 +100,6 @@ static PLUGINS: [PluginApi; 19] = [
     PluginApi {
         descriptor: deesser::clap_descriptor_ptr,
         create: deesser::clap_create_plugin,
-    },
-    PluginApi {
-        descriptor: bandwidth::clap_descriptor_ptr,
-        create: bandwidth::clap_create_plugin,
     },
     PluginApi {
         descriptor: widener::clap_descriptor_ptr,

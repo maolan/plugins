@@ -19,7 +19,7 @@ base64 = "0.22.1"
 dirs = "6"
 hound = "3.5.1"
 maolan-baseview = "0.0.2"
-maolan-widgets = "0.0.8"
+maolan-widgets = "0.0.13"
 parking_lot = "0.12.3"
 quick-xml = { version = "0.37.0", features = ["serialize"] }
 rand = "0.8.5"

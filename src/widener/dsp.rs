@@ -12,7 +12,6 @@ pub struct WidenerParams {
     pub x2: f64,
     pub strength: f64,
     pub monitor_mode: u8,
-    pub bypass: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -141,12 +140,6 @@ pub struct Widener {
     lp_x2_r: Lr4,
     hp_x2_l: Lr4,
     hp_x2_r: Lr4,
-    bypass_mix: f64,
-    bypass_target: f64,
-    bypass_step: f64,
-    bypass_samples_left: u32,
-    bypass_ramp_to_wet: u32,
-    bypass_ramp_to_dry: u32,
     low_max_a: usize,
     low_max_b: usize,
     mid_max_a: usize,
@@ -187,12 +180,6 @@ impl Default for Widener {
             lp_x2_r: Lr4::lowpass(x2, sample_rate),
             hp_x2_l: Lr4::highpass(x2, sample_rate),
             hp_x2_r: Lr4::highpass(x2, sample_rate),
-            bypass_mix: 1.0,
-            bypass_target: 1.0,
-            bypass_step: 0.0,
-            bypass_samples_left: 0,
-            bypass_ramp_to_wet: BYPASS_RAMP_TO_WET,
-            bypass_ramp_to_dry: BYPASS_RAMP_TO_DRY,
             low_max_a: 960,
             low_max_b: 960,
             mid_max_a: 960,
@@ -235,9 +222,7 @@ impl Widener {
     }
 
     fn flush_denormal(v: f64) -> f64 {
-        if !v.is_finite() {
-            0.0
-        } else if v.abs() < 1.0e-30 {
+        if !v.is_finite() || v.abs() < 1.0e-30 {
             0.0
         } else {
             v
@@ -291,10 +276,6 @@ impl Widener {
         self.smooth_strength.reset(5.0);
         self.smooth_output.reset(0.0);
         self.smooth_boost.reset(1.0);
-        self.bypass_mix = 1.0;
-        self.bypass_target = 1.0;
-        self.bypass_step = 0.0;
-        self.bypass_samples_left = 0;
     }
 
     fn rebuild_filters(&mut self, x1: f64, x2: f64) {
@@ -311,30 +292,6 @@ impl Widener {
     }
 
     pub fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32], params: &WidenerParams) {
-        let target = if params.bypass { 0.0 } else { 1.0 };
-        let diff = target - self.bypass_mix;
-        let abs_eps = 1.175_494_350_822_287_5e-38_f64;
-        let rel_eps = 1.192_092_895_507_812_5e-7_f64;
-        let cur_mag = self.bypass_mix.abs();
-        let min_step = abs_eps.max(cur_mag * rel_eps);
-
-        if diff.abs() > min_step {
-            self.bypass_target = target;
-            let ramp = if target >= BOOL_THRESHOLD {
-                self.bypass_ramp_to_wet
-            } else {
-                self.bypass_ramp_to_dry
-            };
-            if ramp <= 1 {
-                self.bypass_mix = self.bypass_target;
-                self.bypass_step = 0.0;
-                self.bypass_samples_left = 0;
-            } else {
-                self.bypass_samples_left = ramp;
-                self.bypass_step = (self.bypass_target - self.bypass_mix) / (ramp as f64);
-            }
-        }
-
         let nyquist = (self.sample_rate * 0.5 - 1.0).max(21.0);
         self.smooth_low.target = params.low.clamp(0.0, GAIN_DEN);
         self.smooth_mid.target = params.mid.clamp(0.0, GAIN_DEN);
@@ -428,17 +385,6 @@ impl Widener {
                 _ => {}
             }
 
-            if self.bypass_samples_left > 0 {
-                self.bypass_mix += self.bypass_step;
-                self.bypass_samples_left -= 1;
-                if self.bypass_samples_left == 0 {
-                    self.bypass_mix = self.bypass_target;
-                }
-            }
-            let wet = self.bypass_mix;
-            out_l = in_l * (1.0 - wet) + out_l * wet;
-            out_r = in_r * (1.0 - wet) + out_r * wet;
-
             *l = Self::flush_denormal(out_l) as f32;
             *r = Self::flush_denormal(out_r) as f32;
         }
@@ -528,6 +474,3 @@ const GAIN_NORM: f64 = 100.0;
 const STRENGTH_MIN: f64 = 1.0;
 const STRENGTH_MAX: f64 = 20.0;
 const STRENGTH_SHAPE_SCALE: f64 = 2.5;
-const BOOL_THRESHOLD: f64 = 0.5;
-const BYPASS_RAMP_TO_WET: u32 = 1272;
-const BYPASS_RAMP_TO_DRY: u32 = 756;
