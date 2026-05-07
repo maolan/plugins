@@ -14,25 +14,35 @@ use crate::eq::parametric::params::{PARAMS, ParamId};
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{checkbox, column, container, row, scrollable, text},
+    widget::{button, column, container, row, text},
 };
 use maolan_widgets::arch_slider::arch_slider;
+use maolan_widgets::meters::meters;
+use maolan_widgets::slider::slider;
 
-pub const EDITOR_WIDTH: u32 = 800;
-pub const EDITOR_HEIGHT: u32 = 500;
+pub const EDITOR_WIDTH: u32 = 700;
+pub const EDITOR_HEIGHT: u32 = 350;
 
 #[derive(Debug, Clone)]
 pub enum Message {
     SetParam(ParamId, f32),
     SetBoolParam(ParamId, bool),
+    SelectTab(usize),
 }
 
 struct State {
     shared: Arc<SharedState<ParamId>>,
+    selected_tab: usize,
 }
 
 fn init(shared: Arc<SharedState<ParamId>>) -> (State, Task<Message>) {
-    (State { shared }, Task::none())
+    (
+        State {
+            shared,
+            selected_tab: 0,
+        },
+        Task::none(),
+    )
 }
 
 fn update(state: &mut State, message: Message) -> Task<Message> {
@@ -41,54 +51,83 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::SetBoolParam(id, value) => {
             state.shared.set_param(id, if value { 1.0 } else { 0.0 })
         }
+        Message::SelectTab(tab) => state.selected_tab = tab.min(3),
     }
     Task::none()
 }
 
 fn view(state: &State) -> Element<'_, Message> {
     let p = |id: ParamId| state.shared.params.get(id) as f32;
-    let b = |id: ParamId| state.shared.params.get_bool(id);
 
-    let mut content = column![text("Maolan Parametric EQ").size(24)]
+    let mut tabs = row![].spacing(5).align_y(Alignment::Center);
+    for tab in 0..4 {
+        let label = format!("{}", tab + 1);
+        let tab_element: Element<'_, Message> = if tab == state.selected_tab {
+            container(text(label).size(14)).padding(5).into()
+        } else {
+            button(text(label).size(14))
+                .on_press(Message::SelectTab(tab))
+                .into()
+        };
+        tabs = tabs.push(tab_element);
+    }
+
+    let mut content = column![tabs].spacing(10).align_x(Alignment::Start);
+
+    let ch = state
+        .shared
+        .channels
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .clamp(1, 2) as usize;
+    let input_levels_db: Vec<f32> = if ch == 1 {
+        vec![state.shared.input_level_left_db()]
+    } else {
+        vec![
+            state.shared.input_level_left_db(),
+            state.shared.input_level_right_db(),
+        ]
+    };
+    let output_levels_db: Vec<f32> = if ch == 1 {
+        vec![state.shared.output_level_left_db()]
+    } else {
+        vec![
+            state.shared.output_level_left_db(),
+            state.shared.output_level_right_db(),
+        ]
+    };
+
+    let start_band = state.selected_tab * 8;
+    let mut parametric_bands =
+        row![container(meters(ch, &input_levels_db, 260.0)).height(Length::Fill)].spacing(10);
+    for i in start_band..start_band + 8 {
+        parametric_bands = parametric_bands.push(parametric_band(state, i));
+    }
+    parametric_bands =
+        parametric_bands.push(container(meters(ch, &output_levels_db, 260.0)).height(Length::Fill));
+
+    let parameters = column![parametric_bands]
         .spacing(10)
-        .align_x(Alignment::Start);
+        .align_x(Alignment::Center);
 
     content = content.push(
         row![
-            knob(
+            gain_slider(
                 "Input".to_string(),
                 ParamId::InputGain,
-                p(ParamId::InputGain),
-                "dB",
-                0.1
+                p(ParamId::InputGain)
             ),
-            knob(
+            parameters,
+            gain_slider(
                 "Output".to_string(),
                 ParamId::OutputGain,
-                p(ParamId::OutputGain),
-                "dB",
-                0.1
+                p(ParamId::OutputGain)
             ),
-            checkbox(b(ParamId::Bypass))
-                .label("Bypass")
-                .on_toggle(|v| Message::SetBoolParam(ParamId::Bypass, v)),
         ]
         .spacing(14)
-        .align_y(Alignment::Center),
+        .align_y(Alignment::Start),
     );
 
-    content = content.push(text("32 Bands").size(18));
-    let mut parametric_bands = row![].spacing(10);
-    for i in 0..32 {
-        parametric_bands = parametric_bands.push(parametric_band(state, i));
-    }
-    content = content.push(
-        scrollable(parametric_bands)
-            .direction(scrollable::Direction::Horizontal(Default::default()))
-            .height(Length::Fixed(350.0)),
-    );
-
-    container(scrollable(content))
+    container(content)
         .padding(16)
         .width(Length::Fill)
         .height(Length::Fill)
@@ -150,6 +189,27 @@ fn knob(
             .align_x(Alignment::Center),
     )
     .width(Length::Fixed(50.0))
+    .into()
+}
+
+fn gain_slider(label: String, id: ParamId, value: f32) -> Element<'static, Message> {
+    let def = PARAMS[id.as_index()];
+    let s = slider(def.min as f32..=def.max as f32, value, move |v| {
+        Message::SetParam(id, v)
+    })
+    .step(def.step as f32)
+    .double_click_reset(def.default as f32)
+    .width(Length::Fixed(20.0))
+    .height(Length::Fill);
+
+    let value_text = format!("{value:.1} dB");
+
+    container(
+        column![text(label).size(11), s, text(value_text).size(10)]
+            .spacing(2)
+            .align_x(Alignment::Center),
+    )
+    .width(Length::Fixed(40.0))
     .into()
 }
 

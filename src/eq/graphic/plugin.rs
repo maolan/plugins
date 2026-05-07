@@ -169,13 +169,94 @@ impl AudioProcessor {
                 let mut output_r = process.audio_outputs(1);
                 output_r.data32(0)[..frames].copy_from_slice(&self.temp_right[..frames]);
             }
+
+            let in_peak_l = self.temp_left[..frames]
+                .iter()
+                .map(|s| s.abs())
+                .fold(0.0f32, f32::max);
+            let in_peak_r = self.temp_right[..frames]
+                .iter()
+                .map(|s| s.abs())
+                .fold(0.0f32, f32::max);
+            let in_db_l = if in_peak_l > 0.0 {
+                20.0 * in_peak_l.log10()
+            } else {
+                -90.0
+            };
+            let in_db_r = if in_peak_r > 0.0 {
+                20.0 * in_peak_r.log10()
+            } else {
+                -90.0
+            };
+            shared.set_input_level_left_db(in_db_l.clamp(-90.0, 20.0));
+            shared.set_input_level_right_db(in_db_r.clamp(-90.0, 20.0));
+
+            self.equalizer.process_stereo(
+                &mut self.temp_left[..frames],
+                &mut self.temp_right[..frames],
+            );
+
+            {
+                let mut output_l = process.audio_outputs(0);
+                output_l.data32(0)[..frames].copy_from_slice(&self.temp_left[..frames]);
+            }
+            {
+                let mut output_r = process.audio_outputs(1);
+                output_r.data32(0)[..frames].copy_from_slice(&self.temp_right[..frames]);
+            }
+
+            let out_peak_l = self.temp_left[..frames]
+                .iter()
+                .map(|s| s.abs())
+                .fold(0.0f32, f32::max);
+            let out_peak_r = self.temp_right[..frames]
+                .iter()
+                .map(|s| s.abs())
+                .fold(0.0f32, f32::max);
+            let out_db_l = if out_peak_l > 0.0 {
+                20.0 * out_peak_l.log10()
+            } else {
+                -90.0
+            };
+            let out_db_r = if out_peak_r > 0.0 {
+                20.0 * out_peak_r.log10()
+            } else {
+                -90.0
+            };
+            shared.set_output_level_left_db(out_db_l.clamp(-90.0, 20.0));
+            shared.set_output_level_right_db(out_db_r.clamp(-90.0, 20.0));
         } else if inputs_count >= 1 && outputs_count >= 1 {
             let input_port = process.audio_inputs(0);
             self.temp_left[..frames].copy_from_slice(input_port.data32(0));
+
+            let in_peak_l = self.temp_left[..frames]
+                .iter()
+                .map(|s| s.abs())
+                .fold(0.0f32, f32::max);
+            let in_db_l = if in_peak_l > 0.0 {
+                20.0 * in_peak_l.log10()
+            } else {
+                -90.0
+            };
+            shared.set_input_level_left_db(in_db_l.clamp(-90.0, 20.0));
+            shared.set_input_level_right_db(in_db_l.clamp(-90.0, 20.0));
+
             self.equalizer.process_mono(&mut self.temp_left[..frames]);
 
             let mut output_port = process.audio_outputs(0);
             output_port.data32(0)[..frames].copy_from_slice(&self.temp_left[..frames]);
+
+            let out_peak_l = self.temp_left[..frames]
+                .iter()
+                .map(|s| s.abs())
+                .fold(0.0f32, f32::max);
+            let out_db_l = if out_peak_l > 0.0 {
+                20.0 * out_peak_l.log10()
+            } else {
+                -90.0
+            };
+            shared.set_output_level_left_db(out_db_l.clamp(-90.0, 20.0));
+            shared.set_output_level_right_db(out_db_l.clamp(-90.0, 20.0));
         }
 
         CLAP_PROCESS_CONTINUE
@@ -194,7 +275,7 @@ struct PluginInstance {
 impl PluginInstance {
     fn new(host: *const clap_host, channels: u32) -> Self {
         let params = ParamStore::new(&PARAMS);
-        let shared = Arc::new(SharedState::new(params, host));
+        let shared = Arc::new(SharedState::new(params, host, channels));
         Self {
             shared,
             active: AtomicBool::new(false),

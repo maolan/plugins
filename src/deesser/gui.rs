@@ -107,7 +107,6 @@ fn view(state: &State) -> Element<'_, Message> {
     let p = |id: ParamId| state.shared.params.get(id) as f32;
 
     let content = column![
-        text("Maolan DeEsser (Stereo)").size(24),
         row![
             knob(
                 "Intensity",

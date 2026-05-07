@@ -128,7 +128,6 @@ fn view(state: &State) -> Element<'_, Message> {
     }
 
     let content = column![
-        text("Maolan Reverb (Stereo)").size(24),
         row![
             knob(ParamId::Replace, "Replace", state),
             knob(ParamId::Brightness, "Brightness", state),

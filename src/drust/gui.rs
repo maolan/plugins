@@ -610,7 +610,6 @@ fn view(state: &State) -> Element<'_, Message> {
     };
 
     let content = column![
-        text("Drust").size(20),
         loaded_label,
         kit_dropdown,
         variation_dropdown,

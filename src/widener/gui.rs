@@ -107,9 +107,7 @@ fn view(state: &State) -> Element<'_, Message> {
     let p = |id: ParamId| state.shared.params.get(id) as f32;
     let b = |id: ParamId| state.shared.params.get(id) >= 0.5;
 
-    let mut content = column![text("Maolan Widener (Stereo)").size(24)]
-        .spacing(16)
-        .align_x(Alignment::Start);
+    let mut content = column![].spacing(16).align_x(Alignment::Start);
 
     content = content.push(
         row![

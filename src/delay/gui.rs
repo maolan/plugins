@@ -144,7 +144,6 @@ fn view(state: &State) -> Element<'_, Message> {
     }
 
     let content = column![
-        text("Maolan Delay (Stereo)").size(24),
         row![
             knob(ParamId::TimeMode, "Mode", state),
             knob(ParamId::TimeMs, "Time (ms)", state),

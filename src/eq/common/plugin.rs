@@ -2,16 +2,23 @@ use crate::eq::common::params::{ParamIdExt, ParamStore};
 use clap_clap::ffi::clap_host;
 use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
+const FADER_MIN_DB: f32 = -90.0;
+
 pub struct SharedState<T: ParamIdExt> {
     pub params: ParamStore<T>,
     pub sample_rate_bits: AtomicU64,
     pub pending_param_notifications: Vec<AtomicU32>,
     pub local_param_overrides: Vec<AtomicU32>,
     pub host: AtomicPtr<clap_host>,
+    pub input_level_left_db_bits: AtomicU32,
+    pub input_level_right_db_bits: AtomicU32,
+    pub output_level_left_db_bits: AtomicU32,
+    pub output_level_right_db_bits: AtomicU32,
+    pub channels: AtomicU32,
 }
 
 impl<T: ParamIdExt> SharedState<T> {
-    pub fn new(params: ParamStore<T>, host: *const clap_host) -> Self {
+    pub fn new(params: ParamStore<T>, host: *const clap_host, channels: u32) -> Self {
         let count = T::count();
         let words = count.div_ceil(32);
         let mut pending = Vec::with_capacity(words);
@@ -26,6 +33,11 @@ impl<T: ParamIdExt> SharedState<T> {
             pending_param_notifications: pending,
             local_param_overrides: local,
             host: AtomicPtr::new(host.cast_mut()),
+            input_level_left_db_bits: AtomicU32::new(FADER_MIN_DB.to_bits()),
+            input_level_right_db_bits: AtomicU32::new(FADER_MIN_DB.to_bits()),
+            output_level_left_db_bits: AtomicU32::new(FADER_MIN_DB.to_bits()),
+            output_level_right_db_bits: AtomicU32::new(FADER_MIN_DB.to_bits()),
+            channels: AtomicU32::new(channels),
         }
     }
 
@@ -99,6 +111,42 @@ impl<T: ParamIdExt> SharedState<T> {
                 mark_dirty(host);
             }
         }
+    }
+
+    pub fn set_input_level_left_db(&self, db: f32) {
+        self.input_level_left_db_bits
+            .store(db.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn set_input_level_right_db(&self, db: f32) {
+        self.input_level_right_db_bits
+            .store(db.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn input_level_left_db(&self) -> f32 {
+        f32::from_bits(self.input_level_left_db_bits.load(Ordering::Relaxed))
+    }
+
+    pub fn input_level_right_db(&self) -> f32 {
+        f32::from_bits(self.input_level_right_db_bits.load(Ordering::Relaxed))
+    }
+
+    pub fn set_output_level_left_db(&self, db: f32) {
+        self.output_level_left_db_bits
+            .store(db.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn set_output_level_right_db(&self, db: f32) {
+        self.output_level_right_db_bits
+            .store(db.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn output_level_left_db(&self) -> f32 {
+        f32::from_bits(self.output_level_left_db_bits.load(Ordering::Relaxed))
+    }
+
+    pub fn output_level_right_db(&self) -> f32 {
+        f32::from_bits(self.output_level_right_db_bits.load(Ordering::Relaxed))
     }
 
     pub fn request_gui_closed(&self) {

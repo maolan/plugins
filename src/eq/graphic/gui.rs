@@ -14,13 +14,13 @@ use crate::eq::graphic::params::{PARAMS, ParamId};
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{checkbox, column, container, row, scrollable, text},
+    widget::{column, container, row, scrollable, text},
 };
-use maolan_widgets::arch_slider::arch_slider;
+use maolan_widgets::meters::meters;
 use maolan_widgets::slider::slider;
 
-pub const EDITOR_WIDTH: u32 = 800;
-pub const EDITOR_HEIGHT: u32 = 400;
+pub const EDITOR_WIDTH: u32 = 900;
+pub const EDITOR_HEIGHT: u32 = 200;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -48,48 +48,59 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
 
 fn view(state: &State) -> Element<'_, Message> {
     let p = |id: ParamId| state.shared.params.get(id) as f32;
-    let b = |id: ParamId| state.shared.params.get_bool(id);
 
-    let mut content = column![text("Maolan Graphic EQ").size(24)]
-        .spacing(10)
-        .align_x(Alignment::Start);
+    let mut content = column![].spacing(10).align_x(Alignment::Start);
 
-    content = content.push(
-        row![
-            knob(
-                "Input".to_string(),
-                ParamId::InputGain,
-                p(ParamId::InputGain),
-                "dB",
-                0.1
-            ),
-            knob(
-                "Output".to_string(),
-                ParamId::OutputGain,
-                p(ParamId::OutputGain),
-                "dB",
-                0.1
-            ),
-            checkbox(b(ParamId::Bypass))
-                .label("Bypass")
-                .on_toggle(|v| Message::SetBoolParam(ParamId::Bypass, v)),
+    let ch = state
+        .shared
+        .channels
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .clamp(1, 2) as usize;
+    let input_levels_db: Vec<f32> = if ch == 1 {
+        vec![state.shared.input_level_left_db()]
+    } else {
+        vec![
+            state.shared.input_level_left_db(),
+            state.shared.input_level_right_db(),
         ]
-        .spacing(14)
-        .align_y(Alignment::Center),
-    );
+    };
+    let output_levels_db: Vec<f32> = if ch == 1 {
+        vec![state.shared.output_level_left_db()]
+    } else {
+        vec![
+            state.shared.output_level_left_db(),
+            state.shared.output_level_right_db(),
+        ]
+    };
 
-    content = content.push(text("32 Bands").size(18));
     let mut graphic_bands = row![].spacing(10);
     for i in 0..32 {
         graphic_bands = graphic_bands.push(graphic_band(state, i));
     }
-    content = content.push(
+
+    let mut graphic_row =
+        row![container(meters(ch, &input_levels_db, 150.0)).height(Length::Fill)].spacing(10);
+    graphic_row = graphic_row.push(
         scrollable(graphic_bands)
             .direction(scrollable::Direction::Horizontal(Default::default()))
             .height(Length::Fixed(150.0)),
     );
+    graphic_row =
+        graphic_row.push(container(meters(ch, &output_levels_db, 150.0)).height(Length::Fill));
 
-    container(scrollable(content))
+    let parameters = column![graphic_row].spacing(10).align_x(Alignment::Center);
+
+    content = content.push(
+        row![
+            gain_slider(ParamId::InputGain, p(ParamId::InputGain)),
+            parameters,
+            gain_slider(ParamId::OutputGain, p(ParamId::OutputGain)),
+        ]
+        .spacing(14)
+        .align_y(Alignment::Start),
+    );
+
+    container(content)
         .padding(16)
         .width(Length::Fill)
         .height(Length::Fill)
@@ -101,73 +112,53 @@ fn view(state: &State) -> Element<'_, Message> {
 fn graphic_band(state: &State, index: usize) -> Element<'_, Message> {
     let p = |id: ParamId| state.shared.params.get(id) as f32;
     let id = ParamId::graphic_gain(index);
-    let label = format!("G{:02}", index + 1);
 
-    vertical_knob(label, id, p(id), "dB", 0.1)
+    vertical_knob(id, p(id), 0.1)
 }
 
 fn theme(_state: &State) -> Theme {
     Theme::TokyoNight
 }
 
-fn vertical_knob(
-    label: String,
-    id: ParamId,
-    value: f32,
-    _units: &'static str,
-    step: f32,
-) -> Element<'static, Message> {
+fn vertical_knob(id: ParamId, value: f32, step: f32) -> Element<'static, Message> {
     let def = PARAMS[id.as_index()];
     let slider = slider(def.min as f32..=def.max as f32, value, move |v| {
         Message::SetParam(id, v)
     })
     .step(step)
     .double_click_reset(def.default as f32)
-    .width(Length::Fixed(20.0))
+    .width(Length::Fixed(10.0))
     .height(Length::Fixed(100.0));
 
     let value_text = format!("{value:.1}");
 
     container(
-        column![text(label).size(12), slider, text(value_text).size(11)]
+        column![slider, text(value_text).size(11)]
             .spacing(3)
             .align_x(Alignment::Center),
     )
-    .width(Length::Fixed(40.0))
+    .width(Length::Fixed(12.0))
     .into()
 }
 
-fn knob(
-    label: String,
-    id: ParamId,
-    value: f32,
-    units: &'static str,
-    step: f32,
-) -> Element<'static, Message> {
+fn gain_slider(id: ParamId, value: f32) -> Element<'static, Message> {
     let def = PARAMS[id.as_index()];
-    let slider = arch_slider(def.min as f32..=def.max as f32, value, move |v| {
+    let s = slider(def.min as f32..=def.max as f32, value, move |v| {
         Message::SetParam(id, v)
     })
-    .step(step)
+    .step(def.step as f32)
     .double_click_reset(def.default as f32)
-    .fill_from_start()
-    .width(Length::Fixed(41.0))
-    .height(Length::Fixed(41.0));
+    .width(Length::Fixed(20.0))
+    .height(Length::Fixed(100.0));
 
-    let value_text = if units.is_empty() {
-        format!("{value:.2}")
-    } else if units == "Hz" {
-        format!("{value:.0} {units}")
-    } else {
-        format!("{value:.1} {units}")
-    };
+    let value_text = format!("{value:.1} dB");
 
     container(
-        column![text(label).size(11), slider, text(value_text).size(10)]
+        column![s, text(value_text).size(10)]
             .spacing(2)
             .align_x(Alignment::Center),
     )
-    .width(Length::Fixed(50.0))
+    .width(Length::Fixed(40.0))
     .into()
 }
 

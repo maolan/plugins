@@ -108,7 +108,6 @@ fn view(state: &State) -> Element<'_, Message> {
     let mode = crate::monitoring::params::Mode::from_raw(p(ParamId::Mode) as u32);
 
     let content = column![
-        text("Maolan Monitoring (Stereo)").size(24),
         row![knob("Mode", ParamId::Mode, p(ParamId::Mode), "", 1.0),]
             .spacing(16)
             .align_y(Alignment::Center),

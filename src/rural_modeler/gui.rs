@@ -572,9 +572,7 @@ fn view(state: &State) -> Element<'_, Message> {
     let p = |id: ParamId| state.shared.params.get(id) as f32;
     let b = |id: ParamId| state.shared.params.get_bool(id);
 
-    let mut content = column![text("Rural Modeler").size(24)]
-        .spacing(12)
-        .align_x(Alignment::Start);
+    let mut content = column![].spacing(12).align_x(Alignment::Start);
 
     content = content.push(
         row![

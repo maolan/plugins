@@ -110,9 +110,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
 fn view(state: &State) -> Element<'_, Message> {
     let p = |id: ParamId| state.shared.params.get(id) as f32;
 
-    let mut content = column![text("Maolan Limiter (Stereo)").size(24)]
-        .spacing(12)
-        .align_x(Alignment::Start);
+    let mut content = column![].spacing(12).align_x(Alignment::Start);
 
     let variant = state.shared.params.get_enum(ParamId::Variant).min(1);
     content = content.push(
