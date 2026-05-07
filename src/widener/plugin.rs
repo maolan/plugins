@@ -36,7 +36,7 @@ use crate::widener::{
     state::PluginState,
 };
 
-const PLUGIN_ID: &[u8] = b"rs.maolan.widener.stereo\0";
+const PLUGIN_ID: &[u8] = b"rs.maolan.widener\0";
 const PLUGIN_NAME: &[u8] = b"Maolan Widener\0";
 const PLUGIN_VENDOR: &[u8] = b"Maolan\0";
 const PLUGIN_URL: &[u8] = b"\0";

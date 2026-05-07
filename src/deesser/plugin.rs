@@ -36,7 +36,7 @@ use crate::deesser::{
     state::PluginState,
 };
 
-const PLUGIN_ID: &[u8] = b"rs.maolan.deesser.stereo\0";
+const PLUGIN_ID: &[u8] = b"rs.maolan.deesser\0";
 const PLUGIN_NAME: &[u8] = b"Maolan DeEsser\0";
 const PLUGIN_VENDOR: &[u8] = b"Maolan\0";
 const PLUGIN_URL: &[u8] = b"\0";
