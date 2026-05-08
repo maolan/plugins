@@ -11,25 +11,27 @@ use std::{
 use clap_clap::{
     events::{EventBuilder, InputEvents, OutputEvents, ParamValue},
     ffi::{
-        CLAP_AUDIO_PORT_IS_MAIN, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE,
-        CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL,
-        CLAP_INVALID_ID, CLAP_PLUGIN_FEATURE_AUDIO_EFFECT, CLAP_PLUGIN_FEATURE_EQUALIZER,
-        CLAP_PLUGIN_FEATURE_MONO, CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_MONO,
-        CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_COCOA, CLAP_WINDOW_API_WIN32,
-        CLAP_WINDOW_API_X11, clap_audio_port_info, clap_host, clap_id, clap_istream, clap_ostream,
-        clap_param_info, clap_plugin, clap_plugin_audio_ports, clap_plugin_descriptor,
-        clap_plugin_factory, clap_plugin_gui, clap_plugin_params, clap_plugin_state,
-        clap_plugin_tail, clap_process, clap_process_status, clap_window,
+        CLAP_AUDIO_PORT_IS_MAIN, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_GESTURE_BEGIN,
+        CLAP_EVENT_PARAM_GESTURE_END, CLAP_EVENT_PARAM_VALUE, CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI,
+        CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL, CLAP_INVALID_ID,
+        CLAP_PLUGIN_FEATURE_AUDIO_EFFECT, CLAP_PLUGIN_FEATURE_EQUALIZER, CLAP_PLUGIN_FEATURE_MONO,
+        CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION,
+        CLAP_WINDOW_API_COCOA, CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info,
+        clap_event_header, clap_event_param_gesture, clap_host, clap_id, clap_istream,
+        clap_ostream, clap_param_info, clap_plugin, clap_plugin_audio_ports,
+        clap_plugin_descriptor, clap_plugin_factory, clap_plugin_gui, clap_plugin_params,
+        clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status, clap_window,
     },
     id::ClapId,
     process::Process,
     stream::{IStream, OStream},
 };
 use parking_lot::Mutex;
+use std::mem::size_of;
 
 use crate::eq::common::gui::{ParentWindowHandle, is_api_supported, preferred_api};
 use crate::eq::common::params::{ParamIdExt, ParamStore, copy_str_to_array, sanitize_param_value};
-use crate::eq::common::plugin::SharedState;
+use crate::eq::common::plugin::{SPECTRUM_BINS, SharedState};
 use crate::eq::common::state::PluginState;
 use crate::eq::graphic::dsp::GraphicEqualizer;
 use crate::eq::graphic::gui::{EDITOR_HEIGHT, EDITOR_WIDTH, GuiBridge};
@@ -134,6 +136,7 @@ impl AudioProcessor {
         shared: &SharedState<ParamId>,
         process: &mut Process,
     ) -> clap_process_status {
+        let ui_visible = shared.is_ui_visible();
         self.apply_params(shared);
         apply_param_events(shared, &process.in_events());
         {
@@ -170,26 +173,28 @@ impl AudioProcessor {
                 output_r.data32(0)[..frames].copy_from_slice(&self.temp_right[..frames]);
             }
 
-            let in_peak_l = self.temp_left[..frames]
-                .iter()
-                .map(|s| s.abs())
-                .fold(0.0f32, f32::max);
-            let in_peak_r = self.temp_right[..frames]
-                .iter()
-                .map(|s| s.abs())
-                .fold(0.0f32, f32::max);
-            let in_db_l = if in_peak_l > 0.0 {
-                20.0 * in_peak_l.log10()
-            } else {
-                -90.0
-            };
-            let in_db_r = if in_peak_r > 0.0 {
-                20.0 * in_peak_r.log10()
-            } else {
-                -90.0
-            };
-            shared.set_input_level_left_db(in_db_l.clamp(-90.0, 20.0));
-            shared.set_input_level_right_db(in_db_r.clamp(-90.0, 20.0));
+            if ui_visible {
+                let in_peak_l = self.temp_left[..frames]
+                    .iter()
+                    .map(|s| s.abs())
+                    .fold(0.0f32, f32::max);
+                let in_peak_r = self.temp_right[..frames]
+                    .iter()
+                    .map(|s| s.abs())
+                    .fold(0.0f32, f32::max);
+                let in_db_l = if in_peak_l > 0.0 {
+                    20.0 * in_peak_l.log10()
+                } else {
+                    -90.0
+                };
+                let in_db_r = if in_peak_r > 0.0 {
+                    20.0 * in_peak_r.log10()
+                } else {
+                    -90.0
+                };
+                shared.set_input_level_left_db(in_db_l.clamp(-90.0, 20.0));
+                shared.set_input_level_right_db(in_db_r.clamp(-90.0, 20.0));
+            }
 
             self.equalizer.process_stereo(
                 &mut self.temp_left[..frames],
@@ -205,62 +210,130 @@ impl AudioProcessor {
                 output_r.data32(0)[..frames].copy_from_slice(&self.temp_right[..frames]);
             }
 
-            let out_peak_l = self.temp_left[..frames]
-                .iter()
-                .map(|s| s.abs())
-                .fold(0.0f32, f32::max);
-            let out_peak_r = self.temp_right[..frames]
-                .iter()
-                .map(|s| s.abs())
-                .fold(0.0f32, f32::max);
-            let out_db_l = if out_peak_l > 0.0 {
-                20.0 * out_peak_l.log10()
-            } else {
-                -90.0
-            };
-            let out_db_r = if out_peak_r > 0.0 {
-                20.0 * out_peak_r.log10()
-            } else {
-                -90.0
-            };
-            shared.set_output_level_left_db(out_db_l.clamp(-90.0, 20.0));
-            shared.set_output_level_right_db(out_db_r.clamp(-90.0, 20.0));
+            if ui_visible {
+                let out_peak_l = self.temp_left[..frames]
+                    .iter()
+                    .map(|s| s.abs())
+                    .fold(0.0f32, f32::max);
+                let out_peak_r = self.temp_right[..frames]
+                    .iter()
+                    .map(|s| s.abs())
+                    .fold(0.0f32, f32::max);
+                let out_db_l = if out_peak_l > 0.0 {
+                    20.0 * out_peak_l.log10()
+                } else {
+                    -90.0
+                };
+                let out_db_r = if out_peak_r > 0.0 {
+                    20.0 * out_peak_r.log10()
+                } else {
+                    -90.0
+                };
+                shared.set_output_level_left_db(out_db_l.clamp(-90.0, 20.0));
+                shared.set_output_level_right_db(out_db_r.clamp(-90.0, 20.0));
+                let spectrum = analyze_output_spectrum_stereo(
+                    &self.temp_left[..frames],
+                    &self.temp_right[..frames],
+                    self.equalizer.sample_rate(),
+                );
+                shared.set_output_spectrum_db(&spectrum);
+            }
         } else if inputs_count >= 1 && outputs_count >= 1 {
             let input_port = process.audio_inputs(0);
             self.temp_left[..frames].copy_from_slice(input_port.data32(0));
 
-            let in_peak_l = self.temp_left[..frames]
-                .iter()
-                .map(|s| s.abs())
-                .fold(0.0f32, f32::max);
-            let in_db_l = if in_peak_l > 0.0 {
-                20.0 * in_peak_l.log10()
-            } else {
-                -90.0
-            };
-            shared.set_input_level_left_db(in_db_l.clamp(-90.0, 20.0));
-            shared.set_input_level_right_db(in_db_l.clamp(-90.0, 20.0));
+            if ui_visible {
+                let in_peak_l = self.temp_left[..frames]
+                    .iter()
+                    .map(|s| s.abs())
+                    .fold(0.0f32, f32::max);
+                let in_db_l = if in_peak_l > 0.0 {
+                    20.0 * in_peak_l.log10()
+                } else {
+                    -90.0
+                };
+                shared.set_input_level_left_db(in_db_l.clamp(-90.0, 20.0));
+                shared.set_input_level_right_db(in_db_l.clamp(-90.0, 20.0));
+            }
 
             self.equalizer.process_mono(&mut self.temp_left[..frames]);
 
             let mut output_port = process.audio_outputs(0);
             output_port.data32(0)[..frames].copy_from_slice(&self.temp_left[..frames]);
 
-            let out_peak_l = self.temp_left[..frames]
-                .iter()
-                .map(|s| s.abs())
-                .fold(0.0f32, f32::max);
-            let out_db_l = if out_peak_l > 0.0 {
-                20.0 * out_peak_l.log10()
-            } else {
-                -90.0
-            };
-            shared.set_output_level_left_db(out_db_l.clamp(-90.0, 20.0));
-            shared.set_output_level_right_db(out_db_l.clamp(-90.0, 20.0));
+            if ui_visible {
+                let out_peak_l = self.temp_left[..frames]
+                    .iter()
+                    .map(|s| s.abs())
+                    .fold(0.0f32, f32::max);
+                let out_db_l = if out_peak_l > 0.0 {
+                    20.0 * out_peak_l.log10()
+                } else {
+                    -90.0
+                };
+                shared.set_output_level_left_db(out_db_l.clamp(-90.0, 20.0));
+                shared.set_output_level_right_db(out_db_l.clamp(-90.0, 20.0));
+                let spectrum = analyze_output_spectrum_mono(
+                    &self.temp_left[..frames],
+                    self.equalizer.sample_rate(),
+                );
+                shared.set_output_spectrum_db(&spectrum);
+            }
         }
 
         CLAP_PROCESS_CONTINUE
     }
+}
+
+fn analyze_output_spectrum_mono(samples: &[f32], sample_rate: f32) -> [f32; SPECTRUM_BINS] {
+    analyze_output_spectrum_impl(samples, None, sample_rate)
+}
+
+fn analyze_output_spectrum_stereo(
+    left: &[f32],
+    right: &[f32],
+    sample_rate: f32,
+) -> [f32; SPECTRUM_BINS] {
+    analyze_output_spectrum_impl(left, Some(right), sample_rate)
+}
+
+fn analyze_output_spectrum_impl(
+    left: &[f32],
+    right: Option<&[f32]>,
+    sample_rate: f32,
+) -> [f32; SPECTRUM_BINS] {
+    let mut out = [-90.0_f32; SPECTRUM_BINS];
+    let n = left.len().min(1024);
+    if n < 32 || sample_rate <= 0.0 {
+        return out;
+    }
+
+    for (bin, out_db) in out.iter_mut().enumerate() {
+        let t = bin as f32 / (SPECTRUM_BINS.saturating_sub(1).max(1) as f32);
+        let freq = 20.0_f32 * (20_000.0_f32 / 20.0_f32).powf(t);
+        let omega =
+            (2.0 * std::f32::consts::PI * freq / sample_rate).clamp(0.0, std::f32::consts::PI);
+        let mut re = 0.0_f32;
+        let mut im = 0.0_f32;
+        for i in 0..n {
+            let mut x = left[i];
+            if let Some(r) = right {
+                x = 0.5 * (x + r[i]);
+            }
+            let w = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (n as f32 - 1.0)).cos();
+            let s = x * w;
+            let phase = omega * i as f32;
+            re += s * phase.cos();
+            im -= s * phase.sin();
+        }
+        let mag = (re * re + im * im).sqrt() / (n as f32);
+        *out_db = if mag > 1.0e-8 {
+            (20.0 * mag.log10()).clamp(-90.0, 20.0)
+        } else {
+            -90.0
+        };
+    }
+    out
 }
 
 struct PluginInstance {
@@ -312,22 +385,37 @@ fn apply_param_events(shared: &SharedState<ParamId>, events: &InputEvents<'_>) {
         if header.space_id() != CLAP_CORE_EVENT_SPACE_ID {
             continue;
         }
-        if header.r#type() != CLAP_EVENT_PARAM_VALUE as u16 {
-            continue;
-        }
-        if let Ok(param) = header.param_value() {
-            let raw: u32 = param.param_id().into();
-            if let Some(id) = ParamId::from_raw(raw) {
-                let incoming = sanitize_param_value(id, param.value(), &PARAMS);
-                if shared.has_local_param_override(id) {
-                    let current = shared.params.get(id);
-                    if (incoming - current).abs() > 1.0e-9 {
-                        continue;
-                    }
-                    shared.clear_local_param_override(id);
-                }
-                shared.params.set(id, incoming);
+        match header.r#type() {
+            t if t == CLAP_EVENT_PARAM_GESTURE_BEGIN as u16 => {
+                shared.active_gesture_count.fetch_add(1, Ordering::AcqRel);
             }
+            t if t == CLAP_EVENT_PARAM_GESTURE_END as u16 => {
+                let mut current = shared.active_gesture_count.load(Ordering::Acquire);
+                while current != 0 {
+                    match shared.active_gesture_count.compare_exchange_weak(
+                        current,
+                        current - 1,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => break,
+                        Err(next) => current = next,
+                    }
+                }
+            }
+            t if t == CLAP_EVENT_PARAM_VALUE as u16 => {
+                if let Ok(param) = header.param_value() {
+                    let raw: u32 = param.param_id().into();
+                    if let Some(id) = ParamId::from_raw(raw) {
+                        if shared.any_gesture_active() {
+                            continue;
+                        }
+                        let incoming = sanitize_param_value(id, param.value(), &PARAMS);
+                        shared.params.set(id, incoming);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -336,12 +424,17 @@ fn emit_pending_param_events_to_host(
     shared: &SharedState<ParamId>,
     out_events: &mut OutputEvents<'_>,
 ) {
+    let pending_begin = shared.take_pending_gesture_begin_bits();
     let mut pending = vec![0_u32; shared.pending_param_notifications.len()];
     for (i, atomic) in shared.pending_param_notifications.iter().enumerate() {
         pending[i] = atomic.swap(0, Ordering::AcqRel);
     }
+    let pending_end = shared.take_pending_gesture_end_bits();
 
-    if pending.iter().all(|&bits| bits == 0) {
+    if pending.iter().all(|&bits| bits == 0)
+        && pending_begin.iter().all(|&bits| bits == 0)
+        && pending_end.iter().all(|&bits| bits == 0)
+    {
         return;
     }
 
@@ -350,22 +443,71 @@ fn emit_pending_param_events_to_host(
         let idx = id.as_index();
         let word = idx / 32;
         let bit = 1_u32 << (idx % 32);
-        if pending[word] & bit == 0 {
-            continue;
+        if pending_begin[word] & bit != 0 {
+            let begin = ParamGesture::begin(ClapId::from(id as u16));
+            if out_events.try_push(begin).is_err() {
+                failed[word] |= bit;
+            }
         }
-        let event_builder = ParamValue::build()
-            .param_id(ClapId::from(id as u16))
-            .value(shared.params.get(id));
-        let event = event_builder.event();
-        if out_events.try_push(event).is_err() {
-            failed[word] |= bit;
+
+        if pending[word] & bit != 0 {
+            let event_builder = ParamValue::build()
+                .param_id(ClapId::from(id as u16))
+                .value(shared.take_pending_param_value_or_current(id));
+            let event = event_builder.event();
+            if out_events.try_push(event).is_err() {
+                failed[word] |= bit;
+            }
+        }
+
+        if pending_end[word] & bit != 0 {
+            let end = ParamGesture::end(ClapId::from(id as u16));
+            if out_events.try_push(end).is_err() {
+                failed[word] |= bit;
+            }
         }
     }
 
     for (i, bit) in failed.iter().enumerate() {
         if *bit != 0 {
             shared.pending_param_notifications[i].fetch_or(*bit, Ordering::AcqRel);
+            shared.pending_gesture_begin[i].fetch_or(*bit, Ordering::AcqRel);
+            shared.pending_gesture_end[i].fetch_or(*bit, Ordering::AcqRel);
         }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+struct ParamGesture {
+    inner: clap_event_param_gesture,
+}
+
+impl ParamGesture {
+    fn begin(id: ClapId) -> Self {
+        Self::new(id, CLAP_EVENT_PARAM_GESTURE_BEGIN as u16)
+    }
+    fn end(id: ClapId) -> Self {
+        Self::new(id, CLAP_EVENT_PARAM_GESTURE_END as u16)
+    }
+    fn new(id: ClapId, event_type: u16) -> Self {
+        Self {
+            inner: clap_event_param_gesture {
+                header: clap_event_header {
+                    size: size_of::<clap_event_param_gesture>() as u32,
+                    time: 0,
+                    space_id: CLAP_CORE_EVENT_SPACE_ID,
+                    r#type: event_type,
+                    flags: 0,
+                },
+                param_id: id.into(),
+            },
+        }
+    }
+}
+
+impl clap_clap::events::Event for ParamGesture {
+    fn header(&self) -> &clap_clap::events::Header {
+        unsafe { clap_clap::events::Header::new_unchecked(&self.inner.header) }
     }
 }
 

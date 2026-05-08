@@ -55,6 +55,10 @@ impl GraphicEqualizer {
         self.bypass = bypass;
     }
 
+    pub fn sample_rate(&self) -> f32 {
+        self.sample_rate
+    }
+
     pub fn set_graphic_gain(&mut self, idx: usize, gain: f32) {
         if idx >= 32 {
             return;

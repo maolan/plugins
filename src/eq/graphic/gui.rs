@@ -1,47 +1,90 @@
 use std::{
+    collections::HashSet,
     ffi::CStr,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
     thread,
+    time::Duration,
 };
 
 use crate::eq::common::gui::{AnyWindowHandle, ParentWindowHandle, is_api_supported};
 use crate::eq::common::params::ParamIdExt;
-use crate::eq::common::plugin::SharedState;
+use crate::eq::common::plugin::{SPECTRUM_BINS, SharedState};
 use crate::eq::graphic::params::{PARAMS, ParamId};
 use maolan_baseview::iced::{
-    Alignment, Element, Length, Task, Theme,
+    Alignment, Background, Color, Element, Length, Point, Rectangle, Renderer, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{column, container, row, scrollable, text},
+    mouse,
+    widget::{
+        canvas,
+        canvas::{Frame, Geometry, Path, Program},
+        column, container, row, scrollable,
+        scrollable::Scrollbar,
+        text,
+    },
 };
 use maolan_widgets::meters::meters;
 use maolan_widgets::slider::slider;
 
 pub const EDITOR_WIDTH: u32 = 900;
-pub const EDITOR_HEIGHT: u32 = 200;
+pub const EDITOR_HEIGHT: u32 = 380;
 
 #[derive(Debug, Clone)]
 pub enum Message {
     SetParam(ParamId, f32),
     SetBoolParam(ParamId, bool),
+    ReleaseParam(ParamId),
+    UiTick,
 }
 
 struct State {
     shared: Arc<SharedState<ParamId>>,
+    active_gestures: HashSet<ParamId>,
 }
 
 fn init(shared: Arc<SharedState<ParamId>>) -> (State, Task<Message>) {
-    (State { shared }, Task::none())
+    (
+        State {
+            shared,
+            active_gestures: HashSet::new(),
+        },
+        next_ui_tick_task(),
+    )
+}
+
+fn next_ui_tick_task() -> Task<Message> {
+    Task::perform(
+        async move {
+            thread::sleep(Duration::from_millis(33));
+        },
+        |_| Message::UiTick,
+    )
 }
 
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
-        Message::SetParam(id, value) => state.shared.set_param(id, value as f64),
-        Message::SetBoolParam(id, value) => {
-            state.shared.set_param(id, if value { 1.0 } else { 0.0 })
+        Message::SetParam(id, value) => {
+            if state.active_gestures.insert(id) {
+                state.shared.mark_gesture_begin_pending(id);
+            }
+            state.shared.set_param_outbound_only(id, value as f64);
         }
+        Message::SetBoolParam(id, value) => {
+            if state.active_gestures.insert(id) {
+                state.shared.mark_gesture_begin_pending(id);
+            }
+            state
+                .shared
+                .set_param_outbound_only(id, if value { 1.0 } else { 0.0 })
+        }
+        Message::ReleaseParam(id) => {
+            if state.active_gestures.remove(&id) {
+                state.shared.mark_gesture_end_pending(id);
+            }
+        }
+        Message::UiTick => return next_ui_tick_task(),
     }
     Task::none()
 }
@@ -82,28 +125,37 @@ fn view(state: &State) -> Element<'_, Message> {
         row![container(meters(ch, &input_levels_db, 150.0)).height(Length::Fill)].spacing(10);
     graphic_row = graphic_row.push(
         scrollable(graphic_bands)
-            .direction(scrollable::Direction::Horizontal(Default::default()))
+            .direction(scrollable::Direction::Horizontal(Scrollbar::hidden()))
             .height(Length::Fixed(150.0)),
     );
     graphic_row =
         graphic_row.push(container(meters(ch, &output_levels_db, 150.0)).height(Length::Fill));
 
     let parameters = column![graphic_row].spacing(10).align_x(Alignment::Center);
+    let output_spectrum_db = state.shared.output_spectrum_db();
 
     content = content.push(
-        row![
-            gain_slider(ParamId::InputGain, p(ParamId::InputGain)),
-            parameters,
-            gain_slider(ParamId::OutputGain, p(ParamId::OutputGain)),
+        column![
+            output_spectrum_graph(output_spectrum_db),
+            row![
+                gain_slider(ParamId::InputGain, p(ParamId::InputGain)),
+                parameters,
+                gain_slider(ParamId::OutputGain, p(ParamId::OutputGain)),
+            ]
+            .spacing(14)
+            .align_y(Alignment::Start),
         ]
-        .spacing(14)
-        .align_y(Alignment::Start),
+        .spacing(10),
     );
 
     container(content)
         .padding(16)
         .width(Length::Fill)
         .height(Length::Fill)
+        .style(|_theme| maolan_baseview::iced::widget::container::Style {
+            background: Some(Background::Color(Color::from_rgb(0.10, 0.11, 0.14))),
+            ..Default::default()
+        })
         .align_x(Horizontal::Left)
         .align_y(Vertical::Top)
         .into()
@@ -127,6 +179,7 @@ fn vertical_knob(id: ParamId, value: f32, step: f32) -> Element<'static, Message
     })
     .step(step)
     .double_click_reset(def.default as f32)
+    .on_release(Message::ReleaseParam(id))
     .width(Length::Fixed(10.0))
     .height(Length::Fixed(100.0));
 
@@ -148,6 +201,7 @@ fn gain_slider(id: ParamId, value: f32) -> Element<'static, Message> {
     })
     .step(def.step as f32)
     .double_click_reset(def.default as f32)
+    .on_release(Message::ReleaseParam(id))
     .width(Length::Fixed(20.0))
     .height(Length::Fixed(100.0));
 
@@ -166,6 +220,137 @@ fn build_app(shared: Arc<SharedState<ParamId>>) -> impl maolan_baseview::iced::P
     maolan_baseview::iced::application(move || init(shared.clone()), update, view)
         .theme(theme)
         .run()
+}
+
+#[derive(Clone)]
+struct SpectrumCanvas {
+    output_spectrum_db: [f32; SPECTRUM_BINS],
+}
+
+impl SpectrumCanvas {
+    const F_MIN: f32 = 20.0;
+    const F_MAX: f32 = 20_000.0;
+    const S_MIN: f32 = -90.0;
+    const S_MAX: f32 = 0.0;
+
+    fn freq_to_x(freq: f32, bounds: Rectangle) -> f32 {
+        let f = freq.clamp(Self::F_MIN, Self::F_MAX);
+        let t = (f / Self::F_MIN).ln() / (Self::F_MAX / Self::F_MIN).ln();
+        bounds.x + t * bounds.width
+    }
+
+    fn spectrum_to_y(db: f32, bounds: Rectangle) -> f32 {
+        let s = db.clamp(Self::S_MIN, Self::S_MAX);
+        let t = (s - Self::S_MIN) / (Self::S_MAX - Self::S_MIN);
+        bounds.y + (1.0 - t) * bounds.height
+    }
+}
+
+impl Program<Message> for SpectrumCanvas {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        frame.fill(
+            &Path::rectangle(Point::new(0.0, 0.0), bounds.size()),
+            Color::from_rgb(0.10, 0.11, 0.14),
+        );
+
+        let h_grid_db = [-90.0_f32, -72.0, -54.0, -36.0, -18.0, 0.0];
+        for db in h_grid_db {
+            let y = Self::spectrum_to_y(
+                db,
+                Rectangle {
+                    x: 0.0,
+                    y: 0.0,
+                    ..bounds
+                },
+            );
+            let path = Path::line(Point::new(0.0, y), Point::new(bounds.width, y));
+            let c = if db == -18.0 {
+                Color::from_rgba(0.85, 0.87, 0.90, 0.24)
+            } else {
+                Color::from_rgba(0.72, 0.76, 0.82, 0.10)
+            };
+            frame.stroke(
+                &path,
+                canvas::Stroke::default().with_color(c).with_width(1.0),
+            );
+        }
+
+        let v_grid_hz = [
+            20.0_f32, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10_000.0, 20_000.0,
+        ];
+        for hz in v_grid_hz {
+            let x = Self::freq_to_x(
+                hz,
+                Rectangle {
+                    x: 0.0,
+                    y: 0.0,
+                    ..bounds
+                },
+            );
+            let path = Path::line(Point::new(x, 0.0), Point::new(x, bounds.height));
+            frame.stroke(
+                &path,
+                canvas::Stroke::default()
+                    .with_color(Color::from_rgba(0.72, 0.76, 0.82, 0.10))
+                    .with_width(1.0),
+            );
+        }
+
+        let spectrum = Path::new(|b| {
+            let mut first = true;
+            for (i, db) in self.output_spectrum_db.iter().enumerate() {
+                let t = i as f32 / (SPECTRUM_BINS.saturating_sub(1).max(1) as f32);
+                let freq = Self::F_MIN * (Self::F_MAX / Self::F_MIN).powf(t);
+                let x = Self::freq_to_x(
+                    freq,
+                    Rectangle {
+                        x: 0.0,
+                        y: 0.0,
+                        ..bounds
+                    },
+                );
+                let y = Self::spectrum_to_y(
+                    *db,
+                    Rectangle {
+                        x: 0.0,
+                        y: 0.0,
+                        ..bounds
+                    },
+                );
+                if first {
+                    b.move_to(Point::new(x, y));
+                    first = false;
+                } else {
+                    b.line_to(Point::new(x, y));
+                }
+            }
+        });
+        frame.stroke(
+            &spectrum,
+            canvas::Stroke::default()
+                .with_color(Color::from_rgba(0.95, 0.95, 0.95, 0.85))
+                .with_width(1.2),
+        );
+
+        vec![frame.into_geometry()]
+    }
+}
+
+fn output_spectrum_graph(output_spectrum_db: [f32; SPECTRUM_BINS]) -> Element<'static, Message> {
+    canvas(SpectrumCanvas { output_spectrum_db })
+        .width(Length::Fill)
+        .height(Length::Fixed(190.0))
+        .into()
 }
 
 pub struct GuiBridge {
@@ -205,6 +390,9 @@ impl GuiBridge {
     }
 
     pub fn destroy(&mut self) {
+        if let Some(shared) = &self.shared {
+            shared.set_ui_visible(false);
+        }
         self.window_handle = None;
         self.shared = None;
         self.floating = false;
@@ -223,6 +411,7 @@ impl GuiBridge {
             self.shared = Some(shared);
             return true;
         }
+        shared.set_ui_visible(true);
 
         let settings = maolan_baseview::iced::IcedBaseviewSettings {
             window: maolan_baseview::iced::baseview::WindowOpenOptions {
@@ -234,7 +423,7 @@ impl GuiBridge {
                 scale: maolan_baseview::iced::baseview::WindowScalePolicy::SystemScaleFactor,
             },
             ignore_non_modifier_keys: false,
-            always_redraw: false,
+            always_redraw: true,
         };
 
         let handle = maolan_baseview::iced::shell::open_parented(
@@ -262,8 +451,10 @@ impl GuiBridge {
                 self.floating_open.store(false, Ordering::Release);
                 return false;
             };
+            shared.set_ui_visible(true);
             let open_flag = self.floating_open.clone();
             thread::spawn(move || {
+                let shared_for_close = shared.clone();
                 let settings = maolan_baseview::iced::IcedBaseviewSettings {
                     window: maolan_baseview::iced::baseview::WindowOpenOptions {
                         title: String::from("Maolan Graphic EQ"),
@@ -275,7 +466,7 @@ impl GuiBridge {
                             maolan_baseview::iced::baseview::WindowScalePolicy::SystemScaleFactor,
                     },
                     ignore_non_modifier_keys: false,
-                    always_redraw: false,
+                    always_redraw: true,
                 };
                 maolan_baseview::iced::shell::open_blocking(
                     settings,
@@ -283,12 +474,14 @@ impl GuiBridge {
                     move || build_app(shared),
                 );
                 open_flag.store(false, Ordering::Release);
+                shared_for_close.set_ui_visible(false);
             });
         }
         true
     }
 
     pub fn hide(&mut self, shared: Arc<SharedState<ParamId>>) -> bool {
+        shared.set_ui_visible(false);
         if self.floating {
             self.floating_open.store(false, Ordering::Release);
             shared.request_gui_closed();

@@ -6,7 +6,7 @@ use std::sync::LazyLock;
 
 use crate::eq::common::params::{ParamDef, ParamIdExt, copy_str_to_array};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u16)]
 pub enum ParamId {
     InputGain = 0,
@@ -108,6 +108,38 @@ pub enum ParamId {
     Para32Freq = 96,
     Para32Gain = 97,
     Para32Q = 98,
+    Para1On = 99,
+    Para2On = 100,
+    Para3On = 101,
+    Para4On = 102,
+    Para5On = 103,
+    Para6On = 104,
+    Para7On = 105,
+    Para8On = 106,
+    Para9On = 107,
+    Para10On = 108,
+    Para11On = 109,
+    Para12On = 110,
+    Para13On = 111,
+    Para14On = 112,
+    Para15On = 113,
+    Para16On = 114,
+    Para17On = 115,
+    Para18On = 116,
+    Para19On = 117,
+    Para20On = 118,
+    Para21On = 119,
+    Para22On = 120,
+    Para23On = 121,
+    Para24On = 122,
+    Para25On = 123,
+    Para26On = 124,
+    Para27On = 125,
+    Para28On = 126,
+    Para29On = 127,
+    Para30On = 128,
+    Para31On = 129,
+    Para32On = 130,
 }
 
 impl ParamIdExt for ParamId {
@@ -115,7 +147,7 @@ impl ParamIdExt for ParamId {
         self as u16 as usize
     }
     fn count() -> usize {
-        99 // 3 + 32 * 3
+        131 // 3 + 32 * 3 + 32
     }
 }
 
@@ -155,6 +187,11 @@ impl ParamId {
         Self::from_raw(raw as u32).unwrap()
     }
 
+    pub fn para_on(index: usize) -> Self {
+        let raw = 99 + index;
+        Self::from_raw(raw as u32).unwrap()
+    }
+
     pub fn all() -> Vec<ParamId> {
         (0..<Self as ParamIdExt>::count())
             .map(|i| Self::from_raw(i as u32).unwrap())
@@ -178,35 +215,49 @@ pub static PARAMS: LazyLock<Vec<ParamDef<ParamId>>> = LazyLock::new(|| {
                 step: 0.1,
             },
             AUTOMATABLE,
-        ),
-        make_param(
-            ParamId::OutputGain,
-            "Output Gain",
-            "Global",
-            ParamRange {
-                min: -24.0,
-                max: 24.0,
-                default: 0.0,
-                step: 0.1,
-            },
-            AUTOMATABLE,
-        ),
-        make_param(
-            ParamId::Bypass,
-            "Bypass",
-            "Global",
-            ParamRange {
-                min: 0.0,
-                max: 1.0,
-                default: 0.0,
-                step: 1.0,
-            },
-            STEPPED_BOOL,
-        ),
+        );
+        <ParamId as ParamIdExt>::count()
     ];
 
+    params[ParamId::InputGain.as_index()] = make_param(
+        ParamId::InputGain,
+        "Input Gain",
+        "Global",
+        ParamRange {
+            min: -24.0,
+            max: 24.0,
+            default: 0.0,
+            step: 0.1,
+        },
+        AUTOMATABLE,
+    );
+    params[ParamId::OutputGain.as_index()] = make_param(
+        ParamId::OutputGain,
+        "Output Gain",
+        "Global",
+        ParamRange {
+            min: -24.0,
+            max: 24.0,
+            default: 0.0,
+            step: 0.1,
+        },
+        AUTOMATABLE,
+    );
+    params[ParamId::Bypass.as_index()] = make_param(
+        ParamId::Bypass,
+        "Bypass",
+        "Global",
+        ParamRange {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            step: 1.0,
+        },
+        STEPPED_BOOL,
+    );
+
     for i in 0..32 {
-        params.push(make_param(
+        params[ParamId::para_freq(i).as_index()] = make_param(
             ParamId::para_freq(i),
             &format!("P{} Freq", i + 1),
             "Parametric",
@@ -217,8 +268,8 @@ pub static PARAMS: LazyLock<Vec<ParamDef<ParamId>>> = LazyLock::new(|| {
                 step: 1.0,
             },
             AUTOMATABLE,
-        ));
-        params.push(make_param(
+        );
+        params[ParamId::para_gain(i).as_index()] = make_param(
             ParamId::para_gain(i),
             &format!("P{} Gain", i + 1),
             "Parametric",
@@ -229,8 +280,8 @@ pub static PARAMS: LazyLock<Vec<ParamDef<ParamId>>> = LazyLock::new(|| {
                 step: 0.1,
             },
             AUTOMATABLE,
-        ));
-        params.push(make_param(
+        );
+        params[ParamId::para_q(i).as_index()] = make_param(
             ParamId::para_q(i),
             &format!("P{} Q", i + 1),
             "Parametric",
@@ -241,7 +292,19 @@ pub static PARAMS: LazyLock<Vec<ParamDef<ParamId>>> = LazyLock::new(|| {
                 step: 0.01,
             },
             AUTOMATABLE,
-        ));
+        );
+        params[ParamId::para_on(i).as_index()] = make_param(
+            ParamId::para_on(i),
+            &format!("P{} On", i + 1),
+            "Parametric",
+            ParamRange {
+                min: 0.0,
+                max: 1.0,
+                default: 0.0,
+                step: 1.0,
+            },
+            STEPPED_BOOL,
+        );
     }
     params
 });

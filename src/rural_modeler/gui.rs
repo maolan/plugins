@@ -102,6 +102,7 @@ pub enum Message {
     SetParam(ParamId, f32),
     SetBoolParam(ParamId, bool),
     SetOutputMode(u8),
+    ReleaseParam(ParamId),
     ToneModelQueryChanged(String),
     ToneIrQueryChanged(String),
     ToneSearchModels,
@@ -130,6 +131,7 @@ pub enum Message {
 
 struct State {
     shared: Arc<SharedState>,
+    active_gestures: Vec<bool>,
     error: Option<String>,
     loading: Option<String>,
     tone_oauth_client_id: String,
@@ -185,6 +187,7 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
     (
         State {
             shared,
+            active_gestures: vec![false; ParamId::COUNT],
             error: init_error,
             loading: None,
             tone_oauth_client_id,
@@ -335,15 +338,36 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::SetParam(id, value) => {
-            state.shared.set_param(id, value as f64);
+            let idx = id.as_index();
+            if !state.active_gestures[idx] {
+                state.active_gestures[idx] = true;
+                state.shared.mark_gesture_begin_pending(id);
+            }
+            state.shared.set_param_outbound_only(id, value as f64);
+            Task::none()
+        }
+        Message::ReleaseParam(id) => {
+            let idx = id.as_index();
+            if state.active_gestures[idx] {
+                state.active_gestures[idx] = false;
+                state.shared.mark_gesture_end_pending(id);
+            }
             Task::none()
         }
         Message::SetBoolParam(id, value) => {
-            state.shared.set_param(id, if value { 1.0 } else { 0.0 });
+            state.shared.mark_gesture_begin_pending(id);
+            state
+                .shared
+                .set_param_outbound_only(id, if value { 1.0 } else { 0.0 });
+            state.shared.mark_gesture_end_pending(id);
             Task::none()
         }
         Message::SetOutputMode(mode) => {
-            state.shared.set_param(ParamId::OutputMode, mode as f64);
+            state.shared.mark_gesture_begin_pending(ParamId::OutputMode);
+            state
+                .shared
+                .set_param_outbound_only(ParamId::OutputMode, mode as f64);
+            state.shared.mark_gesture_end_pending(ParamId::OutputMode);
             Task::none()
         }
         Message::ToneModelQueryChanged(value) => {
@@ -912,6 +936,7 @@ fn knob(
     })
     .step(step)
     .double_click_reset(def.default as f32)
+    .on_release(Message::ReleaseParam(id))
     .fill_from_start()
     .width(Length::Fixed(86.0))
     .height(Length::Fixed(86.0));

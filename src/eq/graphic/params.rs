@@ -6,7 +6,7 @@ use std::sync::LazyLock;
 
 use crate::eq::common::params::{ParamDef, ParamIdExt, copy_str_to_array};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u16)]
 pub enum ParamId {
     InputGain = 0,

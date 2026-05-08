@@ -91,26 +91,76 @@ pub enum Message {
     SetMode(u8),
     SetScBoost(u8),
     SetTopology(u8),
+    ReleaseParam(ParamId),
 }
 
 struct State {
     shared: Arc<SharedState>,
+    active_gestures: Vec<bool>,
 }
 
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
-    (State { shared }, Task::none())
+    (
+        State {
+            shared,
+            active_gestures: vec![false; ParamId::COUNT],
+        },
+        Task::none(),
+    )
 }
 
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
-        Message::SetParam(id, value) => state.shared.set_param(id, value as f64),
-        Message::SetBoolParam(id, value) => {
-            state.shared.set_param(id, if value { 1.0 } else { 0.0 })
+        Message::SetParam(id, value) => {
+            let idx = id.as_index();
+            if !state.active_gestures[idx] {
+                state.active_gestures[idx] = true;
+                state.shared.mark_gesture_begin_pending(id);
+            }
+            state.shared.set_param_outbound_only(id, value as f64);
         }
-        Message::SetScMode(mode) => state.shared.set_param(ParamId::ScMode, mode as f64),
-        Message::SetMode(mode) => state.shared.set_param(ParamId::Mode, mode as f64),
-        Message::SetScBoost(mode) => state.shared.set_param(ParamId::ScBoost, mode as f64),
-        Message::SetTopology(mode) => state.shared.set_param(ParamId::Topology, mode as f64),
+        Message::ReleaseParam(id) => {
+            let idx = id.as_index();
+            if state.active_gestures[idx] {
+                state.active_gestures[idx] = false;
+                state.shared.mark_gesture_end_pending(id);
+            }
+        }
+        Message::SetBoolParam(id, value) => {
+            state.shared.mark_gesture_begin_pending(id);
+            state
+                .shared
+                .set_param_outbound_only(id, if value { 1.0 } else { 0.0 });
+            state.shared.mark_gesture_end_pending(id);
+        }
+        Message::SetScMode(mode) => {
+            state.shared.mark_gesture_begin_pending(ParamId::ScMode);
+            state
+                .shared
+                .set_param_outbound_only(ParamId::ScMode, mode as f64);
+            state.shared.mark_gesture_end_pending(ParamId::ScMode);
+        }
+        Message::SetMode(mode) => {
+            state.shared.mark_gesture_begin_pending(ParamId::Mode);
+            state
+                .shared
+                .set_param_outbound_only(ParamId::Mode, mode as f64);
+            state.shared.mark_gesture_end_pending(ParamId::Mode);
+        }
+        Message::SetScBoost(mode) => {
+            state.shared.mark_gesture_begin_pending(ParamId::ScBoost);
+            state
+                .shared
+                .set_param_outbound_only(ParamId::ScBoost, mode as f64);
+            state.shared.mark_gesture_end_pending(ParamId::ScBoost);
+        }
+        Message::SetTopology(mode) => {
+            state.shared.mark_gesture_begin_pending(ParamId::Topology);
+            state
+                .shared
+                .set_param_outbound_only(ParamId::Topology, mode as f64);
+            state.shared.mark_gesture_end_pending(ParamId::Topology);
+        }
     }
     Task::none()
 }
@@ -366,6 +416,7 @@ fn knob(
     })
     .step(step)
     .double_click_reset(def.default as f32)
+    .on_release(Message::ReleaseParam(id))
     .fill_from_start()
     .width(Length::Fixed(86.0))
     .height(Length::Fixed(86.0));

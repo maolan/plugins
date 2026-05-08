@@ -88,21 +88,55 @@ pub enum Message {
     SetParam(ParamId, f32),
     SetMode(u8),
     SetVariant(u8),
+    ReleaseParam(ParamId),
 }
 
 struct State {
     shared: Arc<SharedState>,
+    active_gestures: Vec<bool>,
 }
 
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
-    (State { shared }, Task::none())
+    (
+        State {
+            shared,
+            active_gestures: vec![false; ParamId::COUNT],
+        },
+        Task::none(),
+    )
 }
 
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
-        Message::SetParam(id, value) => state.shared.set_param(id, value as f64),
-        Message::SetMode(mode) => state.shared.set_param(ParamId::Mode, mode as f64),
-        Message::SetVariant(variant) => state.shared.set_param(ParamId::Variant, variant as f64),
+        Message::SetParam(id, value) => {
+            let idx = id.as_index();
+            if !state.active_gestures[idx] {
+                state.active_gestures[idx] = true;
+                state.shared.mark_gesture_begin_pending(id);
+            }
+            state.shared.set_param_outbound_only(id, value as f64);
+        }
+        Message::ReleaseParam(id) => {
+            let idx = id.as_index();
+            if state.active_gestures[idx] {
+                state.active_gestures[idx] = false;
+                state.shared.mark_gesture_end_pending(id);
+            }
+        }
+        Message::SetMode(mode) => {
+            state.shared.mark_gesture_begin_pending(ParamId::Mode);
+            state
+                .shared
+                .set_param_outbound_only(ParamId::Mode, mode as f64);
+            state.shared.mark_gesture_end_pending(ParamId::Mode);
+        }
+        Message::SetVariant(variant) => {
+            state.shared.mark_gesture_begin_pending(ParamId::Variant);
+            state
+                .shared
+                .set_param_outbound_only(ParamId::Variant, variant as f64);
+            state.shared.mark_gesture_end_pending(ParamId::Variant);
+        }
     }
     Task::none()
 }
@@ -221,6 +255,7 @@ fn knob(
     })
     .step(step)
     .double_click_reset(def.default as f32)
+    .on_release(Message::ReleaseParam(id))
     .fill_from_start()
     .width(Length::Fixed(86.0))
     .height(Length::Fixed(86.0));

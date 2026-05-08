@@ -91,7 +91,9 @@ pub struct SharedState {
     pub params: ParamStore,
     sample_rate_bits: std::sync::atomic::AtomicU64,
     pending_param_notifications: std::sync::atomic::AtomicU32,
-    local_param_overrides: std::sync::atomic::AtomicU32,
+    pending_gesture_begin: std::sync::atomic::AtomicU32,
+    pending_gesture_end: std::sync::atomic::AtomicU32,
+    active_local_gestures: std::sync::atomic::AtomicU32,
     host: AtomicPtr<clap_host>,
 }
 
@@ -101,7 +103,9 @@ impl Default for SharedState {
             params: ParamStore::default(),
             sample_rate_bits: std::sync::atomic::AtomicU64::new(48_000.0f64.to_bits()),
             pending_param_notifications: std::sync::atomic::AtomicU32::new(0),
-            local_param_overrides: std::sync::atomic::AtomicU32::new(0),
+            pending_gesture_begin: std::sync::atomic::AtomicU32::new(0),
+            pending_gesture_end: std::sync::atomic::AtomicU32::new(0),
+            active_local_gestures: std::sync::atomic::AtomicU32::new(0),
             host: AtomicPtr::new(null_mut()),
         }
     }
@@ -120,7 +124,6 @@ impl SharedState {
     fn set_param_internal(&self, id: ParamId, value: f64, notify_host: bool) {
         self.params.set(id, sanitize_param_value(id, value));
         if notify_host {
-            self.mark_local_param_override(id);
             self.mark_param_notification_pending(id);
             self.request_flush();
             self.mark_dirty();
@@ -144,23 +147,22 @@ impl SharedState {
         }
     }
 
-    fn mark_local_param_override(&self, id: ParamId) {
-        let bit = 1_u32 << (id.as_index() as u32);
-        self.local_param_overrides.fetch_or(bit, Ordering::AcqRel);
-    }
-
-    fn has_local_param_override(&self, id: ParamId) -> bool {
-        let bit = 1_u32 << (id.as_index() as u32);
-        (self.local_param_overrides.load(Ordering::Acquire) & bit) != 0
-    }
-
-    fn clear_local_param_override(&self, id: ParamId) {
-        let bit = !(1_u32 << (id.as_index() as u32));
-        self.local_param_overrides.fetch_and(bit, Ordering::AcqRel);
-    }
-
-    pub fn set_param(&self, id: ParamId, value: f64) {
+    pub fn set_param_outbound_only(&self, id: ParamId, value: f64) {
         self.set_param_internal(id, value, true);
+    }
+
+    pub fn mark_gesture_begin_pending(&self, id: ParamId) {
+        let bit = 1_u32 << (id.as_index() as u32);
+        self.pending_gesture_begin.fetch_or(bit, Ordering::AcqRel);
+        self.active_local_gestures.fetch_or(bit, Ordering::AcqRel);
+        self.mark_dirty();
+    }
+
+    pub fn mark_gesture_end_pending(&self, id: ParamId) {
+        let bit = 1_u32 << (id.as_index() as u32);
+        self.pending_gesture_end.fetch_or(bit, Ordering::AcqRel);
+        self.active_local_gestures.fetch_and(!bit, Ordering::AcqRel);
+        self.mark_dirty();
     }
 
     pub fn set_param_from_host(&self, id: ParamId, value: f64) {
@@ -232,11 +234,17 @@ impl SharedStateExt<ParamId> for SharedState {
     fn params_get(&self, id: ParamId) -> f64 {
         self.params.get(id)
     }
-    fn has_local_param_override(&self, id: ParamId) -> bool {
-        self.has_local_param_override(id)
+    fn set_gesture_active(&self, id: ParamId, active: bool) {
+        let bit = 1_u32 << (id.as_index() as u32);
+        if active {
+            self.active_local_gestures.fetch_or(bit, Ordering::AcqRel);
+        } else {
+            self.active_local_gestures.fetch_and(!bit, Ordering::AcqRel);
+        }
     }
-    fn clear_local_param_override(&self, id: ParamId) {
-        self.clear_local_param_override(id);
+    fn is_gesture_active(&self, id: ParamId) -> bool {
+        let bit = 1_u32 << (id.as_index() as u32);
+        (self.active_local_gestures.load(Ordering::Acquire) & bit) != 0
     }
     fn set_param_from_host(&self, id: ParamId, value: f64) {
         self.set_param_from_host(id, value);
@@ -246,6 +254,22 @@ impl SharedStateExt<ParamId> for SharedState {
     }
     fn requeue_pending_param_notifications(&self, bits: u32) {
         self.requeue_pending_param_notifications(bits);
+    }
+    fn take_pending_gesture_begin(&self) -> u32 {
+        self.pending_gesture_begin.swap(0, Ordering::AcqRel)
+    }
+    fn requeue_pending_gesture_begin(&self, bits: u32) {
+        if bits != 0 {
+            self.pending_gesture_begin.fetch_or(bits, Ordering::AcqRel);
+        }
+    }
+    fn take_pending_gesture_end(&self) -> u32 {
+        self.pending_gesture_end.swap(0, Ordering::AcqRel)
+    }
+    fn requeue_pending_gesture_end(&self, bits: u32) {
+        if bits != 0 {
+            self.pending_gesture_end.fetch_or(bits, Ordering::AcqRel);
+        }
     }
 }
 

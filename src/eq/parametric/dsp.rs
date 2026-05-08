@@ -13,6 +13,7 @@ pub struct ParametricEqualizer {
     para_freq: [f32; 32],
     para_gain: [f32; 32],
     para_q: [f32; 32],
+    para_on: [bool; 32],
 }
 
 impl Default for ParametricEqualizer {
@@ -27,6 +28,7 @@ impl Default for ParametricEqualizer {
             para_freq: [1000.0; 32],
             para_gain: [0.0; 32],
             para_q: [1.0; 32],
+            para_on: [false; 32],
         }
     }
 }
@@ -60,13 +62,18 @@ impl ParametricEqualizer {
         self.bypass = bypass;
     }
 
-    pub fn set_para_band(&mut self, idx: usize, freq: f32, gain: f32, q: f32) {
+    pub fn sample_rate(&self) -> f32 {
+        self.sample_rate
+    }
+
+    pub fn set_para_band(&mut self, idx: usize, freq: f32, gain: f32, q: f32, on: bool) {
         if idx >= 32 {
             return;
         }
         self.para_freq[idx] = freq;
         self.para_gain[idx] = gain;
         self.para_q[idx] = q;
+        self.para_on[idx] = on;
         self.update_para_band(idx);
     }
 
@@ -101,8 +108,10 @@ impl ParametricEqualizer {
             let mut r = right[i] * self.input_gain_lin;
 
             for b in 0..32 {
-                l = self.para_l[b].process(l);
-                r = self.para_r[b].process(r);
+                if self.para_on[b] {
+                    l = self.para_l[b].process(l);
+                    r = self.para_r[b].process(r);
+                }
             }
 
             left[i] = l * self.output_gain_lin;
@@ -117,7 +126,9 @@ impl ParametricEqualizer {
         for s in buffer.iter_mut() {
             let mut l = *s * self.input_gain_lin;
             for b in 0..32 {
-                l = self.para_l[b].process(l);
+                if self.para_on[b] {
+                    l = self.para_l[b].process(l);
+                }
             }
             *s = l * self.output_gain_lin;
         }
