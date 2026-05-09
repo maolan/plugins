@@ -210,9 +210,11 @@ impl Buffer {
         self.input_buffer_offset += num_frames;
     }
 
-    pub fn get(&self, relative_index: isize) -> f32 {
-        let idx = self.input_buffer_offset as isize + relative_index;
-        self.input_buffer[idx as usize]
+    /// Returns a slice of the receptive-field history valid for the given output index.
+    /// The slice length equals `self.receptive_field`.
+    pub fn history_slice(&self, output_index: usize) -> &[f32] {
+        let base = self.input_buffer_offset - self.receptive_field + 1 + output_index;
+        &self.input_buffer[base..base + self.receptive_field]
     }
 }
 
@@ -289,8 +291,8 @@ mod tests {
         buffer.advance(block.len());
         buffer.update_buffers(&[1.0]);
         assert!(
-            std::panic::catch_unwind(|| buffer.get(0)).is_ok(),
-            "reading at current offset should not panic after rewind-at-capacity"
+            std::panic::catch_unwind(|| buffer.history_slice(0)).is_ok(),
+            "reading history after rewind-at-capacity should not panic"
         );
     }
 }

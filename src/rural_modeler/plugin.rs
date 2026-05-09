@@ -557,6 +557,20 @@ impl AudioProcessor {
         let channels_in = input_port.channel_count() as usize;
         if channels_in == 0 {
             self.mono_input[..frames].fill(0.0);
+        } else if channels_in == 1 {
+            let src = input_port.data32(0);
+            crate::simd::copy_scaled_inplace(
+                &mut self.mono_input[..frames],
+                &src[..frames],
+                input_gain,
+            );
+        } else if channels_in == 2 {
+            let left = input_port.data32(0);
+            let right = input_port.data32(1);
+            let gain = input_gain * 0.5;
+            self.mono_input[..frames].copy_from_slice(&left[..frames]);
+            crate::simd::add_scaled_inplace(&mut self.mono_input[..frames], &right[..frames], 1.0);
+            crate::simd::mul_inplace(&mut self.mono_input[..frames], gain);
         } else {
             for i in 0..frames {
                 let mut mono = 0.0;
@@ -613,12 +627,8 @@ impl AudioProcessor {
         }
         self.dc_block.process_block(&mut self.mono_output[..frames]);
 
-        for sample in &mut self.mono_output[..frames] {
-            if !sample.is_finite() {
-                *sample = 0.0;
-            }
-            *sample *= output_gain;
-        }
+        crate::simd::sanitize_finite_inplace(&mut self.mono_output[..frames]);
+        crate::simd::mul_inplace(&mut self.mono_output[..frames], output_gain);
 
         let channels_out = process.audio_outputs(0).channel_count() as usize;
         let mut output_port = process.audio_outputs(0);

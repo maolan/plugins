@@ -42,20 +42,26 @@ pub fn load_wav_channels(
 
     let frame_count = all_samples.len() / file_channels;
 
-    // Deinterleave and extract only requested channels.
-    let mut channels = Vec::with_capacity(channels_to_extract.len());
+    // Validate channels before parallel extraction.
     for &ch in channels_to_extract {
         if ch >= file_channels {
             return Err(format!(
                 "Channel {ch} out of range (file has {file_channels} channels)",
             ));
         }
-        let mut data = Vec::with_capacity(frame_count);
-        for frame in 0..frame_count {
-            data.push(all_samples[frame * file_channels + ch]);
-        }
-        channels.push(data);
     }
+
+    // Deinterleave and extract only requested channels in parallel.
+    let channels: Vec<Vec<f32>> = channels_to_extract
+        .par_iter()
+        .map(|&ch| {
+            let mut data = Vec::with_capacity(frame_count);
+            for frame in 0..frame_count {
+                data.push(all_samples[frame * file_channels + ch]);
+            }
+            data
+        })
+        .collect();
 
     Ok(LoadedAudioFile {
         path: path.to_string_lossy().into_owned(),

@@ -58,6 +58,72 @@ impl Limiter {
             return;
         }
 
+        let mut gains = vec![1.0f32; frames];
+
+        #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+        unsafe {
+            if std::arch::is_x86_feature_detected!("sse") {
+                let sign_mask = std::arch::x86_64::_mm_set1_ps(-0.0);
+                let mut i = 0usize;
+                while i + 4 <= frames {
+                    let mut peak_vec = std::arch::x86_64::_mm_setzero_ps();
+                    for s in slices.iter() {
+                        if i < s.len() {
+                            let v = std::arch::x86_64::_mm_loadu_ps(s.as_ptr().add(i));
+                            let abs_v = std::arch::x86_64::_mm_andnot_ps(sign_mask, v);
+                            peak_vec = std::arch::x86_64::_mm_max_ps(peak_vec, abs_v);
+                        }
+                    }
+                    let peaks: [f32; 4] = std::mem::transmute(peak_vec);
+                    for j in 0..4 {
+                        let peak = peaks[j];
+                        let target_gr = if peak > self.threshold {
+                            self.threshold / peak
+                        } else {
+                            1.0
+                        };
+                        if target_gr < self.gain_reduction {
+                            self.gain_reduction +=
+                                (target_gr - self.gain_reduction) * self.attack_coeff;
+                        } else {
+                            self.gain_reduction +=
+                                (target_gr - self.gain_reduction) * self.release_coeff;
+                        }
+                        gains[i + j] = self.gain_reduction;
+                    }
+                    i += 4;
+                }
+                for j in i..frames {
+                    let mut peak = 0.0f32;
+                    for s in slices.iter() {
+                        if j < s.len() {
+                            peak = peak.max(s[j].abs());
+                        }
+                    }
+                    let target_gr = if peak > self.threshold {
+                        self.threshold / peak
+                    } else {
+                        1.0
+                    };
+                    if target_gr < self.gain_reduction {
+                        self.gain_reduction +=
+                            (target_gr - self.gain_reduction) * self.attack_coeff;
+                    } else {
+                        self.gain_reduction +=
+                            (target_gr - self.gain_reduction) * self.release_coeff;
+                    }
+                    gains[j] = self.gain_reduction;
+                }
+
+                for s in slices.iter_mut() {
+                    let len = s.len().min(frames);
+                    crate::simd::mul_per_sample_inplace(&mut s[..len], &gains[..len]);
+                }
+                return;
+            }
+        }
+
+        // Scalar fallback.
         for i in 0..frames {
             let mut peak = 0.0f32;
             for s in slices.iter() {
@@ -65,24 +131,21 @@ impl Limiter {
                     peak = peak.max(s[i].abs());
                 }
             }
-
             let target_gr = if peak > self.threshold {
                 self.threshold / peak
             } else {
                 1.0
             };
-
             if target_gr < self.gain_reduction {
                 self.gain_reduction += (target_gr - self.gain_reduction) * self.attack_coeff;
             } else {
                 self.gain_reduction += (target_gr - self.gain_reduction) * self.release_coeff;
             }
-
-            for s in slices.iter_mut() {
-                if i < s.len() {
-                    s[i] *= self.gain_reduction;
-                }
-            }
+            gains[i] = self.gain_reduction;
+        }
+        for s in slices.iter_mut() {
+            let len = s.len().min(frames);
+            crate::simd::mul_per_sample_inplace(&mut s[..len], &gains[..len]);
         }
     }
 }

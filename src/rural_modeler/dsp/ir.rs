@@ -111,14 +111,11 @@ impl ImpulseResponse {
         let ir_length = resampled.len().min(8192);
         let gain = 10.0_f32.powf(-18.0 * 0.05) * 48_000.0 / self.target_sample_rate.max(1.0);
         self.weights.resize(ir_length, 0.0);
-        for (dst, src) in self
-            .weights
-            .iter_mut()
-            .rev()
-            .zip(resampled.iter().take(ir_length))
-        {
-            *dst = gain * *src;
-        }
+        crate::simd::copy_scaled_inplace(
+            &mut self.weights[..ir_length],
+            &resampled[..ir_length],
+            gain,
+        );
     }
 
     pub fn reset(&mut self) {
@@ -135,11 +132,8 @@ impl ImpulseResponse {
         };
         buffer.update_buffers(block);
         for (i, out) in block.iter_mut().enumerate() {
-            let mut sum = 0.0;
-            for (j, weight) in self.weights.iter().enumerate() {
-                sum += *weight * buffer.get(i as isize - j as isize);
-            }
-            *out = sum;
+            let history = buffer.history_slice(i);
+            *out = crate::simd::dot_product(&self.weights, history);
         }
         buffer.advance(block.len());
     }

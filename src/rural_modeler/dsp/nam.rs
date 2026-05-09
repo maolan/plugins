@@ -1,3 +1,5 @@
+#![allow(unsafe_op_in_unsafe_fn)]
+
 use std::{collections::VecDeque, fs, path::Path, sync::Arc};
 
 use serde::Deserialize;
@@ -267,11 +269,13 @@ impl Conv1D {
                     continue;
                 }
                 let row = &self.weight[idx_base..idx_base + row_len];
-                for (i, coeff) in row.iter().enumerate().take(row_len) {
-                    let input_idx = i_base + i;
-                    if input_idx < sample.len() {
-                        sum += *coeff * sample[input_idx];
-                    }
+                let sample_len = sample.len().saturating_sub(i_base);
+                let dot_len = row_len.min(sample_len);
+                if dot_len > 0 {
+                    sum += crate::simd::dot_product(
+                        &row[..dot_len],
+                        &sample[i_base..i_base + dot_len],
+                    );
                 }
             }
             out.push(sum);
@@ -324,11 +328,9 @@ impl LinearModel {
     fn process_block(&mut self, input: &[f32], output: &mut [f32]) {
         self.buffer.update_buffers(input);
         for (i, out) in output.iter_mut().enumerate().take(input.len()) {
-            let start = -(self.weights.len() as isize) + i as isize + 1;
+            let history = self.buffer.history_slice(i);
             let mut sum = self.bias;
-            for (j, weight) in self.weights.iter().enumerate() {
-                sum += *weight * self.buffer.get(start + j as isize);
-            }
+            sum += crate::simd::dot_product(&self.weights, history);
             *out = sum;
         }
         self.buffer.advance(input.len());
@@ -381,13 +383,7 @@ impl BatchNorm {
     }
 
     fn apply(&self, values: &mut [f32]) {
-        for ((value, scale), loc) in values
-            .iter_mut()
-            .zip(self.scale.iter())
-            .zip(self.loc.iter())
-        {
-            *value = *value * *scale + *loc;
-        }
+        crate::simd::affine_inplace(values, &self.scale, &self.loc);
     }
 }
 
@@ -499,13 +495,7 @@ impl ConvNetModel {
             }
             std::mem::swap(&mut self.current, &mut self.temp);
         }
-        self.head_bias
-            + self
-                .current
-                .iter()
-                .zip(self.head_weight.iter())
-                .map(|(a, b)| a * b)
-                .sum::<f32>()
+        self.head_bias + crate::simd::dot_product(&self.current, &self.head_weight)
     }
 
     /// Process a block of samples, matching the C++ `nam::convnet::ConvNet::process`
@@ -594,25 +584,120 @@ impl LstmCell {
         prefix[..copy_len].copy_from_slice(&input[..copy_len]);
         let rows = 4 * self.hidden_size;
         for r in 0..rows {
+            let row = &self.weights[r * self.xh.len()..(r + 1) * self.xh.len()];
             let mut sum = self.bias[r];
-            for c in 0..self.xh.len() {
-                sum += self.weights[r * self.xh.len() + c] * self.xh[c];
-            }
+            sum += crate::simd::dot_product(row, &self.xh);
             self.ifgo[r] = sum;
         }
         let f_offset = self.hidden_size;
         let g_offset = 2 * self.hidden_size;
         let o_offset = 3 * self.hidden_size;
-        for i in 0..self.hidden_size {
-            self.c[i] = activations::fast_sigmoid(self.ifgo[i + f_offset]) * self.c[i]
-                + activations::fast_sigmoid(self.ifgo[i])
-                    * activations::fast_tanh(self.ifgo[i + g_offset]);
-        }
-        for i in 0..self.hidden_size {
-            self.xh[self.input_size + i] = activations::fast_sigmoid(self.ifgo[i + o_offset])
-                * activations::fast_tanh(self.c[i]);
+        lstm_gates_inplace(
+            &mut self.c[..self.hidden_size],
+            &self.ifgo[..self.hidden_size],
+            &self.ifgo[f_offset..f_offset + self.hidden_size],
+            &self.ifgo[g_offset..g_offset + self.hidden_size],
+        );
+        lstm_output_inplace(
+            &mut self.xh[self.input_size..self.input_size + self.hidden_size],
+            &self.ifgo[o_offset..o_offset + self.hidden_size],
+            &self.c[..self.hidden_size],
+        );
+    }
+}
+
+/// c = sigmoid(f) * c + sigmoid(i) * tanh(g)
+fn lstm_gates_inplace(c: &mut [f32], i: &[f32], f: &[f32], g: &[f32]) {
+    let n = c.len().min(i.len()).min(f.len()).min(g.len());
+    if n == 0 {
+        return;
+    }
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    unsafe {
+        if is_x86_feature_detected!("sse") {
+            lstm_gates_inplace_sse(&mut c[..n], &i[..n], &f[..n], &g[..n]);
+            return;
         }
     }
+    for j in 0..n {
+        c[j] = activations::fast_sigmoid(f[j]) * c[j]
+            + activations::fast_sigmoid(i[j]) * activations::fast_tanh(g[j]);
+    }
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+unsafe fn lstm_gates_inplace_sse(c: &mut [f32], i: &[f32], f: &[f32], g: &[f32]) {
+    use wide::f32x4;
+    let n = c.len().min(i.len()).min(f.len()).min(g.len());
+    let chunks = n / 4;
+    for j in 0..chunks {
+        let cj = f32x4::from(&c[j * 4..(j + 1) * 4]);
+        let ij = f32x4::from(&i[j * 4..(j + 1) * 4]);
+        let fj = f32x4::from(&f[j * 4..(j + 1) * 4]);
+        let gj = f32x4::from(&g[j * 4..(j + 1) * 4]);
+        let r = fast_sigmoid_f32x4(fj) * cj + fast_sigmoid_f32x4(ij) * fast_tanh_f32x4(gj);
+        c[j * 4..(j + 1) * 4].copy_from_slice(&r.to_array());
+    }
+    for j in chunks * 4..n {
+        c[j] = activations::fast_sigmoid(f[j]) * c[j]
+            + activations::fast_sigmoid(i[j]) * activations::fast_tanh(g[j]);
+    }
+}
+
+/// out = sigmoid(o) * tanh(c)
+fn lstm_output_inplace(out: &mut [f32], o: &[f32], c: &[f32]) {
+    let n = out.len().min(o.len()).min(c.len());
+    if n == 0 {
+        return;
+    }
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    unsafe {
+        if is_x86_feature_detected!("sse") {
+            lstm_output_inplace_sse(&mut out[..n], &o[..n], &c[..n]);
+            return;
+        }
+    }
+    for j in 0..n {
+        out[j] = activations::fast_sigmoid(o[j]) * activations::fast_tanh(c[j]);
+    }
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+unsafe fn lstm_output_inplace_sse(out: &mut [f32], o: &[f32], c: &[f32]) {
+    use wide::f32x4;
+    let n = out.len().min(o.len()).min(c.len());
+    let chunks = n / 4;
+    for j in 0..chunks {
+        let oj = f32x4::from(&o[j * 4..(j + 1) * 4]);
+        let cj = f32x4::from(&c[j * 4..(j + 1) * 4]);
+        let r = fast_sigmoid_f32x4(oj) * fast_tanh_f32x4(cj);
+        out[j * 4..(j + 1) * 4].copy_from_slice(&r.to_array());
+    }
+    for j in chunks * 4..n {
+        out[j] = activations::fast_sigmoid(o[j]) * activations::fast_tanh(c[j]);
+    }
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+#[inline]
+unsafe fn fast_tanh_f32x4(x: wide::f32x4) -> wide::f32x4 {
+    use wide::f32x4;
+    let ax = x.abs();
+    let x2 = x * x;
+    let num = x
+        * (f32x4::splat(2.455_507_5)
+            + f32x4::splat(2.455_507_5) * ax
+            + (f32x4::splat(0.893_229_85) + f32x4::splat(0.821_226_67) * ax) * x2);
+    let den = f32x4::splat(2.445_066_4)
+        + (f32x4::splat(2.445_066_4) + x2) * (x + f32x4::splat(0.814_642_7) * x * ax).abs();
+    num / den
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+#[inline]
+unsafe fn fast_sigmoid_f32x4(x: wide::f32x4) -> wide::f32x4 {
+    wide::f32x4::splat(0.5)
+        * (fast_tanh_f32x4(x * wide::f32x4::splat(0.5)) + wide::f32x4::splat(1.0))
 }
 
 #[derive(Debug, Clone)]
@@ -687,12 +772,7 @@ impl LstmModel {
             layer.process(&current);
             current = layer.hidden().to_vec();
         }
-        self.head_bias
-            + current
-                .iter()
-                .zip(self.head_weight.iter())
-                .map(|(a, b)| a * b)
-                .sum::<f32>()
+        self.head_bias + crate::simd::dot_product(&current, &self.head_weight)
     }
 
     /// Process a block of samples, matching the C++ `nam::lstm::LSTM::process`
@@ -863,13 +943,10 @@ impl WaveNetModel {
                 let b = bias.and_then(|b| b.get(c)).copied().unwrap_or(0.0);
                 let in_ptr = unsafe { input.as_ptr().add(c * frames) };
                 let out_ptr = unsafe { output.as_mut_ptr().add(c * frames) };
-                let mut f = 0usize;
-                while f < frames {
-                    unsafe {
-                        *out_ptr.add(f) = b + w * *in_ptr.add(f);
-                    }
-                    f += 1;
-                }
+                let out_slice = unsafe { std::slice::from_raw_parts_mut(out_ptr, frames) };
+                let in_slice = unsafe { std::slice::from_raw_parts(in_ptr, frames) };
+                out_slice.fill(b);
+                crate::simd::add_scaled_inplace(out_slice, in_slice, w);
                 c += 1;
             }
             return;
@@ -892,23 +969,16 @@ impl WaveNetModel {
             let b = bias.and_then(|b| b.get(o)).copied().unwrap_or(0.0);
             unsafe {
                 let out_ptr = output.as_mut_ptr().add(out_base);
-                let mut f = 0usize;
-                while f < frames {
-                    *out_ptr.add(f) = b;
-                    f += 1;
-                }
+                let out_slice = std::slice::from_raw_parts_mut(out_ptr, frames);
+                out_slice.fill(b);
 
                 let mut i_in_group = 0usize;
                 while i_in_group < in_per_group {
                     let w = *conv.weight.get_unchecked(w_row_base + i_in_group);
                     let i = group * in_per_group + i_in_group;
                     let in_ptr = input.as_ptr().add(i * frames);
-                    let mut f2 = 0usize;
-                    while f2 < frames {
-                        let cur = *out_ptr.add(f2);
-                        *out_ptr.add(f2) = cur + w * *in_ptr.add(f2);
-                        f2 += 1;
-                    }
+                    let in_slice = std::slice::from_raw_parts(in_ptr, frames);
+                    crate::simd::add_scaled_inplace(out_slice, in_slice, w);
                     i_in_group += 1;
                 }
             }
@@ -942,11 +1012,8 @@ impl WaveNetModel {
             let b = conv.bias.get(o).copied().unwrap_or(0.0);
             unsafe {
                 let out_ptr = output.as_mut_ptr().add(out_base);
-                let mut f = 0usize;
-                while f < frames {
-                    *out_ptr.add(f) = b;
-                    f += 1;
-                }
+                let out_slice = std::slice::from_raw_parts_mut(out_ptr, frames);
+                out_slice.fill(b);
 
                 let mut k = 0usize;
                 while k < kernel_size {
@@ -958,12 +1025,8 @@ impl WaveNetModel {
                     while i < in_channels {
                         let w = *conv.weight.get_unchecked(w_base + i);
                         let in_ptr = input.as_ptr().add(i * input_stride + src_base);
-                        let mut f2 = 0usize;
-                        while f2 < frames {
-                            let cur = *out_ptr.add(f2);
-                            *out_ptr.add(f2) = cur + w * *in_ptr.add(f2);
-                            f2 += 1;
-                        }
+                        let in_slice = std::slice::from_raw_parts(in_ptr, frames);
+                        crate::simd::add_scaled_inplace(out_slice, in_slice, w);
                         i += 1;
                     }
                     k += 1;
@@ -1086,9 +1149,10 @@ impl WaveNetModel {
                 frames,
                 &mut layer.mixin_block[..layer.conv.out_channels * frames],
             );
-            for idx in 0..layer.conv.out_channels * frames {
-                layer.conv_out_block[idx] += layer.mixin_block[idx];
-            }
+            crate::simd::add_inplace(
+                &mut layer.conv_out_block[..layer.conv.out_channels * frames],
+                &layer.mixin_block[..layer.conv.out_channels * frames],
+            );
 
             let channels = array.channels;
             if layer.gated {
@@ -1127,26 +1191,27 @@ impl WaveNetModel {
 
             if layer_idx == last_layer {
                 for c in 0..channels {
-                    let in_base = c * array.buffer_size;
+                    let in_base = c * array.buffer_size + array.buffer_start;
                     let out_base = c * frames;
-                    for f in 0..frames {
-                        let input_idx = in_base + array.buffer_start + f;
-                        array.layer_output_block[out_base + f] =
-                            input_buffer[input_idx] + layer.post_block[out_base + f];
-                    }
+                    array.layer_output_block[out_base..out_base + frames]
+                        .copy_from_slice(&layer.post_block[out_base..out_base + frames]);
+                    crate::simd::add_inplace(
+                        &mut array.layer_output_block[out_base..out_base + frames],
+                        &input_buffer[in_base..in_base + frames],
+                    );
                 }
             } else {
                 let next_layer_buffer =
                     next_layer_buffer.expect("next layer buffer exists for non-final layer");
                 for c in 0..channels {
-                    let in_base = c * array.buffer_size;
+                    let in_base = c * array.buffer_size + array.buffer_start;
                     let out_base = c * frames;
-                    for f in 0..frames {
-                        let input_idx = in_base + array.buffer_start + f;
-                        let out = input_buffer[input_idx] + layer.post_block[out_base + f];
-                        let dst_idx = in_base + array.buffer_start + f;
-                        next_layer_buffer[dst_idx] = out;
-                    }
+                    next_layer_buffer[in_base..in_base + frames]
+                        .copy_from_slice(&layer.post_block[out_base..out_base + frames]);
+                    crate::simd::add_inplace(
+                        &mut next_layer_buffer[in_base..in_base + frames],
+                        &input_buffer[in_base..in_base + frames],
+                    );
                 }
             }
         }
@@ -1400,9 +1465,11 @@ impl WaveNetModel {
                     *out = head_out.first().copied().unwrap_or(0.0);
                 }
             } else {
-                for (f, out) in output.iter_mut().take(frames).enumerate() {
-                    *out = self.head_scale * last.head_output_block[f];
-                }
+                crate::simd::copy_scaled_inplace(
+                    &mut output[..frames],
+                    &last.head_output_block[..frames],
+                    self.head_scale,
+                );
             }
         } else {
             output[..frames].copy_from_slice(&input[..frames]);

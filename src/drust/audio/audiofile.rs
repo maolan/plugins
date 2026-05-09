@@ -24,7 +24,8 @@ impl AudioFile {
         let channels = spec.channels;
         let sample_rate = spec.sample_rate;
 
-        let mut data = Vec::new();
+        let total_samples = reader.duration() as usize * spec.channels as usize;
+        let mut data = Vec::with_capacity(total_samples);
         match spec.sample_format {
             hound::SampleFormat::Float => {
                 for sample in reader.into_samples::<f32>() {

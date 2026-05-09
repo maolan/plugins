@@ -154,17 +154,19 @@ impl DrumGizmoEngine {
                     continue;
                 }
                 let buf = &mut output_buffers[ch];
-                for i in 0..num_frames {
-                    let pos = voice.position + i;
-                    if pos >= data.len() {
-                        break;
-                    }
-                    let mut gain = voice.gain;
-                    if voice.ramp_down && voice.ramp_length > 0 {
+                let data_slice = &data[voice.position..];
+                let len = num_frames.min(data_slice.len());
+                if len == 0 {
+                    continue;
+                }
+                if voice.ramp_down && voice.ramp_length > 0 {
+                    for i in 0..len {
                         let remaining = voice.ramp_length.saturating_sub(voice.ramp_count + i);
-                        gain *= remaining as f32 / voice.ramp_length as f32;
+                        let gain = voice.gain * (remaining as f32 / voice.ramp_length as f32);
+                        buf[i] += data_slice[i] * gain;
                     }
-                    buf[i] += data[pos] * gain;
+                } else {
+                    crate::simd::add_scaled_inplace(&mut buf[..len], &data_slice[..len], voice.gain);
                 }
             }
             voice.position += num_frames;

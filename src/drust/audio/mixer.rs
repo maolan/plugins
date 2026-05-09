@@ -27,12 +27,9 @@ impl ChannelMixer {
             return;
         }
         let buf = &mut self.buffers[channel];
-        for (i, &s) in samples.iter().enumerate() {
-            let idx = offset + i;
-            if idx < buf.len() {
-                buf[idx] += s * gain;
-            }
-        }
+        let end = (offset + samples.len()).min(buf.len());
+        let len = end.saturating_sub(offset);
+        crate::simd::add_scaled_inplace(&mut buf[offset..end], &samples[..len], gain);
     }
 
     pub fn buffer(&self, channel: usize) -> Option<&[f32]> {

@@ -22,6 +22,7 @@ pub mod monitoring;
 pub mod reverb;
 pub mod rural_modeler;
 pub mod saturator;
+pub mod simd;
 pub mod widener;
 
 type DescriptorFn = unsafe fn() -> *const clap_plugin_descriptor;

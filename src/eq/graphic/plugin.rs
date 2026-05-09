@@ -174,14 +174,8 @@ impl AudioProcessor {
             }
 
             if ui_visible {
-                let in_peak_l = self.temp_left[..frames]
-                    .iter()
-                    .map(|s| s.abs())
-                    .fold(0.0f32, f32::max);
-                let in_peak_r = self.temp_right[..frames]
-                    .iter()
-                    .map(|s| s.abs())
-                    .fold(0.0f32, f32::max);
+                let in_peak_l = crate::simd::peak_abs(&self.temp_left[..frames]);
+                let in_peak_r = crate::simd::peak_abs(&self.temp_right[..frames]);
                 let in_db_l = if in_peak_l > 0.0 {
                     20.0 * in_peak_l.log10()
                 } else {
@@ -211,14 +205,8 @@ impl AudioProcessor {
             }
 
             if ui_visible {
-                let out_peak_l = self.temp_left[..frames]
-                    .iter()
-                    .map(|s| s.abs())
-                    .fold(0.0f32, f32::max);
-                let out_peak_r = self.temp_right[..frames]
-                    .iter()
-                    .map(|s| s.abs())
-                    .fold(0.0f32, f32::max);
+                let out_peak_l = crate::simd::peak_abs(&self.temp_left[..frames]);
+                let out_peak_r = crate::simd::peak_abs(&self.temp_right[..frames]);
                 let out_db_l = if out_peak_l > 0.0 {
                     20.0 * out_peak_l.log10()
                 } else {
@@ -243,10 +231,7 @@ impl AudioProcessor {
             self.temp_left[..frames].copy_from_slice(input_port.data32(0));
 
             if ui_visible {
-                let in_peak_l = self.temp_left[..frames]
-                    .iter()
-                    .map(|s| s.abs())
-                    .fold(0.0f32, f32::max);
+                let in_peak_l = crate::simd::peak_abs(&self.temp_left[..frames]);
                 let in_db_l = if in_peak_l > 0.0 {
                     20.0 * in_peak_l.log10()
                 } else {
@@ -262,10 +247,7 @@ impl AudioProcessor {
             output_port.data32(0)[..frames].copy_from_slice(&self.temp_left[..frames]);
 
             if ui_visible {
-                let out_peak_l = self.temp_left[..frames]
-                    .iter()
-                    .map(|s| s.abs())
-                    .fold(0.0f32, f32::max);
+                let out_peak_l = crate::simd::peak_abs(&self.temp_left[..frames]);
                 let out_db_l = if out_peak_l > 0.0 {
                     20.0 * out_peak_l.log10()
                 } else {
@@ -308,24 +290,45 @@ fn analyze_output_spectrum_impl(
         return out;
     }
 
+    // Precompute Hann window.
+    let nf = n as f32;
+    let mut hann = vec![0.0f32; n];
+    for (i, h) in hann.iter_mut().enumerate() {
+        *h = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (nf - 1.0)).cos();
+    }
+
+    // Precompute windowed samples (stereo downmix + window).
+    let mut windowed = vec![0.0f32; n];
+    if let Some(r) = right {
+        for i in 0..n {
+            windowed[i] = 0.5 * (left[i] + r[i]) * hann[i];
+        }
+    } else {
+        windowed[..n].copy_from_slice(&left[..n]);
+        crate::simd::mul_per_sample_inplace(&mut windowed[..n], &hann[..n]);
+    }
+
     for (bin, out_db) in out.iter_mut().enumerate() {
         let t = bin as f32 / (SPECTRUM_BINS.saturating_sub(1).max(1) as f32);
         let freq = 20.0_f32 * (20_000.0_f32 / 20.0_f32).powf(t);
         let omega =
             (2.0 * std::f32::consts::PI * freq / sample_rate).clamp(0.0, std::f32::consts::PI);
+        let cos_delta = omega.cos();
+        let sin_delta = omega.sin();
         let mut re = 0.0_f32;
         let mut im = 0.0_f32;
-        for i in 0..n {
-            let mut x = left[i];
-            if let Some(r) = right {
-                x = 0.5 * (x + r[i]);
-            }
-            let w = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (n as f32 - 1.0)).cos();
-            let s = x * w;
-            let phase = omega * i as f32;
-            re += s * phase.cos();
-            im -= s * phase.sin();
+        let mut cos_phase = 1.0_f32;
+        let mut sin_phase = 0.0_f32;
+
+        for s in windowed.iter() {
+            re += *s * cos_phase;
+            im -= *s * sin_phase;
+            let new_cos = cos_phase * cos_delta - sin_phase * sin_delta;
+            let new_sin = sin_phase * cos_delta + cos_phase * sin_delta;
+            cos_phase = new_cos;
+            sin_phase = new_sin;
         }
+
         let mag = (re * re + im * im).sqrt() / (n as f32);
         *out_db = if mag > 1.0e-8 {
             (20.0 * mag.log10()).clamp(-90.0, 20.0)

@@ -201,9 +201,7 @@ impl AudioProcessor {
         // Apply master gain per output.
         let gain = 10.0_f32.powf(self.shared.params.get(ParamId::MasterGain) as f32 * 0.05);
         for buf in out_outputs.iter_mut().flatten() {
-            for s in buf.iter_mut() {
-                *s *= gain;
-            }
+            crate::simd::mul_inplace(buf, gain);
         }
 
         // Apply balance per output pair.
@@ -228,14 +226,10 @@ impl AudioProcessor {
                 (1.0 - balance, 1.0)
             };
             if let Some(Some(buf)) = out_outputs.get_mut(left) {
-                for s in buf.iter_mut() {
-                    *s *= left_gain;
-                }
+                crate::simd::mul_inplace(buf, left_gain);
             }
             if let Some(Some(buf)) = out_outputs.get_mut(right) {
-                for s in buf.iter_mut() {
-                    *s *= right_gain;
-                }
+                crate::simd::mul_inplace(buf, right_gain);
             }
         }
 

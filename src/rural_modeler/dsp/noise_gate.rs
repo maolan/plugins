@@ -230,9 +230,16 @@ impl NoiseGateGain {
     pub fn apply_blocks(&self, blocks: &mut [&mut [f32]]) {
         for c in 0..blocks.len().min(self.num_channels) {
             let block = &mut blocks[c];
-            for (sample, db) in block.iter_mut().zip(self.gain_reduction_db[c].iter()) {
-                *sample *= 10.0_f32.powf(*db * 0.1);
+            let db = &self.gain_reduction_db[c];
+            let frames = block.len().min(db.len());
+            if frames == 0 {
+                continue;
             }
+            let mut linear = vec![0.0f32; frames];
+            for i in 0..frames {
+                linear[i] = 10.0_f32.powf(db[i] * 0.1);
+            }
+            crate::simd::mul_per_sample_inplace(&mut block[..frames], &linear[..frames]);
         }
     }
 
