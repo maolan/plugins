@@ -11,6 +11,10 @@ pub struct Delay {
     current_delay: f64,
     chase: f64,
     sample_rate: f64,
+    temp_dry_l: Vec<f32>,
+    temp_dry_r: Vec<f32>,
+    temp_wet_l: Vec<f32>,
+    temp_wet_r: Vec<f32>,
 }
 
 pub struct DelayParams {
@@ -32,6 +36,10 @@ impl Default for Delay {
             current_delay: 0.0,
             chase: 0.0,
             sample_rate: 48_000.0,
+            temp_dry_l: vec![0.0; 1024],
+            temp_dry_r: vec![0.0; 1024],
+            temp_wet_l: vec![0.0; 1024],
+            temp_wet_r: vec![0.0; 1024],
         }
     }
 }
@@ -47,6 +55,10 @@ impl Delay {
         self.write_pos = 0;
         self.current_delay = 0.0;
         self.chase = 0.0;
+        self.temp_dry_l.fill(0.0);
+        self.temp_dry_r.fill(0.0);
+        self.temp_wet_l.fill(0.0);
+        self.temp_wet_r.fill(0.0);
     }
 
     /// Convert the raw `time_note` parameter (0–1) into a note name and
@@ -103,28 +115,31 @@ impl Delay {
         let wet = params.dry_wet.clamp(0.0, 1.0) as f32;
         let dry = 1.0 - wet;
         let max_len = self.buf_l.len();
+        let frames = left.len().min(right.len());
 
-        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+        // Ensure temp buffers are large enough.
+        if self.temp_dry_l.len() < frames {
+            let new_len = frames.next_power_of_two();
+            self.temp_dry_l.resize(new_len, 0.0);
+            self.temp_dry_r.resize(new_len, 0.0);
+            self.temp_wet_l.resize(new_len, 0.0);
+            self.temp_wet_r.resize(new_len, 0.0);
+        }
+
+        // First pass: read delayed signals and update circular buffer.
+        for i in 0..frames {
             let wp = self.write_pos;
-
-            // Read delayed signal (with interpolation)
             let delayed_l = Self::read_interp(&self.buf_l, wp, self.current_delay);
             let delayed_r = Self::read_interp(&self.buf_r, wp, self.current_delay);
-
-            // Sum input + feedback
-            let sum_l = *l + delayed_l * fb;
-            let sum_r = *r + delayed_r * fb;
-
-            // Write to buffer
-            self.buf_l[wp] = sum_l;
-            self.buf_r[wp] = sum_r;
+            let l = left[i];
+            let r = right[i];
+            self.temp_dry_l[i] = l;
+            self.temp_dry_r[i] = r;
+            self.temp_wet_l[i] = delayed_l;
+            self.temp_wet_r[i] = delayed_r;
+            self.buf_l[wp] = l + delayed_l * fb;
+            self.buf_r[wp] = r + delayed_r * fb;
             self.write_pos = if wp + 1 >= max_len { 0 } else { wp + 1 };
-
-            // Output = dry*input + wet*delayed
-            *l = *l * dry + delayed_l * wet;
-            *r = *r * dry + delayed_r * wet;
-
-            // Chasing: smoothly adjust delay time to avoid clicks
             self.chase += (self.current_delay - target).abs();
             if self.chase > CHASE_THRESHOLD {
                 if self.current_delay > target {
@@ -138,5 +153,13 @@ impl Delay {
                 self.chase = 0.0;
             }
         }
+
+        // Second pass: SIMD dry/wet mix.
+        left[..frames].copy_from_slice(&self.temp_wet_l[..frames]);
+        right[..frames].copy_from_slice(&self.temp_wet_r[..frames]);
+        crate::simd::mul_inplace(&mut left[..frames], wet);
+        crate::simd::mul_inplace(&mut right[..frames], wet);
+        crate::simd::add_scaled_inplace(&mut left[..frames], &self.temp_dry_l[..frames], dry);
+        crate::simd::add_scaled_inplace(&mut right[..frames], &self.temp_dry_r[..frames], dry);
     }
 }

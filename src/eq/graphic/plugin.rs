@@ -159,20 +159,6 @@ impl AudioProcessor {
             self.temp_left[..frames].copy_from_slice(input_l.data32(0));
             self.temp_right[..frames].copy_from_slice(input_r.data32(0));
 
-            self.equalizer.process_stereo(
-                &mut self.temp_left[..frames],
-                &mut self.temp_right[..frames],
-            );
-
-            {
-                let mut output_l = process.audio_outputs(0);
-                output_l.data32(0)[..frames].copy_from_slice(&self.temp_left[..frames]);
-            }
-            {
-                let mut output_r = process.audio_outputs(1);
-                output_r.data32(0)[..frames].copy_from_slice(&self.temp_right[..frames]);
-            }
-
             if ui_visible {
                 let in_peak_l = crate::simd::peak_abs(&self.temp_left[..frames]);
                 let in_peak_r = crate::simd::peak_abs(&self.temp_right[..frames]);
@@ -308,6 +294,92 @@ fn analyze_output_spectrum_impl(
         crate::simd::mul_per_sample_inplace(&mut windowed[..n], &hann[..n]);
     }
 
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    {
+        if is_x86_feature_detected!("sse2") {
+            use wide::{CmpGt, f32x4};
+            const LANES: usize = 4;
+            let bins = SPECTRUM_BINS;
+            let nf4 = f32x4::splat(n as f32);
+            let twenty4 = f32x4::splat(20.0);
+            let neg_ninety4 = f32x4::splat(-90.0);
+            let eps4 = f32x4::splat(1.0e-8);
+            let max_db4 = f32x4::splat(20.0);
+            let bm1 = bins.saturating_sub(1).max(1) as f32;
+            let bm14 = f32x4::splat(bm1);
+            let twenty_const4 = f32x4::splat(20.0);
+            let twentyk4 = f32x4::splat(20_000.0);
+            let ratio4 = twentyk4 / twenty_const4;
+            let two_pi4 = f32x4::splat(2.0 * std::f32::consts::PI);
+            let sr4 = f32x4::splat(sample_rate);
+            let zero4 = f32x4::splat(0.0);
+            let pi4 = f32x4::splat(std::f32::consts::PI);
+
+            let mut cos_deltas = [0.0f32; SPECTRUM_BINS];
+            let mut sin_deltas = [0.0f32; SPECTRUM_BINS];
+            for group in 0..bins / LANES {
+                let base = group * LANES;
+                let t = f32x4::from([
+                    base as f32,
+                    (base + 1) as f32,
+                    (base + 2) as f32,
+                    (base + 3) as f32,
+                ]) / bm14;
+                let freq = twenty_const4 * (ratio4.ln() * t).exp();
+                let omega = (two_pi4 * freq / sr4).fast_min(pi4).fast_max(zero4);
+                let (sin_delta, cos_delta) = omega.sin_cos();
+                let cos_arr = cos_delta.to_array();
+                let sin_arr = sin_delta.to_array();
+                cos_deltas[base..base + LANES].copy_from_slice(&cos_arr);
+                sin_deltas[base..base + LANES].copy_from_slice(&sin_arr);
+            }
+
+            for group in 0..bins / LANES {
+                let base = group * LANES;
+                let cos_delta = f32x4::from([
+                    cos_deltas[base],
+                    cos_deltas[base + 1],
+                    cos_deltas[base + 2],
+                    cos_deltas[base + 3],
+                ]);
+                let sin_delta = f32x4::from([
+                    sin_deltas[base],
+                    sin_deltas[base + 1],
+                    sin_deltas[base + 2],
+                    sin_deltas[base + 3],
+                ]);
+
+                let mut re = f32x4::ZERO;
+                let mut im = f32x4::ZERO;
+                let mut cos_phase = f32x4::splat(1.0);
+                let mut sin_phase = f32x4::splat(0.0);
+
+                for s in windowed.iter() {
+                    let s4 = f32x4::splat(*s);
+                    re += s4 * cos_phase;
+                    im -= s4 * sin_phase;
+                    let new_cos = cos_phase * cos_delta - sin_phase * sin_delta;
+                    let new_sin = sin_phase * cos_delta + cos_phase * sin_delta;
+                    cos_phase = new_cos;
+                    sin_phase = new_sin;
+                }
+
+                let mag = (re * re + im * im).sqrt() / nf4;
+                let mask = mag.simd_gt(eps4);
+                let db = twenty4 * mag.log10();
+                let db_clamped = db.fast_max(neg_ninety4).fast_min(max_db4);
+                let result = mask.blend(db_clamped, neg_ninety4);
+                let arr = result.to_array();
+                out[base] = arr[0];
+                out[base + 1] = arr[1];
+                out[base + 2] = arr[2];
+                out[base + 3] = arr[3];
+            }
+            return out;
+        }
+    }
+
+    // Scalar fallback.
     for (bin, out_db) in out.iter_mut().enumerate() {
         let t = bin as f32 / (SPECTRUM_BINS.saturating_sub(1).max(1) as f32);
         let freq = 20.0_f32 * (20_000.0_f32 / 20.0_f32).powf(t);

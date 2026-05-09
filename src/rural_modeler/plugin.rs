@@ -572,13 +572,19 @@ impl AudioProcessor {
             crate::simd::add_scaled_inplace(&mut self.mono_input[..frames], &right[..frames], 1.0);
             crate::simd::mul_inplace(&mut self.mono_input[..frames], gain);
         } else {
-            for i in 0..frames {
-                let mut mono = 0.0;
-                for channel in 0..channels_in {
-                    mono += input_port.data32(channel as u32)[i];
-                }
-                self.mono_input[i] = input_gain * (mono / channels_in as f32);
+            self.mono_input[..frames].fill(0.0);
+            for channel in 0..channels_in {
+                let ch_data = input_port.data32(channel as u32);
+                crate::simd::add_scaled_inplace(
+                    &mut self.mono_input[..frames],
+                    &ch_data[..frames],
+                    1.0,
+                );
             }
+            crate::simd::mul_inplace(
+                &mut self.mono_input[..frames],
+                input_gain / channels_in as f32,
+            );
         }
         let gate_active = shared.params.get_bool(ParamId::NoiseGateActive);
         let eq_active = shared.params.get_bool(ParamId::EqActive);

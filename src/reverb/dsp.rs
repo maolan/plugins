@@ -77,6 +77,12 @@ pub struct Reverb {
     // Dither PRNG
     fpd_l: u32,
     fpd_r: u32,
+
+    // Temp buffers for SIMD dry/wet mix.
+    temp_dry_l: Vec<f32>,
+    temp_dry_r: Vec<f32>,
+    temp_wet_l: Vec<f32>,
+    temp_wet_r: Vec<f32>,
 }
 
 impl Default for Reverb {
@@ -158,13 +164,96 @@ impl Default for Reverb {
                     break v;
                 }
             },
+
+            temp_dry_l: vec![0.0; 1024],
+            temp_dry_r: vec![0.0; 1024],
+            temp_wet_l: vec![0.0; 1024],
+            temp_wet_r: vec![0.0; 1024],
         }
     }
 }
 
 impl Reverb {
     pub fn reset(&mut self) {
-        *self = Self::default();
+        for buf in [
+            &mut self.buf_il,
+            &mut self.buf_ir,
+            &mut self.buf_jl,
+            &mut self.buf_jr,
+            &mut self.buf_kl,
+            &mut self.buf_kr,
+            &mut self.buf_ll,
+            &mut self.buf_lr,
+            &mut self.buf_al,
+            &mut self.buf_ar,
+            &mut self.buf_bl,
+            &mut self.buf_br,
+            &mut self.buf_cl,
+            &mut self.buf_cr,
+            &mut self.buf_dl,
+            &mut self.buf_dr,
+            &mut self.buf_el,
+            &mut self.buf_er,
+            &mut self.buf_fl,
+            &mut self.buf_fr,
+            &mut self.buf_gl,
+            &mut self.buf_gr,
+            &mut self.buf_hl,
+            &mut self.buf_hr,
+            &mut self.buf_ml,
+            &mut self.buf_mr,
+        ] {
+            buf.fill(0.0);
+        }
+        self.pos_i = 0;
+        self.pos_j = 0;
+        self.pos_k = 0;
+        self.pos_l = 0;
+        self.pos_a = 0;
+        self.pos_b = 0;
+        self.pos_c = 0;
+        self.pos_d = 0;
+        self.pos_e = 0;
+        self.pos_f = 0;
+        self.pos_g = 0;
+        self.pos_h = 0;
+        self.pos_m = 0;
+
+        self.iir_al = 0.0;
+        self.iir_ar = 0.0;
+        self.iir_bl = 0.0;
+        self.iir_br = 0.0;
+
+        self.feedback_al = 0.0;
+        self.feedback_ar = 0.0;
+        self.feedback_bl = 0.0;
+        self.feedback_br = 0.0;
+        self.feedback_cl = 0.0;
+        self.feedback_cr = 0.0;
+        self.feedback_dl = 0.0;
+        self.feedback_dr = 0.0;
+
+        self.cycle = 0;
+        self.vib_m = 3.0;
+        self.old_fpd = 429496.7295;
+
+        self.fpd_l = loop {
+            let v: u32 = rand::random();
+            if v >= 16386 {
+                break v;
+            }
+        };
+        self.fpd_r = loop {
+            let v: u32 = rand::random();
+            if v >= 16386 {
+                break v;
+            }
+        };
+
+        self.temp_dry_l.fill(0.0);
+        self.temp_dry_r.fill(0.0);
+        self.temp_wet_l.fill(0.0);
+        self.temp_wet_r.fill(0.0);
     }
 
     pub fn set_sample_rate(&mut self, sample_rate: f64) {
@@ -229,9 +318,18 @@ impl Reverb {
         let delay_h = ((1597.0 * size) as usize).clamp(1, 3198);
         let delay_m = 256usize;
 
-        for (sample_l, sample_r) in left.iter_mut().zip(right.iter_mut()) {
-            let mut input_l = *sample_l as f64;
-            let mut input_r = *sample_r as f64;
+        let frames = left.len().min(right.len());
+        if self.temp_dry_l.len() < frames {
+            let new_len = frames.next_power_of_two();
+            self.temp_dry_l.resize(new_len, 0.0);
+            self.temp_dry_r.resize(new_len, 0.0);
+            self.temp_wet_l.resize(new_len, 0.0);
+            self.temp_wet_r.resize(new_len, 0.0);
+        }
+
+        for i in 0..frames {
+            let mut input_l = left[i] as f64;
+            let mut input_r = right[i] as f64;
 
             if input_l.abs() < 1.18e-23 {
                 input_l = self.fpd_l as f64 * 1.18e-17;
@@ -508,37 +606,42 @@ impl Reverb {
             self.iir_br = self.iir_br * (1.0 - lowpass) + input_r * lowpass;
             input_r = self.iir_br;
 
-            // Dry/wet
-            if wet < 1.0 {
-                input_l = input_l * wet + dry_l * (1.0 - wet);
-                input_r = input_r * wet + dry_r * (1.0 - wet);
-            }
+            self.temp_dry_l[i] = dry_l as f32;
+            self.temp_dry_r[i] = dry_r as f32;
+            self.temp_wet_l[i] = input_l as f32;
+            self.temp_wet_r[i] = input_r as f32;
+        }
 
-            // Dither
-            let expon_l = if input_l == 0.0 {
-                0
-            } else {
-                input_l.abs().log2().floor() as i32
-            };
+        // SIMD dry/wet mix.
+        let wet_f = wet as f32;
+        let dry_f = (1.0 - wet) as f32;
+        left[..frames].copy_from_slice(&self.temp_wet_l[..frames]);
+        right[..frames].copy_from_slice(&self.temp_wet_r[..frames]);
+        crate::simd::mul_inplace(&mut left[..frames], wet_f);
+        crate::simd::mul_inplace(&mut right[..frames], wet_f);
+        crate::simd::add_scaled_inplace(&mut left[..frames], &self.temp_dry_l[..frames], dry_f);
+        crate::simd::add_scaled_inplace(&mut right[..frames], &self.temp_dry_r[..frames], dry_f);
+
+        // Dither (scalar, stateful per-sample).
+        for i in 0..frames {
+            let mut input_l = left[i] as f64;
+            let mut input_r = right[i] as f64;
+            let mut expon = input_l.abs().log2().floor() as i32;
             self.fpd_l ^= self.fpd_l << 13;
             self.fpd_l ^= self.fpd_l >> 17;
             self.fpd_l ^= self.fpd_l << 5;
             input_l +=
-                (self.fpd_l as f64 - 0x7fff_ffffu32 as f64) * 5.5e-36 * 2.0_f64.powi(expon_l + 62);
+                (self.fpd_l as f64 - 0x7fff_ffffu32 as f64) * 5.5e-36 * 2.0_f64.powi(expon + 62);
 
-            let expon_r = if input_r == 0.0 {
-                0
-            } else {
-                input_r.abs().log2().floor() as i32
-            };
+            expon = input_r.abs().log2().floor() as i32;
             self.fpd_r ^= self.fpd_r << 13;
             self.fpd_r ^= self.fpd_r >> 17;
             self.fpd_r ^= self.fpd_r << 5;
             input_r +=
-                (self.fpd_r as f64 - 0x7fff_ffffu32 as f64) * 5.5e-36 * 2.0_f64.powi(expon_r + 62);
+                (self.fpd_r as f64 - 0x7fff_ffffu32 as f64) * 5.5e-36 * 2.0_f64.powi(expon + 62);
 
-            *sample_l = input_l as f32;
-            *sample_r = input_r as f32;
+            left[i] = input_l as f32;
+            right[i] = input_r as f32;
         }
     }
 }

@@ -7,6 +7,10 @@ pub struct ImagerMild {
     fpd_l: u32,
     fpd_r: u32,
     sample_rate: f64,
+    temp_dry_l: Vec<f32>,
+    temp_dry_r: Vec<f32>,
+    temp_wet_l: Vec<f32>,
+    temp_wet_r: Vec<f32>,
 }
 
 impl Default for ImagerMild {
@@ -17,6 +21,10 @@ impl Default for ImagerMild {
             fpd_l: rand::random(),
             fpd_r: rand::random(),
             sample_rate: 48_000.0,
+            temp_dry_l: vec![0.0; 1024],
+            temp_dry_r: vec![0.0; 1024],
+            temp_wet_l: vec![0.0; 1024],
+            temp_wet_r: vec![0.0; 1024],
         }
     }
 }
@@ -27,6 +35,10 @@ impl ImagerMild {
         self.count = 2048;
         self.fpd_l = rand::random();
         self.fpd_r = rand::random();
+        self.temp_dry_l.fill(0.0);
+        self.temp_dry_r.fill(0.0);
+        self.temp_wet_l.fill(0.0);
+        self.temp_wet_r.fill(0.0);
     }
 
     pub fn set_sample_rate(&mut self, sr: f64) {
@@ -59,9 +71,18 @@ impl ImagerMild {
         let far = near + 1;
         let near_level = 1.0 - far_level;
 
-        for (sample_l, sample_r) in left.iter_mut().zip(right.iter_mut()) {
-            let mut input_l = *sample_l as f64;
-            let mut input_r = *sample_r as f64;
+        let frames = left.len().min(right.len());
+        if self.temp_dry_l.len() < frames {
+            let new_len = frames.next_power_of_two();
+            self.temp_dry_l.resize(new_len, 0.0);
+            self.temp_dry_r.resize(new_len, 0.0);
+            self.temp_wet_l.resize(new_len, 0.0);
+            self.temp_wet_r.resize(new_len, 0.0);
+        }
+
+        for i in 0..frames {
+            let mut input_l = left[i] as f64;
+            let mut input_r = right[i] as f64;
 
             if input_l.abs() < 1.18e-23 {
                 input_l = self.fpd_l as f64 * 1.18e-17;
@@ -128,10 +149,26 @@ impl ImagerMild {
             }
             self.count -= 1;
 
-            input_l = dry_l * (1.0 - wet) + (mid + side) * wet;
-            input_r = dry_r * (1.0 - wet) + (mid - side) * wet;
+            self.temp_dry_l[i] = dry_l as f32;
+            self.temp_dry_r[i] = dry_r as f32;
+            self.temp_wet_l[i] = (mid + side) as f32;
+            self.temp_wet_r[i] = (mid - side) as f32;
+        }
 
-            // dither
+        // SIMD dry/wet mix.
+        let wet_f = wet as f32;
+        let dry_f = (1.0 - wet) as f32;
+        left[..frames].copy_from_slice(&self.temp_wet_l[..frames]);
+        right[..frames].copy_from_slice(&self.temp_wet_r[..frames]);
+        crate::simd::mul_inplace(&mut left[..frames], wet_f);
+        crate::simd::mul_inplace(&mut right[..frames], wet_f);
+        crate::simd::add_scaled_inplace(&mut left[..frames], &self.temp_dry_l[..frames], dry_f);
+        crate::simd::add_scaled_inplace(&mut right[..frames], &self.temp_dry_r[..frames], dry_f);
+
+        // Dither (scalar, stateful per-sample).
+        for i in 0..frames {
+            let mut input_l = left[i] as f64;
+            let mut input_r = right[i] as f64;
             let mut expon = input_l.abs().log2().floor() as i32;
             self.fpd_l ^= self.fpd_l << 13;
             self.fpd_l ^= self.fpd_l >> 17;
@@ -146,8 +183,8 @@ impl ImagerMild {
             input_r +=
                 (self.fpd_r as f64 - 0x7fff_ffffu32 as f64) * 5.5e-36 * 2.0_f64.powi(expon + 62);
 
-            *sample_l = input_l as f32;
-            *sample_r = input_r as f32;
+            left[i] = input_l as f32;
+            right[i] = input_r as f32;
         }
     }
 }
