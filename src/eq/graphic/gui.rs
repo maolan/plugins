@@ -306,9 +306,11 @@ impl Program<Message> for SpectrumCanvas {
             );
         }
 
-        let spectrum = Path::new(|b| {
+        let spectrum_fill = Path::new(|b| {
             let mut first = true;
-            for (i, db) in self.output_spectrum_db.iter().enumerate() {
+            let last = SPECTRUM_BINS.saturating_sub(1);
+            for i in (0..SPECTRUM_BINS).step_by(2) {
+                let db = self.output_spectrum_db[i];
                 let t = i as f32 / (SPECTRUM_BINS.saturating_sub(1).max(1) as f32);
                 let freq = Self::F_MIN * (Self::F_MAX / Self::F_MIN).powf(t);
                 let x = Self::freq_to_x(
@@ -320,7 +322,7 @@ impl Program<Message> for SpectrumCanvas {
                     },
                 );
                 let y = Self::spectrum_to_y(
-                    *db,
+                    db,
                     Rectangle {
                         x: 0.0,
                         y: 0.0,
@@ -334,13 +336,36 @@ impl Program<Message> for SpectrumCanvas {
                     b.line_to(Point::new(x, y));
                 }
             }
+            if last % 2 == 1 {
+                let t = last as f32 / (SPECTRUM_BINS.saturating_sub(1).max(1) as f32);
+                let freq = Self::F_MIN * (Self::F_MAX / Self::F_MIN).powf(t);
+                let x = Self::freq_to_x(
+                    freq,
+                    Rectangle {
+                        x: 0.0,
+                        y: 0.0,
+                        ..bounds
+                    },
+                );
+                let y = Self::spectrum_to_y(
+                    self.output_spectrum_db[last],
+                    Rectangle {
+                        x: 0.0,
+                        y: 0.0,
+                        ..bounds
+                    },
+                );
+                if first {
+                    b.move_to(Point::new(x, y));
+                } else {
+                    b.line_to(Point::new(x, y));
+                }
+            }
+            b.line_to(Point::new(bounds.width, bounds.height));
+            b.line_to(Point::new(0.0, bounds.height));
+            b.close();
         });
-        frame.stroke(
-            &spectrum,
-            canvas::Stroke::default()
-                .with_color(Color::from_rgba(0.95, 0.95, 0.95, 0.85))
-                .with_width(1.2),
-        );
+        frame.fill(&spectrum_fill, Color::from_rgba(0.0, 0.85, 0.3, 0.15));
 
         vec![frame.into_geometry()]
     }

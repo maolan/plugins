@@ -377,6 +377,51 @@ impl Program<Message> for EqResponseCanvas {
             );
         }
 
+        let spectrum_fill = Path::new(|b| {
+            let mut first = true;
+            let last = SPECTRUM_BINS.saturating_sub(1);
+            for i in (0..SPECTRUM_BINS).step_by(2) {
+                let db = self.output_spectrum_db[i];
+                let t = i as f32 / (SPECTRUM_BINS.saturating_sub(1).max(1) as f32);
+                let x = t * bounds.width;
+                let y = Self::spectrum_to_y(
+                    db,
+                    Rectangle {
+                        x: 0.0,
+                        y: 0.0,
+                        ..bounds
+                    },
+                );
+                if first {
+                    b.move_to(Point::new(x, y));
+                    first = false;
+                } else {
+                    b.line_to(Point::new(x, y));
+                }
+            }
+            if last % 2 == 1 {
+                let t = last as f32 / (SPECTRUM_BINS.saturating_sub(1).max(1) as f32);
+                let x = t * bounds.width;
+                let y = Self::spectrum_to_y(
+                    self.output_spectrum_db[last],
+                    Rectangle {
+                        x: 0.0,
+                        y: 0.0,
+                        ..bounds
+                    },
+                );
+                if first {
+                    b.move_to(Point::new(x, y));
+                } else {
+                    b.line_to(Point::new(x, y));
+                }
+            }
+            b.line_to(Point::new(bounds.width, bounds.height));
+            b.line_to(Point::new(0.0, bounds.height));
+            b.close();
+        });
+        frame.fill(&spectrum_fill, Color::from_rgba(0.0, 0.85, 0.3, 0.15));
+
         let response = Path::new(|b| {
             let mut first = true;
             for xi in 0..(bounds.width as usize).max(2) {
@@ -416,34 +461,6 @@ impl Program<Message> for EqResponseCanvas {
             canvas::Stroke::default()
                 .with_color(Color::from_rgb(0.53, 0.88, 0.98))
                 .with_width(2.0),
-        );
-
-        let spectrum = Path::new(|b| {
-            let mut first = true;
-            for (i, db) in self.output_spectrum_db.iter().enumerate() {
-                let t = i as f32 / (SPECTRUM_BINS.saturating_sub(1).max(1) as f32);
-                let x = t * bounds.width;
-                let y = Self::spectrum_to_y(
-                    *db,
-                    Rectangle {
-                        x: 0.0,
-                        y: 0.0,
-                        ..bounds
-                    },
-                );
-                if first {
-                    b.move_to(Point::new(x, y));
-                    first = false;
-                } else {
-                    b.line_to(Point::new(x, y));
-                }
-            }
-        });
-        frame.stroke(
-            &spectrum,
-            canvas::Stroke::default()
-                .with_color(Color::from_rgba(0.95, 0.95, 0.95, 0.75))
-                .with_width(1.0),
         );
 
         for (_global_idx, freq, gain, _q, on) in self.bands.iter() {

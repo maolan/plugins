@@ -33,6 +33,7 @@ impl Biquad {
         self.a2 = a2 / a0;
     }
 
+    #[inline(always)]
     pub fn process(&mut self, x: f32) -> f32 {
         let y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2
             - self.a1 * self.y1
@@ -42,6 +43,33 @@ impl Biquad {
         self.y2 = self.y1;
         self.y1 = y;
         y
+    }
+
+    pub fn process_inplace(&mut self, buffer: &mut [f32]) {
+        let b0 = self.b0;
+        let b1 = self.b1;
+        let b2 = self.b2;
+        let a1 = self.a1;
+        let a2 = self.a2;
+        let mut x1 = self.x1;
+        let mut x2 = self.x2;
+        let mut y1 = self.y1;
+        let mut y2 = self.y2;
+
+        for x in buffer.iter_mut() {
+            let input = *x;
+            let y = b0 * input + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+            x2 = x1;
+            x1 = input;
+            y2 = y1;
+            y1 = y;
+            *x = y;
+        }
+
+        self.x1 = x1;
+        self.x2 = x2;
+        self.y1 = y1;
+        self.y2 = y2;
     }
 
     pub fn set_low_shelf(&mut self, sample_rate: f32, freq_hz: f32, gain_db: f32) {

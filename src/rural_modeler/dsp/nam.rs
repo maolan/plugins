@@ -627,16 +627,23 @@ fn lstm_gates_inplace(c: &mut [f32], i: &[f32], f: &[f32], g: &[f32]) {
 
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 unsafe fn lstm_gates_inplace_sse(c: &mut [f32], i: &[f32], f: &[f32], g: &[f32]) {
-    use wide::f32x4;
     let n = c.len().min(i.len()).min(f.len()).min(g.len());
     let chunks = n / 4;
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
     for j in 0..chunks {
-        let cj = f32x4::from(&c[j * 4..(j + 1) * 4]);
-        let ij = f32x4::from(&i[j * 4..(j + 1) * 4]);
-        let fj = f32x4::from(&f[j * 4..(j + 1) * 4]);
-        let gj = f32x4::from(&g[j * 4..(j + 1) * 4]);
-        let r = fast_sigmoid_f32x4(fj) * cj + fast_sigmoid_f32x4(ij) * fast_tanh_f32x4(gj);
-        c[j * 4..(j + 1) * 4].copy_from_slice(&r.to_array());
+        let base = j * 4;
+        let cj = _mm_loadu_ps(c.as_ptr().add(base));
+        let ij = _mm_loadu_ps(i.as_ptr().add(base));
+        let fj = _mm_loadu_ps(f.as_ptr().add(base));
+        let gj = _mm_loadu_ps(g.as_ptr().add(base));
+        let r = _mm_add_ps(
+            _mm_mul_ps(fast_sigmoid_m128(fj), cj),
+            _mm_mul_ps(fast_sigmoid_m128(ij), fast_tanh_m128(gj)),
+        );
+        _mm_storeu_ps(c.as_mut_ptr().add(base), r);
     }
     for j in chunks * 4..n {
         c[j] = activations::fast_sigmoid(f[j]) * c[j]
@@ -664,40 +671,63 @@ fn lstm_output_inplace(out: &mut [f32], o: &[f32], c: &[f32]) {
 
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 unsafe fn lstm_output_inplace_sse(out: &mut [f32], o: &[f32], c: &[f32]) {
-    use wide::f32x4;
     let n = out.len().min(o.len()).min(c.len());
     let chunks = n / 4;
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
     for j in 0..chunks {
-        let oj = f32x4::from(&o[j * 4..(j + 1) * 4]);
-        let cj = f32x4::from(&c[j * 4..(j + 1) * 4]);
-        let r = fast_sigmoid_f32x4(oj) * fast_tanh_f32x4(cj);
-        out[j * 4..(j + 1) * 4].copy_from_slice(&r.to_array());
+        let base = j * 4;
+        let oj = _mm_loadu_ps(o.as_ptr().add(base));
+        let cj = _mm_loadu_ps(c.as_ptr().add(base));
+        let r = _mm_mul_ps(fast_sigmoid_m128(oj), fast_tanh_m128(cj));
+        _mm_storeu_ps(out.as_mut_ptr().add(base), r);
     }
     for j in chunks * 4..n {
         out[j] = activations::fast_sigmoid(o[j]) * activations::fast_tanh(c[j]);
     }
 }
 
+#[cfg(target_arch = "x86")]
+type M128 = std::arch::x86::__m128;
+#[cfg(target_arch = "x86_64")]
+type M128 = std::arch::x86_64::__m128;
+
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[inline]
-unsafe fn fast_tanh_f32x4(x: wide::f32x4) -> wide::f32x4 {
-    use wide::f32x4;
-    let ax = x.abs();
-    let x2 = x * x;
-    let num = x
-        * (f32x4::splat(2.455_507_5)
-            + f32x4::splat(2.455_507_5) * ax
-            + (f32x4::splat(0.893_229_85) + f32x4::splat(0.821_226_67) * ax) * x2);
-    let den = f32x4::splat(2.445_066_4)
-        + (f32x4::splat(2.445_066_4) + x2) * (x + f32x4::splat(0.814_642_7) * x * ax).abs();
-    num / den
+unsafe fn fast_tanh_m128(x: M128) -> M128 {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+    let sign_mask = _mm_set1_ps(-0.0);
+    let ax = _mm_andnot_ps(sign_mask, x);
+    let x2 = _mm_mul_ps(x, x);
+    let c1 = _mm_set1_ps(2.455_507_5);
+    let c2 = _mm_set1_ps(0.893_229_85);
+    let c3 = _mm_set1_ps(0.821_226_67);
+    let c4 = _mm_set1_ps(2.445_066_4);
+    let c5 = _mm_set1_ps(0.814_642_7);
+    let num_inner = _mm_add_ps(c1, _mm_mul_ps(c1, ax));
+    let num_tail = _mm_mul_ps(_mm_add_ps(c2, _mm_mul_ps(c3, ax)), x2);
+    let num = _mm_mul_ps(x, _mm_add_ps(num_inner, num_tail));
+    let den_inner = _mm_add_ps(x, _mm_mul_ps(_mm_mul_ps(c5, x), ax));
+    let den_inner_abs = _mm_andnot_ps(sign_mask, den_inner);
+    let den = _mm_add_ps(c4, _mm_mul_ps(_mm_add_ps(c4, x2), den_inner_abs));
+    _mm_div_ps(num, den)
 }
 
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 #[inline]
-unsafe fn fast_sigmoid_f32x4(x: wide::f32x4) -> wide::f32x4 {
-    wide::f32x4::splat(0.5)
-        * (fast_tanh_f32x4(x * wide::f32x4::splat(0.5)) + wide::f32x4::splat(1.0))
+unsafe fn fast_sigmoid_m128(x: M128) -> M128 {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+    let half = _mm_set1_ps(0.5);
+    let one = _mm_set1_ps(1.0);
+    _mm_mul_ps(half, _mm_add_ps(fast_tanh_m128(_mm_mul_ps(x, half)), one))
 }
 
 #[derive(Debug, Clone)]

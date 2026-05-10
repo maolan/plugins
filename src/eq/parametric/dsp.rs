@@ -14,6 +14,8 @@ pub struct ParametricEqualizer {
     para_gain: [f32; 32],
     para_q: [f32; 32],
     para_on: [bool; 32],
+    active_bands: [usize; 32],
+    active_count: usize,
 }
 
 impl Default for ParametricEqualizer {
@@ -29,6 +31,8 @@ impl Default for ParametricEqualizer {
             para_gain: [0.0; 32],
             para_q: [1.0; 32],
             para_on: [false; 32],
+            active_bands: [0; 32],
+            active_count: 0,
         }
     }
 }
@@ -75,12 +79,25 @@ impl ParametricEqualizer {
         self.para_q[idx] = q;
         self.para_on[idx] = on;
         self.update_para_band(idx);
+        self.rebuild_active_bands();
     }
 
     fn rebuild_filters(&mut self) {
         for i in 0..32 {
             self.update_para_band(i);
         }
+        self.rebuild_active_bands();
+    }
+
+    fn rebuild_active_bands(&mut self) {
+        let mut n = 0usize;
+        for i in 0..32 {
+            if self.para_on[i] {
+                self.active_bands[n] = i;
+                n += 1;
+            }
+        }
+        self.active_count = n;
     }
 
     fn update_para_band(&mut self, idx: usize) {
@@ -105,17 +122,9 @@ impl ParametricEqualizer {
         let frames = left.len().min(right.len());
         crate::simd::mul_inplace(&mut left[..frames], self.input_gain_lin);
         crate::simd::mul_inplace(&mut right[..frames], self.input_gain_lin);
-        for i in 0..frames {
-            let mut l = left[i];
-            let mut r = right[i];
-            for b in 0..32 {
-                if self.para_on[b] {
-                    l = self.para_l[b].process(l);
-                    r = self.para_r[b].process(r);
-                }
-            }
-            left[i] = l;
-            right[i] = r;
+        for &b in self.active_bands[..self.active_count].iter() {
+            self.para_l[b].process_inplace(&mut left[..frames]);
+            self.para_r[b].process_inplace(&mut right[..frames]);
         }
         crate::simd::mul_inplace(&mut left[..frames], self.output_gain_lin);
         crate::simd::mul_inplace(&mut right[..frames], self.output_gain_lin);
@@ -126,14 +135,8 @@ impl ParametricEqualizer {
             return;
         }
         crate::simd::mul_inplace(buffer, self.input_gain_lin);
-        for s in buffer.iter_mut() {
-            let mut l = *s;
-            for b in 0..32 {
-                if self.para_on[b] {
-                    l = self.para_l[b].process(l);
-                }
-            }
-            *s = l;
+        for &b in self.active_bands[..self.active_count].iter() {
+            self.para_l[b].process_inplace(buffer);
         }
         crate::simd::mul_inplace(buffer, self.output_gain_lin);
     }

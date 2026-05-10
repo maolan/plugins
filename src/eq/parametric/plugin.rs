@@ -101,6 +101,7 @@ struct AudioProcessor {
     equalizer: ParametricEqualizer,
     temp_left: Vec<f32>,
     temp_right: Vec<f32>,
+    spectrum_samples_since_update: usize,
 }
 
 impl AudioProcessor {
@@ -111,11 +112,13 @@ impl AudioProcessor {
             equalizer,
             temp_left: vec![0.0; max_frames as usize],
             temp_right: vec![0.0; max_frames as usize],
+            spectrum_samples_since_update: 0,
         }
     }
 
     fn reset(&mut self) {
         self.equalizer.reset();
+        self.spectrum_samples_since_update = 0;
     }
 
     fn apply_params(&mut self, shared: &SharedState<ParamId>) {
@@ -154,6 +157,10 @@ impl AudioProcessor {
             self.temp_left.resize(frames, 0.0);
             self.temp_right.resize(frames, 0.0);
         }
+        let spectrum_update_interval_samples =
+            (self.equalizer.sample_rate() / 10.0).round().max(1.0) as usize;
+        self.spectrum_samples_since_update =
+            self.spectrum_samples_since_update.saturating_add(frames);
 
         let inputs_count = process.audio_inputs_count();
         let outputs_count = process.audio_outputs_count();
@@ -210,12 +217,15 @@ impl AudioProcessor {
                 };
                 shared.set_output_level_left_db(out_db_l.clamp(-90.0, 20.0));
                 shared.set_output_level_right_db(out_db_r.clamp(-90.0, 20.0));
-                let spectrum = analyze_output_spectrum_stereo(
-                    &self.temp_left[..frames],
-                    &self.temp_right[..frames],
-                    self.equalizer.sample_rate(),
-                );
-                shared.set_output_spectrum_db(&spectrum);
+                if self.spectrum_samples_since_update >= spectrum_update_interval_samples {
+                    let spectrum = analyze_output_spectrum_stereo(
+                        &self.temp_left[..frames],
+                        &self.temp_right[..frames],
+                        self.equalizer.sample_rate(),
+                    );
+                    shared.set_output_spectrum_db(&spectrum);
+                    self.spectrum_samples_since_update = 0;
+                }
             }
         } else if inputs_count >= 1 && outputs_count >= 1 {
             let input_port = process.audio_inputs(0);
@@ -246,11 +256,14 @@ impl AudioProcessor {
                 };
                 shared.set_output_level_left_db(out_db_l.clamp(-90.0, 20.0));
                 shared.set_output_level_right_db(out_db_l.clamp(-90.0, 20.0));
-                let spectrum = analyze_output_spectrum_mono(
-                    &self.temp_left[..frames],
-                    self.equalizer.sample_rate(),
-                );
-                shared.set_output_spectrum_db(&spectrum);
+                if self.spectrum_samples_since_update >= spectrum_update_interval_samples {
+                    let spectrum = analyze_output_spectrum_mono(
+                        &self.temp_left[..frames],
+                        self.equalizer.sample_rate(),
+                    );
+                    shared.set_output_spectrum_db(&spectrum);
+                    self.spectrum_samples_since_update = 0;
+                }
             }
         }
 
@@ -283,17 +296,18 @@ fn analyze_output_spectrum_impl(
 
     // Precompute Hann window.
     let nf = n as f32;
-    let mut hann = vec![0.0f32; n];
-    for (i, h) in hann.iter_mut().enumerate() {
+    let mut hann = [0.0f32; 1024];
+    for (i, h) in hann[..n].iter_mut().enumerate() {
         *h = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (nf - 1.0)).cos();
     }
 
     // Precompute windowed samples (stereo downmix + window).
-    let mut windowed = vec![0.0f32; n];
+    let mut windowed = [0.0f32; 1024];
     if let Some(r) = right {
-        for i in 0..n {
-            windowed[i] = 0.5 * (left[i] + r[i]) * hann[i];
-        }
+        windowed[..n].copy_from_slice(&left[..n]);
+        crate::simd::add_scaled_inplace(&mut windowed[..n], &r[..n], 1.0);
+        crate::simd::mul_inplace(&mut windowed[..n], 0.5);
+        crate::simd::mul_per_sample_inplace(&mut windowed[..n], &hann[..n]);
     } else {
         windowed[..n].copy_from_slice(&left[..n]);
         crate::simd::mul_per_sample_inplace(&mut windowed[..n], &hann[..n]);
@@ -301,84 +315,130 @@ fn analyze_output_spectrum_impl(
 
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     {
-        if is_x86_feature_detected!("sse2") {
-            use wide::{CmpGt, f32x4};
-            const LANES: usize = 4;
+        if is_x86_feature_detected!("avx") {
+            const LANES: usize = 8;
             let bins = SPECTRUM_BINS;
-            let nf4 = f32x4::splat(n as f32);
-            let twenty4 = f32x4::splat(20.0);
-            let neg_ninety4 = f32x4::splat(-90.0);
-            let eps4 = f32x4::splat(1.0e-8);
-            let max_db4 = f32x4::splat(20.0);
-            let bm1 = bins.saturating_sub(1).max(1) as f32;
-            let bm14 = f32x4::splat(bm1);
-            let twenty_const4 = f32x4::splat(20.0);
-            let twentyk4 = f32x4::splat(20_000.0);
-            let ratio4 = twentyk4 / twenty_const4;
-            let two_pi4 = f32x4::splat(2.0 * std::f32::consts::PI);
-            let sr4 = f32x4::splat(sample_rate);
-            let zero4 = f32x4::splat(0.0);
-            let pi4 = f32x4::splat(std::f32::consts::PI);
-
             let mut cos_deltas = [0.0f32; SPECTRUM_BINS];
             let mut sin_deltas = [0.0f32; SPECTRUM_BINS];
-            for group in 0..bins / LANES {
-                let base = group * LANES;
-                let t = f32x4::from([
-                    base as f32,
-                    (base + 1) as f32,
-                    (base + 2) as f32,
-                    (base + 3) as f32,
-                ]) / bm14;
-                let freq = twenty_const4 * (ratio4.ln() * t).exp();
-                let omega = (two_pi4 * freq / sr4).fast_min(pi4).fast_max(zero4);
-                let (sin_delta, cos_delta) = omega.sin_cos();
-                let cos_arr = cos_delta.to_array();
-                let sin_arr = sin_delta.to_array();
-                cos_deltas[base..base + LANES].copy_from_slice(&cos_arr);
-                sin_deltas[base..base + LANES].copy_from_slice(&sin_arr);
+            for bin in 0..bins {
+                let t = bin as f32 / (bins.saturating_sub(1).max(1) as f32);
+                let freq = 20.0_f32 * (20_000.0_f32 / 20.0_f32).powf(t);
+                let omega = (2.0 * std::f32::consts::PI * freq / sample_rate)
+                    .clamp(0.0, std::f32::consts::PI);
+                cos_deltas[bin] = omega.cos();
+                sin_deltas[bin] = omega.sin();
             }
 
-            for group in 0..bins / LANES {
-                let base = group * LANES;
-                let cos_delta = f32x4::from([
-                    cos_deltas[base],
-                    cos_deltas[base + 1],
-                    cos_deltas[base + 2],
-                    cos_deltas[base + 3],
-                ]);
-                let sin_delta = f32x4::from([
-                    sin_deltas[base],
-                    sin_deltas[base + 1],
-                    sin_deltas[base + 2],
-                    sin_deltas[base + 3],
-                ]);
+            #[cfg(target_arch = "x86")]
+            use std::arch::x86::*;
+            #[cfg(target_arch = "x86_64")]
+            use std::arch::x86_64::*;
 
-                let mut re = f32x4::ZERO;
-                let mut im = f32x4::ZERO;
-                let mut cos_phase = f32x4::splat(1.0);
-                let mut sin_phase = f32x4::splat(0.0);
+            unsafe {
+                let nf = n as f32;
+                let eps = 1.0e-8f32;
+                for group in 0..bins / LANES {
+                    let base = group * LANES;
+                    let cos_delta = _mm256_loadu_ps(cos_deltas.as_ptr().add(base));
+                    let sin_delta = _mm256_loadu_ps(sin_deltas.as_ptr().add(base));
+                    let mut re = _mm256_setzero_ps();
+                    let mut im = _mm256_setzero_ps();
+                    let mut cos_phase = _mm256_set1_ps(1.0);
+                    let mut sin_phase = _mm256_setzero_ps();
 
-                for s in windowed.iter() {
-                    let s4 = f32x4::splat(*s);
-                    re += s4 * cos_phase;
-                    im -= s4 * sin_phase;
-                    let new_cos = cos_phase * cos_delta - sin_phase * sin_delta;
-                    let new_sin = sin_phase * cos_delta + cos_phase * sin_delta;
-                    cos_phase = new_cos;
-                    sin_phase = new_sin;
+                    for s in windowed[..n].iter() {
+                        let s8 = _mm256_set1_ps(*s);
+                        re = _mm256_add_ps(re, _mm256_mul_ps(s8, cos_phase));
+                        im = _mm256_sub_ps(im, _mm256_mul_ps(s8, sin_phase));
+                        let new_cos = _mm256_sub_ps(
+                            _mm256_mul_ps(cos_phase, cos_delta),
+                            _mm256_mul_ps(sin_phase, sin_delta),
+                        );
+                        let new_sin = _mm256_add_ps(
+                            _mm256_mul_ps(sin_phase, cos_delta),
+                            _mm256_mul_ps(cos_phase, sin_delta),
+                        );
+                        cos_phase = new_cos;
+                        sin_phase = new_sin;
+                    }
+
+                    let mag = _mm256_div_ps(
+                        _mm256_sqrt_ps(_mm256_add_ps(_mm256_mul_ps(re, re), _mm256_mul_ps(im, im))),
+                        _mm256_set1_ps(nf),
+                    );
+                    let mut mag_arr = [0.0f32; LANES];
+                    _mm256_storeu_ps(mag_arr.as_mut_ptr(), mag);
+                    for lane in 0..LANES {
+                        let m = mag_arr[lane];
+                        out[base + lane] = if m > eps {
+                            (20.0 * m.log10()).clamp(-90.0, 20.0)
+                        } else {
+                            -90.0
+                        };
+                    }
                 }
+            }
+            return out;
+        }
+        if is_x86_feature_detected!("sse2") {
+            const LANES: usize = 4;
+            let bins = SPECTRUM_BINS;
+            let mut cos_deltas = [0.0f32; SPECTRUM_BINS];
+            let mut sin_deltas = [0.0f32; SPECTRUM_BINS];
+            for bin in 0..bins {
+                let t = bin as f32 / (bins.saturating_sub(1).max(1) as f32);
+                let freq = 20.0_f32 * (20_000.0_f32 / 20.0_f32).powf(t);
+                let omega = (2.0 * std::f32::consts::PI * freq / sample_rate)
+                    .clamp(0.0, std::f32::consts::PI);
+                cos_deltas[bin] = omega.cos();
+                sin_deltas[bin] = omega.sin();
+            }
 
-                let mag = (re * re + im * im).sqrt() / nf4;
-                let mask = mag.simd_gt(eps4);
-                let db = twenty4 * mag.log10();
-                let db_clamped = db.fast_max(neg_ninety4).fast_min(max_db4);
-                let result = mask.blend(db_clamped, neg_ninety4);
-                let arr = result.to_array();
-                out[base] = arr[0];
-                out[base + 1] = arr[1];
-                out[base + 2] = arr[2];
-                out[base + 3] = arr[3];
+            #[cfg(target_arch = "x86")]
+            use std::arch::x86::*;
+            #[cfg(target_arch = "x86_64")]
+            use std::arch::x86_64::*;
+            unsafe {
+                let nf = _mm_set1_ps(n as f32);
+                let eps = 1.0e-8f32;
+                for group in 0..bins / LANES {
+                    let base = group * LANES;
+                    let cos_delta = _mm_loadu_ps(cos_deltas.as_ptr().add(base));
+                    let sin_delta = _mm_loadu_ps(sin_deltas.as_ptr().add(base));
+                    let mut re = _mm_setzero_ps();
+                    let mut im = _mm_setzero_ps();
+                    let mut cos_phase = _mm_set1_ps(1.0);
+                    let mut sin_phase = _mm_setzero_ps();
+                    for s in windowed[..n].iter() {
+                        let s4 = _mm_set1_ps(*s);
+                        re = _mm_add_ps(re, _mm_mul_ps(s4, cos_phase));
+                        im = _mm_sub_ps(im, _mm_mul_ps(s4, sin_phase));
+                        let new_cos = _mm_sub_ps(
+                            _mm_mul_ps(cos_phase, cos_delta),
+                            _mm_mul_ps(sin_phase, sin_delta),
+                        );
+                        let new_sin = _mm_add_ps(
+                            _mm_mul_ps(sin_phase, cos_delta),
+                            _mm_mul_ps(cos_phase, sin_delta),
+                        );
+                        cos_phase = new_cos;
+                        sin_phase = new_sin;
+                    }
+                    let mag = _mm_div_ps(
+                        _mm_sqrt_ps(_mm_add_ps(_mm_mul_ps(re, re), _mm_mul_ps(im, im))),
+                        nf,
+                    );
+                    let mut mag_arr = [0.0f32; LANES];
+                    _mm_storeu_ps(mag_arr.as_mut_ptr(), mag);
+                    for lane in 0..LANES {
+                        let m = mag_arr[lane];
+                        out[base + lane] = if m > eps {
+                            (20.0 * m.log10()).clamp(-90.0, 20.0)
+                        } else {
+                            -90.0
+                        };
+                    }
+                }
             }
             return out;
         }
@@ -397,7 +457,7 @@ fn analyze_output_spectrum_impl(
         let mut cos_phase = 1.0_f32;
         let mut sin_phase = 0.0_f32;
 
-        for s in windowed.iter() {
+        for s in windowed[..n].iter() {
             re += *s * cos_phase;
             im -= *s * sin_phase;
             let new_cos = cos_phase * cos_delta - sin_phase * sin_delta;
