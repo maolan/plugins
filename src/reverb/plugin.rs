@@ -708,8 +708,6 @@ static TAIL_EXT: clap_plugin_tail = clap_plugin_tail {
 };
 
 unsafe extern "C-unwind" fn ext_tail_get(_plugin: *const clap_plugin) -> u32 {
-    // Reverb tail: longest delay line is ~7607 samples at 1.77 size ≈ 13,500 samples
-    // At 48kHz that's ~0.28s. Add a safety margin.
     32768
 }
 

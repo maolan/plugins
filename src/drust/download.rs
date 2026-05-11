@@ -180,7 +180,6 @@ pub fn download_kit_with_progress(
     let cache = cache_dir();
     std::fs::create_dir_all(&cache).map_err(|e| format!("Failed to create cache dir: {e}"))?;
 
-    // Check if already extracted.
     if let Some(xml) = resolve_kit_xml(kit_name, variation) {
         on_progress(1.0);
         return Ok(xml.to_string_lossy().into_owned());
@@ -188,7 +187,6 @@ pub fn download_kit_with_progress(
 
     let tmp_zip = cache.join(format!("drust-{}.zip", kit_name.to_lowercase()));
 
-    // Download with progress.
     let response = ureq::get(url)
         .call()
         .map_err(|e| format!("Download failed: {e}"))?;
@@ -222,15 +220,12 @@ pub fn download_kit_with_progress(
     }
     drop(file);
 
-    // Extract with progress (maps 0.0..1.0 to 0.7..1.0).
     extract_zip_with_progress(&tmp_zip, &cache, |p| on_progress(0.7 + p * 0.3))?;
 
-    // Clean up temp file.
     let _ = std::fs::remove_file(&tmp_zip);
 
     on_progress(1.0);
 
-    // Find the specific drumkit XML.
     resolve_kit_xml(kit_name, variation)
         .map(|p| p.to_string_lossy().into_owned())
         .ok_or_else(|| format!("No drumkit XML found for {} ({})", kit_name, variation))

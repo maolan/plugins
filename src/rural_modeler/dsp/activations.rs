@@ -5,10 +5,6 @@ use serde_json::Value;
 
 use crate::rural_modeler::dsp::error::NamError;
 
-// =============================================================================
-// Activation trait
-// =============================================================================
-
 /// Re-implementation of NAM C++ `nam::activations::Activation`.
 ///
 /// Each activation type implements this trait.  The global registry stores
@@ -25,10 +21,6 @@ pub trait Activation: Send + Sync + std::fmt::Debug {
         buf[0]
     }
 }
-
-// =============================================================================
-// Low-level activation functions (match C++ constants exactly)
-// =============================================================================
 
 #[inline]
 pub fn relu(x: f32) -> f32 {
@@ -92,10 +84,6 @@ pub fn hardswish(x: f32) -> f32 {
 pub fn softsign(x: f32) -> f32 {
     x / (1.0 + x.abs())
 }
-
-// =============================================================================
-// Concrete activation types
-// =============================================================================
 
 #[derive(Debug)]
 pub struct Tanh;
@@ -317,10 +305,6 @@ pub fn is_fast_tanh_enabled() -> bool {
     }
     false
 }
-
-// =============================================================================
-// JSON parsing
-// =============================================================================
 
 /// Parse an activation from JSON, either a simple string or an object with
 /// parameters.  Returns a fresh `Arc<dyn Activation>` (parameterized instances

@@ -22,9 +22,7 @@ impl ImpulseResponse {
                 channels
             ));
         }
-        // Align with NAM's WAV support matrix used for IR loading:
-        // - IEEE float: 32-bit only
-        // - PCM int: 16, 24, or 32-bit only
+
         match (spec.sample_format, spec.bits_per_sample) {
             (hound::SampleFormat::Float, 32) => {}
             (hound::SampleFormat::Int, 16 | 24 | 32) => {}
@@ -97,9 +95,6 @@ impl ImpulseResponse {
             self.raw_samples.clone()
         } else {
             {
-                // C++ pads with a zero at the start and end before resampling.
-                // This ensures the first sample of the raw audio is included in
-                // the output and the interpolation tails off to zero naturally.
                 let mut padded = Vec::with_capacity(self.raw_samples.len() + 2);
                 padded.push(0.0);
                 padded.extend_from_slice(&self.raw_samples);
@@ -149,7 +144,7 @@ fn resample_cubic(input: &[f32], src_rate: f32, dst_rate: f32) -> Vec<f32> {
 
     let time_increment = 1.0 / src_rate;
     let resampled_time_increment = 1.0 / dst_rate;
-    let mut time = time_increment; // Start at second sample (cubic needs boundary)
+    let mut time = time_increment;
     let end_time = (input.len() - 1) as f32 * time_increment;
 
     let mut output = Vec::new();

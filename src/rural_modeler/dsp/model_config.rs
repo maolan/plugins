@@ -6,9 +6,9 @@ use serde_json::Value;
 use crate::rural_modeler::dsp::core::Dsp;
 use crate::rural_modeler::dsp::error::NamError;
 
-// =============================================================================
-// ModelConfig trait
-// =============================================================================
+
+
+
 
 /// Abstract base class for architecture-specific configuration.
 ///
@@ -23,9 +23,9 @@ pub trait ModelConfig: std::fmt::Debug + Send {
     fn create(&self, weights: Vec<f32>, sample_rate: f64) -> Result<Box<dyn Dsp>, NamError>;
 }
 
-// =============================================================================
-// ConfigParserRegistry
-// =============================================================================
+
+
+
 
 pub type ConfigParserFunction =
     Box<dyn Fn(&Value, f64) -> Result<Box<dyn ModelConfig>, NamError> + Send + Sync>;
@@ -87,9 +87,9 @@ impl Default for ConfigParserRegistry {
     }
 }
 
-// =============================================================================
-// Global instance
-// =============================================================================
+
+
+
 
 use std::sync::OnceLock;
 

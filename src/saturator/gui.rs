@@ -27,7 +27,7 @@ use crate::saturator::{
 };
 
 pub const EDITOR_WIDTH: u32 = 320;
-pub const EDITOR_HEIGHT: u32 = 280;
+pub const EDITOR_HEIGHT: u32 = 420;
 
 pub fn preferred_api() -> &'static CStr {
     #[cfg(target_os = "windows")]
@@ -129,9 +129,18 @@ fn view(state: &State) -> Element<'_, Message> {
     let p = |id: ParamId| state.shared.params.get(id) as f32;
 
     let content = column![
-        row![knob("Drive", ParamId::Drive, p(ParamId::Drive), "", 0.01),]
-            .spacing(16)
-            .align_y(Alignment::Center),
+        row![
+            knob("Triode", ParamId::Triode, p(ParamId::Triode), "", 0.01),
+            knob("Class AB", ParamId::ClassAB, p(ParamId::ClassAB), "", 0.01),
+        ]
+        .spacing(16)
+        .align_y(Alignment::Center),
+        row![
+            knob("Class B", ParamId::ClassB, p(ParamId::ClassB), "", 0.01),
+            knob("Dry/Wet", ParamId::DryWet, p(ParamId::DryWet), "", 0.01),
+        ]
+        .spacing(16)
+        .align_y(Alignment::Center),
     ]
     .spacing(16)
     .align_x(Alignment::Start);

@@ -174,7 +174,6 @@ impl LatencyFilter {
             z0
         };
 
-        // Velocity-adaptive bias: loud notes rush ~20%, soft notes drag ~20%
         let velocity_bias = (velocity - 0.5) * 0.4;
         let offset = (gaussian * 0.5 + velocity_bias) * self.amount_ms;
         offset.clamp(-self.max_ms, self.max_ms)

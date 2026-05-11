@@ -311,7 +311,6 @@ impl AudioProcessor {
             self.temp_right.resize(frames, 0.0);
         }
 
-        // Read transport tempo for note-sync mode
         let mut tempo: Option<f64> = None;
         if let Some(transport) = process.transport() {
             let flags = transport.flags();
@@ -772,7 +771,6 @@ static TAIL_EXT: clap_plugin_tail = clap_plugin_tail {
 };
 
 unsafe extern "C-unwind" fn ext_tail_get(_plugin: *const clap_plugin) -> u32 {
-    // Maximum delay is 5 seconds. At 192kHz that's 960,000 samples.
     960_000
 }
 

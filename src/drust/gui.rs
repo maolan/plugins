@@ -57,10 +57,6 @@ pub fn is_api_supported(api: &CStr, _is_floating: bool) -> bool {
     api == preferred_api()
 }
 
-// ------------------------------------------------------------------
-// Parent window handle wrapper for baseview
-// ------------------------------------------------------------------
-
 pub enum ParentWindowHandle {
     #[cfg(all(unix, not(target_os = "macos")))]
     X11(u64),
@@ -94,10 +90,6 @@ unsafe impl HasRawWindowHandle for ParentWindowHandle {
         }
     }
 }
-
-// ------------------------------------------------------------------
-// Iced GUI
-// ------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -151,24 +143,18 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
         Some(selected_variation)
     };
 
-    // Determine actual load state from shared progress.
     let progress = shared.loading_progress.load(Ordering::Acquire);
     let active_channels = shared.active_channels.load(Ordering::Acquire);
     let kit_already_known = progress >= 100 || active_channels > 0;
     let (loaded_kit, loaded_variation, initial_task) = if kit_already_known {
-        // Previous load completed before GUI opened or active_channels was
-        // restored from state (UI-only instance doesn't load the kit itself).
         (
             selected_kit.clone(),
             selected_variation.clone(),
             Task::none(),
         )
     } else if has_kit {
-        // Kit path is set but load may be in progress or not yet reflected.
-        // Start polling so the UI discovers the real state.
         (None, None, poll_engine_load_task(Arc::clone(&shared)))
     } else {
-        // No kit selected.
         (None, None, Task::none())
     };
 
@@ -207,7 +193,7 @@ fn poll_download_task(progress: Arc<AtomicU32>) -> Task<Message> {
     )
 }
 
-const MAX_ENGINE_LOAD_POLLS: u32 = 600; // ~60s at 100ms intervals
+const MAX_ENGINE_LOAD_POLLS: u32 = 600;
 
 fn poll_engine_load_task(shared: Arc<SharedState>) -> Task<Message> {
     Task::perform(
@@ -260,7 +246,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .unwrap_or("")
                         .to_string()
                 });
-                // If already cached, load immediately without spawning a thread.
+
                 if let Some(xml_path) = download::resolve_kit_xml(&kit, &variation) {
                     *state.shared.pending_kit_path.write() =
                         Some(xml_path.to_string_lossy().into_owned());
@@ -290,7 +276,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if let Some(progress_arc) = state.load_progress_arc.clone() {
                 let prog = progress_arc.load(Ordering::Acquire);
                 if prog >= 200 {
-                    // Download done; transition to engine load.
                     state.load_progress_arc = None;
                     state.load_progress = Some(0.0);
                     state.load_poll_count = 0;
@@ -313,7 +298,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     return poll_download_task(progress_arc);
                 }
             } else if p < 1.0 {
-                // Engine still loading.
                 state.load_poll_count += 1;
                 if state.load_poll_count > MAX_ENGINE_LOAD_POLLS {
                     state.load_progress = None;
@@ -324,7 +308,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 return poll_engine_load_task(Arc::clone(&state.shared));
             } else {
-                // Engine load done.
                 state.load_progress = None;
                 state.load_result_arc = None;
                 state.load_poll_count = 0;
@@ -587,7 +570,6 @@ fn view(state: &State) -> Element<'_, Message> {
             let var = state.loaded_variation.as_deref().unwrap_or("-");
             text(format!("Loaded: {kit}/{var}")).size(12)
         } else {
-            // Load hasn't completed yet; show what is being loaded (if known).
             let kit_path = state.shared.kit_path.read();
             let variation = state.shared.variation.read();
             let kit_name = if kit_path.is_empty() {
@@ -641,16 +623,10 @@ fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {
         .run()
 }
 
-// ------------------------------------------------------------------
-// GuiBridge
-// ------------------------------------------------------------------
-
 struct AnyWindowHandle {
     _inner: Box<dyn std::any::Any>,
 }
 
-// baseview::WindowHandle is !Send because it contains raw pointers, but in practice
-// the window runs on its own thread and the handle only sends signals to it.
 unsafe impl Send for AnyWindowHandle {}
 
 pub struct GuiBridge {

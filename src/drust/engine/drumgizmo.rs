@@ -37,7 +37,7 @@ impl DrumGizmoEngine {
         let kit = loader::load_kit(path).map_err(|e| e.to_string())?;
         let base = std::path::Path::new(path).parent().unwrap_or(std::path::Path::new("."));
 
-        // Preload audio files.
+        
         let mut files = HashMap::new();
         for instr in &kit.instruments {
             for sample in &instr.samples {
@@ -94,10 +94,10 @@ impl DrumGizmoEngine {
                             .unwrap_or(std::path::Path::new("."));
                             let full_path = base.join(file_name).display().to_string();
                             if let Some(af) = files.get(&full_path) {
-                                // Find the channel index in the file.
+                                
                                 let ch_idx = kit.channels.iter().position(|c| c.name == ch.name).unwrap_or(0);
                                 if ch_idx < af.channels as usize {
-                                    // Extract single channel data.
+                                    
                                     let frames = af.num_frames();
                                     let mut mono = vec![0.0f32; frames];
                                     for f in 0..frames {
@@ -137,7 +137,7 @@ impl DrumGizmoEngine {
         let kit = self.kit.read();
         let mut voices = self.voices.write();
 
-        // Ensure output buffers are sized.
+        
         for buf in output_buffers.iter_mut() {
             if buf.len() < num_frames {
                 buf.resize(num_frames, 0.0);
@@ -145,7 +145,7 @@ impl DrumGizmoEngine {
             buf[..num_frames].fill(0.0);
         }
 
-        // Render voices.
+        
         voices.retain_mut(|voice| {
             let num_channels = voice.channel_data.len().min(output_buffers.len());
             for ch in 0..num_channels {

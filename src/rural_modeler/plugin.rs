@@ -137,7 +137,6 @@ impl SharedState {
         let next = model.map(Box::new).map_or(null_mut(), Box::into_raw);
         let old = self.pending_model.swap(next, Ordering::AcqRel);
         if !old.is_null() {
-            // SAFETY: `old` came from Box::into_raw in this object.
             unsafe { drop(Box::from_raw(old)) };
         }
     }
@@ -146,7 +145,6 @@ impl SharedState {
         let next = ir.map(Box::new).map_or(null_mut(), Box::into_raw);
         let old = self.pending_ir.swap(next, Ordering::AcqRel);
         if !old.is_null() {
-            // SAFETY: `old` came from Box::into_raw in this object.
             unsafe { drop(Box::from_raw(old)) };
         }
     }
@@ -156,7 +154,6 @@ impl SharedState {
         if ptr.is_null() {
             None
         } else {
-            // SAFETY: pointer ownership is transferred by `swap(null)`.
             Some(*unsafe { Box::from_raw(ptr) })
         }
     }
@@ -166,7 +163,6 @@ impl SharedState {
         if ptr.is_null() {
             None
         } else {
-            // SAFETY: pointer ownership is transferred by `swap(null)`.
             Some(*unsafe { Box::from_raw(ptr) })
         }
     }
@@ -311,8 +307,6 @@ impl SharedState {
             }
             let gui = &*(ext as *const clap_host_gui);
             if let Some(closed) = gui.closed {
-                // The standalone helper window is closing, but the plugin GUI state
-                // still needs the host to snapshot it on shutdown.
                 closed(host, false);
             }
         }
@@ -426,12 +420,10 @@ impl Drop for SharedState {
     fn drop(&mut self) {
         let model = self.pending_model.swap(null_mut(), Ordering::AcqRel);
         if !model.is_null() {
-            // SAFETY: pointer was created by Box::into_raw in `replace_pending_model`.
             unsafe { drop(Box::from_raw(model)) };
         }
         let ir = self.pending_ir.swap(null_mut(), Ordering::AcqRel);
         if !ir.is_null() {
-            // SAFETY: pointer was created by Box::into_raw in `replace_pending_ir`.
             unsafe { drop(Box::from_raw(ir)) };
         }
     }
@@ -478,14 +470,12 @@ impl AudioProcessor {
         }
         if let Some(ir) = &mut self.ir {
             ir.set_sample_rate(self.sample_rate);
-            // C++ does not reset IR state on plugin reset; it only rebuilds
-            // weights when the sample rate changes.
         }
         self.tone_stack.reset(self.sample_rate);
         self.noise_gate_trigger.reset(self.sample_rate);
         self.noise_gate_trigger
             .set_params(NAM_NOISE_GATE_TRIGGER_PARAMS);
-        // C++ does not reset the DC blocker state on plugin reset.
+
         self.dc_block.set_frequency(self.sample_rate, 5.0);
     }
 
@@ -597,9 +587,7 @@ impl AudioProcessor {
         self.tone_stack
             .set_treble(shared.params.get(ParamId::ToneTreble) as f32);
 
-        // Compute noise gate gain reduction on the clean input (before NAM).
         if gate_active {
-            // Match NAM C++ runtime trigger settings.
             self.noise_gate_trigger
                 .set_params(NAM_NOISE_GATE_TRIGGER_PARAMS);
             self.noise_gate_trigger.process_block_mono(
@@ -610,16 +598,12 @@ impl AudioProcessor {
                 .set_gain_reduction_db(self.noise_gate_trigger.gain_reduction_db());
         }
 
-        // NAM model inference (block-based API; internally sample-by-sample
-        // until true block-based DSP is added for WaveNet/ConvNet).
         if let Some(model) = &mut self.model {
             model.process_block(&self.mono_input[..frames], &mut self.mono_output[..frames]);
         } else {
             self.mono_output[..frames].copy_from_slice(&self.mono_input[..frames]);
         }
 
-        // Post-NAM pipeline: noise gate gain -> EQ -> IR -> DC blocker.
-        // Each stage operates on the full block, matching the C++ architecture.
         if gate_active {
             self.noise_gate_gain
                 .apply_block(&mut self.mono_output[..frames]);
@@ -688,13 +672,11 @@ impl Drop for PluginInstance {
     fn drop(&mut self) {
         let ptr = self.processor.swap(null_mut(), Ordering::AcqRel);
         if !ptr.is_null() {
-            // SAFETY: pointer was created by Box::into_raw in plugin_activate.
             unsafe { drop(Box::from_raw(ptr)) };
         }
         let retired = std::mem::take(&mut *self.retired_processors.lock());
         for ptr in retired {
             if !ptr.is_null() {
-                // SAFETY: pointers were created by Box::into_raw for this instance.
                 unsafe { drop(Box::from_raw(ptr)) };
             }
         }
@@ -793,8 +775,6 @@ unsafe extern "C-unwind" fn plugin_activate(
         instance.retired_processors.lock().push(old);
     }
 
-    // Ensure any preloaded model/IR are restaged for the actual host sample
-    // rate now that activation parameters are known.
     let model_path = instance.shared.model_path.read().clone();
     if !model_path.is_empty() {
         instance.shared.load_model(model_path);
@@ -834,7 +814,6 @@ unsafe extern "C-unwind" fn plugin_reset(plugin: *const clap_plugin) {
     let instance = unsafe { instance(plugin) };
     let ptr = instance.processor.load(Ordering::Acquire);
     if !ptr.is_null() {
-        // SAFETY: host lifecycle guarantees reset is not concurrent with teardown/process.
         unsafe { (&mut *ptr).reset() };
     }
     instance.shared.latency_changed();
@@ -852,7 +831,7 @@ unsafe extern "C-unwind" fn plugin_process(
     if processor_ptr.is_null() {
         return CLAP_PROCESS_CONTINUE;
     }
-    // SAFETY: host lifecycle guarantees process uses a live processor pointer.
+
     let processor = unsafe { &mut *processor_ptr };
     let process_ptr = unsafe { NonNull::new_unchecked(process as *mut clap_process) };
     let mut process = unsafe { Process::new_unchecked(process_ptr) };
@@ -1084,7 +1063,7 @@ unsafe extern "C-unwind" fn ext_latency_get(_plugin: *const clap_plugin) -> u32 
     if processor_ptr.is_null() {
         return 0;
     }
-    // SAFETY: host lifecycle guarantees pointer validity while active.
+
     unsafe { (&*processor_ptr).latency_samples() }
 }
 
@@ -1098,9 +1077,7 @@ unsafe extern "C-unwind" fn ext_tail_get(plugin: *const clap_plugin) -> u32 {
     }
     let instance = unsafe { instance(plugin) };
     let sample_rate = instance.shared.sample_rate();
-    // Match C++: tailCycles * (sampleRate / kDCBlockerFrequency)
-    // with tailCycles = 10 and kDCBlockerFrequency = 5.0.
-    // The tail is due to the HPF DC blocker decay.
+
     (10.0 * (sample_rate / 5.0)) as u32
 }
 
@@ -1158,8 +1135,7 @@ unsafe extern "C-unwind" fn ext_gui_destroy(plugin: *const clap_plugin) {
     }
     let instance = unsafe { instance(plugin) };
     instance.gui_bridge.lock().destroy();
-    // Prevent any lingering background thread from calling back into the
-    // host after the GUI (and soon the plugin instance) is gone.
+
     instance
         .shared
         .host

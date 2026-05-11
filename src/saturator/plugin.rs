@@ -30,7 +30,7 @@ use crate::common::{
     SharedStateExt, apply_param_events, copy_str_to_array, emit_pending_param_events_to_host,
 };
 use crate::saturator::{
-    dsp::Saturator,
+    dsp::SingleEndedTriode,
     gui::GuiBridge,
     params::{PARAMS, ParamId, ParamStore, sanitize_param_value},
     state::PluginState,
@@ -258,7 +258,7 @@ impl SharedStateExt<ParamId> for SharedState {
 }
 
 struct AudioProcessor {
-    dsp: Saturator,
+    dsp: SingleEndedTriode,
     temp_left: Vec<f32>,
     temp_right: Vec<f32>,
 }
@@ -266,7 +266,7 @@ struct AudioProcessor {
 impl AudioProcessor {
     fn new(_sample_rate: f64, max_frames: u32) -> Self {
         Self {
-            dsp: Saturator::default(),
+            dsp: SingleEndedTriode::default(),
             temp_left: vec![0.0; max_frames as usize],
             temp_right: vec![0.0; max_frames as usize],
         }
@@ -301,7 +301,10 @@ impl AudioProcessor {
             self.dsp.process_stereo(
                 &mut self.temp_left[..frames],
                 &mut self.temp_right[..frames],
-                shared.params.get(ParamId::Drive),
+                shared.params.get(ParamId::Triode),
+                shared.params.get(ParamId::ClassAB),
+                shared.params.get(ParamId::ClassB),
+                shared.params.get(ParamId::DryWet),
             );
 
             {
@@ -319,7 +322,10 @@ impl AudioProcessor {
             self.dsp.process_stereo(
                 &mut self.temp_left[..frames],
                 &mut self.temp_right[..frames],
-                shared.params.get(ParamId::Drive),
+                shared.params.get(ParamId::Triode),
+                shared.params.get(ParamId::ClassAB),
+                shared.params.get(ParamId::ClassB),
+                shared.params.get(ParamId::DryWet),
             );
 
             let mut output_port = process.audio_outputs(0);

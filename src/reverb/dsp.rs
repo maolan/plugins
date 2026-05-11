@@ -4,7 +4,6 @@
 /// cross-feedback between channels, vibrato predelay, and
 /// input/output lowpass filters.
 pub struct Reverb {
-    // Delay buffers (maximum sizes from original C++ arrays)
     buf_il: Vec<f64>,
     buf_ir: Vec<f64>,
     buf_jl: Vec<f64>,
@@ -32,7 +31,6 @@ pub struct Reverb {
     buf_ml: Vec<f64>,
     buf_mr: Vec<f64>,
 
-    // Write positions
     pos_i: usize,
     pos_j: usize,
     pos_k: usize,
@@ -47,13 +45,11 @@ pub struct Reverb {
     pos_h: usize,
     pos_m: usize,
 
-    // Filter states
     iir_al: f64,
     iir_ar: f64,
     iir_bl: f64,
     iir_br: f64,
 
-    // Feedback states
     feedback_al: f64,
     feedback_ar: f64,
     feedback_bl: f64,
@@ -63,22 +59,18 @@ pub struct Reverb {
     feedback_dl: f64,
     feedback_dr: f64,
 
-    // Cycle / interpolation
     sample_rate: f64,
     cycle: usize,
     cycle_end: usize,
     last_ref_l: [f64; 5],
     last_ref_r: [f64; 5],
 
-    // Vibrato
     vib_m: f64,
     old_fpd: f64,
 
-    // Dither PRNG
     fpd_l: u32,
     fpd_r: u32,
 
-    // Temp buffers for SIMD dry/wet mix.
     temp_dry_l: Vec<f32>,
     temp_dry_r: Vec<f32>,
     temp_wet_l: Vec<f32>,
@@ -341,14 +333,12 @@ impl Reverb {
             let dry_l = input_l;
             let dry_r = input_r;
 
-            // Vibrato
             self.vib_m += self.old_fpd * drift;
             if self.vib_m > std::f64::consts::TAU {
                 self.vib_m = 0.0;
                 self.old_fpd = 0.429_496_729_5 + (self.fpd_l as f64 * 0.000_000_000_061_8);
             }
 
-            // Predelay with vibrato
             Self::write_delay(&mut self.buf_ml, self.pos_m, input_l * attenuate);
             Self::write_delay(&mut self.buf_mr, self.pos_m, input_r * attenuate);
             self.pos_m = Self::advance(self.pos_m, delay_m + 1);
@@ -360,7 +350,6 @@ impl Reverb {
             input_r =
                 Self::read_interpolated(&self.buf_mr, self.pos_m as f64 + offset_mr, delay_m + 1);
 
-            // Initial lowpass
             self.iir_al = self.iir_al * (1.0 - lowpass) + input_l * lowpass;
             input_l = self.iir_al;
             self.iir_ar = self.iir_ar * (1.0 - lowpass) + input_r * lowpass;
@@ -368,10 +357,8 @@ impl Reverb {
 
             self.cycle += 1;
             if self.cycle >= self.cycle_end {
-                // Reverb network tick
                 self.cycle = 0;
 
-                // Block 1: I/J/K/L with cross-feedback
                 Self::write_delay(
                     &mut self.buf_il,
                     self.pos_i,
@@ -427,7 +414,6 @@ impl Reverb {
                 let out_kr = Self::read_delay(&self.buf_kr, self.pos_k);
                 let out_lr = Self::read_delay(&self.buf_lr, self.pos_l);
 
-                // Block 2: A/B/C/D
                 Self::write_delay(
                     &mut self.buf_al,
                     self.pos_a,
@@ -483,7 +469,6 @@ impl Reverb {
                 let out_cr = Self::read_delay(&self.buf_cr, self.pos_c);
                 let out_dr = Self::read_delay(&self.buf_dr, self.pos_d);
 
-                // Block 3: E/F/G/H
                 Self::write_delay(
                     &mut self.buf_el,
                     self.pos_e,
@@ -539,7 +524,6 @@ impl Reverb {
                 let out_gr = Self::read_delay(&self.buf_gr, self.pos_g);
                 let out_hr = Self::read_delay(&self.buf_hr, self.pos_h);
 
-                // Feedback
                 self.feedback_al = out_el - (out_fl + out_gl + out_hl);
                 self.feedback_bl = out_fl - (out_el + out_gl + out_hl);
                 self.feedback_cl = out_gl - (out_el + out_fl + out_hl);
@@ -552,7 +536,6 @@ impl Reverb {
                 let sum_l = (out_el + out_fl + out_gl + out_hl) / 8.0;
                 let sum_r = (out_er + out_fr + out_gr + out_hr) / 8.0;
 
-                // Interpolation setup for between-cycle samples
                 match self.cycle_end {
                     4 => {
                         self.last_ref_l[0] = self.last_ref_l[4];
@@ -595,12 +578,10 @@ impl Reverb {
                 input_l = self.last_ref_l[0];
                 input_r = self.last_ref_r[0];
             } else {
-                // Between reverb ticks: read from interpolation table
                 input_l = self.last_ref_l[self.cycle];
                 input_r = self.last_ref_r[self.cycle];
             }
 
-            // End lowpass
             self.iir_bl = self.iir_bl * (1.0 - lowpass) + input_l * lowpass;
             input_l = self.iir_bl;
             self.iir_br = self.iir_br * (1.0 - lowpass) + input_r * lowpass;
@@ -612,7 +593,6 @@ impl Reverb {
             self.temp_wet_r[i] = input_r as f32;
         }
 
-        // SIMD dry/wet mix.
         let wet_f = wet as f32;
         let dry_f = (1.0 - wet) as f32;
         left[..frames].copy_from_slice(&self.temp_wet_l[..frames]);
@@ -622,7 +602,6 @@ impl Reverb {
         crate::simd::add_scaled_inplace(&mut left[..frames], &self.temp_dry_l[..frames], dry_f);
         crate::simd::add_scaled_inplace(&mut right[..frames], &self.temp_dry_r[..frames], dry_f);
 
-        // Dither (scalar, stateful per-sample).
         for i in 0..frames {
             let mut input_l = left[i] as f64;
             let mut input_r = right[i] as f64;

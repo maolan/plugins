@@ -294,14 +294,12 @@ fn analyze_output_spectrum_impl(
         return out;
     }
 
-    // Precompute Hann window.
     let nf = n as f32;
     let mut hann = [0.0f32; 1024];
     for (i, h) in hann[..n].iter_mut().enumerate() {
         *h = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (nf - 1.0)).cos();
     }
 
-    // Precompute windowed samples (stereo downmix + window).
     let mut windowed = [0.0f32; 1024];
     if let Some(r) = right {
         windowed[..n].copy_from_slice(&left[..n]);
@@ -444,7 +442,6 @@ fn analyze_output_spectrum_impl(
         }
     }
 
-    // Scalar fallback.
     for (bin, out_db) in out.iter_mut().enumerate() {
         let t = bin as f32 / (SPECTRUM_BINS.saturating_sub(1).max(1) as f32);
         let freq = 20.0_f32 * (20_000.0_f32 / 20.0_f32).powf(t);

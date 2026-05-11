@@ -79,14 +79,12 @@ impl Delay {
         tempo: Option<f64>,
     ) -> f64 {
         if time_mode >= 0.5 {
-            // Note mode
             let bpm = tempo.unwrap_or(120.0).max(1.0);
             let (_, note_mult) = Self::note_from_param(time_note);
-            let beat_duration = 60.0 / bpm; // quarter note duration
+            let beat_duration = 60.0 / bpm;
             let delay_seconds = beat_duration * note_mult;
             delay_seconds * self.sample_rate
         } else {
-            // Ms mode
             let ms = time_ms.clamp(1.0, 5000.0);
             (ms / 1000.0) * self.sample_rate
         }
@@ -117,7 +115,6 @@ impl Delay {
         let max_len = self.buf_l.len();
         let frames = left.len().min(right.len());
 
-        // Ensure temp buffers are large enough.
         if self.temp_dry_l.len() < frames {
             let new_len = frames.next_power_of_two();
             self.temp_dry_l.resize(new_len, 0.0);
@@ -126,7 +123,6 @@ impl Delay {
             self.temp_wet_r.resize(new_len, 0.0);
         }
 
-        // First pass: read delayed signals and update circular buffer.
         for i in 0..frames {
             let wp = self.write_pos;
             let delayed_l = Self::read_interp(&self.buf_l, wp, self.current_delay);
@@ -154,7 +150,6 @@ impl Delay {
             }
         }
 
-        // Second pass: SIMD dry/wet mix.
         left[..frames].copy_from_slice(&self.temp_wet_l[..frames]);
         right[..frames].copy_from_slice(&self.temp_wet_r[..frames]);
         crate::simd::mul_inplace(&mut left[..frames], wet);

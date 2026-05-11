@@ -1,11 +1,9 @@
 pub struct Monitoring {
-    // NJAD
     byn_l: [f64; 13],
     byn_r: [f64; 13],
     noise_shaping_l: f64,
     noise_shaping_r: f64,
 
-    // PeaksOnly allpasses (also used by Cans)
     a_l: Vec<f64>,
     a_r: Vec<f64>,
     b_l: Vec<f64>,
@@ -19,15 +17,12 @@ pub struct Monitoring {
     cx: usize,
     dx: usize,
 
-    // SlewOnly
     last_sample_l: f64,
     last_sample_r: f64,
 
-    // SubsOnly + Cans
     iir_l: [f64; 26],
     iir_r: [f64; 26],
 
-    // Bandpasses
     biquad_l: [f64; 11],
     biquad_r: [f64; 11],
 
@@ -148,11 +143,8 @@ impl Monitoring {
             }
 
             match processing {
-                0 | 1 => {
-                    // NJAD dither handled after match
-                }
+                0 | 1 => {}
                 2 => {
-                    // PeaksOnly
                     (input_l, input_r) = Self::peaks_allpass_stereo(
                         &mut self.a_l,
                         &mut self.a_r,

@@ -479,7 +479,7 @@ impl DrumGizmoEngine {
                 Ok(k) => k,
                 Err(e) => {
                     *self.last_load_error.lock() = Some(format!("Failed to parse kit: {e}"));
-                    // Early exit: parsing failed. Mark done so GUI stops polling.
+
                     self.loading_progress.store(100, Ordering::Release);
                     self.is_loading.store(false, Ordering::Release);
                     return;
@@ -537,7 +537,6 @@ impl DrumGizmoEngine {
 
             self.loading_progress.store(10, Ordering::Release);
 
-            // Collect unique files.
             let mut files: HashMap<String, Vec<usize>> = HashMap::new();
             for instrument in new_kit.instruments.iter() {
                 for sample in &instrument.samples {
@@ -558,7 +557,6 @@ impl DrumGizmoEngine {
             let files_vec: Vec<(String, Vec<usize>)> = files.into_iter().collect();
             let expected_count = files_vec.len();
 
-            // Pre-allocate lock-free entries and build index.
             let mut index = HashMap::with_capacity(expected_count);
             let mut lock_free_entries = Vec::with_capacity(expected_count);
             for (i, (path, _)) in files_vec.iter().enumerate() {
@@ -569,7 +567,6 @@ impl DrumGizmoEngine {
                 });
             }
 
-            // Create AudioData skeleton and swap pointer early.
             let audio_data = Arc::new(AudioData {
                 loaded: Vec::new(),
                 index,
@@ -586,14 +583,9 @@ impl DrumGizmoEngine {
                 });
             }
 
-            // Kit metadata is ready; audio thread can trigger notes immediately.
-            // Samples that aren't loaded yet will silently skip.
             self.loading_progress.store(20, Ordering::Release);
             self.kit_ready.store(true, Ordering::Release);
 
-            // Parallel WAV loading + resampling with incremental publishing.
-            // A dedicated thread pool is used so the GUI's iced_futures pool
-            // never competes with us for CPU.
             let expected = expected_count.max(1);
             let success_count = std::sync::atomic::AtomicUsize::new(0);
 
@@ -648,7 +640,6 @@ impl DrumGizmoEngine {
 
             self.rebuild_note_cache();
 
-            // Always mark 100% when we reach the end, regardless of per-file errors.
             self.loading_progress.store(100, Ordering::Release);
             self.is_loading.store(false, Ordering::Release);
         });
@@ -862,7 +853,6 @@ impl DrumGizmoEngine {
                                     1.0
                                 };
 
-                                // Pre-cache buffer pointer for lock-free rendering.
                                 let buffer = &audio_file.channels[af.filechannel];
                                 playbacks.push(ChannelPlayback {
                                     audio_ref: AudioRef {
@@ -883,7 +873,6 @@ impl DrumGizmoEngine {
                         }
                     }
 
-                    // Apply gain compensation for multiple "Both" channels.
                     if !playbacks.is_empty() {
                         let num_both = playbacks
                             .iter()
@@ -1014,11 +1003,6 @@ impl DrumGizmoEngine {
         let quality = *self.resample_quality.read();
         let mut state = self.audio_state.lock();
 
-        // ------------------------------------------------------------------
-        // Pass 1: Render all voices at their current positions.
-        // No state is advanced here — every voice reads from the same
-        // starting position for the entire block.
-        // ------------------------------------------------------------------
         for voice in state.voices.iter_mut() {
             if !voice.active {
                 continue;
@@ -1071,7 +1055,6 @@ impl DrumGizmoEngine {
                     continue;
                 }
 
-                // How many samples are skipped due to delay?
                 let delay_skip = playback.delay_remaining.min(frames);
                 let renderable = frames - delay_skip;
                 let audio_remaining = audio_len.saturating_sub(playback.position as usize);
@@ -1120,11 +1103,6 @@ impl DrumGizmoEngine {
             }
         }
 
-        // ------------------------------------------------------------------
-        // Pass 2: Advance all voices.
-        // Every voice moves forward by the same block duration, so
-        // overlapping voices remain sample-aligned.
-        // ------------------------------------------------------------------
         for voice in state.voices.iter_mut() {
             if !voice.active {
                 continue;

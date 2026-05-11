@@ -51,10 +51,6 @@ pub fn is_api_supported(api: &CStr, _is_floating: bool) -> bool {
     api == preferred_api()
 }
 
-// ------------------------------------------------------------------
-// Parent window handle wrapper for baseview
-// ------------------------------------------------------------------
-
 pub enum ParentWindowHandle {
     #[cfg(all(unix, not(target_os = "macos")))]
     X11(u64),
@@ -88,10 +84,6 @@ unsafe impl HasRawWindowHandle for ParentWindowHandle {
         }
     }
 }
-
-// ------------------------------------------------------------------
-// Iced GUI
-// ------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -972,16 +964,10 @@ fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {
         .run()
 }
 
-// ------------------------------------------------------------------
-// GuiBridge
-// ------------------------------------------------------------------
-
 struct AnyWindowHandle {
     _inner: Box<dyn std::any::Any>,
 }
 
-// baseview::WindowHandle is !Send because it contains raw pointers, but in practice
-// the window runs on its own thread and the handle only sends signals to it.
 unsafe impl Send for AnyWindowHandle {}
 
 pub struct GuiBridge {

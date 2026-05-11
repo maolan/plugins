@@ -32,7 +32,6 @@ impl Instrument {
             return Some(&self.samples[0]);
         }
 
-        // Find min/max power across samples.
         let min_power = self
             .samples
             .iter()
@@ -43,10 +42,8 @@ impl Instrument {
             return Some(&self.samples[0]);
         }
 
-        // Map velocity to target power.
         let target_power = min_power + velocity * (max_power - min_power);
 
-        // Find sample with power closest to target.
         let mut best_idx = 0;
         let mut best_dist = f32::INFINITY;
         for (i, sample) in self.samples.iter().enumerate() {

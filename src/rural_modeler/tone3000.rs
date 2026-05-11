@@ -308,8 +308,6 @@ pub fn oauth_login_with_browser(client_id: &str) -> Result<(), String> {
         return Err("Tone3000 OAuth client_id is empty".to_string());
     }
 
-    // Tone3000 requires a fixed redirect URI; ephemeral ports fail with
-    // "Failed to register redirect_uri". Try a small set of well-known ports.
     const FIXED_PORTS: [u16; 5] = [8765, 8766, 8767, 8768, 8769];
     let mut listener_v4 = None;
     let mut port = 0;
@@ -349,8 +347,7 @@ pub fn oauth_login_with_browser(client_id: &str) -> Result<(), String> {
         Ok(q) => log_oauth(&format!("callback received: {q}")),
         Err(e) => log_oauth(&format!("callback error: {e}")),
     }
-    // Keep answering follow-up browser requests (favicon, etc.) for a short
-    // grace period so the browser doesn't see connection refused.
+
     drain_oauth_listeners(&listener_v4, listener_v6.as_ref());
     complete_oauth_callback_and_save(&callback_query?)
 }
@@ -476,7 +473,7 @@ fn try_accept_oauth_callback(
                     parts.next().map(str::to_string)
                 })
                 .unwrap_or_default();
-            // Only process the root path; ignore favicon and other browser noise.
+
             let is_root = target == "/" || target.starts_with("/?");
             let query = target.split('?').nth(1);
             let response_body = if !is_root {
@@ -1221,7 +1218,6 @@ fn find_download_url_in_array(kind: AssetKind, arr: &[Value]) -> Option<String> 
 }
 
 fn extract_picture_url(entry: &Value) -> Option<String> {
-    // Tone3000 returns tone images as an array of URLs under "images"
     if let Some(images) = entry.get("images").and_then(Value::as_array)
         && let Some(url) = images.first().and_then(Value::as_str)
         && !url.is_empty()
@@ -1229,7 +1225,6 @@ fn extract_picture_url(entry: &Value) -> Option<String> {
         return Some(url.to_string());
     }
 
-    // User avatar can be nested under "user.avatar_url"
     if let Some(url) = entry
         .get("user")
         .and_then(|u| u.get("avatar_url"))
@@ -1239,7 +1234,6 @@ fn extract_picture_url(entry: &Value) -> Option<String> {
         return Some(url.to_string());
     }
 
-    // Fallback to common single-string picture fields
     let keys = [
         "avatar_url",
         "picture",

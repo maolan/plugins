@@ -278,9 +278,7 @@ impl AudioProcessor {
         self.dsp.reset();
     }
 
-    fn _apply_params(&mut self, _shared: &SharedState) {
-        // params are read per-sample in process_stereo, but we could cache them
-    }
+    fn _apply_params(&mut self, _shared: &SharedState) {}
 
     fn process(&mut self, shared: &SharedState, process: &mut Process) -> clap_process_status {
         apply_param_events(shared, &process.in_events(), sanitize_param_value);
@@ -720,7 +718,6 @@ static STATE_EXT: clap_plugin_state = clap_plugin_state {
 };
 
 unsafe extern "C-unwind" fn ext_tail_get(_plugin: *const clap_plugin) -> u32 {
-    // MaximizerVintage has no significant tail
     0
 }
 

@@ -15,8 +15,6 @@ pub enum LoadError {
     Invalid(String),
 }
 
-// --- drumkit.xml serde ---
-
 #[derive(Debug, Deserialize)]
 struct DrumkitXml {
     #[serde(rename = "@name")]
@@ -69,8 +67,6 @@ struct ChannelMapXml {
     main: Option<String>,
 }
 
-// --- instrument.xml serde ---
-
 #[derive(Debug, Deserialize)]
 struct InstrumentFileXml {
     #[serde(rename = "@version")]
@@ -108,8 +104,6 @@ struct AudioFileXml {
     filechannel: usize,
 }
 
-// --- midimap.xml serde ---
-
 #[derive(Debug, Deserialize)]
 struct MidimapXml {
     #[serde(rename = "map", default)]
@@ -124,11 +118,9 @@ struct MapXml {
     instr: String,
 }
 
-// --- parsing functions ---
-
 fn read_xml_file(path: &Path) -> Result<String, LoadError> {
     let bytes = fs::read(path)?;
-    // Remove UTF-8 BOM if present.
+
     let text = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
         String::from_utf8_lossy(&bytes[3..]).into_owned()
     } else {
@@ -173,7 +165,6 @@ pub fn load_drumkit(path: &str) -> Result<DrumKit, LoadError> {
             });
         }
 
-        // Parse instrument XML.
         let instr_path = kit_dir.join(&instr_xml.file);
         if instr_path.exists() {
             let instr_text = read_xml_file(&instr_path)?;
@@ -196,7 +187,7 @@ pub fn load_drumkit(path: &str) -> Result<DrumKit, LoadError> {
                         channel: af.channel,
                         file: af.file,
                         abs_path,
-                        filechannel: af.filechannel.saturating_sub(1), // convert 1-indexed to 0-indexed
+                        filechannel: af.filechannel.saturating_sub(1),
                     });
                 }
                 instrument.samples.push(sample);

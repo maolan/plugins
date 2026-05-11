@@ -87,7 +87,6 @@ impl DeEsser {
             let dry_l = input_l;
             let dry_r = input_r;
 
-            // Shift sample history
             self.s_l[0] = input_l;
             self.s_r[0] = input_r;
             for x in (1..=sharpness).rev() {
@@ -95,7 +94,6 @@ impl DeEsser {
                 self.s_r[x] = self.s_r[x - 1];
             }
 
-            // Build slew-of-slew products
             self.m_l[1] = (self.s_l[1] - self.s_l[2]) * ((self.s_l[1] - self.s_l[2]) / 1.3);
             self.m_r[1] = (self.s_r[1] - self.s_r[2]) * ((self.s_r[1] - self.s_r[2]) / 1.3);
             for x in (2..sharpness).rev() {
@@ -105,7 +103,6 @@ impl DeEsser {
                     (self.s_r[x] - self.s_r[x + 1]) * ((self.s_r[x - 1] - self.s_r[x]) / 1.3);
             }
 
-            // Compute sense from chained differences
             let mut sense_l =
                 (self.m_l[1] - self.m_l[2]).abs() * sharpness as f64 * sharpness as f64;
             let mut sense_r =
@@ -182,7 +179,6 @@ impl DeEsser {
                 input_r = dry_r - input_r;
             }
 
-            // Dither
             let mut expon = input_l.abs().log2().floor() as i32;
             self.fpd_l ^= self.fpd_l << 13;
             self.fpd_l ^= self.fpd_l >> 17;

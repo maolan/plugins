@@ -5,14 +5,22 @@ use clap_clap::ffi::{CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_REQUIRES_PROCESS};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum ParamId {
-    Drive = 0,
+    Triode = 0,
+    ClassAB = 1,
+    ClassB = 2,
+    DryWet = 3,
 }
 
 impl ParamId {
-    pub const COUNT: usize = 1;
+    pub const COUNT: usize = 4;
 
     pub const fn all() -> [ParamId; Self::COUNT] {
-        [ParamId::Drive]
+        [
+            ParamId::Triode,
+            ParamId::ClassAB,
+            ParamId::ClassB,
+            ParamId::DryWet,
+        ]
     }
 
     pub const fn as_index(self) -> usize {
@@ -42,16 +50,48 @@ pub struct ParamDef {
 
 const AUTOMATABLE: u32 = CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_REQUIRES_PROCESS;
 
-pub const PARAMS: [ParamDef; ParamId::COUNT] = [ParamDef {
-    id: ParamId::Drive,
-    name: "Drive",
-    module: "Saturation",
-    min: 0.0,
-    max: 1.0,
-    default: 0.0,
-    step: 0.01,
-    flags: AUTOMATABLE,
-}];
+pub const PARAMS: [ParamDef; ParamId::COUNT] = [
+    ParamDef {
+        id: ParamId::Triode,
+        name: "Triode",
+        module: "Saturation",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        step: 0.01,
+        flags: AUTOMATABLE,
+    },
+    ParamDef {
+        id: ParamId::ClassAB,
+        name: "Class AB",
+        module: "Saturation",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        step: 0.01,
+        flags: AUTOMATABLE,
+    },
+    ParamDef {
+        id: ParamId::ClassB,
+        name: "Class B",
+        module: "Saturation",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        step: 0.01,
+        flags: AUTOMATABLE,
+    },
+    ParamDef {
+        id: ParamId::DryWet,
+        name: "Dry/Wet",
+        module: "Saturation",
+        min: 0.0,
+        max: 1.0,
+        default: 1.0,
+        step: 0.01,
+        flags: AUTOMATABLE,
+    },
+];
 
 pub fn sanitize_param_value(id: ParamId, value: f64) -> f64 {
     let def = PARAMS[id.as_index()];

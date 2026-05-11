@@ -110,7 +110,7 @@ pub const PARAMS: [ParamDef; ParamId::COUNT] = [
         module: "Delay",
         min: 0.0,
         max: 1.0,
-        default: 0.75, // 1/8
+        default: 0.75,
         step: 1.0 / 15.0,
         flags: AUTOMATABLE,
     },

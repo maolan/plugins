@@ -16,7 +16,7 @@ impl Default for Limiter {
 
 impl Limiter {
     pub fn new(threshold_db: f32, attack_ms: f32, release_ms: f32) -> Self {
-        let sr = 44100.0f32; // will be updated on first process
+        let sr = 44100.0f32;
         Self {
             threshold: 10.0f32.powf(threshold_db * 0.05),
             attack_coeff: 1.0 - (-1000.0 / (attack_ms * sr)).exp(),
@@ -123,7 +123,6 @@ impl Limiter {
             }
         }
 
-        // Scalar fallback.
         for i in 0..frames {
             let mut peak = 0.0f32;
             for s in slices.iter() {

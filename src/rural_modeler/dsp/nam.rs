@@ -123,8 +123,7 @@ impl Conv1x1 {
             if weights.len() < count {
                 return Err(NamError::InvalidConfig("conv1x1 weight underflow".into()));
             }
-            // C++ stores grouped weights per group: [group0, group1, ...]
-            // Each group is (out_per_group, in_per_row).
+
             let (taken, rest) = weights.split_at(count);
             let weight = taken.to_vec();
             *weights = rest;
@@ -208,8 +207,7 @@ impl Conv1D {
         if weights.len() < count {
             return Err(NamError::InvalidConfig("conv1d weight underflow".into()));
         }
-        // NAM C++ flattens grouped Conv1D weights in (out, in/groups, kernel) order.
-        // Internally we index as (kernel, out, in_per_group), so remap once during load.
+
         let (flat, rest) = weights.split_at(count);
         let mut weight = vec![0.0; count];
         for o in 0..out_channels {
@@ -401,7 +399,7 @@ struct ConvNetModel {
     head_weight: Vec<f32>,
     head_bias: f32,
     prewarm_samples: usize,
-    // Reusable work buffers to avoid per-sample allocations in process_block.
+
     current: Vec<f32>,
     temp: Vec<f32>,
 }
@@ -965,7 +963,6 @@ impl WaveNetModel {
         let out_channels = conv.out_channels;
 
         if conv.is_depthwise {
-            // Depthwise: each channel is scaled by its corresponding weight.
             debug_assert!(conv.weight.len() >= in_channels);
             let mut c = 0usize;
             while c < in_channels {
@@ -987,8 +984,6 @@ impl WaveNetModel {
         let in_per_group = in_channels / groups;
         debug_assert!(conv.weight.len() >= groups * out_per_group * in_per_group);
 
-        // output[o,f] = bias[o] + sum_i weight[g, o', i'] * input[i,f]
-        // where g = o / out_per_group, o' = o % out_per_group, i' = i % in_per_group
         let mut o = 0usize;
         while o < out_channels {
             let out_base = o * frames;
@@ -1035,7 +1030,6 @@ impl WaveNetModel {
         let kernel_size = conv.kernel_size;
         let dilation = conv.dilation as isize;
 
-        // output[o,f] = bias[o] + sum_{k,i} weight[k,o,i] * input[i, start+f+offset(k)]
         let mut o = 0usize;
         while o < out_channels {
             let out_base = o * frames;
@@ -1483,7 +1477,6 @@ impl WaveNetModel {
 
         if let Some(last) = self.arrays.last() {
             if let Some(head) = &mut self.post_stack_head {
-                // Process through post-stack head, matching C++ WaveNet::process.
                 let head_in = last.head_size;
                 for (f, out) in output.iter_mut().enumerate().take(frames) {
                     let mut frame = vec![0.0f32; head_in];
@@ -1491,7 +1484,7 @@ impl WaveNetModel {
                         *value = self.head_scale * last.head_output_block[c * frames + f];
                     }
                     let head_out = head.process_frame(&frame);
-                    // Rural-modeler currently enforces mono output.
+
                     *out = head_out.first().copied().unwrap_or(0.0);
                 }
             } else {
@@ -1511,10 +1504,7 @@ impl WaveNetModel {
         if frames == 0 {
             return;
         }
-        // The layer-array buffers are sized to LAYER_ARRAY_BUFFER_SIZE plus
-        // receptive-field padding. To avoid overflows when the host (or the
-        // resampler upstream) delivers very large blocks, chunk the work the
-        // same way NAM's iPlug2 ResamplingContainer does internally.
+
         let chunk_size = Self::LAYER_ARRAY_BUFFER_SIZE;
         let mut offset = 0;
         while offset < frames {
@@ -1796,8 +1786,7 @@ impl NamModel {
                 got: out_channels,
             });
         }
-        // Match NAM get_dsp.cpp behavior: prewarm on load so initial
-        // conditions are settled before the model is first used.
+
         let mut loaded = Self {
             metadata,
             model,
@@ -2020,7 +2009,6 @@ impl RateConverter {
             self.next_t += self.step;
         }
 
-        // Drop history that can no longer affect future output.
         let min_needed = self.next_t.floor() as i64 - self.radius as i64 - 2;
         while self.first_index < min_needed && !self.data.is_empty() {
             self.data.pop_front();
@@ -2038,7 +2026,6 @@ impl RateConverter {
     }
 
     fn renormalize_phase(&mut self) {
-        // Keep phase-like counters bounded without changing relative timing.
         if self.first_index > 0 {
             let shift = self.first_index;
             self.first_index = 0;
@@ -2062,9 +2049,6 @@ pub struct ResamplingNamModel {
 
 impl ResamplingNamModel {
     pub fn new(model: NamModel, host_rate: f32) -> Self {
-        // C++ GetNAMSampleRate: models without a declared sample rate are
-        // assumed to be 48 kHz, which was the standard before sample rate
-        // metadata was added.
         let model_rate = model.metadata.expected_sample_rate.unwrap_or(48_000.0);
         let mut this = Self {
             host_to_model: RateConverter::new(host_rate, model_rate),
@@ -2084,9 +2068,7 @@ impl ResamplingNamModel {
             self.resampling_latency_samples = 0;
             return;
         }
-        // Match NAM's container approach:
-        // mid = resampler2.GetNumSamplesRequiredFor(1)
-        // latency = resampler1.GetNumSamplesRequiredFor(mid)
+
         let mid_samples = self.model_to_host.required_input_samples_for_outputs(1);
         let latency = self
             .host_to_model
@@ -2101,25 +2083,19 @@ impl ResamplingNamModel {
         let mid_samples = self.model_to_host.required_input_samples_for_outputs(1);
         let latency = self.resampling_latency_samples as usize;
 
-        // 1) Push silence through host->model converter.
         for _ in 0..latency {
             self.host_to_model.push(0.0);
         }
 
-        // 2) Pull enough model-rate samples from converter output.
         let mut produced_mid = 0usize;
         while produced_mid < mid_samples {
             if self.host_to_model.pull().is_some() {
                 produced_mid += 1;
             } else {
-                // Defensive: keep feeding silence until enough output exists.
                 self.host_to_model.push(0.0);
             }
         }
 
-        // 3) Push corresponding silence into model->host converter.
-        // This mirrors NAM's assumption that warmup silence through a causal
-        // effect remains silence.
         for _ in 0..mid_samples {
             self.model_to_host.push(0.0);
         }
@@ -2157,9 +2133,6 @@ impl ResamplingNamModel {
         if self.host_rate == self.model_rate {
             self.model.process_block(input, output);
         } else {
-            // Match NAM container semantics: process the provided input block,
-            // then pull what is available for this output block. If there's an
-            // under-run, repeat the last sample (or zero).
             let mut model_in_block = Vec::new();
             for &x in input {
                 self.host_to_model.push(x);
@@ -2368,8 +2341,6 @@ mod tests {
 
     #[test]
     fn wavenet_with_head_produces_output() {
-        // Minimal WaveNet with a post-stack head (kernel_size=1, so head is
-        // effectively a pointwise convolution).
         let file = NamFile {
             version: "0.7.0".to_string(),
             architecture: "WaveNet".to_string(),
@@ -2393,23 +2364,8 @@ mod tests {
                 }
             }),
             metadata: None,
-            // Weights for the layer array:
-            // rechannel 1x1 (1->1, no bias): [1.0]
-            // conv1d (1->1, k=2, bias): weights [0.0, 1.0], bias [0.0]
-            // input_mixin 1x1 (1->1, no bias): [1.0]
-            // post 1x1 (1->1, bias): [1.0], bias [0.0]
-            // head_rechannel 1x1 (1->1, bias): [1.0], bias [0.0]
-            // head_scale: [1.0]
-            // Head conv1d (1->1, k=1, bias): [1.0], bias [0.0]
-            weights: vec![
-                1.0, // rechannel
-                0.0, 1.0, 0.0, // conv
-                1.0, // input_mixin
-                1.0, 0.0, // post
-                1.0, 0.0, // head_rechannel
-                1.0, // head_scale
-                1.0, 0.0, // head conv
-            ],
+
+            weights: vec![1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0],
             sample_rate: Some(48_000.0),
         };
 
@@ -2418,8 +2374,7 @@ mod tests {
 
         let mut out = [0.0f32];
         model.process_block(&[1.0], &mut out);
-        // With all weights as identity and ReLU activations, output should be
-        // close to 1.0 (exact value depends on buffer initialization).
+
         assert!(
             out[0] >= 0.0,
             "expected non-negative output from ReLU-based identity network, got {}",

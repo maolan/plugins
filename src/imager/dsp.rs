@@ -1,6 +1,3 @@
-// ---------------------------------------------------------------------------
-// ImagerMild
-// ---------------------------------------------------------------------------
 pub struct ImagerMild {
     p: Vec<f64>,
     count: i32,
@@ -155,7 +152,6 @@ impl ImagerMild {
             self.temp_wet_r[i] = (mid - side) as f32;
         }
 
-        // SIMD dry/wet mix.
         let wet_f = wet as f32;
         let dry_f = (1.0 - wet) as f32;
         left[..frames].copy_from_slice(&self.temp_wet_l[..frames]);
@@ -165,7 +161,6 @@ impl ImagerMild {
         crate::simd::add_scaled_inplace(&mut left[..frames], &self.temp_dry_l[..frames], dry_f);
         crate::simd::add_scaled_inplace(&mut right[..frames], &self.temp_dry_r[..frames], dry_f);
 
-        // Dither (scalar, stateful per-sample).
         for i in 0..frames {
             let mut input_l = left[i] as f64;
             let mut input_r = right[i] as f64;
@@ -189,9 +184,6 @@ impl ImagerMild {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Imager dispatcher
-// ---------------------------------------------------------------------------
 pub struct ImagerParams {
     pub width: f64,
     pub focus: f64,

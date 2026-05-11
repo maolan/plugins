@@ -121,14 +121,13 @@ impl DenormalGuard {
     fn new() -> Self {
         #[cfg(target_arch = "x86_64")]
         {
-            // SAFETY: `stmxcsr`/`ldmxcsr` are valid on x86_64.
             let old_csr = unsafe {
                 let mut mxcsr: u32 = 0;
                 std::arch::asm!("stmxcsr [{0}]", in(reg) &mut mxcsr, options(nostack, preserves_flags));
                 mxcsr
             };
-            const FTZ: u32 = 0x8000; // Flush-To-Zero
-            const DAZ: u32 = 0x0040; // Denormals-Are-Zero
+            const FTZ: u32 = 0x8000;
+            const DAZ: u32 = 0x0040;
             let new_csr = old_csr | FTZ | DAZ;
             unsafe {
                 std::arch::asm!("ldmxcsr [{0}]", in(reg) &new_csr, options(nostack, preserves_flags));
@@ -146,7 +145,6 @@ impl Drop for DenormalGuard {
     fn drop(&mut self) {
         #[cfg(target_arch = "x86_64")]
         {
-            // SAFETY: `ldmxcsr` is valid on x86_64.
             unsafe {
                 std::arch::asm!("ldmxcsr [{0}]", in(reg) &self.old_csr, options(nostack, preserves_flags));
             }
@@ -285,7 +283,7 @@ mod tests {
     #[test]
     fn buffer_rewinds_when_write_reaches_end_capacity() {
         let mut buffer = Buffer::new(2);
-        // initial offset = receptive_field = 2, len = 64
+
         let block = vec![0.0f32; 62];
         buffer.update_buffers(&block);
         buffer.advance(block.len());

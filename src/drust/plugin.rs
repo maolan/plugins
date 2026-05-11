@@ -92,11 +92,8 @@ impl AudioProcessor {
     fn process(&mut self, process: &mut Process) -> clap_process_status {
         let frames = process.frames_count() as usize;
 
-        // Acquire-load kit_ready: if false, audio thread sees incomplete data
-        // and renders silence until the main thread release-stores true.
         let kit_ready = self.engine.kit_ready.load(Ordering::Acquire);
 
-        // Collect connected output slices and clear them.
         let mut out_outputs: Vec<Option<&mut [f32]>> = Vec::with_capacity(MAX_CHANNELS);
         let output_count = process.audio_outputs_count() as usize;
         for out in 0..output_count.min(MAX_CHANNELS) {
@@ -112,7 +109,6 @@ impl AudioProcessor {
             }
         }
 
-        // Handle note events.
         let events = process.in_events();
         for i in 0..events.size() {
             let header = unsafe { events.get_unchecked(i) };
@@ -145,9 +141,7 @@ impl AudioProcessor {
                         }
                     }
                 }
-                CLAP_EVENT_NOTE_OFF => {
-                    // One-shot drum samples: ignore NOTE_OFF.
-                }
+                CLAP_EVENT_NOTE_OFF => {}
                 CLAP_EVENT_NOTE_CHOKE => {
                     if let Ok(note) = header.note() {
                         let note_num = note.key() as u8;
@@ -165,7 +159,6 @@ impl AudioProcessor {
             }
         }
 
-        // Handle param events.
         for i in 0..events.size() {
             let header = unsafe { events.get_unchecked(i) };
             if header.space_id() != CLAP_CORE_EVENT_SPACE_ID {
@@ -191,20 +184,17 @@ impl AudioProcessor {
             }
         }
 
-        // Check bypass and kit readiness.
         let bypass = self.shared.params.get(ParamId::Bypass) >= 0.5;
         if !bypass && kit_ready {
             self.engine.sync_params(&self.shared.params);
             self.engine.render_outputs(frames, &mut out_outputs);
         }
 
-        // Apply master gain per output.
         let gain = 10.0_f32.powf(self.shared.params.get(ParamId::MasterGain) as f32 * 0.05);
         for buf in out_outputs.iter_mut().flatten() {
             crate::simd::mul_inplace(buf, gain);
         }
 
-        // Apply balance per output pair.
         for pair in 0..(MAX_CHANNELS / 2) {
             let left = pair * 2;
             let right = left + 1;
@@ -233,13 +223,11 @@ impl AudioProcessor {
             }
         }
 
-        // Build flat slice list for the limiter from output buffers.
         let mut flat_slices: Vec<&mut [f32]> = Vec::with_capacity(MAX_CHANNELS);
         for buf in out_outputs.iter_mut().flatten() {
             flat_slices.push(buf);
         }
 
-        // Apply limiter to all output channels.
         let limiter_threshold = self.shared.params.get(ParamId::LimiterThreshold) as f32;
         self.limiter.set_enabled(limiter_threshold < 0.0);
         self.limiter.set_threshold_db(limiter_threshold);
@@ -277,31 +265,26 @@ impl PluginInstance {
     }
 
     fn load_kit(&self, path: String) {
-        // Close gate before any state changes.
         self.engine.kit_ready.store(false, Ordering::Release);
 
         *self.shared.kit_path.write() = path.clone();
         *self.shared.last_error.write() = None;
         self.shared.active_channels.store(0, Ordering::Release);
-        // Reset shared progress so the GUI can detect a new load is starting.
+
         self.shared.loading_progress.store(0, Ordering::Release);
         self.shared.mark_dirty();
         self.shared.latency_changed();
 
-        // Kick off async loading.
         let engine = Arc::clone(&self.engine);
         engine.load_kit_async(path.clone());
 
-        // Auto-discover MIDI map using variation-aware resolution.
         let mut variation = self.shared.variation.read().clone();
-        if variation.is_empty() {
-            // Session state may have an empty variation string; try to infer it
-            // from the kit XML filename (e.g. CrocellKit_full.xml -> "full").
-            if let Some(inferred) = download::kit_variation_from_path(&path) {
-                variation = inferred;
-                *self.shared.variation.write() = variation.clone();
-                self.shared.mark_dirty();
-            }
+        if variation.is_empty()
+            && let Some(inferred) = download::kit_variation_from_path(&path)
+        {
+            variation = inferred;
+            *self.shared.variation.write() = variation.clone();
+            self.shared.mark_dirty();
         }
         if let Some(kit_name) = download::kit_display_name_from_path(&path)
             && let Some(midimap_path) = download::resolve_midimap_xml(&kit_name, &variation)
@@ -426,8 +409,6 @@ unsafe extern "C-unwind" fn plugin_activate(
     let shared = Arc::clone(&inst.shared);
     let engine = Arc::clone(&inst.engine);
 
-    // Per-instance RNG seeding: mix time with instance pointer to prevent
-    // lockstep humanization across duplicated plugin instances.
     let ptr_mix = inst as *const _ as usize as u64;
     let time_mix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -450,7 +431,7 @@ unsafe extern "C-unwind" fn plugin_activate(
         inst.retired_processors.lock().push(old);
     }
     inst.active.store(true, Ordering::Release);
-    // If a kit was restored before activation but never loaded, start loading now.
+
     let kit_path = inst.shared.kit_path.read().clone();
     let kit_loaded = !inst.engine.kit.load(Ordering::Acquire).is_null();
     if !kit_path.is_empty() && !kit_loaded {
@@ -520,8 +501,6 @@ unsafe extern "C-unwind" fn plugin_on_main_thread(plugin: *const clap_plugin) {
     let inst = unsafe { instance(plugin) };
     inst.engine.cleanup_retired();
 
-    // Safety net: if a loader thread exited early without reaching 100,
-    // bump progress so the GUI stops polling.
     if !inst.engine.is_loading.load(Ordering::Acquire) {
         let ep = inst.engine.loading_progress.load(Ordering::Acquire);
         if ep < 100 {
@@ -534,14 +513,11 @@ unsafe extern "C-unwind" fn plugin_on_main_thread(plugin: *const clap_plugin) {
         Ordering::Release,
     );
 
-    // Handle pending kit download/load requests from the GUI.
     if let Some(path) = inst.shared.pending_kit_path.write().take() {
         inst.load_kit(path);
     }
 
-    // Poll async loading completion and update shared state.
     if !inst.engine.is_loading.load(Ordering::Acquire) {
-        // If loading just finished, copy any error and update channel count.
         if let Some(err) = inst.engine.last_load_error.lock().take() {
             *inst.shared.last_error.write() = Some(err);
         }
@@ -576,7 +552,7 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
     info.flags = CLAP_AUDIO_PORT_IS_MAIN;
     info.channel_count = 1;
     info.port_type = CLAP_PORT_MONO.as_ptr();
-    info.in_place_pair = u32::MAX; // CLAP_INVALID_ID
+    info.in_place_pair = u32::MAX;
     let name = match index {
         0 => "Kick L",
         1 => "Kick R",
@@ -756,9 +732,7 @@ unsafe extern "C-unwind" fn ext_state_save(
         return false;
     }
     let inst = unsafe { instance(plugin) };
-    // Generate unique state ID (timestamp + random) to detect project changes,
-    // but only if one isn't already set. Reusing the existing ID prevents
-    // spurious kit reloads when the host snapshots state (e.g. on UI close).
+
     let current_state_id = inst.shared.state_id.read().clone();
     let state_id = if current_state_id.is_empty() {
         let new_id = format!(
@@ -805,7 +779,7 @@ unsafe extern "C-unwind" fn ext_state_load(
     let Ok(state) = PluginState::from_bytes(&bytes) else {
         return false;
     };
-    // Detect project/session changes via state_id.
+
     let saved_state_id = state.state_id.clone();
 
     let (kit_path, midimap_path, variation, active_channels) = state.apply(&inst.shared.params);
@@ -816,10 +790,7 @@ unsafe extern "C-unwind" fn ext_state_load(
 
     let current_kit_path = inst.shared.kit_path.read().clone();
     let kit_changed = kit_path != current_kit_path;
-    // Only load the kit on instances that will actually process audio.
-    // UI-only instances never call plugin_activate, so their processor
-    // pointer stays null. They get active_channels from the saved state
-    // and don't need to spawn an expensive async load.
+
     let is_audio_instance = !inst.processor.load(Ordering::Acquire).is_null();
 
     if !kit_path.is_empty() && kit_changed && is_audio_instance {
@@ -828,7 +799,7 @@ unsafe extern "C-unwind" fn ext_state_load(
             inst.load_midimap(midimap_path);
         }
     }
-    // Always sync state_id so it stays matched with the saved state.
+
     *inst.shared.state_id.write() = saved_state_id;
     true
 }

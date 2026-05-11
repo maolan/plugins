@@ -868,7 +868,7 @@ unsafe extern "C-unwind" fn ext_tail_get(plugin: *const clap_plugin) -> u32 {
     }
     let instance = unsafe { instance(plugin) };
     let sample_rate = instance.shared.sample_rate();
-    // Tail from release time: approximate 5 time constants
+
     let release_ms = [
         instance.shared.params.get(ParamId::B1Release) as f32,
         instance.shared.params.get(ParamId::B2Release) as f32,

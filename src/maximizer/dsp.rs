@@ -3,9 +3,6 @@ const FP_NEW: f64 = 1.0 - FP_OLD;
 const BUFFER_SIZE: usize = 22_200;
 const HALF_BUFFER: usize = 11_020;
 
-// ---------------------------------------------------------------------------
-// MaximizerVintage
-// ---------------------------------------------------------------------------
 pub struct MaximizerVintage {
     last_sample_l: f64,
     last_sample_r: f64,
@@ -536,9 +533,6 @@ impl MaximizerVintage {
     }
 }
 
-// ---------------------------------------------------------------------------
-// MaximizerModern
-// ---------------------------------------------------------------------------
 pub struct MaximizerModern {
     last_sample_l: [f64; 8],
     last_sample_r: [f64; 8],
@@ -655,7 +649,6 @@ impl MaximizerModern {
                     input_r = self.last_sample_r[stage] - hardness;
                 }
 
-                // ClipOnly2 left
                 if self.was_pos_clip_l[stage] {
                     if input_l < self.last_sample_l[stage] {
                         self.last_sample_l[stage] = 1.0 + input_l * softness;
@@ -690,7 +683,6 @@ impl MaximizerModern {
                 }
                 self.last_sample_l[stage] = self.intermediate_l[0][stage];
 
-                // ClipOnly2 right
                 if self.was_pos_clip_r[stage] {
                     if input_r < self.last_sample_r[stage] {
                         self.last_sample_r[stage] = 1.0 + input_r * softness;
@@ -742,7 +734,6 @@ impl MaximizerModern {
             input_l *= ceiling_val;
             input_r *= ceiling_val;
 
-            // dither
             let mut expon = input_l.abs().log2().floor() as i32;
             self.fpd_l ^= self.fpd_l << 13;
             self.fpd_l ^= self.fpd_l >> 17;
@@ -763,9 +754,6 @@ impl MaximizerModern {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Maximizer dispatcher
-// ---------------------------------------------------------------------------
 #[derive(Default)]
 pub struct Maximizer {
     pub maximizer_vintage: MaximizerVintage,

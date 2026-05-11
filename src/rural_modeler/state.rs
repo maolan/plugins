@@ -55,7 +55,6 @@ impl PluginState {
             if let Some(&value) = self.params.get(def.name) {
                 params.set(def.id, sanitize_param_value(def.id, value));
             } else {
-                // Missing parameter: reset to default (backward compatibility)
                 params.set(def.id, def.default);
             }
         }

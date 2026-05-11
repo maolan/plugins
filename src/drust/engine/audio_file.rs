@@ -23,7 +23,6 @@ pub fn load_wav_channels(
     let file_channels = spec.channels as usize;
     let sample_rate = spec.sample_rate;
 
-    // Read all samples as f32.
     let all_samples: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Float => reader
             .samples::<f32>()
@@ -42,7 +41,6 @@ pub fn load_wav_channels(
 
     let frame_count = all_samples.len() / file_channels;
 
-    // Validate channels before parallel extraction.
     for &ch in channels_to_extract {
         if ch >= file_channels {
             return Err(format!(
@@ -51,7 +49,6 @@ pub fn load_wav_channels(
         }
     }
 
-    // Deinterleave and extract only requested channels in parallel.
     let channels: Vec<Vec<f32>> = channels_to_extract
         .par_iter()
         .map(|&ch| {
@@ -96,7 +93,6 @@ pub fn resample_buffer(input: &[f32], src_rate: f64, dst_rate: f64) -> Vec<f32> 
     let mut output = Vec::with_capacity(output_len);
 
     if ratio_error < 0.15 {
-        // Fast linear interpolation for common conversions (44.1 <-> 48kHz).
         for i in 0..output_len {
             let pos = i as f64 * ratio;
             let idx = pos as usize;
@@ -106,7 +102,6 @@ pub fn resample_buffer(input: &[f32], src_rate: f64, dst_rate: f64) -> Vec<f32> 
             output.push(a + (b - a) * frac);
         }
     } else {
-        // High-quality Lagrange for larger differences.
         for i in 0..output_len {
             let pos = i as f64 * ratio;
             let idx = pos as usize;
@@ -131,7 +126,6 @@ pub fn load_kit_audio(
     kit: &crate::drust::drumkit::DrumKit,
     host_rate: f32,
 ) -> Result<HashMap<String, LoadedAudioFile>, String> {
-    // Collect all unique (absolute_path, channel_indices) pairs.
     let mut files: HashMap<String, Vec<usize>> = HashMap::new();
 
     for instrument in &kit.instruments {
@@ -145,13 +139,11 @@ pub fn load_kit_audio(
         }
     }
 
-    // Deduplicate and sort channel indices per file.
     for channels in files.values_mut() {
         channels.sort_unstable();
         channels.dedup();
     }
 
-    // Load each file and resample to host rate in parallel.
     let results: Vec<Result<(String, LoadedAudioFile), String>> =
         super::load_pool().install(|| {
             files

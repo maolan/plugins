@@ -213,7 +213,7 @@ struct EqResponseState {
 
 #[derive(Clone)]
 struct EqResponseCanvas {
-    bands: Vec<(usize, f32, f32, f32, bool)>, // (global index, freq, gain, q, on)
+    bands: Vec<(usize, f32, f32, f32, bool)>,
     output_spectrum_db: [f32; SPECTRUM_BINS],
 }
 

@@ -3,7 +3,7 @@ pub struct AudioFileRef {
     pub channel: String,
     pub file: String,
     pub abs_path: String,
-    pub filechannel: usize, // 1-indexed in XML, converted to 0-indexed
+    pub filechannel: usize,
 }
 
 #[derive(Debug, Clone, Default)]
