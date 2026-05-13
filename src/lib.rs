@@ -17,6 +17,7 @@ pub mod delay;
 pub mod drust;
 pub mod eq;
 pub mod imager;
+pub mod kick;
 pub mod maximizer;
 pub mod monitoring;
 pub mod reverb;
@@ -33,7 +34,7 @@ struct PluginApi {
     create: CreateFn,
 }
 
-static PLUGINS: [PluginApi; 18] = [
+static PLUGINS: [PluginApi; 19] = [
     PluginApi {
         descriptor: eq::parametric::clap_mono_descriptor_ptr,
         create: eq::parametric::clap_mono_create_plugin,
@@ -105,6 +106,10 @@ static PLUGINS: [PluginApi; 18] = [
     PluginApi {
         descriptor: widener::clap_descriptor_ptr,
         create: widener::clap_create_plugin,
+    },
+    PluginApi {
+        descriptor: kick::clap_descriptor_ptr,
+        create: kick::clap_create_plugin,
     },
 ];
 
