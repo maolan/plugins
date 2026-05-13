@@ -197,6 +197,7 @@ pub enum Message {
     SetWaveform(ParamId, u8),
     SetDistortionType(ParamId, u8),
     SetNoiseType(u8),
+    SetActiveInstrument(u8),
     CopyInstrument,
     PasteInstrument,
     EnvelopeEdit(EnvelopeEditorMsg),
@@ -290,6 +291,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.shared.set_param_outbound_only(
                 ParamId::new(active_inst as u8, ParamType::NoiseType),
                 v as f64,
+            );
+        }
+        Message::SetActiveInstrument(inst) => {
+            state.shared.set_param_outbound_only(
+                ParamId::new(0, ParamType::ActiveInstrument),
+                inst as f64,
             );
         }
         Message::CopyInstrument => {
@@ -479,6 +486,39 @@ fn view(state: &State) -> Element<'_, Message> {
         .width(Length::Fixed(48.0));
 
     let top_row = row![waveform, meter].spacing(8).align_y(Alignment::Center);
+
+    // Instrument selector
+    let mut inst_buttons = vec![];
+    for i in 0..16 {
+        let label = format!("{}", i + 1);
+        let is_active = i == active_inst;
+        inst_buttons.push(
+            maolan_baseview::iced::widget::button(
+                container(text(label).size(11))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill),
+            )
+            .width(Length::Fixed(28.0))
+            .height(Length::Fixed(24.0))
+            .padding(0)
+            .style(move |theme: &Theme, status| {
+                let mut base = if is_active {
+                    maolan_baseview::iced::widget::button::primary(theme, status)
+                } else {
+                    maolan_baseview::iced::widget::button::secondary(theme, status)
+                };
+                base.border.radius = 4.0.into();
+                base
+            })
+            .on_press(Message::SetActiveInstrument(i as u8))
+            .into(),
+        );
+    }
+    let inst_selector = row(inst_buttons)
+        .spacing(2)
+        .align_y(Alignment::Center);
 
     // Kit section
     let kit_section = column![
@@ -944,8 +984,8 @@ fn view(state: &State) -> Element<'_, Message> {
     .spacing(10)
     .align_y(Alignment::Start);
 
-    let mut content = column![top_row, controls]
-        .spacing(10)
+    let mut content = column![top_row, inst_selector, controls]
+        .spacing(8)
         .align_x(Alignment::Start);
     if let Some(editor) = envelope_editor {
         let editor_el: Element<'_, EnvelopeEditorMsg> = editor.into();

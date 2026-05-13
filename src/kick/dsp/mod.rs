@@ -265,7 +265,7 @@ impl Instrument {
 
 #[derive(Clone)]
 pub struct Kit {
-    pub instruments: [Instrument; INSTRUMENTS_PER_KIT],
+    pub instruments: Vec<Instrument>,
     pub humanizer_velocity: f32,
     pub humanizer_timing_ms: f32,
     pub any_soloed: bool,
@@ -273,8 +273,12 @@ pub struct Kit {
 
 impl Kit {
     pub fn new(sample_rate: f32) -> Self {
+        let mut instruments = Vec::with_capacity(INSTRUMENTS_PER_KIT);
+        for _ in 0..INSTRUMENTS_PER_KIT {
+            instruments.push(Instrument::new(sample_rate));
+        }
         Self {
-            instruments: std::array::from_fn(|_| Instrument::new(sample_rate)),
+            instruments,
             humanizer_velocity: 0.0,
             humanizer_timing_ms: 0.0,
             any_soloed: false,
@@ -605,8 +609,10 @@ pub fn db_to_linear(db: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::envelope::EnvPoint;
+    use super::limiter::db_to_linear;
     use super::noise::{BrownNoise, PinkNoise};
-    use super::*;
+    use super::oscillator::Oscillator;
+    use super::{Envelope, KickSynthesizer, Kit};
 
     #[test]
     fn kick_synthesizer_trigger_and_read() {

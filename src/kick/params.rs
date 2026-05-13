@@ -230,18 +230,21 @@ impl ParamId {
 
     #[inline]
     pub const fn new(instrument: u8, param_type: ParamType) -> Self {
-        Self(((instrument as u32) << 8) | (param_type as u32))
+        Self(
+            (instrument as u32) * (ParamType::COUNT as u32) + (param_type as u32),
+        )
     }
 
     #[inline]
     pub const fn instrument(self) -> u8 {
-        ((self.0 >> 8) & 0xF) as u8
+        (self.0 / (ParamType::COUNT as u32)) as u8
     }
 
     #[inline]
     pub const fn param_type(self) -> ParamType {
-        // Safe because param_type is always < 179
-        unsafe { std::mem::transmute((self.0 & 0xFF) as u8) }
+        let idx = (self.0 % (ParamType::COUNT as u32)) as u8;
+        // Safe because idx is always < ParamType::COUNT
+        unsafe { std::mem::transmute(idx) }
     }
 
     #[inline]

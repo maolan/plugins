@@ -71,12 +71,12 @@ impl Limiter {
 }
 
 #[inline]
-fn db_to_linear(db: f32) -> f32 {
+pub(crate) fn db_to_linear(db: f32) -> f32 {
     10.0f32.powf(db / 20.0)
 }
 
 #[inline]
-fn linear_to_db(lin: f32) -> f32 {
+pub(crate) fn linear_to_db(lin: f32) -> f32 {
     if lin <= 0.0 {
         -100.0
     } else {

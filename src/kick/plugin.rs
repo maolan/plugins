@@ -901,8 +901,8 @@ impl AudioProcessor {
                     &mut self.master_temp_r[..frames],
                     &self.temp_buf_r[..frames],
                 );
-                // Write to instrument port (port 1+ = instrument output)
-                let port_idx = inst_idx + 1;
+                // Write to instrument port
+                let port_idx = inst_idx;
                 if port_idx < outputs_count {
                     let mut out_port = process.audio_outputs(port_idx as u32);
                     let ch_count = out_port.channel_count() as usize;
@@ -936,24 +936,6 @@ impl AudioProcessor {
             -60.0
         };
         shared.set_output_peak_db(peak_db_l, peak_db_r);
-
-        // Write master mix to port 0
-        if outputs_count >= 1 {
-            let mut out_port = process.audio_outputs(0);
-            let ch_count = out_port.channel_count() as usize;
-            if ch_count >= 1 {
-                let out_l = unsafe {
-                    std::slice::from_raw_parts_mut(out_port.data32(0).as_mut_ptr(), frames)
-                };
-                out_l.copy_from_slice(&self.master_temp_l[..frames]);
-            }
-            if ch_count >= 2 {
-                let out_r = unsafe {
-                    std::slice::from_raw_parts_mut(out_port.data32(1).as_mut_ptr(), frames)
-                };
-                out_r.copy_from_slice(&self.master_temp_r[..frames]);
-            }
-        }
 
         // Copy waveform to shared state for GUI
         let mut display = shared.waveform_display.lock();
@@ -1116,7 +1098,7 @@ unsafe extern "C-unwind" fn ext_audio_ports_count(
     _plugin: *const clap_plugin,
     is_input: bool,
 ) -> u32 {
-    if is_input { 0 } else { 17 } // 1 master + 16 per-instrument
+    if is_input { 0 } else { 16 } // 16 per-instrument outputs
 }
 
 unsafe extern "C-unwind" fn ext_audio_ports_get(
@@ -1129,24 +1111,13 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
         return false;
     }
     let info = unsafe { &mut *info };
-    if index == 0 {
-        info.id = 0;
-        info.channel_count = 2;
-        info.flags = CLAP_AUDIO_PORT_IS_MAIN;
-        copy_str_to_array("Master Out", &mut info.name);
-        info.in_place_pair = CLAP_INVALID_ID;
-        true
-    } else if index <= 16 {
-        info.id = index;
-        info.channel_count = 2;
-        info.flags = 0;
-        let name = format!("Inst {}", index);
-        copy_str_to_array(&name, &mut info.name);
-        info.in_place_pair = CLAP_INVALID_ID;
-        true
-    } else {
-        false
-    }
+    info.id = index;
+    info.channel_count = 2;
+    info.flags = CLAP_AUDIO_PORT_IS_MAIN;
+    let name = format!("Inst {}", index + 1);
+    copy_str_to_array(&name, &mut info.name);
+    info.in_place_pair = CLAP_INVALID_ID;
+    true
 }
 
 static AUDIO_PORTS_EXT: clap_plugin_audio_ports = clap_plugin_audio_ports {
