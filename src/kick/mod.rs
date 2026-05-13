@@ -1,4 +1,5 @@
 mod dsp;
+pub mod export;
 pub mod gui;
 mod params;
 mod plugin;

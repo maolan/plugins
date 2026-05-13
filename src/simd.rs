@@ -626,3 +626,269 @@ unsafe fn sanitize_finite_inplace_avx(buf: &mut [f32]) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Ramp-scaled copy / add — dst[i] = src[i] * ramp(i)  or  dst[i] += src[i] * ramp(i)
+// ramp(i) = start_gain + i * delta,  delta = (end_gain - start_gain) / (len - 1)
+// ---------------------------------------------------------------------------
+
+/// dst[i] = src[i] * ramp(i)
+pub fn copy_ramp_scaled_inplace(dst: &mut [f32], src: &[f32], start_gain: f32, end_gain: f32) {
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    unsafe {
+        if is_x86_feature_detected!("avx") {
+            copy_ramp_scaled_inplace_avx(dst, src, start_gain, end_gain);
+            return;
+        }
+        if is_x86_feature_detected!("sse") {
+            copy_ramp_scaled_inplace_sse(dst, src, start_gain, end_gain);
+            return;
+        }
+    }
+    copy_ramp_scaled_inplace_scalar(dst, src, start_gain, end_gain);
+}
+
+/// dst[i] += src[i] * ramp(i)
+pub fn add_ramp_scaled_inplace(dst: &mut [f32], src: &[f32], start_gain: f32, end_gain: f32) {
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    unsafe {
+        if is_x86_feature_detected!("avx") && is_x86_feature_detected!("fma") {
+            add_ramp_scaled_inplace_avx_fma(dst, src, start_gain, end_gain);
+            return;
+        }
+        if is_x86_feature_detected!("avx") {
+            add_ramp_scaled_inplace_avx(dst, src, start_gain, end_gain);
+            return;
+        }
+        if is_x86_feature_detected!("sse") {
+            add_ramp_scaled_inplace_sse(dst, src, start_gain, end_gain);
+            return;
+        }
+    }
+    add_ramp_scaled_inplace_scalar(dst, src, start_gain, end_gain);
+}
+
+fn copy_ramp_scaled_inplace_scalar(dst: &mut [f32], src: &[f32], start_gain: f32, end_gain: f32) {
+    let len = dst.len().min(src.len());
+    if len == 0 {
+        return;
+    }
+    let delta = if len > 1 {
+        (end_gain - start_gain) / (len - 1) as f32
+    } else {
+        0.0
+    };
+    for i in 0..len {
+        dst[i] = src[i] * (start_gain + i as f32 * delta);
+    }
+}
+
+fn add_ramp_scaled_inplace_scalar(dst: &mut [f32], src: &[f32], start_gain: f32, end_gain: f32) {
+    let len = dst.len().min(src.len());
+    if len == 0 {
+        return;
+    }
+    let delta = if len > 1 {
+        (end_gain - start_gain) / (len - 1) as f32
+    } else {
+        0.0
+    };
+    for i in 0..len {
+        dst[i] += src[i] * (start_gain + i as f32 * delta);
+    }
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+#[target_feature(enable = "sse")]
+unsafe fn copy_ramp_scaled_inplace_sse(
+    dst: &mut [f32],
+    src: &[f32],
+    start_gain: f32,
+    end_gain: f32,
+) {
+    let len = dst.len().min(src.len());
+    if len == 0 {
+        return;
+    }
+    let delta = if len > 1 {
+        (end_gain - start_gain) / (len - 1) as f32
+    } else {
+        0.0
+    };
+    let delta4 = _mm_set_ps(3.0 * delta, 2.0 * delta, 1.0 * delta, 0.0 * delta);
+    let stride4 = _mm_set1_ps(4.0 * delta);
+    let mut gain_vec = _mm_add_ps(_mm_set1_ps(start_gain), delta4);
+    let mut i = 0usize;
+    while i + 4 <= len {
+        let s = _mm_loadu_ps(src.as_ptr().add(i));
+        let r = _mm_mul_ps(s, gain_vec);
+        _mm_storeu_ps(dst.as_mut_ptr().add(i), r);
+        gain_vec = _mm_add_ps(gain_vec, stride4);
+        i += 4;
+    }
+    for j in i..len {
+        dst[j] = src[j] * (start_gain + j as f32 * delta);
+    }
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+#[target_feature(enable = "sse")]
+unsafe fn add_ramp_scaled_inplace_sse(
+    dst: &mut [f32],
+    src: &[f32],
+    start_gain: f32,
+    end_gain: f32,
+) {
+    let len = dst.len().min(src.len());
+    if len == 0 {
+        return;
+    }
+    let delta = if len > 1 {
+        (end_gain - start_gain) / (len - 1) as f32
+    } else {
+        0.0
+    };
+    let delta4 = _mm_set_ps(3.0 * delta, 2.0 * delta, 1.0 * delta, 0.0 * delta);
+    let stride4 = _mm_set1_ps(4.0 * delta);
+    let mut gain_vec = _mm_add_ps(_mm_set1_ps(start_gain), delta4);
+    let mut i = 0usize;
+    while i + 4 <= len {
+        let d = _mm_loadu_ps(dst.as_ptr().add(i));
+        let s = _mm_loadu_ps(src.as_ptr().add(i));
+        let r = _mm_add_ps(d, _mm_mul_ps(s, gain_vec));
+        _mm_storeu_ps(dst.as_mut_ptr().add(i), r);
+        gain_vec = _mm_add_ps(gain_vec, stride4);
+        i += 4;
+    }
+    for j in i..len {
+        dst[j] += src[j] * (start_gain + j as f32 * delta);
+    }
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+#[target_feature(enable = "avx")]
+unsafe fn copy_ramp_scaled_inplace_avx(
+    dst: &mut [f32],
+    src: &[f32],
+    start_gain: f32,
+    end_gain: f32,
+) {
+    let len = dst.len().min(src.len());
+    if len == 0 {
+        return;
+    }
+    let delta = if len > 1 {
+        (end_gain - start_gain) / (len - 1) as f32
+    } else {
+        0.0
+    };
+    let delta8 = _mm256_set_ps(
+        7.0 * delta,
+        6.0 * delta,
+        5.0 * delta,
+        4.0 * delta,
+        3.0 * delta,
+        2.0 * delta,
+        1.0 * delta,
+        0.0 * delta,
+    );
+    let stride8 = _mm256_set1_ps(8.0 * delta);
+    let mut gain_vec = _mm256_add_ps(_mm256_set1_ps(start_gain), delta8);
+    let mut i = 0;
+    while i + 8 <= len {
+        let s = _mm256_loadu_ps(src.as_ptr().add(i));
+        let r = _mm256_mul_ps(s, gain_vec);
+        _mm256_storeu_ps(dst.as_mut_ptr().add(i), r);
+        gain_vec = _mm256_add_ps(gain_vec, stride8);
+        i += 8;
+    }
+    for j in i..len {
+        dst[j] = src[j] * (start_gain + j as f32 * delta);
+    }
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+#[target_feature(enable = "avx")]
+unsafe fn add_ramp_scaled_inplace_avx(
+    dst: &mut [f32],
+    src: &[f32],
+    start_gain: f32,
+    end_gain: f32,
+) {
+    let len = dst.len().min(src.len());
+    if len == 0 {
+        return;
+    }
+    let delta = if len > 1 {
+        (end_gain - start_gain) / (len - 1) as f32
+    } else {
+        0.0
+    };
+    let delta8 = _mm256_set_ps(
+        7.0 * delta,
+        6.0 * delta,
+        5.0 * delta,
+        4.0 * delta,
+        3.0 * delta,
+        2.0 * delta,
+        1.0 * delta,
+        0.0 * delta,
+    );
+    let stride8 = _mm256_set1_ps(8.0 * delta);
+    let mut gain_vec = _mm256_add_ps(_mm256_set1_ps(start_gain), delta8);
+    let mut i = 0;
+    while i + 8 <= len {
+        let d = _mm256_loadu_ps(dst.as_ptr().add(i));
+        let s = _mm256_loadu_ps(src.as_ptr().add(i));
+        let r = _mm256_add_ps(d, _mm256_mul_ps(s, gain_vec));
+        _mm256_storeu_ps(dst.as_mut_ptr().add(i), r);
+        gain_vec = _mm256_add_ps(gain_vec, stride8);
+        i += 8;
+    }
+    for j in i..len {
+        dst[j] += src[j] * (start_gain + j as f32 * delta);
+    }
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+#[target_feature(enable = "avx,fma")]
+unsafe fn add_ramp_scaled_inplace_avx_fma(
+    dst: &mut [f32],
+    src: &[f32],
+    start_gain: f32,
+    end_gain: f32,
+) {
+    let len = dst.len().min(src.len());
+    if len == 0 {
+        return;
+    }
+    let delta = if len > 1 {
+        (end_gain - start_gain) / (len - 1) as f32
+    } else {
+        0.0
+    };
+    let delta8 = _mm256_set_ps(
+        7.0 * delta,
+        6.0 * delta,
+        5.0 * delta,
+        4.0 * delta,
+        3.0 * delta,
+        2.0 * delta,
+        1.0 * delta,
+        0.0 * delta,
+    );
+    let stride8 = _mm256_set1_ps(8.0 * delta);
+    let mut gain_vec = _mm256_add_ps(_mm256_set1_ps(start_gain), delta8);
+    let mut i = 0;
+    while i + 8 <= len {
+        let d = _mm256_loadu_ps(dst.as_ptr().add(i));
+        let s = _mm256_loadu_ps(src.as_ptr().add(i));
+        let r = _mm256_fmadd_ps(s, gain_vec, d);
+        _mm256_storeu_ps(dst.as_mut_ptr().add(i), r);
+        gain_vec = _mm256_add_ps(gain_vec, stride8);
+        i += 8;
+    }
+    for j in i..len {
+        dst[j] += src[j] * (start_gain + j as f32 * delta);
+    }
+}
