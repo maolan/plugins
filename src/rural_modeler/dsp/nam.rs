@@ -1183,26 +1183,29 @@ impl WaveNetModel {
                 for c in 0..channels {
                     let z_base = c * frames;
                     let g_base = (channels + c) * frames;
-                    for f in 0..frames {
-                        let a = layer
-                            .activation
-                            .apply_sample(layer.conv_out_block[z_base + f]);
-                        let g = activations::sigmoid(layer.conv_out_block[g_base + f]);
-                        let z = a * g;
-                        layer.z_block[z_base + f] = z;
-                        array.head_input_block[z_base + f] += z;
-                    }
+                    layer.z_block[z_base..z_base + frames]
+                        .copy_from_slice(&layer.conv_out_block[z_base..z_base + frames]);
+                    layer
+                        .activation
+                        .apply(&mut layer.z_block[z_base..z_base + frames]);
+                    crate::simd::sigmoid_mul_add_inplace(
+                        &mut array.head_input_block[z_base..z_base + frames],
+                        &layer.conv_out_block[g_base..g_base + frames],
+                        &layer.z_block[z_base..z_base + frames],
+                    );
                 }
             } else {
                 for c in 0..channels {
                     let z_base = c * frames;
-                    for f in 0..frames {
-                        let z = layer
-                            .activation
-                            .apply_sample(layer.conv_out_block[z_base + f]);
-                        layer.z_block[z_base + f] = z;
-                        array.head_input_block[z_base + f] += z;
-                    }
+                    layer.z_block[z_base..z_base + frames]
+                        .copy_from_slice(&layer.conv_out_block[z_base..z_base + frames]);
+                    layer
+                        .activation
+                        .apply(&mut layer.z_block[z_base..z_base + frames]);
+                    crate::simd::add_inplace(
+                        &mut array.head_input_block[z_base..z_base + frames],
+                        &layer.z_block[z_base..z_base + frames],
+                    );
                 }
             }
 
@@ -1478,13 +1481,14 @@ impl WaveNetModel {
         if let Some(last) = self.arrays.last() {
             if let Some(head) = &mut self.post_stack_head {
                 let head_in = last.head_size;
+                let mut frame = Vec::with_capacity(head_in);
                 for (f, out) in output.iter_mut().enumerate().take(frames) {
-                    let mut frame = vec![0.0f32; head_in];
-                    for (c, value) in frame.iter_mut().enumerate().take(head_in) {
-                        *value = self.head_scale * last.head_output_block[c * frames + f];
-                    }
+                    frame.clear();
+                    frame.extend(
+                        (0..head_in)
+                            .map(|c| self.head_scale * last.head_output_block[c * frames + f]),
+                    );
                     let head_out = head.process_frame(&frame);
-
                     *out = head_out.first().copied().unwrap_or(0.0);
                 }
             } else {

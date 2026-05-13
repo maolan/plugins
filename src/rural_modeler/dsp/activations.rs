@@ -23,18 +23,8 @@ pub trait Activation: Send + Sync + std::fmt::Debug {
 }
 
 #[inline]
-pub fn relu(x: f32) -> f32 {
-    if x > 0.0 { x } else { 0.0 }
-}
-
-#[inline]
 pub fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
-}
-
-#[inline]
-pub fn hard_tanh(x: f32) -> f32 {
-    x.clamp(-1.0, 1.0)
 }
 
 #[inline]
@@ -73,18 +63,6 @@ pub fn swish(x: f32) -> f32 {
     x * sigmoid(x)
 }
 
-#[inline]
-pub fn hardswish(x: f32) -> f32 {
-    let t = x + 3.0;
-    let clamped = t.clamp(0.0, 6.0);
-    x * clamped * (1.0 / 6.0)
-}
-
-#[inline]
-pub fn softsign(x: f32) -> f32 {
-    x / (1.0 + x.abs())
-}
-
 #[derive(Debug)]
 pub struct Tanh;
 impl Activation for Tanh {
@@ -99,9 +77,7 @@ impl Activation for Tanh {
 pub struct HardTanh;
 impl Activation for HardTanh {
     fn apply(&self, data: &mut [f32]) {
-        for x in data {
-            *x = hard_tanh(*x);
-        }
+        crate::simd::hardtanh_inplace(data);
     }
 }
 
@@ -109,9 +85,7 @@ impl Activation for HardTanh {
 pub struct FastTanh;
 impl Activation for FastTanh {
     fn apply(&self, data: &mut [f32]) {
-        for x in data {
-            *x = fast_tanh(*x);
-        }
+        crate::simd::fast_tanh_inplace(data);
     }
 }
 
@@ -119,9 +93,7 @@ impl Activation for FastTanh {
 pub struct ReLU;
 impl Activation for ReLU {
     fn apply(&self, data: &mut [f32]) {
-        for x in data {
-            *x = relu(*x);
-        }
+        crate::simd::relu_inplace(data);
     }
 }
 
@@ -140,9 +112,7 @@ impl Default for LeakyReLU {
 
 impl Activation for LeakyReLU {
     fn apply(&self, data: &mut [f32]) {
-        for x in data {
-            *x = leaky_relu(*x, self.negative_slope);
-        }
+        crate::simd::leaky_relu_inplace(data, self.negative_slope);
     }
 }
 
@@ -193,9 +163,7 @@ impl Activation for SiLU {
 pub struct HardSwish;
 impl Activation for HardSwish {
     fn apply(&self, data: &mut [f32]) {
-        for x in data {
-            *x = hardswish(*x);
-        }
+        crate::simd::hardswish_inplace(data);
     }
 }
 
@@ -236,9 +204,7 @@ impl Activation for LeakyHardTanh {
 pub struct Softsign;
 impl Activation for Softsign {
     fn apply(&self, data: &mut [f32]) {
-        for x in data {
-            *x = softsign(*x);
-        }
+        crate::simd::softsign_inplace(data);
     }
 }
 
