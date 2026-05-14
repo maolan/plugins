@@ -170,6 +170,10 @@ impl SharedState {
         self.set_param_internal(id, value, true);
     }
 
+    pub fn set_bool_param_outbound_only(&self, id: ParamId, value: bool) {
+        self.set_param_internal(id, if value { 1.0 } else { 0.0 }, true);
+    }
+
     pub fn is_gesture_active(&self, id: ParamId) -> bool {
         let idx = id.as_index();
         let word = idx / 32;
@@ -467,13 +471,13 @@ fn apply_params_to_synth(synth: &mut KickSynthesizer, params: &ParamStore) {
         inst.length_ms = params.get(inst_id(ParamType::MasterLength)) as f32;
         inst.output_gain_db = params.get(inst_id(ParamType::MasterOutputGain)) as f32;
         inst.note_off_decay_ms = params.get(inst_id(ParamType::MasterNoteOffDecay)) as f32;
-        inst.note_off_enabled = params.get(inst_id(ParamType::MasterNoteOffEnabled)) > 0.5;
-        inst.pitch_to_note = params.get(inst_id(ParamType::MasterPitchToNote)) > 0.5;
+        inst.note_off_enabled = params.get_bool(inst_id(ParamType::MasterNoteOffEnabled));
+        inst.pitch_to_note = params.get_bool(inst_id(ParamType::MasterPitchToNote));
         inst.key_min = params.get(inst_id(ParamType::MasterKeyMin)) as u8;
         inst.key_max = params.get(inst_id(ParamType::MasterKeyMax)) as u8;
         inst.midi_channel = params.get(inst_id(ParamType::MasterMidiChannel)) as u8;
-        inst.muted = params.get(inst_id(ParamType::MasterMuted)) > 0.5;
-        inst.soloed = params.get(inst_id(ParamType::MasterSoloed)) > 0.5;
+        inst.muted = params.get_bool(inst_id(ParamType::MasterMuted));
+        inst.soloed = params.get_bool(inst_id(ParamType::MasterSoloed));
         inst.master_filter_type =
             FilterType::from_u8(params.get(inst_id(ParamType::MasterFilterType)) as u8);
         inst.master_filter_cutoff_hz = params.get(inst_id(ParamType::MasterFilterCutoff)) as f32;
@@ -503,15 +507,15 @@ fn apply_params_to_synth(synth: &mut KickSynthesizer, params: &ParamStore) {
         );
 
         // Layers 1, 2
-        inst.layers[1].enabled = params.get(inst_id(ParamType::Layer1Enabled)) > 0.5;
+        inst.layers[1].enabled = params.get_bool(inst_id(ParamType::Layer1Enabled));
         inst.layers[1].amplitude = params.get(inst_id(ParamType::Layer1Amp)) as f32;
-        inst.layers[2].enabled = params.get(inst_id(ParamType::Layer2Enabled)) > 0.5;
+        inst.layers[2].enabled = params.get_bool(inst_id(ParamType::Layer2Enabled));
         inst.layers[2].amplitude = params.get(inst_id(ParamType::Layer2Amp)) as f32;
 
         // Layer 0
         {
             let l0 = &mut inst.layers[0];
-            l0.enabled = params.get(inst_id(ParamType::Layer0Enabled)) > 0.5;
+            l0.enabled = params.get_bool(inst_id(ParamType::Layer0Enabled));
             l0.amplitude = params.get(inst_id(ParamType::Layer0Amp)) as f32;
             l0.filter_type =
                 FilterType::from_u8(params.get(inst_id(ParamType::Layer0FilterType)) as u8);

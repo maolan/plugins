@@ -1982,6 +1982,14 @@ impl ParamStore {
     pub fn set(&self, id: ParamId, value: f64) {
         self.values[id.as_index()].store(value.to_bits(), Ordering::Release);
     }
+
+    pub fn get_bool(&self, id: ParamId) -> bool {
+        self.get(id) > 0.5
+    }
+
+    pub fn set_bool(&self, id: ParamId, value: bool) {
+        self.set(id, if value { 1.0 } else { 0.0 });
+    }
 }
 
 impl crate::common::ClapParamId for ParamId {

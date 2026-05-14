@@ -17,7 +17,7 @@ use maolan_baseview::iced::widget::canvas::{Frame, Geometry, Path, Program, Stro
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{canvas, column, container, row, text},
+    widget::{canvas, checkbox, column, container, row, text},
 };
 use maolan_widgets::arch_slider::arch_slider;
 use maolan_widgets::meters::meters;
@@ -192,6 +192,7 @@ impl Program<Message> for WaveformState {
 #[derive(Debug, Clone)]
 pub enum Message {
     SetParam(ParamId, f32),
+    SetBoolParam(ParamId, bool),
     ReleaseParam(ParamId),
     SetFilterType(ParamId, u8),
     SetWaveform(ParamId, u8),
@@ -202,8 +203,6 @@ pub enum Message {
     PasteInstrument,
     DuplicateInstrument,
     ClearInstrument,
-    MoveInstrumentUp,
-    MoveInstrumentDown,
     EnvelopeEdit(EnvelopeEditorMsg),
     PresetNameChanged(String),
     SavePreset,
@@ -376,6 +375,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             state.shared.set_param_outbound_only(id, value as f64);
         }
+        Message::SetBoolParam(id, value) => {
+            let idx = id.as_index();
+            if !state.active_gestures[idx] {
+                state.active_gestures[idx] = true;
+                state.shared.mark_gesture_begin_pending(id);
+            }
+            state.shared.set_bool_param_outbound_only(id, value);
+        }
         Message::ReleaseParam(id) => {
             let idx = id.as_index();
             if state.active_gestures[idx] {
@@ -480,62 +487,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     let def = param_type_def(ty);
                     state.shared.params.set(id, def.default);
                 }
-                state
-                    .shared
-                    .kit_version
-                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-            }
-        }
-        Message::MoveInstrumentUp => {
-            let active_inst = state
-                .shared
-                .params
-                .get(ParamId::new(0, ParamType::ActiveInstrument))
-                as usize;
-            if active_inst > 0 {
-                let mut kit = state.shared.kit.lock();
-                kit.instruments.swap(active_inst, active_inst - 1);
-                for ty_idx in 0..ParamType::COUNT {
-                    let ty = unsafe { std::mem::transmute::<u8, ParamType>(ty_idx as u8) };
-                    let a = ParamId::new(active_inst as u8, ty);
-                    let b = ParamId::new((active_inst - 1) as u8, ty);
-                    let va = state.shared.params.get(a);
-                    let vb = state.shared.params.get(b);
-                    state.shared.params.set(a, vb);
-                    state.shared.params.set(b, va);
-                }
-                state.shared.set_param_outbound_only(
-                    ParamId::new(0, ParamType::ActiveInstrument),
-                    (active_inst - 1) as f64,
-                );
-                state
-                    .shared
-                    .kit_version
-                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-            }
-        }
-        Message::MoveInstrumentDown => {
-            let active_inst = state
-                .shared
-                .params
-                .get(ParamId::new(0, ParamType::ActiveInstrument))
-                as usize;
-            if active_inst < 15 {
-                let mut kit = state.shared.kit.lock();
-                kit.instruments.swap(active_inst, active_inst + 1);
-                for ty_idx in 0..ParamType::COUNT {
-                    let ty = unsafe { std::mem::transmute::<u8, ParamType>(ty_idx as u8) };
-                    let a = ParamId::new(active_inst as u8, ty);
-                    let b = ParamId::new((active_inst + 1) as u8, ty);
-                    let va = state.shared.params.get(a);
-                    let vb = state.shared.params.get(b);
-                    state.shared.params.set(a, vb);
-                    state.shared.params.set(b, va);
-                }
-                state.shared.set_param_outbound_only(
-                    ParamId::new(0, ParamType::ActiveInstrument),
-                    (active_inst + 1) as f64,
-                );
                 state
                     .shared
                     .kit_version
@@ -878,8 +829,7 @@ fn view(state: &State) -> Element<'_, Message> {
             maolan_baseview::iced::widget::button("Paste").on_press(Message::PasteInstrument),
             maolan_baseview::iced::widget::button("Dup").on_press(Message::DuplicateInstrument),
             maolan_baseview::iced::widget::button("Clear").on_press(Message::ClearInstrument),
-            maolan_baseview::iced::widget::button("Up").on_press(Message::MoveInstrumentUp),
-            maolan_baseview::iced::widget::button("Down").on_press(Message::MoveInstrumentDown),
+
         ]
         .spacing(6),
         row![
@@ -958,12 +908,10 @@ fn view(state: &State) -> Element<'_, Message> {
                 "ms",
                 1.0
             ),
-            knob(
+            checkbox_param(
                 "NO Enab",
                 ap(ParamType::MasterNoteOffEnabled),
-                p(ap(ParamType::MasterNoteOffEnabled)),
-                "",
-                1.0
+                state.shared.params.get_bool(ap(ParamType::MasterNoteOffEnabled)),
             ),
         ]
         .spacing(6),
@@ -1032,12 +980,10 @@ fn view(state: &State) -> Element<'_, Message> {
     let layer0_section = column![
         section_header("LAYER 0"),
         row![
-            knob(
+            checkbox_param(
                 "Enabled",
                 ap(ParamType::Layer0Enabled),
-                p(ap(ParamType::Layer0Enabled)),
-                "",
-                1.0
+                state.shared.params.get_bool(ap(ParamType::Layer0Enabled)),
             ),
             knob(
                 "Amp",
@@ -1116,12 +1062,10 @@ fn view(state: &State) -> Element<'_, Message> {
     let layer1_section = column![
         section_header("LAYER 1"),
         row![
-            knob(
+            checkbox_param(
                 "Enabled",
                 ap(ParamType::Layer1Enabled),
-                p(ap(ParamType::Layer1Enabled)),
-                "",
-                1.0
+                state.shared.params.get_bool(ap(ParamType::Layer1Enabled)),
             ),
             knob(
                 "Amp",
@@ -1138,12 +1082,10 @@ fn view(state: &State) -> Element<'_, Message> {
     let layer2_section = column![
         section_header("LAYER 2"),
         row![
-            knob(
+            checkbox_param(
                 "Enabled",
                 ap(ParamType::Layer2Enabled),
-                p(ap(ParamType::Layer2Enabled)),
-                "",
-                1.0
+                state.shared.params.get_bool(ap(ParamType::Layer2Enabled)),
             ),
             knob(
                 "Amp",
@@ -2276,6 +2218,25 @@ fn knob(
         column![text(label).size(9), slider, text(value_text).size(8)]
             .spacing(1)
             .align_x(Alignment::Center),
+    )
+    .width(Length::Fixed(60.0))
+    .into()
+}
+
+fn checkbox_param(
+    label: &'static str,
+    id: ParamId,
+    value: bool,
+) -> Element<'static, Message> {
+    container(
+        column![
+            text(label).size(9),
+            checkbox(value)
+                .label("")
+                .on_toggle(move |v| Message::SetBoolParam(id, v))
+        ]
+        .spacing(1)
+        .align_x(Alignment::Center),
     )
     .width(Length::Fixed(60.0))
     .into()
