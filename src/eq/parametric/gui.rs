@@ -118,10 +118,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     let fid = ParamId::para_freq(i);
                     let gid = ParamId::para_gain(i);
                     let qid = ParamId::para_q(i);
+                    let q = if gain >= 0.0 {
+                        1.0 + (gain / 24.0) * 2.0
+                    } else {
+                        1.0 + (gain.abs() / 24.0) * 9.0
+                    };
                     state.shared.set_param_outbound_only(oid, 1.0);
                     state.shared.set_param_outbound_only(fid, freq as f64);
                     state.shared.set_param_outbound_only(gid, gain as f64);
-                    state.shared.set_param_outbound_only(qid, 1.0);
+                    state.shared.set_param_outbound_only(qid, q as f64);
                     state.selected_band = i;
                     break;
                 }
@@ -189,6 +194,7 @@ fn view(state: &State) -> Element<'_, Message> {
 #[derive(Default, Debug)]
 struct EqResponseState {
     dragging: Option<usize>,
+    hover_pos: Option<Point>,
 }
 
 #[derive(Clone)]
@@ -308,16 +314,21 @@ impl Program<Message> for EqResponseCanvas {
                 }
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
-                if let (Some(local_idx), Some(p)) = (state.dragging, cursor.position_in(bounds))
-                    && let Some((global_idx, _freq, _gain, _q, _on)) =
-                        self.bands.get(local_idx).copied()
-                {
-                    let freq = Self::x_to_freq(p.x, local_bounds);
-                    let gain = Self::y_to_gain(p.y, local_bounds);
-                    return Some(
-                        CanvasAction::publish(Message::SetBandFreqGain(global_idx, freq, gain))
-                            .and_capture(),
-                    );
+                if let Some(p) = cursor.position_in(bounds) {
+                    state.hover_pos = Some(p);
+                    if let Some(local_idx) = state.dragging
+                        && let Some((global_idx, _freq, _gain, _q, _on)) =
+                            self.bands.get(local_idx).copied()
+                    {
+                        let freq = Self::x_to_freq(p.x, local_bounds);
+                        let gain = Self::y_to_gain(p.y, local_bounds);
+                        return Some(
+                            CanvasAction::publish(Message::SetBandFreqGain(global_idx, freq, gain))
+                                .and_capture(),
+                        );
+                    }
+                } else {
+                    state.hover_pos = None;
                 }
             }
             _ => {}
@@ -327,12 +338,18 @@ impl Program<Message> for EqResponseCanvas {
 
     fn draw(
         &self,
-        _state: &Self::State,
+        state: &Self::State,
         renderer: &Renderer,
         _theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
+        let local_bounds = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: bounds.width,
+            height: bounds.height,
+        };
         let mut frame = Frame::new(renderer, bounds.size());
         frame.fill(
             &Path::rectangle(Point::new(0.0, 0.0), bounds.size()),
@@ -467,6 +484,58 @@ impl Program<Message> for EqResponseCanvas {
                 .with_color(Color::from_rgb(0.53, 0.88, 0.98))
                 .with_width(2.0),
         );
+
+        if state.dragging.is_none() && state.hover_pos.is_some() && self.bands.iter().any(|(_, _, _, _, on)| !*on) {
+            let hover = state.hover_pos.unwrap();
+            let hover_freq = Self::x_to_freq(hover.x, local_bounds);
+            let hover_gain = Self::y_to_gain(hover.y, local_bounds);
+            let hover_q = if hover_gain >= 0.0 {
+                1.0 + (hover_gain / 24.0) * 2.0
+            } else {
+                1.0 + (hover_gain.abs() / 24.0) * 9.0
+            };
+
+            let preview = Path::new(|b| {
+                let mut first = true;
+                for xi in 0..(bounds.width as usize).max(2) {
+                    let x = xi as f32;
+                    let freq = Self::x_to_freq(
+                        x,
+                        Rectangle {
+                            x: 0.0,
+                            y: 0.0,
+                            ..bounds
+                        },
+                    );
+                    let mut total_db = bell_like_db(freq, hover_freq, hover_gain, hover_q);
+                    for (_idx, f0, gain_db, q, on) in &self.bands {
+                        if *on {
+                            total_db += bell_like_db(freq, *f0, *gain_db, *q);
+                        }
+                    }
+                    let y = Self::gain_to_y(
+                        total_db,
+                        Rectangle {
+                            x: 0.0,
+                            y: 0.0,
+                            ..bounds
+                        },
+                    );
+                    if first {
+                        b.move_to(Point::new(x, y));
+                        first = false;
+                    } else {
+                        b.line_to(Point::new(x, y));
+                    }
+                }
+            });
+            frame.stroke(
+                &preview,
+                canvas::Stroke::default()
+                    .with_color(Color::from_rgba(0.95, 0.95, 0.98, 0.55))
+                    .with_width(1.0),
+            );
+        }
 
         for (global_idx, freq, gain, _q, on) in self.bands.iter() {
             if !*on {
