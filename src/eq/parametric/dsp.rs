@@ -7,15 +7,14 @@ pub struct ParametricEqualizer {
     output_gain_lin: f32,
     bypass: bool,
 
-    para_l: [Biquad; 32],
-    para_r: [Biquad; 32],
+    para_l: Vec<Biquad>,
+    para_r: Vec<Biquad>,
 
-    para_freq: [f32; 32],
-    para_gain: [f32; 32],
-    para_q: [f32; 32],
-    para_on: [bool; 32],
-    active_bands: [usize; 32],
-    active_count: usize,
+    para_freq: Vec<f32>,
+    para_gain: Vec<f32>,
+    para_q: Vec<f32>,
+    para_on: Vec<bool>,
+    active_bands: Vec<usize>,
 }
 
 impl Default for ParametricEqualizer {
@@ -25,26 +24,23 @@ impl Default for ParametricEqualizer {
             input_gain_lin: 1.0,
             output_gain_lin: 1.0,
             bypass: false,
-            para_l: [Biquad::default(); 32],
-            para_r: [Biquad::default(); 32],
-            para_freq: [1000.0; 32],
-            para_gain: [0.0; 32],
-            para_q: [1.0; 32],
-            para_on: [false; 32],
-            active_bands: [0; 32],
-            active_count: 0,
+            para_l: Vec::new(),
+            para_r: Vec::new(),
+            para_freq: Vec::new(),
+            para_gain: Vec::new(),
+            para_q: Vec::new(),
+            para_on: Vec::new(),
+            active_bands: Vec::new(),
         }
     }
 }
 
 impl ParametricEqualizer {
     pub fn new(sample_rate: f32) -> Self {
-        let mut eq = Self {
+        Self {
             sample_rate,
             ..Self::default()
-        };
-        eq.rebuild_filters();
-        eq
+        }
     }
 
     pub fn reset(&mut self) {
@@ -71,9 +67,20 @@ impl ParametricEqualizer {
     }
 
     pub fn set_para_band(&mut self, idx: usize, freq: f32, gain: f32, q: f32, on: bool) {
-        if idx >= 32 {
+        if !on && idx >= self.para_on.len() {
             return;
         }
+
+        if idx >= self.para_on.len() {
+            let new_len = idx + 1;
+            self.para_l.resize(new_len, Biquad::default());
+            self.para_r.resize(new_len, Biquad::default());
+            self.para_freq.resize(new_len, 1000.0);
+            self.para_gain.resize(new_len, 0.0);
+            self.para_q.resize(new_len, 1.0);
+            self.para_on.resize(new_len, false);
+        }
+
         self.para_freq[idx] = freq;
         self.para_gain[idx] = gain;
         self.para_q[idx] = q;
@@ -82,22 +89,13 @@ impl ParametricEqualizer {
         self.rebuild_active_bands();
     }
 
-    fn rebuild_filters(&mut self) {
-        for i in 0..32 {
-            self.update_para_band(i);
-        }
-        self.rebuild_active_bands();
-    }
-
     fn rebuild_active_bands(&mut self) {
-        let mut n = 0usize;
-        for i in 0..32 {
+        self.active_bands.clear();
+        for i in 0..self.para_on.len() {
             if self.para_on[i] {
-                self.active_bands[n] = i;
-                n += 1;
+                self.active_bands.push(i);
             }
         }
-        self.active_count = n;
     }
 
     fn update_para_band(&mut self, idx: usize) {
@@ -122,7 +120,7 @@ impl ParametricEqualizer {
         let frames = left.len().min(right.len());
         crate::simd::mul_inplace(&mut left[..frames], self.input_gain_lin);
         crate::simd::mul_inplace(&mut right[..frames], self.input_gain_lin);
-        for &b in self.active_bands[..self.active_count].iter() {
+        for &b in self.active_bands.iter() {
             self.para_l[b].process_inplace(&mut left[..frames]);
             self.para_r[b].process_inplace(&mut right[..frames]);
         }
@@ -135,7 +133,7 @@ impl ParametricEqualizer {
             return;
         }
         crate::simd::mul_inplace(buffer, self.input_gain_lin);
-        for &b in self.active_bands[..self.active_count].iter() {
+        for &b in self.active_bands.iter() {
             self.para_l[b].process_inplace(buffer);
         }
         crate::simd::mul_inplace(buffer, self.output_gain_lin);

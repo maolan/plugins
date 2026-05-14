@@ -18,17 +18,15 @@ use maolan_baseview::iced::{
     alignment::{Horizontal, Vertical},
     mouse,
     widget::{
-        button, canvas,
+        canvas,
         canvas::{Action as CanvasAction, Frame, Geometry, Path, Program, Text},
-        checkbox, column, container, row, text,
+        column, container, row, text,
     },
 };
 use maolan_widgets::arch_slider::arch_slider;
-use maolan_widgets::meters::meters;
-use maolan_widgets::slider::slider;
 
-pub const EDITOR_WIDTH: u32 = 700;
-pub const EDITOR_HEIGHT: u32 = 530;
+pub const EDITOR_WIDTH: u32 = 800;
+pub const EDITOR_HEIGHT: u32 = 680;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -36,14 +34,15 @@ pub enum Message {
     SetBandFreqGain(usize, f32, f32),
     EndBandDrag(usize),
     SetBoolParam(ParamId, bool),
-    SelectTab(usize),
     ReleaseParam(ParamId),
+    CreateBand(f32, f32),
+    SelectBand(usize),
     UiTick,
 }
 
 struct State {
     shared: Arc<SharedState<ParamId>>,
-    selected_tab: usize,
+    selected_band: usize,
     active_gestures: HashSet<ParamId>,
 }
 
@@ -51,7 +50,7 @@ fn init(shared: Arc<SharedState<ParamId>>) -> (State, Task<Message>) {
     (
         State {
             shared,
-            selected_tab: 0,
+            selected_band: 0,
             active_gestures: HashSet::new(),
         },
         next_ui_tick_task(),
@@ -107,11 +106,29 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .shared
                 .set_param_outbound_only(id, if value { 1.0 } else { 0.0 })
         }
-        Message::SelectTab(tab) => state.selected_tab = tab.min(3),
         Message::ReleaseParam(id) => {
             if state.active_gestures.remove(&id) {
                 state.shared.mark_gesture_end_pending(id);
             }
+        }
+        Message::CreateBand(freq, gain) => {
+            for i in 0..32 {
+                if !state.shared.params.get_bool(ParamId::para_on(i)) {
+                    let oid = ParamId::para_on(i);
+                    let fid = ParamId::para_freq(i);
+                    let gid = ParamId::para_gain(i);
+                    let qid = ParamId::para_q(i);
+                    state.shared.set_param_outbound_only(oid, 1.0);
+                    state.shared.set_param_outbound_only(fid, freq as f64);
+                    state.shared.set_param_outbound_only(gid, gain as f64);
+                    state.shared.set_param_outbound_only(qid, 1.0);
+                    state.selected_band = i;
+                    break;
+                }
+            }
+        }
+        Message::SelectBand(index) => {
+            state.selected_band = index;
         }
         Message::UiTick => return next_ui_tick_task(),
     }
@@ -121,47 +138,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
 fn view(state: &State) -> Element<'_, Message> {
     let p = |id: ParamId| state.shared.params.get(id) as f32;
 
-    let mut tabs = row![].spacing(5).align_y(Alignment::Center);
-    for tab in 0..4 {
-        let label = format!("{}", tab + 1);
-        let tab_element: Element<'_, Message> = if tab == state.selected_tab {
-            container(text(label).size(14)).padding(5).into()
-        } else {
-            button(text(label).size(14))
-                .on_press(Message::SelectTab(tab))
-                .into()
-        };
-        tabs = tabs.push(tab_element);
-    }
-
-    let mut content = column![tabs].spacing(10).align_x(Alignment::Start);
-
-    let ch = state
-        .shared
-        .channels
-        .load(std::sync::atomic::Ordering::Relaxed)
-        .clamp(1, 2) as usize;
-    let input_levels_db: Vec<f32> = if ch == 1 {
-        vec![state.shared.input_level_left_db()]
-    } else {
-        vec![
-            state.shared.input_level_left_db(),
-            state.shared.input_level_right_db(),
-        ]
-    };
-    let output_levels_db: Vec<f32> = if ch == 1 {
-        vec![state.shared.output_level_left_db()]
-    } else {
-        vec![
-            state.shared.output_level_left_db(),
-            state.shared.output_level_right_db(),
-        ]
-    };
-
-    let start_band = state.selected_tab * 8;
-    let mut band_points = Vec::with_capacity(8);
-    for i in start_band..start_band + 8 {
-        band_points.push((
+    let mut bands = Vec::with_capacity(32);
+    for i in 0..32 {
+        bands.push((
             i,
             p(ParamId::para_freq(i)),
             p(ParamId::para_gain(i)),
@@ -169,40 +148,41 @@ fn view(state: &State) -> Element<'_, Message> {
             state.shared.params.get_bool(ParamId::para_on(i)),
         ));
     }
-    let mut parametric_bands =
-        row![container(meters(ch, &input_levels_db, 260.0)).height(Length::Fill)].spacing(10);
-    for i in start_band..start_band + 8 {
-        parametric_bands = parametric_bands.push(parametric_band(state, i));
-    }
-    parametric_bands =
-        parametric_bands.push(container(meters(ch, &output_levels_db, 260.0)).height(Length::Fill));
 
-    let parameters = column![parametric_bands]
-        .spacing(10)
-        .align_x(Alignment::Center);
     let output_spectrum_db = state.shared.output_spectrum_db();
-    let response = eq_response_graph(band_points, output_spectrum_db);
+    let response = eq_response_graph(bands.clone(), output_spectrum_db, state.selected_band);
 
-    content = content.push(
-        column![
-            response,
-            row![
-                gain_slider(ParamId::InputGain, p(ParamId::InputGain)),
-                parameters,
-                gain_slider(ParamId::OutputGain, p(ParamId::OutputGain)),
-            ]
-            .spacing(14)
-            .align_y(Alignment::Start),
-        ]
-        .spacing(10),
-    );
+    let sb = state.selected_band;
+    let knobs = row![
+        freq_knob(ParamId::para_freq(sb), p(ParamId::para_freq(sb))),
+        knob(
+            "Gain".to_string(),
+            ParamId::para_gain(sb),
+            p(ParamId::para_gain(sb)),
+            "dB",
+            0.1
+        ),
+        knob(
+            "Q".to_string(),
+            ParamId::para_q(sb),
+            p(ParamId::para_q(sb)),
+            "",
+            0.01
+        ),
+    ]
+    .spacing(20)
+    .align_y(Alignment::Center);
+
+    let content = column![response, knobs,]
+        .spacing(20)
+        .align_x(Alignment::Center);
 
     container(content)
         .padding(16)
         .width(Length::Fill)
         .height(Length::Fill)
-        .align_x(Horizontal::Left)
-        .align_y(Vertical::Top)
+        .align_x(Horizontal::Center)
+        .align_y(Vertical::Center)
         .into()
 }
 
@@ -215,6 +195,7 @@ struct EqResponseState {
 struct EqResponseCanvas {
     bands: Vec<(usize, f32, f32, f32, bool)>,
     output_spectrum_db: [f32; SPECTRUM_BINS],
+    selected_band: usize,
 }
 
 impl EqResponseCanvas {
@@ -291,7 +272,31 @@ impl Program<Message> for EqResponseCanvas {
                             closest = Some(local_idx);
                         }
                     }
-                    state.dragging = closest;
+                    if let Some(local_idx) = closest {
+                        state.dragging = Some(local_idx);
+                        let global_idx = self.bands[local_idx].0;
+                        if global_idx != self.selected_band {
+                            return Some(
+                                CanvasAction::publish(Message::SelectBand(global_idx))
+                                    .and_capture(),
+                            );
+                        }
+                        return Some(CanvasAction::capture());
+                    } else {
+                        for (local_idx, (_global_idx, _freq, _gain, _q, on)) in
+                            self.bands.iter().enumerate()
+                        {
+                            if !*on {
+                                let freq = Self::x_to_freq(p.x, local_bounds);
+                                let gain = Self::y_to_gain(p.y, local_bounds);
+                                state.dragging = Some(local_idx);
+                                return Some(
+                                    CanvasAction::publish(Message::CreateBand(freq, gain))
+                                        .and_capture(),
+                                );
+                            }
+                        }
+                    }
                 }
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
@@ -463,7 +468,7 @@ impl Program<Message> for EqResponseCanvas {
                 .with_width(2.0),
         );
 
-        for (_global_idx, freq, gain, _q, on) in self.bands.iter() {
+        for (global_idx, freq, gain, _q, on) in self.bands.iter() {
             if !*on {
                 continue;
             }
@@ -483,8 +488,16 @@ impl Program<Message> for EqResponseCanvas {
                     ..bounds
                 },
             );
-            let node = Path::circle(Point::new(x, y), 4.5);
-            frame.fill(&node, Color::from_rgb(0.95, 0.64, 0.18));
+            let is_selected = *global_idx == self.selected_band;
+            let node = Path::circle(Point::new(x, y), if is_selected { 6.0 } else { 4.5 });
+            frame.fill(
+                &node,
+                if is_selected {
+                    Color::from_rgb(1.0, 0.85, 0.3)
+                } else {
+                    Color::from_rgb(0.95, 0.64, 0.18)
+                },
+            );
             frame.stroke(
                 &node,
                 canvas::Stroke::default()
@@ -519,36 +532,15 @@ fn bell_like_db(freq: f32, f0: f32, gain_db: f32, q: f32) -> f32 {
 fn eq_response_graph(
     bands: Vec<(usize, f32, f32, f32, bool)>,
     output_spectrum_db: [f32; SPECTRUM_BINS],
+    selected_band: usize,
 ) -> Element<'static, Message> {
     canvas(EqResponseCanvas {
         bands,
         output_spectrum_db,
+        selected_band,
     })
     .width(Length::Fill)
-    .height(Length::Fixed(190.0))
-    .into()
-}
-
-fn parametric_band(state: &State, index: usize) -> Element<'_, Message> {
-    let p = |id: ParamId| state.shared.params.get(id) as f32;
-    let fid = ParamId::para_freq(index);
-    let gid = ParamId::para_gain(index);
-    let qid = ParamId::para_q(index);
-    let oid = ParamId::para_on(index);
-    let label = format!("P{:02}", index + 1);
-    let on = state.shared.params.get_bool(oid);
-
-    column![
-        text(label).size(14),
-        checkbox(on)
-            .label("On")
-            .on_toggle(move |v| Message::SetBoolParam(oid, v)),
-        freq_knob(fid, p(fid)),
-        knob("Gain".to_string(), gid, p(gid), "dB", 0.1),
-        knob("Q".to_string(), qid, p(qid), "", 0.01),
-    ]
-    .spacing(5)
-    .align_x(Alignment::Center)
+    .height(Length::Fill)
     .into()
 }
 
@@ -645,28 +637,6 @@ fn freq_knob(id: ParamId, value_hz: f32) -> Element<'static, Message> {
     .into()
 }
 
-fn gain_slider(id: ParamId, value: f32) -> Element<'static, Message> {
-    let def = PARAMS[id.as_index()];
-    let s = slider(def.min as f32..=def.max as f32, value, move |v| {
-        Message::SetParam(id, v)
-    })
-    .step(def.step as f32)
-    .double_click_reset(def.default as f32)
-    .on_release(Message::ReleaseParam(id))
-    .width(Length::Fixed(20.0))
-    .height(Length::Fill);
-
-    let value_text = format!("{value:.1} dB");
-
-    container(
-        column![s, text(value_text).size(10)]
-            .spacing(2)
-            .align_x(Alignment::Center),
-    )
-    .width(Length::Fixed(40.0))
-    .into()
-}
-
 fn build_app(shared: Arc<SharedState<ParamId>>) -> impl maolan_baseview::iced::Program {
     maolan_baseview::iced::application(move || init(shared.clone()), update, view)
         .theme(theme)
@@ -735,7 +705,7 @@ impl GuiBridge {
 
         let settings = maolan_baseview::iced::IcedBaseviewSettings {
             window: maolan_baseview::iced::baseview::WindowOpenOptions {
-                title: String::from("Maolan Parametric EQ"),
+                title: String::from("Maolan EQ"),
                 size: maolan_baseview::iced::baseview::Size::new(
                     EDITOR_WIDTH as f64,
                     EDITOR_HEIGHT as f64,
@@ -777,7 +747,7 @@ impl GuiBridge {
                 let shared_for_close = shared.clone();
                 let settings = maolan_baseview::iced::IcedBaseviewSettings {
                     window: maolan_baseview::iced::baseview::WindowOpenOptions {
-                        title: String::from("Maolan Parametric EQ"),
+                        title: String::from("Maolan EQ"),
                         size: maolan_baseview::iced::baseview::Size::new(
                             EDITOR_WIDTH as f64,
                             EDITOR_HEIGHT as f64,

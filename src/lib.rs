@@ -34,7 +34,7 @@ struct PluginApi {
     create: CreateFn,
 }
 
-static PLUGINS: [PluginApi; 19] = [
+static PLUGINS: [PluginApi; 17] = [
     PluginApi {
         descriptor: eq::parametric::clap_mono_descriptor_ptr,
         create: eq::parametric::clap_mono_create_plugin,
@@ -42,14 +42,6 @@ static PLUGINS: [PluginApi; 19] = [
     PluginApi {
         descriptor: eq::parametric::clap_stereo_descriptor_ptr,
         create: eq::parametric::clap_stereo_create_plugin,
-    },
-    PluginApi {
-        descriptor: eq::graphic::clap_mono_descriptor_ptr,
-        create: eq::graphic::clap_mono_create_plugin,
-    },
-    PluginApi {
-        descriptor: eq::graphic::clap_stereo_descriptor_ptr,
-        create: eq::graphic::clap_stereo_create_plugin,
     },
     PluginApi {
         descriptor: compressor::clap_mono_descriptor_ptr,

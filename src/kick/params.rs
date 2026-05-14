@@ -230,9 +230,7 @@ impl ParamId {
 
     #[inline]
     pub const fn new(instrument: u8, param_type: ParamType) -> Self {
-        Self(
-            (instrument as u32) * (ParamType::COUNT as u32) + (param_type as u32),
-        )
+        Self((instrument as u32) * (ParamType::COUNT as u32) + (param_type as u32))
     }
 
     #[inline]

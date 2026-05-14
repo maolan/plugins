@@ -200,13 +200,79 @@ pub enum Message {
     SetActiveInstrument(u8),
     CopyInstrument,
     PasteInstrument,
+    DuplicateInstrument,
+    ClearInstrument,
+    MoveInstrumentUp,
+    MoveInstrumentDown,
     EnvelopeEdit(EnvelopeEditorMsg),
     PresetNameChanged(String),
     SavePreset,
     LoadPreset(String),
     RefreshPresets,
     SamplePathChanged(String),
+    SampleTargetLayerChanged(u8),
+    SampleTargetOscChanged(u8),
+    EnvelopeKindChanged(u8),
+    EnvelopeLayerChanged(u8),
+    EnvelopeOscChanged(u8),
+    ExportPathChanged(String),
+    ExportFormatChanged(u8),
+    ExportChannelsChanged(u8),
+    ExportMidiNoteChanged(u8),
+    ExportCurrentInstrument,
     LoadSample,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum EnvelopeKind {
+    GlobalAmp = 0,
+    OscAmp = 1,
+    OscPitch = 2,
+    OscFreq = 3,
+    OscFilterCutoff = 4,
+    OscFilterQ = 5,
+    OscDistDrive = 6,
+    OscPitchShift = 7,
+    NoiseAmp = 8,
+    NoiseDensity = 9,
+    MasterDistVol = 10,
+    LayerDistVol = 11,
+}
+
+impl EnvelopeKind {
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::OscAmp,
+            2 => Self::OscPitch,
+            3 => Self::OscFreq,
+            4 => Self::OscFilterCutoff,
+            5 => Self::OscFilterQ,
+            6 => Self::OscDistDrive,
+            7 => Self::OscPitchShift,
+            8 => Self::NoiseAmp,
+            9 => Self::NoiseDensity,
+            10 => Self::MasterDistVol,
+            11 => Self::LayerDistVol,
+            _ => Self::GlobalAmp,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::GlobalAmp => "Global Amp",
+            Self::OscAmp => "Osc Amp",
+            Self::OscPitch => "Osc Pitch",
+            Self::OscFreq => "Osc Freq",
+            Self::OscFilterCutoff => "Osc Filter Cutoff",
+            Self::OscFilterQ => "Osc Filter Q",
+            Self::OscDistDrive => "Osc Dist Drive",
+            Self::OscPitchShift => "Osc Pitch Shift",
+            Self::NoiseAmp => "Noise Amp",
+            Self::NoiseDensity => "Noise Density",
+            Self::MasterDistVol => "Master Dist Vol",
+            Self::LayerDistVol => "Layer Dist Vol",
+        }
+    }
 }
 
 struct State {
@@ -215,6 +281,16 @@ struct State {
     show_envelope_editor: bool,
     preset_name_input: String,
     sample_path_input: String,
+    sample_target_layer: u8,
+    sample_target_osc: u8,
+    envelope_kind: u8,
+    envelope_layer: u8,
+    envelope_osc: u8,
+    export_path_input: String,
+    export_format: u8,
+    export_channels: u8,
+    export_midi_note: u8,
+    export_status: String,
     preset_files: Vec<String>,
 }
 
@@ -250,10 +326,44 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             show_envelope_editor: true,
             preset_name_input: String::new(),
             sample_path_input: String::new(),
+            sample_target_layer: 0,
+            sample_target_osc: 0,
+            envelope_kind: 0,
+            envelope_layer: 0,
+            envelope_osc: 0,
+            export_path_input: String::new(),
+            export_format: 0,
+            export_channels: 1,
+            export_midi_note: 36,
+            export_status: String::new(),
             preset_files: scan_presets(),
         },
         Task::none(),
     )
+}
+
+fn selected_env(
+    inst: &mut crate::kick::dsp::Instrument,
+    kind: EnvelopeKind,
+    layer: usize,
+    osc: usize,
+) -> &mut crate::kick::dsp::Envelope {
+    let layer = layer.min(2);
+    let osc = osc.min(2);
+    match kind {
+        EnvelopeKind::GlobalAmp => &mut inst.global_amp_env,
+        EnvelopeKind::OscAmp => &mut inst.layers[layer].oscillators[osc].amp_env,
+        EnvelopeKind::OscPitch => &mut inst.layers[layer].oscillators[osc].pitch_env,
+        EnvelopeKind::OscFreq => &mut inst.layers[layer].oscillators[osc].freq_env,
+        EnvelopeKind::OscFilterCutoff => &mut inst.layers[layer].oscillators[osc].filter_cutoff_env,
+        EnvelopeKind::OscFilterQ => &mut inst.layers[layer].oscillators[osc].filter_q_env,
+        EnvelopeKind::OscDistDrive => &mut inst.layers[layer].oscillators[osc].distortion_drive_env,
+        EnvelopeKind::OscPitchShift => &mut inst.layers[layer].oscillators[osc].pitch_shift_env,
+        EnvelopeKind::NoiseAmp => &mut inst.layers[layer].noise.amp_env,
+        EnvelopeKind::NoiseDensity => &mut inst.layers[layer].noise.density_env,
+        EnvelopeKind::MasterDistVol => &mut inst.master_distortion.volume_env,
+        EnvelopeKind::LayerDistVol => &mut inst.layers[layer].distortion.volume_env,
+    }
 }
 
 fn update(state: &mut State, message: Message) -> Task<Message> {
@@ -294,10 +404,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::SetActiveInstrument(inst) => {
-            state.shared.set_param_outbound_only(
-                ParamId::new(0, ParamType::ActiveInstrument),
-                inst as f64,
-            );
+            state
+                .shared
+                .set_param_outbound_only(ParamId::new(0, ParamType::ActiveInstrument), inst as f64);
         }
         Message::CopyInstrument => {
             let active_inst = state
@@ -326,6 +435,113 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             }
         }
+        Message::DuplicateInstrument => {
+            let active_inst = state
+                .shared
+                .params
+                .get(ParamId::new(0, ParamType::ActiveInstrument))
+                as usize;
+            let mut kit = state.shared.kit.lock();
+            if active_inst < kit.instruments.len() {
+                let clone = kit.instruments[active_inst].clone();
+                let dst = (active_inst + 1).min(kit.instruments.len() - 1);
+                kit.instruments[dst] = clone;
+                for ty_idx in 0..ParamType::COUNT {
+                    let src = ParamId::new(active_inst as u8, unsafe {
+                        std::mem::transmute::<u8, ParamType>(ty_idx as u8)
+                    });
+                    let dst_id = ParamId::new(dst as u8, unsafe {
+                        std::mem::transmute::<u8, ParamType>(ty_idx as u8)
+                    });
+                    state
+                        .shared
+                        .params
+                        .set(dst_id, state.shared.params.get(src));
+                }
+                state
+                    .shared
+                    .kit_version
+                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            }
+        }
+        Message::ClearInstrument => {
+            let active_inst = state
+                .shared
+                .params
+                .get(ParamId::new(0, ParamType::ActiveInstrument))
+                as usize;
+            let mut kit = state.shared.kit.lock();
+            if active_inst < kit.instruments.len() {
+                kit.instruments[active_inst] =
+                    crate::kick::dsp::Instrument::new(state.shared.sample_rate());
+                for ty_idx in 0..ParamType::COUNT {
+                    let ty = unsafe { std::mem::transmute::<u8, ParamType>(ty_idx as u8) };
+                    let id = ParamId::new(active_inst as u8, ty);
+                    let def = param_type_def(ty);
+                    state.shared.params.set(id, def.default);
+                }
+                state
+                    .shared
+                    .kit_version
+                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            }
+        }
+        Message::MoveInstrumentUp => {
+            let active_inst = state
+                .shared
+                .params
+                .get(ParamId::new(0, ParamType::ActiveInstrument))
+                as usize;
+            if active_inst > 0 {
+                let mut kit = state.shared.kit.lock();
+                kit.instruments.swap(active_inst, active_inst - 1);
+                for ty_idx in 0..ParamType::COUNT {
+                    let ty = unsafe { std::mem::transmute::<u8, ParamType>(ty_idx as u8) };
+                    let a = ParamId::new(active_inst as u8, ty);
+                    let b = ParamId::new((active_inst - 1) as u8, ty);
+                    let va = state.shared.params.get(a);
+                    let vb = state.shared.params.get(b);
+                    state.shared.params.set(a, vb);
+                    state.shared.params.set(b, va);
+                }
+                state.shared.set_param_outbound_only(
+                    ParamId::new(0, ParamType::ActiveInstrument),
+                    (active_inst - 1) as f64,
+                );
+                state
+                    .shared
+                    .kit_version
+                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            }
+        }
+        Message::MoveInstrumentDown => {
+            let active_inst = state
+                .shared
+                .params
+                .get(ParamId::new(0, ParamType::ActiveInstrument))
+                as usize;
+            if active_inst < 15 {
+                let mut kit = state.shared.kit.lock();
+                kit.instruments.swap(active_inst, active_inst + 1);
+                for ty_idx in 0..ParamType::COUNT {
+                    let ty = unsafe { std::mem::transmute::<u8, ParamType>(ty_idx as u8) };
+                    let a = ParamId::new(active_inst as u8, ty);
+                    let b = ParamId::new((active_inst + 1) as u8, ty);
+                    let va = state.shared.params.get(a);
+                    let vb = state.shared.params.get(b);
+                    state.shared.params.set(a, vb);
+                    state.shared.params.set(b, va);
+                }
+                state.shared.set_param_outbound_only(
+                    ParamId::new(0, ParamType::ActiveInstrument),
+                    (active_inst + 1) as f64,
+                );
+                state
+                    .shared
+                    .kit_version
+                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            }
+        }
         Message::EnvelopeEdit(msg) => {
             let active_inst = state
                 .shared
@@ -333,7 +549,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .get(ParamId::new(0, ParamType::ActiveInstrument))
                 as usize;
             let mut kit = state.shared.kit.lock();
-            let env = &mut kit.instruments[active_inst].global_amp_env;
+            let env_kind = EnvelopeKind::from_u8(state.envelope_kind);
+            let env = selected_env(
+                &mut kit.instruments[active_inst],
+                env_kind,
+                state.envelope_layer as usize,
+                state.envelope_osc as usize,
+            );
             match msg {
                 EnvelopeEditorMsg::PointMoved(idx, t, v) => {
                     if let Some(p) = env.points_mut().get_mut(idx) {
@@ -415,6 +637,109 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::SamplePathChanged(path) => {
             state.sample_path_input = path;
         }
+        Message::SampleTargetLayerChanged(layer) => {
+            state.sample_target_layer = layer.min(2);
+        }
+        Message::SampleTargetOscChanged(osc) => {
+            state.sample_target_osc = osc.min(2);
+        }
+        Message::EnvelopeKindChanged(kind) => {
+            state.envelope_kind = kind.min(11);
+        }
+        Message::EnvelopeLayerChanged(layer) => {
+            state.envelope_layer = layer.min(2);
+        }
+        Message::EnvelopeOscChanged(osc) => {
+            state.envelope_osc = osc.min(2);
+        }
+        Message::ExportPathChanged(path) => {
+            state.export_path_input = path;
+            state.export_status.clear();
+        }
+        Message::ExportFormatChanged(v) => {
+            state.export_format = v.min(3);
+        }
+        Message::ExportChannelsChanged(v) => {
+            state.export_channels = if v == 0 { 1 } else { 2 };
+        }
+        Message::ExportMidiNoteChanged(v) => {
+            state.export_midi_note = v.clamp(0, 127);
+        }
+        Message::ExportCurrentInstrument => {
+            let path = std::path::Path::new(&state.export_path_input);
+            if state.export_path_input.trim().is_empty() {
+                state.export_status = "Export failed: output path is empty".to_string();
+                return Task::none();
+            }
+            if path.extension().is_none() {
+                state.export_status =
+                    "Export failed: output path must include file extension".to_string();
+                return Task::none();
+            }
+            let Some(parent) = path.parent() else {
+                state.export_status = "Export failed: invalid output path".to_string();
+                return Task::none();
+            };
+            if !parent.exists() {
+                state.export_status = format!(
+                    "Export failed: directory does not exist ({})",
+                    parent.display()
+                );
+                return Task::none();
+            }
+
+            let active_inst = state
+                .shared
+                .params
+                .get(ParamId::new(0, ParamType::ActiveInstrument))
+                as usize;
+            let mut kit = state.shared.kit.lock();
+            if active_inst >= kit.instruments.len() {
+                state.export_status = "Export failed: active instrument out of range".to_string();
+                return Task::none();
+            }
+
+            let inst = &mut kit.instruments[active_inst];
+            let num_samples =
+                ((inst.length_ms.max(1.0) * 0.001) * state.shared.sample_rate()) as usize;
+            let mut left = vec![0.0f32; num_samples];
+            let mut right = vec![0.0f32; num_samples];
+            inst.render(&mut left, &mut right, num_samples, state.export_midi_note);
+
+            let format = match state.export_format {
+                1 => "flac",
+                2 => "ogg",
+                3 => "mp3",
+                _ => "wav",
+            };
+            match crate::kick::export::export_audio(
+                path,
+                &left,
+                &right,
+                state.shared.sample_rate() as u32,
+                format,
+                state.export_channels as u16,
+            ) {
+                Ok(_) => {
+                    if format == "wav" {
+                        let sfz = path.with_extension("sfz");
+                        if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                            let _ =
+                                crate::kick::export::export_sfz(&sfz, name, state.export_midi_note);
+                        }
+                    }
+                    state.export_status = format!(
+                        "Exported {} ({}ch, note {})",
+                        path.display(),
+                        state.export_channels,
+                        state.export_midi_note
+                    );
+                }
+                Err(err) => {
+                    state.export_status = format!("Export failed: {err}");
+                }
+            }
+        }
         Message::LoadSample => {
             let path = std::path::Path::new(&state.sample_path_input);
             if path.exists()
@@ -426,7 +751,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .get(ParamId::new(0, ParamType::ActiveInstrument))
                     as usize;
                 let mut kit = state.shared.kit.lock();
-                let osc = &mut kit.instruments[active_inst].layers[0].oscillators[0];
+                let layer_idx = state.sample_target_layer.min(2) as usize;
+                let osc_idx = state.sample_target_osc.min(2) as usize;
+                let osc = &mut kit.instruments[active_inst].layers[layer_idx].oscillators[osc_idx];
                 // Use mono mix if stereo
                 let samples: Vec<f32> = left
                     .iter()
@@ -470,7 +797,15 @@ fn view(state: &State) -> Element<'_, Message> {
 
     let envelope_editor = if state.show_envelope_editor {
         let kit = state.shared.kit.lock();
-        let env = kit.instruments[active_inst].global_amp_env.clone();
+        let env_kind = EnvelopeKind::from_u8(state.envelope_kind);
+        let mut inst = kit.instruments[active_inst].clone();
+        let env = selected_env(
+            &mut inst,
+            env_kind,
+            state.envelope_layer as usize,
+            state.envelope_osc as usize,
+        )
+        .clone();
         drop(kit);
         Some(
             canvas(EnvelopeEditor::new(env))
@@ -516,9 +851,7 @@ fn view(state: &State) -> Element<'_, Message> {
             .into(),
         );
     }
-    let inst_selector = row(inst_buttons)
-        .spacing(2)
-        .align_y(Alignment::Center);
+    let inst_selector = row(inst_buttons).spacing(2).align_y(Alignment::Center);
 
     // Kit section
     let kit_section = column![
@@ -543,6 +876,58 @@ fn view(state: &State) -> Element<'_, Message> {
         row![
             maolan_baseview::iced::widget::button("Copy").on_press(Message::CopyInstrument),
             maolan_baseview::iced::widget::button("Paste").on_press(Message::PasteInstrument),
+            maolan_baseview::iced::widget::button("Dup").on_press(Message::DuplicateInstrument),
+            maolan_baseview::iced::widget::button("Clear").on_press(Message::ClearInstrument),
+            maolan_baseview::iced::widget::button("Up").on_press(Message::MoveInstrumentUp),
+            maolan_baseview::iced::widget::button("Down").on_press(Message::MoveInstrumentDown),
+        ]
+        .spacing(6),
+        row![
+            knob(
+                "MidiCh",
+                ap(ParamType::MasterMidiChannel),
+                p(ap(ParamType::MasterMidiChannel)),
+                "",
+                1.0
+            ),
+            knob(
+                "KeyMin",
+                ap(ParamType::MasterKeyMin),
+                p(ap(ParamType::MasterKeyMin)),
+                "",
+                1.0
+            ),
+            knob(
+                "KeyMax",
+                ap(ParamType::MasterKeyMax),
+                p(ap(ParamType::MasterKeyMax)),
+                "",
+                1.0
+            ),
+            knob(
+                "PitchNote",
+                ap(ParamType::MasterPitchToNote),
+                p(ap(ParamType::MasterPitchToNote)),
+                "",
+                1.0
+            ),
+        ]
+        .spacing(6),
+        row![
+            knob(
+                "Mute",
+                ap(ParamType::MasterMuted),
+                p(ap(ParamType::MasterMuted)),
+                "",
+                1.0
+            ),
+            knob(
+                "Solo",
+                ap(ParamType::MasterSoloed),
+                p(ap(ParamType::MasterSoloed)),
+                "",
+                1.0
+            ),
         ]
         .spacing(6),
     ]
@@ -715,6 +1100,57 @@ fn view(state: &State) -> Element<'_, Message> {
                 p(ap(ParamType::Layer0FmRouting1)),
                 "",
                 1.0
+            ),
+            knob(
+                "FM0->2",
+                ap(ParamType::Layer0FmRouting2),
+                p(ap(ParamType::Layer0FmRouting2)),
+                "",
+                1.0
+            ),
+        ]
+        .spacing(6),
+    ]
+    .spacing(6);
+
+    let layer1_section = column![
+        section_header("LAYER 1"),
+        row![
+            knob(
+                "Enabled",
+                ap(ParamType::Layer1Enabled),
+                p(ap(ParamType::Layer1Enabled)),
+                "",
+                1.0
+            ),
+            knob(
+                "Amp",
+                ap(ParamType::Layer1Amp),
+                p(ap(ParamType::Layer1Amp)),
+                "",
+                0.01
+            ),
+        ]
+        .spacing(6),
+    ]
+    .spacing(6);
+
+    let layer2_section = column![
+        section_header("LAYER 2"),
+        row![
+            knob(
+                "Enabled",
+                ap(ParamType::Layer2Enabled),
+                p(ap(ParamType::Layer2Enabled)),
+                "",
+                1.0
+            ),
+            knob(
+                "Amp",
+                ap(ParamType::Layer2Amp),
+                p(ap(ParamType::Layer2Amp)),
+                "",
+                0.01
             ),
         ]
         .spacing(6),
@@ -927,6 +1363,681 @@ fn view(state: &State) -> Element<'_, Message> {
             ),
         ]
         .spacing(6),
+        row![
+            knob(
+                "Osc1A",
+                ap(ParamType::Osc1AmpEnvAttack),
+                p(ap(ParamType::Osc1AmpEnvAttack)),
+                "ms",
+                0.1
+            ),
+            knob(
+                "Osc1D",
+                ap(ParamType::Osc1AmpEnvDecay),
+                p(ap(ParamType::Osc1AmpEnvDecay)),
+                "ms",
+                1.0
+            ),
+            knob(
+                "Osc1S",
+                ap(ParamType::Osc1AmpEnvSustain),
+                p(ap(ParamType::Osc1AmpEnvSustain)),
+                "",
+                0.01
+            ),
+            knob(
+                "Osc1R",
+                ap(ParamType::Osc1AmpEnvRelease),
+                p(ap(ParamType::Osc1AmpEnvRelease)),
+                "ms",
+                1.0
+            ),
+        ]
+        .spacing(6),
+        row![
+            knob(
+                "Osc2A",
+                ap(ParamType::Osc2AmpEnvAttack),
+                p(ap(ParamType::Osc2AmpEnvAttack)),
+                "ms",
+                0.1
+            ),
+            knob(
+                "Osc2D",
+                ap(ParamType::Osc2AmpEnvDecay),
+                p(ap(ParamType::Osc2AmpEnvDecay)),
+                "ms",
+                1.0
+            ),
+            knob(
+                "Osc2S",
+                ap(ParamType::Osc2AmpEnvSustain),
+                p(ap(ParamType::Osc2AmpEnvSustain)),
+                "",
+                0.01
+            ),
+            knob(
+                "Osc2R",
+                ap(ParamType::Osc2AmpEnvRelease),
+                p(ap(ParamType::Osc2AmpEnvRelease)),
+                "ms",
+                1.0
+            ),
+        ]
+        .spacing(6),
+        row![
+            knob(
+                "DensA",
+                ap(ParamType::NoiseDensityEnvAttack),
+                p(ap(ParamType::NoiseDensityEnvAttack)),
+                "ms",
+                0.1
+            ),
+            knob(
+                "DensD",
+                ap(ParamType::NoiseDensityEnvDecay),
+                p(ap(ParamType::NoiseDensityEnvDecay)),
+                "ms",
+                1.0
+            ),
+            knob(
+                "DensS",
+                ap(ParamType::NoiseDensityEnvSustain),
+                p(ap(ParamType::NoiseDensityEnvSustain)),
+                "",
+                0.01
+            ),
+            knob(
+                "DensR",
+                ap(ParamType::NoiseDensityEnvRelease),
+                p(ap(ParamType::NoiseDensityEnvRelease)),
+                "ms",
+                1.0
+            ),
+        ]
+        .spacing(6),
+        row![
+            knob(
+                "MasterA",
+                ap(ParamType::MasterGlobalAmpEnvAttack),
+                p(ap(ParamType::MasterGlobalAmpEnvAttack)),
+                "ms",
+                0.1
+            ),
+            knob(
+                "MasterD",
+                ap(ParamType::MasterGlobalAmpEnvDecay),
+                p(ap(ParamType::MasterGlobalAmpEnvDecay)),
+                "ms",
+                1.0
+            ),
+            knob(
+                "MasterS",
+                ap(ParamType::MasterGlobalAmpEnvSustain),
+                p(ap(ParamType::MasterGlobalAmpEnvSustain)),
+                "",
+                0.01
+            ),
+            knob(
+                "MasterR",
+                ap(ParamType::MasterGlobalAmpEnvRelease),
+                p(ap(ParamType::MasterGlobalAmpEnvRelease)),
+                "ms",
+                1.0
+            ),
+        ]
+        .spacing(6),
+        row![
+            knob(
+                "O0FC A",
+                ap(ParamType::Osc0FilterCutoffEnvAttack),
+                p(ap(ParamType::Osc0FilterCutoffEnvAttack)),
+                "ms",
+                0.1
+            ),
+            knob(
+                "O0FC D",
+                ap(ParamType::Osc0FilterCutoffEnvDecay),
+                p(ap(ParamType::Osc0FilterCutoffEnvDecay)),
+                "ms",
+                1.0
+            ),
+            knob(
+                "O0FC S",
+                ap(ParamType::Osc0FilterCutoffEnvSustain),
+                p(ap(ParamType::Osc0FilterCutoffEnvSustain)),
+                "",
+                0.01
+            ),
+            knob(
+                "O0FC R",
+                ap(ParamType::Osc0FilterCutoffEnvRelease),
+                p(ap(ParamType::Osc0FilterCutoffEnvRelease)),
+                "ms",
+                1.0
+            ),
+        ]
+        .spacing(6),
+        row![
+            knob(
+                "O1FC A",
+                ap(ParamType::Osc1FilterCutoffEnvAttack),
+                p(ap(ParamType::Osc1FilterCutoffEnvAttack)),
+                "ms",
+                0.1
+            ),
+            knob(
+                "O1FC D",
+                ap(ParamType::Osc1FilterCutoffEnvDecay),
+                p(ap(ParamType::Osc1FilterCutoffEnvDecay)),
+                "ms",
+                1.0
+            ),
+            knob(
+                "O1FC S",
+                ap(ParamType::Osc1FilterCutoffEnvSustain),
+                p(ap(ParamType::Osc1FilterCutoffEnvSustain)),
+                "",
+                0.01
+            ),
+            knob(
+                "O1FC R",
+                ap(ParamType::Osc1FilterCutoffEnvRelease),
+                p(ap(ParamType::Osc1FilterCutoffEnvRelease)),
+                "ms",
+                1.0
+            ),
+        ]
+        .spacing(6),
+        row![
+            knob(
+                "O2FC A",
+                ap(ParamType::Osc2FilterCutoffEnvAttack),
+                p(ap(ParamType::Osc2FilterCutoffEnvAttack)),
+                "ms",
+                0.1
+            ),
+            knob(
+                "O2FC D",
+                ap(ParamType::Osc2FilterCutoffEnvDecay),
+                p(ap(ParamType::Osc2FilterCutoffEnvDecay)),
+                "ms",
+                1.0
+            ),
+            knob(
+                "O2FC S",
+                ap(ParamType::Osc2FilterCutoffEnvSustain),
+                p(ap(ParamType::Osc2FilterCutoffEnvSustain)),
+                "",
+                0.01
+            ),
+            knob(
+                "O2FC R",
+                ap(ParamType::Osc2FilterCutoffEnvRelease),
+                p(ap(ParamType::Osc2FilterCutoffEnvRelease)),
+                "ms",
+                1.0
+            ),
+        ]
+        .spacing(6),
+        row![
+            knob(
+                "O0Q A",
+                ap(ParamType::Osc0FilterQEnvAttack),
+                p(ap(ParamType::Osc0FilterQEnvAttack)),
+                "ms",
+                0.1
+            ),
+            knob(
+                "O0Q D",
+                ap(ParamType::Osc0FilterQEnvDecay),
+                p(ap(ParamType::Osc0FilterQEnvDecay)),
+                "ms",
+                1.0
+            ),
+            knob(
+                "O0Q S",
+                ap(ParamType::Osc0FilterQEnvSustain),
+                p(ap(ParamType::Osc0FilterQEnvSustain)),
+                "",
+                0.01
+            ),
+            knob(
+                "O0Q R",
+                ap(ParamType::Osc0FilterQEnvRelease),
+                p(ap(ParamType::Osc0FilterQEnvRelease)),
+                "ms",
+                1.0
+            ),
+        ]
+        .spacing(6),
+        row![
+            knob(
+                "O1Q A",
+                ap(ParamType::Osc1FilterQEnvAttack),
+                p(ap(ParamType::Osc1FilterQEnvAttack)),
+                "ms",
+                0.1
+            ),
+            knob(
+                "O1Q D",
+                ap(ParamType::Osc1FilterQEnvDecay),
+                p(ap(ParamType::Osc1FilterQEnvDecay)),
+                "ms",
+                1.0
+            ),
+            knob(
+                "O1Q S",
+                ap(ParamType::Osc1FilterQEnvSustain),
+                p(ap(ParamType::Osc1FilterQEnvSustain)),
+                "",
+                0.01
+            ),
+            knob(
+                "O1Q R",
+                ap(ParamType::Osc1FilterQEnvRelease),
+                p(ap(ParamType::Osc1FilterQEnvRelease)),
+                "ms",
+                1.0
+            ),
+        ]
+        .spacing(6),
+        row![
+            knob(
+                "O2Q A",
+                ap(ParamType::Osc2FilterQEnvAttack),
+                p(ap(ParamType::Osc2FilterQEnvAttack)),
+                "ms",
+                0.1
+            ),
+            knob(
+                "O2Q D",
+                ap(ParamType::Osc2FilterQEnvDecay),
+                p(ap(ParamType::Osc2FilterQEnvDecay)),
+                "ms",
+                1.0
+            ),
+            knob(
+                "O2Q S",
+                ap(ParamType::Osc2FilterQEnvSustain),
+                p(ap(ParamType::Osc2FilterQEnvSustain)),
+                "",
+                0.01
+            ),
+            knob(
+                "O2Q R",
+                ap(ParamType::Osc2FilterQEnvRelease),
+                p(ap(ParamType::Osc2FilterQEnvRelease)),
+                "ms",
+                1.0
+            ),
+        ]
+        .spacing(6),
+        row![
+            knob(
+                "O0DRV A",
+                ap(ParamType::Osc0DistortionDriveEnvAttack),
+                p(ap(ParamType::Osc0DistortionDriveEnvAttack)),
+                "ms",
+                0.1
+            ),
+            knob(
+                "O0DRV D",
+                ap(ParamType::Osc0DistortionDriveEnvDecay),
+                p(ap(ParamType::Osc0DistortionDriveEnvDecay)),
+                "ms",
+                1.0
+            ),
+            knob(
+                "O0DRV S",
+                ap(ParamType::Osc0DistortionDriveEnvSustain),
+                p(ap(ParamType::Osc0DistortionDriveEnvSustain)),
+                "",
+                0.01
+            ),
+            knob(
+                "O0DRV R",
+                ap(ParamType::Osc0DistortionDriveEnvRelease),
+                p(ap(ParamType::Osc0DistortionDriveEnvRelease)),
+                "ms",
+                1.0
+            ),
+        ]
+        .spacing(6),
+        row![
+            knob(
+                "O1DRV A",
+                ap(ParamType::Osc1DistortionDriveEnvAttack),
+                p(ap(ParamType::Osc1DistortionDriveEnvAttack)),
+                "ms",
+                0.1
+            ),
+            knob(
+                "O1DRV D",
+                ap(ParamType::Osc1DistortionDriveEnvDecay),
+                p(ap(ParamType::Osc1DistortionDriveEnvDecay)),
+                "ms",
+                1.0
+            ),
+            knob(
+                "O1DRV S",
+                ap(ParamType::Osc1DistortionDriveEnvSustain),
+                p(ap(ParamType::Osc1DistortionDriveEnvSustain)),
+                "",
+                0.01
+            ),
+            knob(
+                "O1DRV R",
+                ap(ParamType::Osc1DistortionDriveEnvRelease),
+                p(ap(ParamType::Osc1DistortionDriveEnvRelease)),
+                "ms",
+                1.0
+            ),
+        ]
+        .spacing(6),
+        row![
+            knob(
+                "O2DRV A",
+                ap(ParamType::Osc2DistortionDriveEnvAttack),
+                p(ap(ParamType::Osc2DistortionDriveEnvAttack)),
+                "ms",
+                0.1
+            ),
+            knob(
+                "O2DRV D",
+                ap(ParamType::Osc2DistortionDriveEnvDecay),
+                p(ap(ParamType::Osc2DistortionDriveEnvDecay)),
+                "ms",
+                1.0
+            ),
+            knob(
+                "O2DRV S",
+                ap(ParamType::Osc2DistortionDriveEnvSustain),
+                p(ap(ParamType::Osc2DistortionDriveEnvSustain)),
+                "",
+                0.01
+            ),
+            knob(
+                "O2DRV R",
+                ap(ParamType::Osc2DistortionDriveEnvRelease),
+                p(ap(ParamType::Osc2DistortionDriveEnvRelease)),
+                "ms",
+                1.0
+            ),
+        ]
+        .spacing(6),
+        row![
+            knob(
+                "O0PS A",
+                ap(ParamType::Osc0PitchShiftEnvAttack),
+                p(ap(ParamType::Osc0PitchShiftEnvAttack)),
+                "ms",
+                0.1
+            ),
+            knob(
+                "O0PS D",
+                ap(ParamType::Osc0PitchShiftEnvDecay),
+                p(ap(ParamType::Osc0PitchShiftEnvDecay)),
+                "ms",
+                1.0
+            ),
+            knob(
+                "O0PS S",
+                ap(ParamType::Osc0PitchShiftEnvSustain),
+                p(ap(ParamType::Osc0PitchShiftEnvSustain)),
+                "",
+                0.01
+            ),
+            knob(
+                "O0PS R",
+                ap(ParamType::Osc0PitchShiftEnvRelease),
+                p(ap(ParamType::Osc0PitchShiftEnvRelease)),
+                "ms",
+                1.0
+            ),
+        ]
+        .spacing(6),
+        row![
+            knob(
+                "O1PS A",
+                ap(ParamType::Osc1PitchShiftEnvAttack),
+                p(ap(ParamType::Osc1PitchShiftEnvAttack)),
+                "ms",
+                0.1
+            ),
+            knob(
+                "O1PS D",
+                ap(ParamType::Osc1PitchShiftEnvDecay),
+                p(ap(ParamType::Osc1PitchShiftEnvDecay)),
+                "ms",
+                1.0
+            ),
+            knob(
+                "O1PS S",
+                ap(ParamType::Osc1PitchShiftEnvSustain),
+                p(ap(ParamType::Osc1PitchShiftEnvSustain)),
+                "",
+                0.01
+            ),
+            knob(
+                "O1PS R",
+                ap(ParamType::Osc1PitchShiftEnvRelease),
+                p(ap(ParamType::Osc1PitchShiftEnvRelease)),
+                "ms",
+                1.0
+            ),
+        ]
+        .spacing(6),
+        row![
+            knob(
+                "O2PS A",
+                ap(ParamType::Osc2PitchShiftEnvAttack),
+                p(ap(ParamType::Osc2PitchShiftEnvAttack)),
+                "ms",
+                0.1
+            ),
+            knob(
+                "O2PS D",
+                ap(ParamType::Osc2PitchShiftEnvDecay),
+                p(ap(ParamType::Osc2PitchShiftEnvDecay)),
+                "ms",
+                1.0
+            ),
+            knob(
+                "O2PS S",
+                ap(ParamType::Osc2PitchShiftEnvSustain),
+                p(ap(ParamType::Osc2PitchShiftEnvSustain)),
+                "",
+                0.01
+            ),
+            knob(
+                "O2PS R",
+                ap(ParamType::Osc2PitchShiftEnvRelease),
+                p(ap(ParamType::Osc2PitchShiftEnvRelease)),
+                "ms",
+                1.0
+            ),
+        ]
+        .spacing(6),
+        row![
+            knob(
+                "O0F A",
+                ap(ParamType::Osc0FreqEnvAttack),
+                p(ap(ParamType::Osc0FreqEnvAttack)),
+                "ms",
+                0.1
+            ),
+            knob(
+                "O0F D",
+                ap(ParamType::Osc0FreqEnvDecay),
+                p(ap(ParamType::Osc0FreqEnvDecay)),
+                "ms",
+                1.0
+            ),
+            knob(
+                "O0F S",
+                ap(ParamType::Osc0FreqEnvSustain),
+                p(ap(ParamType::Osc0FreqEnvSustain)),
+                "",
+                0.01
+            ),
+            knob(
+                "O0F R",
+                ap(ParamType::Osc0FreqEnvRelease),
+                p(ap(ParamType::Osc0FreqEnvRelease)),
+                "ms",
+                1.0
+            ),
+        ]
+        .spacing(6),
+        row![
+            knob(
+                "O1F A",
+                ap(ParamType::Osc1FreqEnvAttack),
+                p(ap(ParamType::Osc1FreqEnvAttack)),
+                "ms",
+                0.1
+            ),
+            knob(
+                "O1F D",
+                ap(ParamType::Osc1FreqEnvDecay),
+                p(ap(ParamType::Osc1FreqEnvDecay)),
+                "ms",
+                1.0
+            ),
+            knob(
+                "O1F S",
+                ap(ParamType::Osc1FreqEnvSustain),
+                p(ap(ParamType::Osc1FreqEnvSustain)),
+                "",
+                0.01
+            ),
+            knob(
+                "O1F R",
+                ap(ParamType::Osc1FreqEnvRelease),
+                p(ap(ParamType::Osc1FreqEnvRelease)),
+                "ms",
+                1.0
+            ),
+        ]
+        .spacing(6),
+        row![
+            knob(
+                "O2F A",
+                ap(ParamType::Osc2FreqEnvAttack),
+                p(ap(ParamType::Osc2FreqEnvAttack)),
+                "ms",
+                0.1
+            ),
+            knob(
+                "O2F D",
+                ap(ParamType::Osc2FreqEnvDecay),
+                p(ap(ParamType::Osc2FreqEnvDecay)),
+                "ms",
+                1.0
+            ),
+            knob(
+                "O2F S",
+                ap(ParamType::Osc2FreqEnvSustain),
+                p(ap(ParamType::Osc2FreqEnvSustain)),
+                "",
+                0.01
+            ),
+            knob(
+                "O2F R",
+                ap(ParamType::Osc2FreqEnvRelease),
+                p(ap(ParamType::Osc2FreqEnvRelease)),
+                "ms",
+                1.0
+            ),
+        ]
+        .spacing(6),
+        row![
+            knob(
+                "O0F Mode",
+                ap(ParamType::Osc0FreqEnvMode),
+                p(ap(ParamType::Osc0FreqEnvMode)),
+                "",
+                1.0
+            ),
+            knob(
+                "O1F Mode",
+                ap(ParamType::Osc1FreqEnvMode),
+                p(ap(ParamType::Osc1FreqEnvMode)),
+                "",
+                1.0
+            ),
+            knob(
+                "O2F Mode",
+                ap(ParamType::Osc2FreqEnvMode),
+                p(ap(ParamType::Osc2FreqEnvMode)),
+                "",
+                1.0
+            ),
+            knob(
+                "MDRV A",
+                ap(ParamType::MasterDistortionVolEnvAttack),
+                p(ap(ParamType::MasterDistortionVolEnvAttack)),
+                "ms",
+                0.1
+            ),
+        ]
+        .spacing(6),
+        row![
+            knob(
+                "MDRV D",
+                ap(ParamType::MasterDistortionVolEnvDecay),
+                p(ap(ParamType::MasterDistortionVolEnvDecay)),
+                "ms",
+                1.0
+            ),
+            knob(
+                "MDRV S",
+                ap(ParamType::MasterDistortionVolEnvSustain),
+                p(ap(ParamType::MasterDistortionVolEnvSustain)),
+                "",
+                0.01
+            ),
+            knob(
+                "MDRV R",
+                ap(ParamType::MasterDistortionVolEnvRelease),
+                p(ap(ParamType::MasterDistortionVolEnvRelease)),
+                "ms",
+                1.0
+            ),
+            knob(
+                "L0DRV A",
+                ap(ParamType::Layer0DistortionVolEnvAttack),
+                p(ap(ParamType::Layer0DistortionVolEnvAttack)),
+                "ms",
+                0.1
+            ),
+        ]
+        .spacing(6),
+        row![
+            knob(
+                "L0DRV D",
+                ap(ParamType::Layer0DistortionVolEnvDecay),
+                p(ap(ParamType::Layer0DistortionVolEnvDecay)),
+                "ms",
+                1.0
+            ),
+            knob(
+                "L0DRV S",
+                ap(ParamType::Layer0DistortionVolEnvSustain),
+                p(ap(ParamType::Layer0DistortionVolEnvSustain)),
+                "",
+                0.01
+            ),
+            knob(
+                "L0DRV R",
+                ap(ParamType::Layer0DistortionVolEnvRelease),
+                p(ap(ParamType::Layer0DistortionVolEnvRelease)),
+                "ms",
+                1.0
+            ),
+        ]
+        .spacing(6),
     ]
     .spacing(6);
 
@@ -967,21 +2078,140 @@ fn view(state: &State) -> Element<'_, Message> {
             maolan_baseview::iced::widget::button("Load").on_press(Message::LoadSample),
         ]
         .spacing(4),
+        row![
+            maolan_baseview::iced::widget::text("Layer"),
+            maolan_baseview::iced::widget::slider(
+                0.0..=2.0,
+                state.sample_target_layer as f32,
+                |v| { Message::SampleTargetLayerChanged(v.round().clamp(0.0, 2.0) as u8) }
+            )
+            .step(1.0)
+            .width(Length::Fixed(80.0)),
+            maolan_baseview::iced::widget::text(format!("{}", state.sample_target_layer + 1)),
+            maolan_baseview::iced::widget::text("Osc"),
+            maolan_baseview::iced::widget::slider(0.0..=2.0, state.sample_target_osc as f32, |v| {
+                Message::SampleTargetOscChanged(v.round().clamp(0.0, 2.0) as u8)
+            })
+            .step(1.0)
+            .width(Length::Fixed(80.0)),
+            maolan_baseview::iced::widget::text(format!("{}", state.sample_target_osc + 1)),
+        ]
+        .spacing(6),
     ]
     .spacing(6);
 
+    let env_kind = EnvelopeKind::from_u8(state.envelope_kind);
+    let envelope_target_section = column![
+        section_header("ENVELOPE TARGET"),
+        row![
+            maolan_baseview::iced::widget::text(env_kind.label()),
+            maolan_baseview::iced::widget::slider(0.0..=11.0, state.envelope_kind as f32, |v| {
+                Message::EnvelopeKindChanged(v.round().clamp(0.0, 11.0) as u8)
+            })
+            .step(1.0)
+            .width(Length::Fixed(170.0)),
+        ]
+        .spacing(6),
+        row![
+            maolan_baseview::iced::widget::text("Layer"),
+            maolan_baseview::iced::widget::slider(0.0..=2.0, state.envelope_layer as f32, |v| {
+                Message::EnvelopeLayerChanged(v.round().clamp(0.0, 2.0) as u8)
+            })
+            .step(1.0)
+            .width(Length::Fixed(90.0)),
+            maolan_baseview::iced::widget::text(format!("{}", state.envelope_layer + 1)),
+            maolan_baseview::iced::widget::text("Osc"),
+            maolan_baseview::iced::widget::slider(0.0..=2.0, state.envelope_osc as f32, |v| {
+                Message::EnvelopeOscChanged(v.round().clamp(0.0, 2.0) as u8)
+            })
+            .step(1.0)
+            .width(Length::Fixed(90.0)),
+            maolan_baseview::iced::widget::text(format!("{}", state.envelope_osc + 1)),
+        ]
+        .spacing(6),
+    ]
+    .spacing(6);
+
+    let export_section = column![
+        section_header("EXPORT"),
+        row![
+            maolan_baseview::iced::widget::text_input("Output path", &state.export_path_input)
+                .on_input(Message::ExportPathChanged)
+                .width(Length::Fixed(220.0)),
+        ]
+        .spacing(6),
+        row![
+            maolan_baseview::iced::widget::text("Fmt"),
+            maolan_baseview::iced::widget::slider(0.0..=3.0, state.export_format as f32, |v| {
+                Message::ExportFormatChanged(v.round().clamp(0.0, 3.0) as u8)
+            })
+            .step(1.0)
+            .width(Length::Fixed(90.0)),
+            maolan_baseview::iced::widget::text(match state.export_format {
+                1 => "FLAC",
+                2 => "OGG",
+                3 => "MP3",
+                _ => "WAV",
+            }),
+            maolan_baseview::iced::widget::text("Ch"),
+            maolan_baseview::iced::widget::slider(1.0..=2.0, state.export_channels as f32, |v| {
+                Message::ExportChannelsChanged(v.round().clamp(1.0, 2.0) as u8)
+            })
+            .step(1.0)
+            .width(Length::Fixed(70.0)),
+            maolan_baseview::iced::widget::text(format!("{}", state.export_channels)),
+        ]
+        .spacing(6),
+        row![
+            maolan_baseview::iced::widget::text("MIDI"),
+            maolan_baseview::iced::widget::slider(
+                0.0..=127.0,
+                state.export_midi_note as f32,
+                |v| Message::ExportMidiNoteChanged(v.round().clamp(0.0, 127.0) as u8)
+            )
+            .step(1.0)
+            .width(Length::Fixed(180.0)),
+            maolan_baseview::iced::widget::text(format!("{}", state.export_midi_note)),
+            maolan_baseview::iced::widget::button("Export")
+                .on_press(Message::ExportCurrentInstrument),
+        ]
+        .spacing(6),
+        maolan_baseview::iced::widget::text(state.export_status.clone()).size(9),
+    ]
+    .spacing(6);
+
+    let kit_group = grouped_panel(column![kit_section, preset_section].spacing(8).into());
+    let master_group = grouped_panel(master_section.into());
+    let layers_group = grouped_panel(
+        column![layer0_section, layer1_section, layer2_section]
+            .spacing(8)
+            .into(),
+    );
+    let osc_group = grouped_panel(column![osc0, osc1, osc2, sample_section].spacing(8).into());
+    let noise_group = grouped_panel(noise_section.into());
+    let env_group = grouped_panel(
+        column![
+            section_header("ENVELOPE MOD MATRIX"),
+            maolan_baseview::iced::widget::scrollable(env_section).height(Length::Fixed(320.0)),
+            envelope_target_section,
+        ]
+        .spacing(6)
+        .into(),
+    );
+    let export_group = grouped_panel(export_section.into());
+
     let controls = row![
-        column![kit_section, master_section, layer0_section, preset_section]
-            .spacing(10)
+        column![kit_group, master_group]
+            .spacing(8)
             .align_x(Alignment::Start),
-        column![osc0, osc1, osc2, sample_section]
-            .spacing(10)
+        column![layers_group, osc_group]
+            .spacing(8)
             .align_x(Alignment::Start),
-        column![noise_section, env_section]
-            .spacing(10)
+        column![noise_group, env_group, export_group]
+            .spacing(8)
             .align_x(Alignment::Start),
     ]
-    .spacing(10)
+    .spacing(8)
     .align_y(Alignment::Start);
 
     let mut content = column![top_row, inst_selector, controls]
@@ -1012,6 +2242,10 @@ fn theme(_state: &State) -> Theme {
 
 fn section_header(label: &'static str) -> Element<'static, Message> {
     text(label).size(11).into()
+}
+
+fn grouped_panel(content: Element<'_, Message>) -> Element<'_, Message> {
+    container(content).padding(8).into()
 }
 
 fn knob(
