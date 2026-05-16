@@ -1391,6 +1391,7 @@ pub fn kit_to_config(kit: &crate::kick::dsp::Kit) -> KitConfig {
             .iter()
             .map(|inst| {
                 InstrumentConfig {
+                    name: inst.name.clone(),
                     layers: inst
                         .layers
                         .iter()
@@ -1531,6 +1532,7 @@ pub fn config_to_kit(config: &KitConfig, sample_rate: f32) -> crate::kick::dsp::
         inst.master_limiter.release_ms = inst_cfg.master_limiter_release_ms;
         inst.note_off_enabled = inst_cfg.note_off_enabled;
         inst.global_amp_env = (&inst_cfg.global_amp_env).into();
+        inst.name = inst_cfg.name.clone();
 
         for (layer_idx, layer_cfg) in inst_cfg
             .layers

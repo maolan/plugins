@@ -40,6 +40,8 @@ fn default_instruments() -> Vec<InstrumentConfig> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstrumentConfig {
+    #[serde(default)]
+    pub name: String,
     #[serde(default = "default_layers")]
     pub layers: Vec<LayerConfig>,
     #[serde(default)]
@@ -111,6 +113,7 @@ impl Default for InstrumentConfig {
             muted: false,
             soloed: false,
             global_amp_env: default_amp_env(),
+            name: String::new(),
         }
     }
 }

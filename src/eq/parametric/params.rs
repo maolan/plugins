@@ -141,6 +141,70 @@ pub enum ParamId {
     Para31On = 129,
     Para32On = 130,
     Channels = 131,
+    Para1Type = 132,
+    Para2Type = 133,
+    Para3Type = 134,
+    Para4Type = 135,
+    Para5Type = 136,
+    Para6Type = 137,
+    Para7Type = 138,
+    Para8Type = 139,
+    Para9Type = 140,
+    Para10Type = 141,
+    Para11Type = 142,
+    Para12Type = 143,
+    Para13Type = 144,
+    Para14Type = 145,
+    Para15Type = 146,
+    Para16Type = 147,
+    Para17Type = 148,
+    Para18Type = 149,
+    Para19Type = 150,
+    Para20Type = 151,
+    Para21Type = 152,
+    Para22Type = 153,
+    Para23Type = 154,
+    Para24Type = 155,
+    Para25Type = 156,
+    Para26Type = 157,
+    Para27Type = 158,
+    Para28Type = 159,
+    Para29Type = 160,
+    Para30Type = 161,
+    Para31Type = 162,
+    Para32Type = 163,
+    Para1Slope = 164,
+    Para2Slope = 165,
+    Para3Slope = 166,
+    Para4Slope = 167,
+    Para5Slope = 168,
+    Para6Slope = 169,
+    Para7Slope = 170,
+    Para8Slope = 171,
+    Para9Slope = 172,
+    Para10Slope = 173,
+    Para11Slope = 174,
+    Para12Slope = 175,
+    Para13Slope = 176,
+    Para14Slope = 177,
+    Para15Slope = 178,
+    Para16Slope = 179,
+    Para17Slope = 180,
+    Para18Slope = 181,
+    Para19Slope = 182,
+    Para20Slope = 183,
+    Para21Slope = 184,
+    Para22Slope = 185,
+    Para23Slope = 186,
+    Para24Slope = 187,
+    Para25Slope = 188,
+    Para26Slope = 189,
+    Para27Slope = 190,
+    Para28Slope = 191,
+    Para29Slope = 192,
+    Para30Slope = 193,
+    Para31Slope = 194,
+    Para32Slope = 195,
 }
 
 impl ParamIdExt for ParamId {
@@ -148,7 +212,7 @@ impl ParamIdExt for ParamId {
         self as u16 as usize
     }
     fn count() -> usize {
-        132
+        196
     }
 }
 
@@ -190,6 +254,16 @@ impl ParamId {
 
     pub fn para_on(index: usize) -> Self {
         let raw = 99 + index;
+        Self::from_raw(raw as u32).unwrap()
+    }
+
+    pub fn para_type(index: usize) -> Self {
+        let raw = 132 + index;
+        Self::from_raw(raw as u32).unwrap()
+    }
+
+    pub fn para_slope(index: usize) -> Self {
+        let raw = 164 + index;
         Self::from_raw(raw as u32).unwrap()
     }
 
@@ -313,6 +387,30 @@ pub static PARAMS: LazyLock<Vec<ParamDef<ParamId>>> = LazyLock::new(|| {
             ParamRange {
                 min: 0.0,
                 max: 1.0,
+                default: 0.0,
+                step: 1.0,
+            },
+            STEPPED_BOOL,
+        );
+        params[ParamId::para_type(i).as_index()] = make_param(
+            ParamId::para_type(i),
+            &format!("P{} Type", i + 1),
+            "Parametric",
+            ParamRange {
+                min: 0.0,
+                max: 2.0,
+                default: 1.0,
+                step: 1.0,
+            },
+            STEPPED_BOOL,
+        );
+        params[ParamId::para_slope(i).as_index()] = make_param(
+            ParamId::para_slope(i),
+            &format!("P{} Slope", i + 1),
+            "Parametric",
+            ParamRange {
+                min: 0.0,
+                max: 3.0,
                 default: 0.0,
                 step: 1.0,
             },

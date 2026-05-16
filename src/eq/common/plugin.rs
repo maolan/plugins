@@ -23,6 +23,7 @@ pub struct SharedState<T: ParamIdExt> {
     pub output_spectrum_db_bits: [AtomicU32; SPECTRUM_BINS],
     pub ui_visible: AtomicU32,
     pub channels: AtomicU32,
+    pub listen_band: AtomicU32,
 }
 
 impl<T: ParamIdExt> SharedState<T> {
@@ -80,11 +81,20 @@ impl<T: ParamIdExt> SharedState<T> {
             }),
             ui_visible: AtomicU32::new(0),
             channels: AtomicU32::new(channels),
+            listen_band: AtomicU32::new(32),
         }
     }
 
     pub fn sample_rate(&self) -> f32 {
         f64::from_bits(self.sample_rate_bits.load(Ordering::Acquire)) as f32
+    }
+
+    pub fn set_listen_band(&self, band: u32) {
+        self.listen_band.store(band, Ordering::Release);
+    }
+
+    pub fn get_listen_band(&self) -> u32 {
+        self.listen_band.load(Ordering::Acquire)
     }
 
     pub fn mark_param_notification_pending(&self, id: T) {

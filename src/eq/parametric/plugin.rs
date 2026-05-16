@@ -80,6 +80,8 @@ struct AudioProcessor {
     equalizer: ParametricEqualizer,
     temp_left: Vec<f32>,
     temp_right: Vec<f32>,
+    delta_left: Vec<f32>,
+    delta_right: Vec<f32>,
     spectrum_samples_since_update: usize,
 }
 
@@ -91,6 +93,8 @@ impl AudioProcessor {
             equalizer,
             temp_left: vec![0.0; max_frames as usize],
             temp_right: vec![0.0; max_frames as usize],
+            delta_left: vec![0.0; max_frames as usize],
+            delta_right: vec![0.0; max_frames as usize],
             spectrum_samples_since_update: 0,
         }
     }
@@ -107,13 +111,23 @@ impl AudioProcessor {
             .set_output_gain_db(shared.params.get(ParamId::OutputGain) as f32);
         self.equalizer
             .set_bypass(shared.params.get_bool(ParamId::Bypass));
+        let listen = shared.get_listen_band();
+        self.equalizer.set_listen_band(if listen < 32 {
+            Some(listen as usize)
+        } else {
+            None
+        });
         for i in 0..32 {
             self.equalizer.set_para_band(
                 i,
-                shared.params.get(ParamId::para_freq(i)) as f32,
-                shared.params.get(ParamId::para_gain(i)) as f32,
-                shared.params.get(ParamId::para_q(i)) as f32,
-                shared.params.get_bool(ParamId::para_on(i)),
+                crate::eq::parametric::dsp::BandParams {
+                    freq: shared.params.get(ParamId::para_freq(i)) as f32,
+                    gain: shared.params.get(ParamId::para_gain(i)) as f32,
+                    q: shared.params.get(ParamId::para_q(i)) as f32,
+                    on: shared.params.get_bool(ParamId::para_on(i)),
+                    typ: shared.params.get(ParamId::para_type(i)) as u8,
+                    slope: shared.params.get(ParamId::para_slope(i)) as u8,
+                },
             );
         }
     }
@@ -135,6 +149,8 @@ impl AudioProcessor {
         if self.temp_left.len() < frames {
             self.temp_left.resize(frames, 0.0);
             self.temp_right.resize(frames, 0.0);
+            self.delta_left.resize(frames, 0.0);
+            self.delta_right.resize(frames, 0.0);
         }
         let spectrum_update_interval_samples =
             (self.equalizer.sample_rate() / 10.0).round().max(1.0) as usize;
@@ -167,10 +183,28 @@ impl AudioProcessor {
                 shared.set_input_level_right_db(in_db_r.clamp(-90.0, 20.0));
             }
 
-            self.equalizer.process_stereo(
-                &mut self.temp_left[..frames],
-                &mut self.temp_right[..frames],
-            );
+            if let Some(listen) = self.equalizer.listen_band {
+                self.delta_left[..frames].copy_from_slice(input_l.data32(0));
+                self.delta_right[..frames].copy_from_slice(input_r.data32(0));
+                self.equalizer.process_stereo(
+                    &mut self.temp_left[..frames],
+                    &mut self.temp_right[..frames],
+                );
+                self.equalizer.process_stereo_without_band(
+                    &mut self.delta_left[..frames],
+                    &mut self.delta_right[..frames],
+                    listen,
+                );
+                for i in 0..frames {
+                    self.temp_left[i] -= self.delta_left[i];
+                    self.temp_right[i] -= self.delta_right[i];
+                }
+            } else {
+                self.equalizer.process_stereo(
+                    &mut self.temp_left[..frames],
+                    &mut self.temp_right[..frames],
+                );
+            }
 
             {
                 let mut output_l = process.audio_outputs(0);
@@ -221,7 +255,17 @@ impl AudioProcessor {
                 shared.set_input_level_right_db(in_db_l.clamp(-90.0, 20.0));
             }
 
-            self.equalizer.process_mono(&mut self.temp_left[..frames]);
+            if let Some(listen) = self.equalizer.listen_band {
+                self.delta_left[..frames].copy_from_slice(input_port.data32(0));
+                self.equalizer.process_mono(&mut self.temp_left[..frames]);
+                self.equalizer
+                    .process_mono_without_band(&mut self.delta_left[..frames], listen);
+                for i in 0..frames {
+                    self.temp_left[i] -= self.delta_left[i];
+                }
+            } else {
+                self.equalizer.process_mono(&mut self.temp_left[..frames]);
+            }
 
             let mut output_port = process.audio_outputs(0);
             output_port.data32(0)[..frames].copy_from_slice(&self.temp_left[..frames]);

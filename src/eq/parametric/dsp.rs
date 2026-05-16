@@ -7,14 +7,27 @@ pub struct ParametricEqualizer {
     output_gain_lin: f32,
     bypass: bool,
 
-    para_l: Vec<Biquad>,
-    para_r: Vec<Biquad>,
+    para_l: Vec<Vec<Biquad>>,
+    para_r: Vec<Vec<Biquad>>,
 
     para_freq: Vec<f32>,
     para_gain: Vec<f32>,
     para_q: Vec<f32>,
     para_on: Vec<bool>,
+    para_type: Vec<u8>,
+    para_slope: Vec<u8>,
     active_bands: Vec<usize>,
+    pub listen_band: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BandParams {
+    pub freq: f32,
+    pub gain: f32,
+    pub q: f32,
+    pub on: bool,
+    pub typ: u8,
+    pub slope: u8,
 }
 
 impl Default for ParametricEqualizer {
@@ -30,7 +43,10 @@ impl Default for ParametricEqualizer {
             para_gain: Vec::new(),
             para_q: Vec::new(),
             para_on: Vec::new(),
+            para_type: Vec::new(),
+            para_slope: Vec::new(),
             active_bands: Vec::new(),
+            listen_band: None,
         }
     }
 }
@@ -44,11 +60,15 @@ impl ParametricEqualizer {
     }
 
     pub fn reset(&mut self) {
-        for f in &mut self.para_l {
-            f.reset();
+        for chain in &mut self.para_l {
+            for f in chain {
+                f.reset();
+            }
         }
-        for f in &mut self.para_r {
-            f.reset();
+        for chain in &mut self.para_r {
+            for f in chain {
+                f.reset();
+            }
         }
     }
 
@@ -66,27 +86,35 @@ impl ParametricEqualizer {
         self.sample_rate
     }
 
-    pub fn set_para_band(&mut self, idx: usize, freq: f32, gain: f32, q: f32, on: bool) {
-        if !on && idx >= self.para_on.len() {
+    pub fn set_para_band(&mut self, idx: usize, params: BandParams) {
+        if !params.on && idx >= self.para_on.len() {
             return;
         }
 
         if idx >= self.para_on.len() {
             let new_len = idx + 1;
-            self.para_l.resize(new_len, Biquad::default());
-            self.para_r.resize(new_len, Biquad::default());
+            self.para_l.resize(new_len, Vec::new());
+            self.para_r.resize(new_len, Vec::new());
             self.para_freq.resize(new_len, 1000.0);
             self.para_gain.resize(new_len, 0.0);
             self.para_q.resize(new_len, 1.0);
             self.para_on.resize(new_len, false);
+            self.para_type.resize(new_len, 1);
+            self.para_slope.resize(new_len, 0);
         }
 
-        self.para_freq[idx] = freq;
-        self.para_gain[idx] = gain;
-        self.para_q[idx] = q;
-        self.para_on[idx] = on;
+        self.para_freq[idx] = params.freq;
+        self.para_gain[idx] = params.gain;
+        self.para_q[idx] = params.q;
+        self.para_on[idx] = params.on;
+        self.para_type[idx] = params.typ;
+        self.para_slope[idx] = params.slope;
         self.update_para_band(idx);
         self.rebuild_active_bands();
+    }
+
+    pub fn set_listen_band(&mut self, band: Option<usize>) {
+        self.listen_band = band;
     }
 
     fn rebuild_active_bands(&mut self) {
@@ -99,18 +127,39 @@ impl ParametricEqualizer {
     }
 
     fn update_para_band(&mut self, idx: usize) {
-        self.para_l[idx].set_peaking(
-            self.sample_rate,
-            self.para_freq[idx],
-            self.para_q[idx],
-            self.para_gain[idx],
-        );
-        self.para_r[idx].set_peaking(
-            self.sample_rate,
-            self.para_freq[idx],
-            self.para_q[idx],
-            self.para_gain[idx],
-        );
+        let n = match self.para_slope.get(idx).copied().unwrap_or(0) {
+            1 => 2,
+            2 => 4,
+            3 => 8,
+            _ => 1,
+        };
+        self.para_l[idx].resize(n, Biquad::default());
+        self.para_r[idx].resize(n, Biquad::default());
+
+        for bq in &mut self.para_l[idx] {
+            match self.para_type[idx] {
+                0 => bq.set_lowpass(self.sample_rate, self.para_freq[idx], self.para_q[idx]),
+                2 => bq.set_highpass(self.sample_rate, self.para_freq[idx], self.para_q[idx]),
+                _ => bq.set_peaking(
+                    self.sample_rate,
+                    self.para_freq[idx],
+                    self.para_q[idx],
+                    self.para_gain[idx],
+                ),
+            }
+        }
+        for bq in &mut self.para_r[idx] {
+            match self.para_type[idx] {
+                0 => bq.set_lowpass(self.sample_rate, self.para_freq[idx], self.para_q[idx]),
+                2 => bq.set_highpass(self.sample_rate, self.para_freq[idx], self.para_q[idx]),
+                _ => bq.set_peaking(
+                    self.sample_rate,
+                    self.para_freq[idx],
+                    self.para_q[idx],
+                    self.para_gain[idx],
+                ),
+            }
+        }
     }
 
     pub fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32]) {
@@ -121,8 +170,12 @@ impl ParametricEqualizer {
         crate::simd::mul_inplace(&mut left[..frames], self.input_gain_lin);
         crate::simd::mul_inplace(&mut right[..frames], self.input_gain_lin);
         for &b in self.active_bands.iter() {
-            self.para_l[b].process_inplace(&mut left[..frames]);
-            self.para_r[b].process_inplace(&mut right[..frames]);
+            for bq in &mut self.para_l[b] {
+                bq.process_inplace(&mut left[..frames]);
+            }
+            for bq in &mut self.para_r[b] {
+                bq.process_inplace(&mut right[..frames]);
+            }
         }
         crate::simd::mul_inplace(&mut left[..frames], self.output_gain_lin);
         crate::simd::mul_inplace(&mut right[..frames], self.output_gain_lin);
@@ -134,7 +187,52 @@ impl ParametricEqualizer {
         }
         crate::simd::mul_inplace(buffer, self.input_gain_lin);
         for &b in self.active_bands.iter() {
-            self.para_l[b].process_inplace(buffer);
+            for bq in &mut self.para_l[b] {
+                bq.process_inplace(buffer);
+            }
+        }
+        crate::simd::mul_inplace(buffer, self.output_gain_lin);
+    }
+
+    pub fn process_stereo_without_band(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        skip: usize,
+    ) {
+        if self.bypass {
+            return;
+        }
+        let frames = left.len().min(right.len());
+        crate::simd::mul_inplace(&mut left[..frames], self.input_gain_lin);
+        crate::simd::mul_inplace(&mut right[..frames], self.input_gain_lin);
+        for &b in self.active_bands.iter() {
+            if b == skip {
+                continue;
+            }
+            for bq in &mut self.para_l[b] {
+                bq.process_inplace(&mut left[..frames]);
+            }
+            for bq in &mut self.para_r[b] {
+                bq.process_inplace(&mut right[..frames]);
+            }
+        }
+        crate::simd::mul_inplace(&mut left[..frames], self.output_gain_lin);
+        crate::simd::mul_inplace(&mut right[..frames], self.output_gain_lin);
+    }
+
+    pub fn process_mono_without_band(&mut self, buffer: &mut [f32], skip: usize) {
+        if self.bypass {
+            return;
+        }
+        crate::simd::mul_inplace(buffer, self.input_gain_lin);
+        for &b in self.active_bands.iter() {
+            if b == skip {
+                continue;
+            }
+            for bq in &mut self.para_l[b] {
+                bq.process_inplace(buffer);
+            }
         }
         crate::simd::mul_inplace(buffer, self.output_gain_lin);
     }

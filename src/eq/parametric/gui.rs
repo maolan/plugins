@@ -9,6 +9,7 @@ use std::{
     time::Duration,
 };
 
+use crate::eq::common::dsp::Biquad;
 use crate::eq::common::gui::{AnyWindowHandle, ParentWindowHandle, is_api_supported};
 use crate::eq::common::params::ParamIdExt;
 use crate::eq::common::plugin::{SPECTRUM_BINS, SharedState};
@@ -27,6 +28,84 @@ use maolan_widgets::arch_slider::arch_slider;
 
 pub const EDITOR_WIDTH: u32 = 800;
 pub const EDITOR_HEIGHT: u32 = 680;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BandType {
+    LowPass,
+    Bell,
+    HighPass,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Slope {
+    Db12,
+    Db24,
+    Db48,
+    Db96,
+}
+
+impl std::fmt::Display for Slope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Slope::Db12 => write!(f, "12 dB/oct"),
+            Slope::Db24 => write!(f, "24 dB/oct"),
+            Slope::Db48 => write!(f, "48 dB/oct"),
+            Slope::Db96 => write!(f, "96 dB/oct"),
+        }
+    }
+}
+
+impl From<u8> for Slope {
+    fn from(v: u8) -> Self {
+        match v {
+            1 => Slope::Db24,
+            2 => Slope::Db48,
+            3 => Slope::Db96,
+            _ => Slope::Db12,
+        }
+    }
+}
+
+impl From<Slope> for u8 {
+    fn from(s: Slope) -> Self {
+        match s {
+            Slope::Db12 => 0,
+            Slope::Db24 => 1,
+            Slope::Db48 => 2,
+            Slope::Db96 => 3,
+        }
+    }
+}
+
+impl std::fmt::Display for BandType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BandType::LowPass => write!(f, "Low Pass"),
+            BandType::Bell => write!(f, "Bell"),
+            BandType::HighPass => write!(f, "High Pass"),
+        }
+    }
+}
+
+impl From<u8> for BandType {
+    fn from(v: u8) -> Self {
+        match v {
+            0 => BandType::LowPass,
+            2 => BandType::HighPass,
+            _ => BandType::Bell,
+        }
+    }
+}
+
+impl From<BandType> for u8 {
+    fn from(t: BandType) -> Self {
+        match t {
+            BandType::LowPass => 0,
+            BandType::Bell => 1,
+            BandType::HighPass => 2,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChannelMode {
@@ -71,13 +150,15 @@ pub enum Message {
     ReleaseParam(ParamId),
     CreateBand(f32, f32),
     SelectBand(usize),
+    DeselectBand,
+    DeleteBand,
     SetChannels(ChannelMode),
     UiTick,
 }
 
 struct State {
     shared: Arc<SharedState<ParamId>>,
-    selected_band: usize,
+    selected_band: Option<usize>,
     active_gestures: HashSet<ParamId>,
 }
 
@@ -85,7 +166,7 @@ fn init(shared: Arc<SharedState<ParamId>>) -> (State, Task<Message>) {
     (
         State {
             shared,
-            selected_band: 0,
+            selected_band: None,
             active_gestures: HashSet::new(),
         },
         next_ui_tick_task(),
@@ -153,6 +234,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     let fid = ParamId::para_freq(i);
                     let gid = ParamId::para_gain(i);
                     let qid = ParamId::para_q(i);
+                    let tid = ParamId::para_type(i);
                     let q = if gain >= 0.0 {
                         1.0 + (gain / 24.0) * 2.0
                     } else {
@@ -162,13 +244,24 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.shared.set_param_outbound_only(fid, freq as f64);
                     state.shared.set_param_outbound_only(gid, gain as f64);
                     state.shared.set_param_outbound_only(qid, q as f64);
-                    state.selected_band = i;
+                    state.shared.set_param_outbound_only(tid, 1.0); // Bell default
+                    state.selected_band = Some(i);
                     break;
                 }
             }
         }
         Message::SelectBand(index) => {
-            state.selected_band = index;
+            state.selected_band = Some(index);
+        }
+        Message::DeselectBand => {
+            state.selected_band = None;
+        }
+        Message::DeleteBand => {
+            if let Some(sb) = state.selected_band {
+                let oid = ParamId::para_on(sb);
+                state.shared.set_param_outbound_only(oid, 0.0);
+                state.selected_band = None;
+            }
         }
         Message::SetChannels(mode) => {
             state
@@ -184,6 +277,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
 fn view(state: &State) -> Element<'_, Message> {
     let p = |id: ParamId| state.shared.params.get(id) as f32;
 
+    let listen_band = state.shared.get_listen_band();
+    let is_listen_on = state
+        .selected_band
+        .map(|sb| listen_band == sb as u32)
+        .unwrap_or(false);
+
     let mut bands = Vec::with_capacity(32);
     for i in 0..32 {
         bands.push((
@@ -192,13 +291,21 @@ fn view(state: &State) -> Element<'_, Message> {
             p(ParamId::para_gain(i)),
             p(ParamId::para_q(i)),
             state.shared.params.get_bool(ParamId::para_on(i)),
+            p(ParamId::para_type(i)) as u8,
+            p(ParamId::para_slope(i)) as u8,
         ));
     }
 
     let output_spectrum_db = state.shared.output_spectrum_db();
-    let response = eq_response_graph(bands.clone(), output_spectrum_db, state.selected_band);
+    let sample_rate = state.shared.sample_rate();
+    let response = eq_response_graph(
+        bands.clone(),
+        output_spectrum_db,
+        state.selected_band,
+        sample_rate,
+        is_listen_on,
+    );
 
-    let sb = state.selected_band;
     let channels = p(ParamId::Channels).round() as u32;
     let channels_dropdown = maolan_baseview::iced::widget::pick_list(
         vec![ChannelMode::Mono, ChannelMode::Stereo],
@@ -207,26 +314,90 @@ fn view(state: &State) -> Element<'_, Message> {
     )
     .placeholder("Channels");
 
-    let knobs = row![
-        channels_dropdown,
-        freq_knob(ParamId::para_freq(sb), p(ParamId::para_freq(sb))),
-        knob(
-            "Gain".to_string(),
-            ParamId::para_gain(sb),
-            p(ParamId::para_gain(sb)),
-            "dB",
-            0.1
-        ),
-        knob(
-            "Q".to_string(),
-            ParamId::para_q(sb),
-            p(ParamId::para_q(sb)),
-            "",
-            0.01
-        ),
-    ]
-    .spacing(20)
-    .align_y(Alignment::Center);
+    let knobs: Element<'_, Message> = if let Some(sb) = state.selected_band {
+        let band_type = BandType::from(p(ParamId::para_type(sb)) as u8);
+        let type_dropdown = maolan_baseview::iced::widget::pick_list(
+            vec![BandType::LowPass, BandType::Bell, BandType::HighPass],
+            Some(band_type),
+            move |t| Message::SetParam(ParamId::para_type(sb), u8::from(t) as f32),
+        )
+        .placeholder("Type")
+        .width(Length::Fixed(100.0));
+
+        let slope = Slope::from(p(ParamId::para_slope(sb)) as u8);
+        let slope_dropdown = maolan_baseview::iced::widget::pick_list(
+            vec![Slope::Db12, Slope::Db24, Slope::Db48, Slope::Db96],
+            Some(slope),
+            move |s| Message::SetParam(ParamId::para_slope(sb), u8::from(s) as f32),
+        )
+        .placeholder("Slope")
+        .width(Length::Fixed(100.0));
+
+        let listen_checkbox = maolan_baseview::iced::widget::checkbox(is_listen_on)
+            .label("Listen")
+            .on_toggle(move |v| {
+                if v {
+                    state.shared.set_listen_band(sb as u32);
+                } else {
+                    state.shared.set_listen_band(32);
+                }
+                Message::UiTick // dummy message to force refresh
+            });
+
+        if matches!(band_type, BandType::LowPass | BandType::HighPass) {
+            row![
+                channels_dropdown,
+                type_dropdown,
+                slope_dropdown,
+                freq_knob(ParamId::para_freq(sb), p(ParamId::para_freq(sb))),
+                knob(
+                    "Q".to_string(),
+                    ParamId::para_q(sb),
+                    p(ParamId::para_q(sb)),
+                    "",
+                    0.01
+                ),
+                listen_checkbox,
+                maolan_baseview::iced::widget::button("Delete").on_press(Message::DeleteBand),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center)
+            .into()
+        } else {
+            row![
+                channels_dropdown,
+                type_dropdown,
+                freq_knob(ParamId::para_freq(sb), p(ParamId::para_freq(sb))),
+                knob(
+                    "Gain".to_string(),
+                    ParamId::para_gain(sb),
+                    p(ParamId::para_gain(sb)),
+                    "dB",
+                    0.1
+                ),
+                knob(
+                    "Q".to_string(),
+                    ParamId::para_q(sb),
+                    p(ParamId::para_q(sb)),
+                    "",
+                    0.01
+                ),
+                listen_checkbox,
+                maolan_baseview::iced::widget::button("Delete").on_press(Message::DeleteBand),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center)
+            .into()
+        }
+    } else {
+        row![
+            channels_dropdown,
+            text("Click a band or empty space to create one").size(12)
+        ]
+        .spacing(20)
+        .align_y(Alignment::Center)
+        .into()
+    };
 
     let content = column![response, knobs,]
         .spacing(20)
@@ -249,9 +420,11 @@ struct EqResponseState {
 
 #[derive(Clone)]
 struct EqResponseCanvas {
-    bands: Vec<(usize, f32, f32, f32, bool)>,
+    bands: Vec<(usize, f32, f32, f32, bool, u8, u8)>,
     output_spectrum_db: [f32; SPECTRUM_BINS],
-    selected_band: usize,
+    selected_band: Option<usize>,
+    sample_rate: f32,
+    listen_mode: bool,
 }
 
 impl EqResponseCanvas {
@@ -312,7 +485,7 @@ impl Program<Message> for EqResponseCanvas {
                 if let Some(p) = cursor.position_in(bounds) {
                     let mut closest = None;
                     let mut best_d2 = 12.0_f32 * 12.0_f32;
-                    for (local_idx, (_global_idx, freq, gain, _q, on)) in
+                    for (local_idx, (_global_idx, freq, gain, _q, on, _typ, _slope)) in
                         self.bands.iter().enumerate()
                     {
                         if !*on {
@@ -331,7 +504,7 @@ impl Program<Message> for EqResponseCanvas {
                     if let Some(local_idx) = closest {
                         state.dragging = Some(local_idx);
                         let global_idx = self.bands[local_idx].0;
-                        if global_idx != self.selected_band {
+                        if Some(global_idx) != self.selected_band {
                             return Some(
                                 CanvasAction::publish(Message::SelectBand(global_idx))
                                     .and_capture(),
@@ -339,7 +512,7 @@ impl Program<Message> for EqResponseCanvas {
                         }
                         return Some(CanvasAction::capture());
                     } else {
-                        for (local_idx, (_global_idx, _freq, _gain, _q, on)) in
+                        for (local_idx, (_global_idx, _freq, _gain, _q, on, _typ, _slope)) in
                             self.bands.iter().enumerate()
                         {
                             if !*on {
@@ -352,12 +525,13 @@ impl Program<Message> for EqResponseCanvas {
                                 );
                             }
                         }
+                        return Some(CanvasAction::publish(Message::DeselectBand).and_capture());
                     }
                 }
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                 if let Some(local_idx) = state.dragging.take()
-                    && let Some((global_idx, _freq, _gain, _q, _on)) =
+                    && let Some((global_idx, _freq, _gain, _q, _on, _typ, _slope)) =
                         self.bands.get(local_idx).copied()
                 {
                     return Some(CanvasAction::publish(Message::EndBandDrag(global_idx)));
@@ -367,7 +541,7 @@ impl Program<Message> for EqResponseCanvas {
                 if let Some(p) = cursor.position_in(bounds) {
                     state.hover_pos = Some(p);
                     if let Some(local_idx) = state.dragging
-                        && let Some((global_idx, _freq, _gain, _q, _on)) =
+                        && let Some((global_idx, _freq, _gain, _q, _on, _typ, _slope)) =
                             self.bands.get(local_idx).copied()
                     {
                         let freq = Self::x_to_freq(p.x, local_bounds);
@@ -494,6 +668,34 @@ impl Program<Message> for EqResponseCanvas {
         });
         frame.fill(&spectrum_fill, Color::from_rgba(0.0, 0.85, 0.3, 0.15));
 
+        // Pre-build biquad chains for active bands
+        let band_biquads: Vec<(usize, Vec<Biquad>)> = self
+            .bands
+            .iter()
+            .filter_map(|(idx, f0, gain, q, on, typ, slope)| {
+                if !on {
+                    return None;
+                }
+                let n = match *slope {
+                    1 => 2,
+                    2 => 4,
+                    3 => 8,
+                    _ => 1,
+                };
+                let mut chain = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let mut b = Biquad::default();
+                    match *typ {
+                        0 => b.set_lowpass(self.sample_rate, *f0, *q),
+                        2 => b.set_highpass(self.sample_rate, *f0, *q),
+                        _ => b.set_peaking(self.sample_rate, *f0, *q, *gain),
+                    }
+                    chain.push(b);
+                }
+                Some((*idx, chain))
+            })
+            .collect();
+
         let response = Path::new(|b| {
             let mut first = true;
             for xi in 0..(bounds.width as usize).max(2) {
@@ -506,12 +708,16 @@ impl Program<Message> for EqResponseCanvas {
                         ..bounds
                     },
                 );
-                let mut total_db = 0.0_f32;
-                for (_idx, f0, gain_db, q, on) in &self.bands {
-                    if *on {
-                        total_db += bell_like_db(freq, *f0, *gain_db, *q);
+                let mut total_lin = 1.0_f32;
+                for (idx, chain) in &band_biquads {
+                    if self.listen_mode && Some(*idx) != self.selected_band {
+                        continue;
+                    }
+                    for bq in chain {
+                        total_lin *= 10.0_f32.powf(bq.magnitude_db(freq, self.sample_rate) * 0.05);
                     }
                 }
+                let total_db = 20.0 * total_lin.max(1.0e-12).log10();
                 let y = Self::gain_to_y(
                     total_db,
                     Rectangle {
@@ -536,7 +742,7 @@ impl Program<Message> for EqResponseCanvas {
         );
 
         if state.dragging.is_none()
-            && self.bands.iter().any(|(_, _, _, _, on)| !*on)
+            && self.bands.iter().any(|(_, _, _, _, on, _, _)| !*on)
             && let Some(hover) = state.hover_pos
         {
             let hover_freq = Self::x_to_freq(hover.x, local_bounds);
@@ -559,12 +765,20 @@ impl Program<Message> for EqResponseCanvas {
                             ..bounds
                         },
                     );
-                    let mut total_db = bell_like_db(freq, hover_freq, hover_gain, hover_q);
-                    for (_idx, f0, gain_db, q, on) in &self.bands {
-                        if *on {
-                            total_db += bell_like_db(freq, *f0, *gain_db, *q);
+                    let mut total_lin = 1.0_f32;
+                    for (_idx, chain) in &band_biquads {
+                        for bq in chain {
+                            total_lin *=
+                                10.0_f32.powf(bq.magnitude_db(freq, self.sample_rate) * 0.05);
                         }
                     }
+                    // Add hover preview (single peaking biquad)
+                    let mut hover_bq = Biquad::default();
+                    hover_bq.set_peaking(self.sample_rate, hover_freq, hover_q, hover_gain);
+                    total_lin *=
+                        10.0_f32.powf(hover_bq.magnitude_db(freq, self.sample_rate) * 0.05);
+
+                    let total_db = 20.0 * total_lin.max(1.0e-12).log10();
                     let y = Self::gain_to_y(
                         total_db,
                         Rectangle {
@@ -589,7 +803,7 @@ impl Program<Message> for EqResponseCanvas {
             );
         }
 
-        for (global_idx, freq, gain, _q, on) in self.bands.iter() {
+        for (global_idx, freq, gain, _q, on, _typ, _slope) in self.bands.iter() {
             if !*on {
                 continue;
             }
@@ -609,7 +823,7 @@ impl Program<Message> for EqResponseCanvas {
                     ..bounds
                 },
             );
-            let is_selected = *global_idx == self.selected_band;
+            let is_selected = Some(*global_idx) == self.selected_band;
             let node = Path::circle(Point::new(x, y), if is_selected { 6.0 } else { 4.5 });
             frame.fill(
                 &node,
@@ -642,23 +856,19 @@ impl Program<Message> for EqResponseCanvas {
     }
 }
 
-fn bell_like_db(freq: f32, f0: f32, gain_db: f32, q: f32) -> f32 {
-    let safe_f0 = f0.clamp(20.0, 20_000.0);
-    let safe_q = q.clamp(0.1, 24.0);
-    let dx = (freq / safe_f0).ln();
-    let sigma = 1.0 / safe_q;
-    gain_db * (-0.5 * (dx / sigma).powi(2)).exp()
-}
-
 fn eq_response_graph(
-    bands: Vec<(usize, f32, f32, f32, bool)>,
+    bands: Vec<(usize, f32, f32, f32, bool, u8, u8)>,
     output_spectrum_db: [f32; SPECTRUM_BINS],
-    selected_band: usize,
+    selected_band: Option<usize>,
+    sample_rate: f32,
+    listen_mode: bool,
 ) -> Element<'static, Message> {
     canvas(EqResponseCanvas {
         bands,
         output_spectrum_db,
         selected_band,
+        sample_rate,
+        listen_mode,
     })
     .width(Length::Fill)
     .height(Length::Fill)

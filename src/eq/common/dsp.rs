@@ -116,6 +116,68 @@ impl Biquad {
         self.a2 = a2 / a0;
     }
 
+    pub fn set_lowpass(&mut self, sample_rate: f32, freq_hz: f32, q: f32) {
+        let w0 = 2.0 * std::f32::consts::PI * freq_hz.clamp(20.0, sample_rate * 0.45) / sample_rate;
+        let cos_w0 = w0.cos();
+        let sin_w0 = w0.sin();
+        let alpha = sin_w0 / (2.0 * q.clamp(0.1, 24.0));
+
+        let b0 = (1.0 - cos_w0) / 2.0;
+        let b1 = 1.0 - cos_w0;
+        let b2 = (1.0 - cos_w0) / 2.0;
+        let a0 = 1.0 + alpha;
+        let a1 = -2.0 * cos_w0;
+        let a2 = 1.0 - alpha;
+
+        self.b0 = b0 / a0;
+        self.b1 = b1 / a0;
+        self.b2 = b2 / a0;
+        self.a1 = a1 / a0;
+        self.a2 = a2 / a0;
+    }
+
+    pub fn set_highpass(&mut self, sample_rate: f32, freq_hz: f32, q: f32) {
+        let w0 = 2.0 * std::f32::consts::PI * freq_hz.clamp(20.0, sample_rate * 0.45) / sample_rate;
+        let cos_w0 = w0.cos();
+        let sin_w0 = w0.sin();
+        let alpha = sin_w0 / (2.0 * q.clamp(0.1, 24.0));
+
+        let b0 = (1.0 + cos_w0) / 2.0;
+        let b1 = -(1.0 + cos_w0);
+        let b2 = (1.0 + cos_w0) / 2.0;
+        let a0 = 1.0 + alpha;
+        let a1 = -2.0 * cos_w0;
+        let a2 = 1.0 - alpha;
+
+        self.b0 = b0 / a0;
+        self.b1 = b1 / a0;
+        self.b2 = b2 / a0;
+        self.a1 = a1 / a0;
+        self.a2 = a2 / a0;
+    }
+
+    pub fn magnitude_db(&self, freq_hz: f32, sample_rate: f32) -> f32 {
+        let w = 2.0 * std::f32::consts::PI * freq_hz.clamp(1.0, sample_rate * 0.499) / sample_rate;
+        let c = w.cos();
+        let c2 = (2.0 * w).cos();
+
+        let num = self.b0 * self.b0
+            + self.b1 * self.b1
+            + self.b2 * self.b2
+            + 2.0 * self.b0 * self.b1 * c
+            + 2.0 * self.b0 * self.b2 * c2
+            + 2.0 * self.b1 * self.b2 * c;
+        let den = 1.0
+            + self.a1 * self.a1
+            + self.a2 * self.a2
+            + 2.0 * self.a1 * c
+            + 2.0 * self.a2 * c2
+            + 2.0 * self.a1 * self.a2 * c;
+
+        let mag_sq = num / den.max(1.0e-12);
+        10.0 * mag_sq.max(1.0e-12).log10()
+    }
+
     pub fn reset(&mut self) {
         self.x1 = 0.0;
         self.x2 = 0.0;

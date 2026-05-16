@@ -159,6 +159,7 @@ pub struct Instrument {
     pub muted: bool,
     pub soloed: bool,
     pub sample_rate: f32,
+    pub name: String,
 }
 
 impl Instrument {
@@ -190,6 +191,7 @@ impl Instrument {
             muted: false,
             soloed: false,
             sample_rate,
+            name: String::new(),
         }
     }
 

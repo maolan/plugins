@@ -17,7 +17,7 @@ use maolan_baseview::iced::widget::canvas::{Frame, Geometry, Path, Program, Stro
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{canvas, checkbox, column, container, row, text},
+    widget::{canvas, checkbox, column, container, pick_list, row, text},
 };
 use maolan_widgets::arch_slider::arch_slider;
 use maolan_widgets::meters::meters;
@@ -220,6 +220,10 @@ pub enum Message {
     ExportMidiNoteChanged(u8),
     ExportCurrentInstrument,
     LoadSample,
+    MainTabChanged(u8),
+    LayerTabChanged(u8),
+    OscTabChanged(u8),
+    InstrumentNameChanged(String),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -291,6 +295,10 @@ struct State {
     export_midi_note: u8,
     export_status: String,
     preset_files: Vec<String>,
+    main_tab: u8,
+    active_layer_tab: u8,
+    active_osc_tab: u8,
+    instrument_name_input: String,
 }
 
 fn presets_dir() -> Option<std::path::PathBuf> {
@@ -318,6 +326,16 @@ fn scan_presets() -> Vec<String> {
 }
 
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
+    let active_inst = shared
+        .params
+        .get(ParamId::new(0, ParamType::ActiveInstrument)) as usize;
+    let kit = shared.kit.lock();
+    let instrument_name_input = if active_inst < kit.instruments.len() {
+        kit.instruments[active_inst].name.clone()
+    } else {
+        String::new()
+    };
+    drop(kit);
     (
         State {
             shared,
@@ -336,6 +354,10 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             export_midi_note: 36,
             export_status: String::new(),
             preset_files: scan_presets(),
+            main_tab: 0,
+            active_layer_tab: 0,
+            active_osc_tab: 0,
+            instrument_name_input,
         },
         Task::none(),
     )
@@ -362,6 +384,193 @@ fn selected_env(
         EnvelopeKind::NoiseDensity => &mut inst.layers[layer].noise.density_env,
         EnvelopeKind::MasterDistVol => &mut inst.master_distortion.volume_env,
         EnvelopeKind::LayerDistVol => &mut inst.layers[layer].distortion.volume_env,
+    }
+}
+
+fn envelope_param_types(
+    kind: EnvelopeKind,
+    _layer: u8,
+    osc: u8,
+) -> Option<(ParamType, ParamType, ParamType, ParamType)> {
+    let osc = osc.min(2);
+    match kind {
+        EnvelopeKind::GlobalAmp => Some((
+            ParamType::MasterGlobalAmpEnvAttack,
+            ParamType::MasterGlobalAmpEnvDecay,
+            ParamType::MasterGlobalAmpEnvSustain,
+            ParamType::MasterGlobalAmpEnvRelease,
+        )),
+        EnvelopeKind::OscAmp => match osc {
+            0 => Some((
+                ParamType::Osc0AmpEnvAttack,
+                ParamType::Osc0AmpEnvDecay,
+                ParamType::Osc0AmpEnvSustain,
+                ParamType::Osc0AmpEnvRelease,
+            )),
+            1 => Some((
+                ParamType::Osc1AmpEnvAttack,
+                ParamType::Osc1AmpEnvDecay,
+                ParamType::Osc1AmpEnvSustain,
+                ParamType::Osc1AmpEnvRelease,
+            )),
+            2 => Some((
+                ParamType::Osc2AmpEnvAttack,
+                ParamType::Osc2AmpEnvDecay,
+                ParamType::Osc2AmpEnvSustain,
+                ParamType::Osc2AmpEnvRelease,
+            )),
+            _ => None,
+        },
+        EnvelopeKind::OscPitch => match osc {
+            0 => Some((
+                ParamType::Osc0PitchShiftEnvAttack,
+                ParamType::Osc0PitchShiftEnvDecay,
+                ParamType::Osc0PitchShiftEnvSustain,
+                ParamType::Osc0PitchShiftEnvRelease,
+            )),
+            1 => Some((
+                ParamType::Osc1PitchShiftEnvAttack,
+                ParamType::Osc1PitchShiftEnvDecay,
+                ParamType::Osc1PitchShiftEnvSustain,
+                ParamType::Osc1PitchShiftEnvRelease,
+            )),
+            2 => Some((
+                ParamType::Osc2PitchShiftEnvAttack,
+                ParamType::Osc2PitchShiftEnvDecay,
+                ParamType::Osc2PitchShiftEnvSustain,
+                ParamType::Osc2PitchShiftEnvRelease,
+            )),
+            _ => None,
+        },
+        EnvelopeKind::OscFreq => match osc {
+            0 => Some((
+                ParamType::Osc0FreqEnvAttack,
+                ParamType::Osc0FreqEnvDecay,
+                ParamType::Osc0FreqEnvSustain,
+                ParamType::Osc0FreqEnvRelease,
+            )),
+            1 => Some((
+                ParamType::Osc1FreqEnvAttack,
+                ParamType::Osc1FreqEnvDecay,
+                ParamType::Osc1FreqEnvSustain,
+                ParamType::Osc1FreqEnvRelease,
+            )),
+            2 => Some((
+                ParamType::Osc2FreqEnvAttack,
+                ParamType::Osc2FreqEnvDecay,
+                ParamType::Osc2FreqEnvSustain,
+                ParamType::Osc2FreqEnvRelease,
+            )),
+            _ => None,
+        },
+        EnvelopeKind::OscFilterCutoff => match osc {
+            0 => Some((
+                ParamType::Osc0FilterCutoffEnvAttack,
+                ParamType::Osc0FilterCutoffEnvDecay,
+                ParamType::Osc0FilterCutoffEnvSustain,
+                ParamType::Osc0FilterCutoffEnvRelease,
+            )),
+            1 => Some((
+                ParamType::Osc1FilterCutoffEnvAttack,
+                ParamType::Osc1FilterCutoffEnvDecay,
+                ParamType::Osc1FilterCutoffEnvSustain,
+                ParamType::Osc1FilterCutoffEnvRelease,
+            )),
+            2 => Some((
+                ParamType::Osc2FilterCutoffEnvAttack,
+                ParamType::Osc2FilterCutoffEnvDecay,
+                ParamType::Osc2FilterCutoffEnvSustain,
+                ParamType::Osc2FilterCutoffEnvRelease,
+            )),
+            _ => None,
+        },
+        EnvelopeKind::OscFilterQ => match osc {
+            0 => Some((
+                ParamType::Osc0FilterQEnvAttack,
+                ParamType::Osc0FilterQEnvDecay,
+                ParamType::Osc0FilterQEnvSustain,
+                ParamType::Osc0FilterQEnvRelease,
+            )),
+            1 => Some((
+                ParamType::Osc1FilterQEnvAttack,
+                ParamType::Osc1FilterQEnvDecay,
+                ParamType::Osc1FilterQEnvSustain,
+                ParamType::Osc1FilterQEnvRelease,
+            )),
+            2 => Some((
+                ParamType::Osc2FilterQEnvAttack,
+                ParamType::Osc2FilterQEnvDecay,
+                ParamType::Osc2FilterQEnvSustain,
+                ParamType::Osc2FilterQEnvRelease,
+            )),
+            _ => None,
+        },
+        EnvelopeKind::OscDistDrive => match osc {
+            0 => Some((
+                ParamType::Osc0DistortionDriveEnvAttack,
+                ParamType::Osc0DistortionDriveEnvDecay,
+                ParamType::Osc0DistortionDriveEnvSustain,
+                ParamType::Osc0DistortionDriveEnvRelease,
+            )),
+            1 => Some((
+                ParamType::Osc1DistortionDriveEnvAttack,
+                ParamType::Osc1DistortionDriveEnvDecay,
+                ParamType::Osc1DistortionDriveEnvSustain,
+                ParamType::Osc1DistortionDriveEnvRelease,
+            )),
+            2 => Some((
+                ParamType::Osc2DistortionDriveEnvAttack,
+                ParamType::Osc2DistortionDriveEnvDecay,
+                ParamType::Osc2DistortionDriveEnvSustain,
+                ParamType::Osc2DistortionDriveEnvRelease,
+            )),
+            _ => None,
+        },
+        EnvelopeKind::NoiseAmp => Some((
+            ParamType::NoiseAmpEnvAttack,
+            ParamType::NoiseAmpEnvDecay,
+            ParamType::NoiseAmpEnvSustain,
+            ParamType::NoiseAmpEnvRelease,
+        )),
+        EnvelopeKind::NoiseDensity => Some((
+            ParamType::NoiseDensityEnvAttack,
+            ParamType::NoiseDensityEnvDecay,
+            ParamType::NoiseDensityEnvSustain,
+            ParamType::NoiseDensityEnvRelease,
+        )),
+        EnvelopeKind::MasterDistVol => Some((
+            ParamType::MasterDistortionVolEnvAttack,
+            ParamType::MasterDistortionVolEnvDecay,
+            ParamType::MasterDistortionVolEnvSustain,
+            ParamType::MasterDistortionVolEnvRelease,
+        )),
+        EnvelopeKind::OscPitchShift => match osc {
+            0 => Some((
+                ParamType::Osc0PitchShiftEnvAttack,
+                ParamType::Osc0PitchShiftEnvDecay,
+                ParamType::Osc0PitchShiftEnvSustain,
+                ParamType::Osc0PitchShiftEnvRelease,
+            )),
+            1 => Some((
+                ParamType::Osc1PitchShiftEnvAttack,
+                ParamType::Osc1PitchShiftEnvDecay,
+                ParamType::Osc1PitchShiftEnvSustain,
+                ParamType::Osc1PitchShiftEnvRelease,
+            )),
+            2 => Some((
+                ParamType::Osc2PitchShiftEnvAttack,
+                ParamType::Osc2PitchShiftEnvDecay,
+                ParamType::Osc2PitchShiftEnvSustain,
+                ParamType::Osc2PitchShiftEnvRelease,
+            )),
+            _ => None,
+        },
+        EnvelopeKind::LayerDistVol => Some((
+            ParamType::Layer0DistortionVolEnvAttack,
+            ParamType::Layer0DistortionVolEnvDecay,
+            ParamType::Layer0DistortionVolEnvSustain,
+            ParamType::Layer0DistortionVolEnvRelease,
+        )),
     }
 }
 
@@ -414,6 +623,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state
                 .shared
                 .set_param_outbound_only(ParamId::new(0, ParamType::ActiveInstrument), inst as f64);
+            let kit = state.shared.kit.lock();
+            state.instrument_name_input = if (inst as usize) < kit.instruments.len() {
+                kit.instruments[inst as usize].name.clone()
+            } else {
+                String::new()
+            };
         }
         Message::CopyInstrument => {
             let active_inst = state
@@ -721,6 +936,31 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             }
         }
+        Message::InstrumentNameChanged(name) => {
+            state.instrument_name_input = name.clone();
+            let active_inst = state
+                .shared
+                .params
+                .get(ParamId::new(0, ParamType::ActiveInstrument))
+                as usize;
+            let mut kit = state.shared.kit.lock();
+            if active_inst < kit.instruments.len() {
+                kit.instruments[active_inst].name = name;
+                state
+                    .shared
+                    .kit_version
+                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            }
+        }
+        Message::MainTabChanged(tab) => {
+            state.main_tab = tab.min(1);
+        }
+        Message::LayerTabChanged(tab) => {
+            state.active_layer_tab = tab.min(2);
+        }
+        Message::OscTabChanged(tab) => {
+            state.active_osc_tab = tab.min(2);
+        }
     }
     Task::none()
 }
@@ -728,6 +968,46 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
 // ---------------------------------------------------------------------------
 // View
 // ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct InstOption {
+    idx: u8,
+    name: String,
+}
+
+impl std::fmt::Display for InstOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.name.is_empty() {
+            write!(f, "{}", self.idx + 1)
+        } else {
+            write!(f, "{}: {}", self.idx + 1, self.name)
+        }
+    }
+}
+
+fn tab_button(label: &'static str, active: bool, msg: Message) -> Element<'static, Message> {
+    maolan_baseview::iced::widget::button(
+        container(text(label).size(11))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill),
+    )
+    .width(Length::Fixed(48.0))
+    .height(Length::Fixed(22.0))
+    .padding(0)
+    .style(move |theme: &Theme, status| {
+        let mut base = if active {
+            maolan_baseview::iced::widget::button::primary(theme, status)
+        } else {
+            maolan_baseview::iced::widget::button::secondary(theme, status)
+        };
+        base.border.radius = 4.0.into();
+        base
+    })
+    .on_press(msg)
+    .into()
+}
 
 fn view(state: &State) -> Element<'_, Message> {
     let p = |id: ParamId| state.shared.params.get(id) as f32;
@@ -773,36 +1053,37 @@ fn view(state: &State) -> Element<'_, Message> {
 
     let top_row = row![waveform, meter].spacing(8).align_y(Alignment::Center);
 
-    // Instrument selector
-    let mut inst_buttons = vec![];
-    for i in 0..16 {
-        let label = format!("{}", i + 1);
-        let is_active = i == active_inst;
-        inst_buttons.push(
-            maolan_baseview::iced::widget::button(
-                container(text(label).size(11))
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .center_x(Length::Fill)
-                    .center_y(Length::Fill),
-            )
-            .width(Length::Fixed(28.0))
-            .height(Length::Fixed(24.0))
-            .padding(0)
-            .style(move |theme: &Theme, status| {
-                let mut base = if is_active {
-                    maolan_baseview::iced::widget::button::primary(theme, status)
-                } else {
-                    maolan_baseview::iced::widget::button::secondary(theme, status)
-                };
-                base.border.radius = 4.0.into();
-                base
+    // Instrument selector dropdown
+    let inst_options: Vec<InstOption> = {
+        let kit = state.shared.kit.lock();
+        kit.instruments
+            .iter()
+            .enumerate()
+            .map(|(i, inst)| InstOption {
+                idx: i as u8,
+                name: inst.name.clone(),
             })
-            .on_press(Message::SetActiveInstrument(i as u8))
-            .into(),
-        );
-    }
-    let inst_selector = row(inst_buttons).spacing(2).align_y(Alignment::Center);
+            .collect()
+    };
+    let selected_inst = if active_inst < inst_options.len() {
+        Some(inst_options[active_inst].clone())
+    } else {
+        None
+    };
+    let inst_dropdown = pick_list(inst_options, selected_inst, |opt| {
+        Message::SetActiveInstrument(opt.idx)
+    })
+    .placeholder("Select instrument...")
+    .width(Length::Fixed(200.0));
+
+    let inst_name_input =
+        maolan_baseview::iced::widget::text_input("Instrument name", &state.instrument_name_input)
+            .on_input(Message::InstrumentNameChanged)
+            .width(Length::Fixed(160.0));
+
+    let inst_selector = row![inst_dropdown, inst_name_input]
+        .spacing(8)
+        .align_y(Alignment::Center);
 
     // Kit section
     let kit_section = column![
@@ -1243,7 +1524,7 @@ fn view(state: &State) -> Element<'_, Message> {
     .spacing(6);
 
     // Envelope section
-    let env_section = column![
+    let _env_section = column![
         section_header("ENVELOPES"),
         row![
             knob(
@@ -1986,17 +2267,13 @@ fn view(state: &State) -> Element<'_, Message> {
     .spacing(6);
 
     // Preset browser section
-    let preset_items: Vec<Element<'_, Message>> = state
-        .preset_files
-        .iter()
-        .map(|name| {
-            maolan_baseview::iced::widget::button(name.as_str())
-                .on_press(Message::LoadPreset(name.clone()))
-                .into()
-        })
-        .collect();
-    let preset_list = maolan_baseview::iced::widget::scrollable(column(preset_items).spacing(2))
-        .height(Length::Fixed(80.0));
+    let preset_dropdown = pick_list(
+        state.preset_files.clone(),
+        None::<String>,
+        Message::LoadPreset,
+    )
+    .placeholder("Select preset...")
+    .width(Length::Fixed(220.0));
 
     let preset_section = column![
         section_header("PRESETS"),
@@ -2008,7 +2285,7 @@ fn view(state: &State) -> Element<'_, Message> {
             maolan_baseview::iced::widget::button("Refresh").on_press(Message::RefreshPresets),
         ]
         .spacing(4),
-        preset_list,
+        preset_dropdown,
     ]
     .spacing(6);
 
@@ -2124,44 +2401,123 @@ fn view(state: &State) -> Element<'_, Message> {
     ]
     .spacing(6);
 
-    let kit_group = grouped_panel(column![kit_section, preset_section].spacing(8).into());
-    let master_group = grouped_panel(master_section.into());
-    let layers_group = grouped_panel(
-        column![layer0_section, layer1_section, layer2_section]
-            .spacing(8)
-            .into(),
-    );
-    let osc_group = grouped_panel(column![osc0, osc1, osc2, sample_section].spacing(8).into());
-    let noise_group = grouped_panel(noise_section.into());
-    let env_group = grouped_panel(
-        column![
-            section_header("ENVELOPE MOD MATRIX"),
-            maolan_baseview::iced::widget::scrollable(env_section).height(Length::Fixed(320.0)),
-            envelope_target_section,
-        ]
-        .spacing(6)
-        .into(),
-    );
-    let export_group = grouped_panel(export_section.into());
-
-    let controls = row![
-        column![kit_group, master_group]
-            .spacing(8)
-            .align_x(Alignment::Start),
-        column![layers_group, osc_group]
-            .spacing(8)
-            .align_x(Alignment::Start),
-        column![noise_group, env_group, export_group]
-            .spacing(8)
-            .align_x(Alignment::Start),
+    // Main tab bar
+    let main_tab_bar = row![
+        tab_button("Synth", state.main_tab == 0, Message::MainTabChanged(0)),
+        tab_button("Setup", state.main_tab == 1, Message::MainTabChanged(1)),
     ]
-    .spacing(8)
-    .align_y(Alignment::Start);
+    .spacing(4)
+    .align_y(Alignment::Center);
 
-    let mut content = column![top_row, inst_selector, controls]
+    let controls: Element<'_, Message> = if state.main_tab == 0 {
+        // Layer tabs
+        let layer_tabs = row![
+            tab_button(
+                "L1",
+                state.active_layer_tab == 0,
+                Message::LayerTabChanged(0)
+            ),
+            tab_button(
+                "L2",
+                state.active_layer_tab == 1,
+                Message::LayerTabChanged(1)
+            ),
+            tab_button(
+                "L3",
+                state.active_layer_tab == 2,
+                Message::LayerTabChanged(2)
+            ),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center);
+
+        // Osc tabs
+        let osc_tabs = row![
+            tab_button("Osc1", state.active_osc_tab == 0, Message::OscTabChanged(0)),
+            tab_button("Osc2", state.active_osc_tab == 1, Message::OscTabChanged(1)),
+            tab_button("Osc3", state.active_osc_tab == 2, Message::OscTabChanged(2)),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center);
+
+        // Active layer
+        let active_layer = match state.active_layer_tab {
+            0 => layer0_section,
+            1 => layer1_section,
+            2 => layer2_section,
+            _ => layer0_section,
+        };
+
+        // Active osc
+        let active_osc = match state.active_osc_tab {
+            0 => osc0,
+            1 => osc1,
+            2 => osc2,
+            _ => osc0,
+        };
+
+        // Envelope ADSR for selected target
+        let env_adsr: Element<'_, Message> = if let Some((a_ty, d_ty, s_ty, r_ty)) =
+            envelope_param_types(
+                EnvelopeKind::from_u8(state.envelope_kind),
+                state.envelope_layer,
+                state.envelope_osc,
+            ) {
+            row![
+                knob("Attack", ap(a_ty), p(ap(a_ty)), "ms", 0.1),
+                knob("Decay", ap(d_ty), p(ap(d_ty)), "ms", 1.0),
+                knob("Sustain", ap(s_ty), p(ap(s_ty)), "", 0.01),
+                knob("Release", ap(r_ty), p(ap(r_ty)), "ms", 1.0),
+            ]
+            .spacing(6)
+            .into()
+        } else {
+            text("No envelope").size(11).into()
+        };
+
+        let synth_left = column![
+            layer_tabs,
+            active_layer,
+            osc_tabs,
+            active_osc,
+            noise_section,
+        ]
         .spacing(8)
         .align_x(Alignment::Start);
-    if let Some(editor) = envelope_editor {
+
+        let synth_right = column![
+            master_section,
+            envelope_target_section,
+            section_header("ENVELOPE"),
+            env_adsr,
+        ]
+        .spacing(8)
+        .align_x(Alignment::Start);
+
+        row![synth_left, synth_right]
+            .spacing(8)
+            .align_y(Alignment::Start)
+            .into()
+    } else {
+        // Setup tab
+        let setup_left = column![kit_section, sample_section]
+            .spacing(8)
+            .align_x(Alignment::Start);
+        let setup_right = column![preset_section, export_section]
+            .spacing(8)
+            .align_x(Alignment::Start);
+        row![setup_left, setup_right]
+            .spacing(8)
+            .align_y(Alignment::Start)
+            .into()
+    };
+
+    let mut content = column![top_row, inst_selector, main_tab_bar, controls]
+        .spacing(8)
+        .align_x(Alignment::Start);
+    if state.main_tab == 0
+        && let Some(editor) = envelope_editor
+    {
         let editor_el: Element<'_, EnvelopeEditorMsg> = editor.into();
         let mapped: Element<'_, Message> = editor_el.map(Message::EnvelopeEdit);
         content = content.push(
@@ -2186,10 +2542,6 @@ fn theme(_state: &State) -> Theme {
 
 fn section_header(label: &'static str) -> Element<'static, Message> {
     text(label).size(11).into()
-}
-
-fn grouped_panel(content: Element<'_, Message>) -> Element<'_, Message> {
-    container(content).padding(8).into()
 }
 
 fn knob(
