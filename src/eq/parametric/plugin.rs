@@ -1116,7 +1116,7 @@ unsafe extern "C-unwind" fn factory_create_plugin(
     if plugin_id != unsafe { CStr::from_ptr(PLUGIN_ID.as_ptr().cast()) } {
         return null();
     }
-    let instance = Box::new(PluginInstance::new(host, 2));
+    let instance = Box::new(PluginInstance::new(host, 1));
     let plugin = Box::new(clap_plugin {
         desc: &raw const DESCRIPTOR.0,
         plugin_data: Box::into_raw(instance).cast(),

@@ -539,54 +539,54 @@ impl Program<Message> for EqResponseCanvas {
             && self.bands.iter().any(|(_, _, _, _, on)| !*on)
             && let Some(hover) = state.hover_pos
         {
-                let hover_freq = Self::x_to_freq(hover.x, local_bounds);
-                let hover_gain = Self::y_to_gain(hover.y, local_bounds);
-                let hover_q = if hover_gain >= 0.0 {
-                    1.0 + (hover_gain / 24.0) * 2.0
-                } else {
-                    1.0 + (hover_gain.abs() / 24.0) * 9.0
-                };
+            let hover_freq = Self::x_to_freq(hover.x, local_bounds);
+            let hover_gain = Self::y_to_gain(hover.y, local_bounds);
+            let hover_q = if hover_gain >= 0.0 {
+                1.0 + (hover_gain / 24.0) * 2.0
+            } else {
+                1.0 + (hover_gain.abs() / 24.0) * 9.0
+            };
 
-                let preview = Path::new(|b| {
-                    let mut first = true;
-                    for xi in 0..(bounds.width as usize).max(2) {
-                        let x = xi as f32;
-                        let freq = Self::x_to_freq(
-                            x,
-                            Rectangle {
-                                x: 0.0,
-                                y: 0.0,
-                                ..bounds
-                            },
-                        );
-                        let mut total_db = bell_like_db(freq, hover_freq, hover_gain, hover_q);
-                        for (_idx, f0, gain_db, q, on) in &self.bands {
-                            if *on {
-                                total_db += bell_like_db(freq, *f0, *gain_db, *q);
-                            }
-                        }
-                        let y = Self::gain_to_y(
-                            total_db,
-                            Rectangle {
-                                x: 0.0,
-                                y: 0.0,
-                                ..bounds
-                            },
-                        );
-                        if first {
-                            b.move_to(Point::new(x, y));
-                            first = false;
-                        } else {
-                            b.line_to(Point::new(x, y));
+            let preview = Path::new(|b| {
+                let mut first = true;
+                for xi in 0..(bounds.width as usize).max(2) {
+                    let x = xi as f32;
+                    let freq = Self::x_to_freq(
+                        x,
+                        Rectangle {
+                            x: 0.0,
+                            y: 0.0,
+                            ..bounds
+                        },
+                    );
+                    let mut total_db = bell_like_db(freq, hover_freq, hover_gain, hover_q);
+                    for (_idx, f0, gain_db, q, on) in &self.bands {
+                        if *on {
+                            total_db += bell_like_db(freq, *f0, *gain_db, *q);
                         }
                     }
-                });
-                frame.stroke(
-                    &preview,
-                    canvas::Stroke::default()
-                        .with_color(Color::from_rgba(0.95, 0.95, 0.98, 0.55))
-                        .with_width(1.0),
-                );
+                    let y = Self::gain_to_y(
+                        total_db,
+                        Rectangle {
+                            x: 0.0,
+                            y: 0.0,
+                            ..bounds
+                        },
+                    );
+                    if first {
+                        b.move_to(Point::new(x, y));
+                        first = false;
+                    } else {
+                        b.line_to(Point::new(x, y));
+                    }
+                }
+            });
+            frame.stroke(
+                &preview,
+                canvas::Stroke::default()
+                    .with_color(Color::from_rgba(0.95, 0.95, 0.98, 0.55))
+                    .with_width(1.0),
+            );
         }
 
         for (global_idx, freq, gain, _q, on) in self.bands.iter() {
