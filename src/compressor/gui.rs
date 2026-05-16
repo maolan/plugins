@@ -29,6 +29,40 @@ use crate::compressor::{
 pub const EDITOR_WIDTH: u32 = 1024;
 pub const EDITOR_HEIGHT: u32 = 720;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelMode {
+    Mono,
+    Stereo,
+}
+
+impl std::fmt::Display for ChannelMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChannelMode::Mono => write!(f, "Mono"),
+            ChannelMode::Stereo => write!(f, "Stereo"),
+        }
+    }
+}
+
+impl From<u32> for ChannelMode {
+    fn from(v: u32) -> Self {
+        if v >= 2 {
+            ChannelMode::Stereo
+        } else {
+            ChannelMode::Mono
+        }
+    }
+}
+
+impl From<ChannelMode> for u32 {
+    fn from(mode: ChannelMode) -> Self {
+        match mode {
+            ChannelMode::Mono => 1,
+            ChannelMode::Stereo => 2,
+        }
+    }
+}
+
 pub fn preferred_api() -> &'static CStr {
     #[cfg(target_os = "windows")]
     {
@@ -91,6 +125,7 @@ pub enum Message {
     SetMode(u8),
     SetScBoost(u8),
     SetTopology(u8),
+    SetChannels(ChannelMode),
     ReleaseParam(ParamId),
 }
 
@@ -161,6 +196,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .set_param_outbound_only(ParamId::Topology, mode as f64);
             state.shared.mark_gesture_end_pending(ParamId::Topology);
         }
+        Message::SetChannels(mode) => {
+            state
+                .shared
+                .set_param_outbound_only(ParamId::Channels, u32::from(mode) as f64);
+            state.shared.request_audio_ports_rescan();
+        }
     }
     Task::none()
 }
@@ -171,8 +212,17 @@ fn view(state: &State) -> Element<'_, Message> {
 
     let mut content = column![].spacing(12).align_x(Alignment::Start);
 
+    let channels = p(ParamId::Channels).round() as u32;
+    let channels_dropdown = maolan_baseview::iced::widget::pick_list(
+        vec![ChannelMode::Mono, ChannelMode::Stereo],
+        Some(ChannelMode::from(channels)),
+        Message::SetChannels,
+    )
+    .placeholder("Channels");
+
     content = content.push(
         row![
+            channels_dropdown,
             knob(
                 "Input",
                 ParamId::InputGain,
@@ -197,7 +247,8 @@ fn view(state: &State) -> Element<'_, Message> {
                 0.01
             ),
         ]
-        .spacing(12),
+        .spacing(12)
+        .align_y(Alignment::Center),
     );
 
     content = content.push(

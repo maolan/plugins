@@ -1,6 +1,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use clap_clap::ffi::{CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_REQUIRES_PROCESS};
+use clap_clap::ffi::{
+    CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_IS_STEPPED, CLAP_PARAM_REQUIRES_PROCESS,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
@@ -10,10 +12,11 @@ pub enum ParamId {
     Detune = 2,
     Bigness = 3,
     DryWet = 4,
+    Channels = 5,
 }
 
 impl ParamId {
-    pub const COUNT: usize = 5;
+    pub const COUNT: usize = 6;
 
     pub const fn all() -> [ParamId; Self::COUNT] {
         [
@@ -22,6 +25,7 @@ impl ParamId {
             ParamId::Detune,
             ParamId::Bigness,
             ParamId::DryWet,
+            ParamId::Channels,
         ]
     }
 
@@ -51,6 +55,7 @@ pub struct ParamDef {
 }
 
 const AUTOMATABLE: u32 = CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_REQUIRES_PROCESS;
+const STEPPED_BOOL: u32 = AUTOMATABLE | CLAP_PARAM_IS_STEPPED;
 
 pub const PARAMS: [ParamDef; ParamId::COUNT] = [
     ParamDef {
@@ -102,6 +107,16 @@ pub const PARAMS: [ParamDef; ParamId::COUNT] = [
         default: 1.0,
         step: 0.01,
         flags: AUTOMATABLE,
+    },
+    ParamDef {
+        id: ParamId::Channels,
+        name: "Channels",
+        module: "Reverb",
+        min: 1.0,
+        max: 2.0,
+        default: 1.0,
+        step: 1.0,
+        flags: STEPPED_BOOL,
     },
 ];
 

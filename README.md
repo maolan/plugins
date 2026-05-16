@@ -11,13 +11,13 @@ theme.
 | Plugin | ID | I/O | Description |
 |--------|-----|-----|-------------|
 | **Drust** | `rs.maolan.drust` | 16× Mono | DrumGizmo-inspired drum sampler |
-| **Maolan Compressor** | `rs.maolan.compressor.{mono,stereo}` | Mono / Stereo | 4-band multiband compressor with lookahead and sidechain boost |
+| **Maolan Compressor** | `rs.maolan.compressor` | Mono / Stereo | 4-band multiband compressor with lookahead and sidechain boost |
 | **Maolan DeEsser** | `rs.maolan.deesser` | Stereo | Sibilance reduction processor |
-| **Maolan Delay** | `rs.maolan.delay.{mono,stereo}` | Mono / Stereo | Delay with ms / note-sync modes and smooth chasing |
-| **Maolan EQ** | `rs.maolan.equalizer.{mono,stereo}` | Mono / Stereo | Parametric EQ with peaking biquad filters |
+| **Maolan Delay** | `rs.maolan.delay` | Mono / Stereo | Delay with ms / note-sync modes and smooth chasing |
+| **Maolan EQ** | `rs.maolan.equalizer` | Mono / Stereo | Parametric EQ with peaking biquad filters |
 | **Maolan Limiter** | `rs.maolan.maximizer` | Stereo | Adaptive clipper/limiter with Vintage and Modern variants |
 | **Maolan Monitoring** | `rs.maolan.monitoring` | Stereo | Monitoring toolbox with 17 reference modes |
-| **Maolan Reverb** | `rs.maolan.reverb.{mono,stereo}` | Mono / Stereo | Stereo reverb |
+| **Maolan Reverb** | `rs.maolan.reverb` | Mono / Stereo | Stereo reverb |
 | **Maolan Saturator** | `rs.maolan.saturator` | Stereo | Waveshape saturation with sine-based distortion |
 | **Maolan Stereo** | `rs.maolan.imager` | Stereo | Stereo width processor |
 | **Maolan Widener** | `rs.maolan.widener` | Stereo | Multiband stereo width processor |

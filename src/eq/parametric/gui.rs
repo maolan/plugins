@@ -28,6 +28,40 @@ use maolan_widgets::arch_slider::arch_slider;
 pub const EDITOR_WIDTH: u32 = 800;
 pub const EDITOR_HEIGHT: u32 = 680;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelMode {
+    Mono,
+    Stereo,
+}
+
+impl std::fmt::Display for ChannelMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChannelMode::Mono => write!(f, "Mono"),
+            ChannelMode::Stereo => write!(f, "Stereo"),
+        }
+    }
+}
+
+impl From<u32> for ChannelMode {
+    fn from(v: u32) -> Self {
+        if v >= 2 {
+            ChannelMode::Stereo
+        } else {
+            ChannelMode::Mono
+        }
+    }
+}
+
+impl From<ChannelMode> for u32 {
+    fn from(mode: ChannelMode) -> Self {
+        match mode {
+            ChannelMode::Mono => 1,
+            ChannelMode::Stereo => 2,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     SetParam(ParamId, f32),
@@ -37,6 +71,7 @@ pub enum Message {
     ReleaseParam(ParamId),
     CreateBand(f32, f32),
     SelectBand(usize),
+    SetChannels(ChannelMode),
     UiTick,
 }
 
@@ -135,6 +170,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::SelectBand(index) => {
             state.selected_band = index;
         }
+        Message::SetChannels(mode) => {
+            state
+                .shared
+                .set_param_outbound_only(ParamId::Channels, u32::from(mode) as f64);
+            state.shared.request_audio_ports_rescan();
+        }
         Message::UiTick => return next_ui_tick_task(),
     }
     Task::none()
@@ -158,7 +199,16 @@ fn view(state: &State) -> Element<'_, Message> {
     let response = eq_response_graph(bands.clone(), output_spectrum_db, state.selected_band);
 
     let sb = state.selected_band;
+    let channels = p(ParamId::Channels).round() as u32;
+    let channels_dropdown = maolan_baseview::iced::widget::pick_list(
+        vec![ChannelMode::Mono, ChannelMode::Stereo],
+        Some(ChannelMode::from(channels)),
+        Message::SetChannels,
+    )
+    .placeholder("Channels");
+
     let knobs = row![
+        channels_dropdown,
         freq_knob(ParamId::para_freq(sb), p(ParamId::para_freq(sb))),
         knob(
             "Gain".to_string(),
@@ -485,56 +535,58 @@ impl Program<Message> for EqResponseCanvas {
                 .with_width(2.0),
         );
 
-        if state.dragging.is_none() && state.hover_pos.is_some() && self.bands.iter().any(|(_, _, _, _, on)| !*on) {
-            let hover = state.hover_pos.unwrap();
-            let hover_freq = Self::x_to_freq(hover.x, local_bounds);
-            let hover_gain = Self::y_to_gain(hover.y, local_bounds);
-            let hover_q = if hover_gain >= 0.0 {
-                1.0 + (hover_gain / 24.0) * 2.0
-            } else {
-                1.0 + (hover_gain.abs() / 24.0) * 9.0
-            };
+        if state.dragging.is_none()
+            && self.bands.iter().any(|(_, _, _, _, on)| !*on)
+            && let Some(hover) = state.hover_pos
+        {
+                let hover_freq = Self::x_to_freq(hover.x, local_bounds);
+                let hover_gain = Self::y_to_gain(hover.y, local_bounds);
+                let hover_q = if hover_gain >= 0.0 {
+                    1.0 + (hover_gain / 24.0) * 2.0
+                } else {
+                    1.0 + (hover_gain.abs() / 24.0) * 9.0
+                };
 
-            let preview = Path::new(|b| {
-                let mut first = true;
-                for xi in 0..(bounds.width as usize).max(2) {
-                    let x = xi as f32;
-                    let freq = Self::x_to_freq(
-                        x,
-                        Rectangle {
-                            x: 0.0,
-                            y: 0.0,
-                            ..bounds
-                        },
-                    );
-                    let mut total_db = bell_like_db(freq, hover_freq, hover_gain, hover_q);
-                    for (_idx, f0, gain_db, q, on) in &self.bands {
-                        if *on {
-                            total_db += bell_like_db(freq, *f0, *gain_db, *q);
+                let preview = Path::new(|b| {
+                    let mut first = true;
+                    for xi in 0..(bounds.width as usize).max(2) {
+                        let x = xi as f32;
+                        let freq = Self::x_to_freq(
+                            x,
+                            Rectangle {
+                                x: 0.0,
+                                y: 0.0,
+                                ..bounds
+                            },
+                        );
+                        let mut total_db = bell_like_db(freq, hover_freq, hover_gain, hover_q);
+                        for (_idx, f0, gain_db, q, on) in &self.bands {
+                            if *on {
+                                total_db += bell_like_db(freq, *f0, *gain_db, *q);
+                            }
+                        }
+                        let y = Self::gain_to_y(
+                            total_db,
+                            Rectangle {
+                                x: 0.0,
+                                y: 0.0,
+                                ..bounds
+                            },
+                        );
+                        if first {
+                            b.move_to(Point::new(x, y));
+                            first = false;
+                        } else {
+                            b.line_to(Point::new(x, y));
                         }
                     }
-                    let y = Self::gain_to_y(
-                        total_db,
-                        Rectangle {
-                            x: 0.0,
-                            y: 0.0,
-                            ..bounds
-                        },
-                    );
-                    if first {
-                        b.move_to(Point::new(x, y));
-                        first = false;
-                    } else {
-                        b.line_to(Point::new(x, y));
-                    }
-                }
-            });
-            frame.stroke(
-                &preview,
-                canvas::Stroke::default()
-                    .with_color(Color::from_rgba(0.95, 0.95, 0.98, 0.55))
-                    .with_width(1.0),
-            );
+                });
+                frame.stroke(
+                    &preview,
+                    canvas::Stroke::default()
+                        .with_color(Color::from_rgba(0.95, 0.95, 0.98, 0.55))
+                        .with_width(1.0),
+                );
         }
 
         for (global_idx, freq, gain, _q, on) in self.bands.iter() {

@@ -50,10 +50,11 @@ pub enum ParamId {
     Lookahead = 34,
     ScBoost = 35,
     Topology = 36,
+    Channels = 37,
 }
 
 impl ParamId {
-    pub const COUNT: usize = 37;
+    pub const COUNT: usize = 38;
 
     pub const fn all() -> [ParamId; Self::COUNT] {
         [
@@ -94,6 +95,7 @@ impl ParamId {
             ParamId::Lookahead,
             ParamId::ScBoost,
             ParamId::Topology,
+            ParamId::Channels,
         ]
     }
 
@@ -496,6 +498,16 @@ pub const PARAMS: [ParamDef; ParamId::COUNT] = [
         default: 1.0,
         step: 1.0,
         flags: ENUM_FLAGS,
+    },
+    ParamDef {
+        id: ParamId::Channels,
+        name: "Channels",
+        module: "Global",
+        min: 1.0,
+        max: 2.0,
+        default: 1.0,
+        step: 1.0,
+        flags: BOOL_FLAGS,
     },
 ];
 

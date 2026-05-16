@@ -140,6 +140,7 @@ pub enum ParamId {
     Para30On = 128,
     Para31On = 129,
     Para32On = 130,
+    Channels = 131,
 }
 
 impl ParamIdExt for ParamId {
@@ -147,7 +148,7 @@ impl ParamIdExt for ParamId {
         self as u16 as usize
     }
     fn count() -> usize {
-        131
+        132
     }
 }
 
@@ -251,6 +252,18 @@ pub static PARAMS: LazyLock<Vec<ParamDef<ParamId>>> = LazyLock::new(|| {
             min: 0.0,
             max: 1.0,
             default: 0.0,
+            step: 1.0,
+        },
+        STEPPED_BOOL,
+    );
+    params[ParamId::Channels.as_index()] = make_param(
+        ParamId::Channels,
+        "Channels",
+        "Global",
+        ParamRange {
+            min: 1.0,
+            max: 2.0,
+            default: 1.0,
             step: 1.0,
         },
         STEPPED_BOOL,

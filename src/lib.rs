@@ -34,22 +34,14 @@ struct PluginApi {
     create: CreateFn,
 }
 
-static PLUGINS: [PluginApi; 17] = [
+static PLUGINS: [PluginApi; 13] = [
     PluginApi {
-        descriptor: eq::parametric::clap_mono_descriptor_ptr,
-        create: eq::parametric::clap_mono_create_plugin,
+        descriptor: eq::parametric::clap_descriptor_ptr,
+        create: eq::parametric::clap_create_plugin,
     },
     PluginApi {
-        descriptor: eq::parametric::clap_stereo_descriptor_ptr,
-        create: eq::parametric::clap_stereo_create_plugin,
-    },
-    PluginApi {
-        descriptor: compressor::clap_mono_descriptor_ptr,
-        create: compressor::clap_mono_create_plugin,
-    },
-    PluginApi {
-        descriptor: compressor::clap_stereo_descriptor_ptr,
-        create: compressor::clap_stereo_create_plugin,
+        descriptor: compressor::clap_descriptor_ptr,
+        create: compressor::clap_create_plugin,
     },
     PluginApi {
         descriptor: maximizer::clap_descriptor_ptr,
@@ -76,20 +68,12 @@ static PLUGINS: [PluginApi; 17] = [
         create: rural_modeler::clap_create_plugin,
     },
     PluginApi {
-        descriptor: reverb::clap_mono_descriptor_ptr,
-        create: reverb::clap_mono_create_plugin,
+        descriptor: reverb::clap_descriptor_ptr,
+        create: reverb::clap_create_plugin,
     },
     PluginApi {
-        descriptor: reverb::clap_stereo_descriptor_ptr,
-        create: reverb::clap_stereo_create_plugin,
-    },
-    PluginApi {
-        descriptor: delay::clap_mono_descriptor_ptr,
-        create: delay::clap_mono_create_plugin,
-    },
-    PluginApi {
-        descriptor: delay::clap_stereo_descriptor_ptr,
-        create: delay::clap_stereo_create_plugin,
+        descriptor: delay::clap_descriptor_ptr,
+        create: delay::clap_create_plugin,
     },
     PluginApi {
         descriptor: deesser::clap_descriptor_ptr,

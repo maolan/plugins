@@ -829,7 +829,6 @@ fn view(state: &State) -> Element<'_, Message> {
             maolan_baseview::iced::widget::button("Paste").on_press(Message::PasteInstrument),
             maolan_baseview::iced::widget::button("Dup").on_press(Message::DuplicateInstrument),
             maolan_baseview::iced::widget::button("Clear").on_press(Message::ClearInstrument),
-
         ]
         .spacing(6),
         row![
@@ -911,7 +910,10 @@ fn view(state: &State) -> Element<'_, Message> {
             checkbox_param(
                 "NO Enab",
                 ap(ParamType::MasterNoteOffEnabled),
-                state.shared.params.get_bool(ap(ParamType::MasterNoteOffEnabled)),
+                state
+                    .shared
+                    .params
+                    .get_bool(ap(ParamType::MasterNoteOffEnabled)),
             ),
         ]
         .spacing(6),
@@ -2223,11 +2225,7 @@ fn knob(
     .into()
 }
 
-fn checkbox_param(
-    label: &'static str,
-    id: ParamId,
-    value: bool,
-) -> Element<'static, Message> {
+fn checkbox_param(label: &'static str, id: ParamId, value: bool) -> Element<'static, Message> {
     container(
         column![
             text(label).size(9),

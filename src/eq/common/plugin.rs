@@ -275,6 +275,26 @@ impl<T: ParamIdExt> SharedState<T> {
         }
     }
 
+    pub fn request_audio_ports_rescan(&self) {
+        let host = self.host.load(Ordering::Acquire);
+        if host.is_null() {
+            return;
+        }
+        unsafe {
+            let Some(get_extension) = (*host).get_extension else {
+                return;
+            };
+            let ext = get_extension(host, c"clap.host.audio-ports".as_ptr());
+            if ext.is_null() {
+                return;
+            }
+            let audio_ports = &*(ext as *const clap_clap::ffi::clap_host_audio_ports);
+            if let Some(rescan) = audio_ports.rescan {
+                rescan(host, clap_clap::ffi::CLAP_AUDIO_PORTS_RESCAN_LIST);
+            }
+        }
+    }
+
     pub fn set_param(&self, id: T, value: f64) {
         self.params.set(id, value);
         self.pending_param_values_bits[id.as_index()].store(value.to_bits(), Ordering::Release);

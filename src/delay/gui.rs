@@ -82,11 +82,46 @@ unsafe impl HasRawWindowHandle for ParentWindowHandle {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelMode {
+    Mono,
+    Stereo,
+}
+
+impl std::fmt::Display for ChannelMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChannelMode::Mono => write!(f, "Mono"),
+            ChannelMode::Stereo => write!(f, "Stereo"),
+        }
+    }
+}
+
+impl From<u32> for ChannelMode {
+    fn from(v: u32) -> Self {
+        if v >= 2 {
+            ChannelMode::Stereo
+        } else {
+            ChannelMode::Mono
+        }
+    }
+}
+
+impl From<ChannelMode> for u32 {
+    fn from(mode: ChannelMode) -> Self {
+        match mode {
+            ChannelMode::Mono => 1,
+            ChannelMode::Stereo => 2,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 #[allow(clippy::enum_variant_names)]
 pub enum Message {
     SetParam(ParamId, f32),
     ReleaseParam(ParamId),
+    SetChannels(ChannelMode),
 }
 
 struct State {
@@ -120,6 +155,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.active_gestures[idx] = false;
                 state.shared.mark_gesture_end_pending(id);
             }
+        }
+        Message::SetChannels(mode) => {
+            state
+                .shared
+                .set_param_outbound_only(ParamId::Channels, u32::from(mode) as f64);
+            state.shared.request_audio_ports_rescan();
         }
     }
     Task::none()
@@ -166,8 +207,17 @@ fn view(state: &State) -> Element<'_, Message> {
         .into()
     }
 
+    let channels = state.shared.params.get(ParamId::Channels).round() as u32;
+    let channels_dropdown = maolan_baseview::iced::widget::pick_list(
+        vec![ChannelMode::Mono, ChannelMode::Stereo],
+        Some(ChannelMode::from(channels)),
+        Message::SetChannels,
+    )
+    .placeholder("Channels");
+
     let content = column![
         row![
+            channels_dropdown,
             knob(ParamId::TimeMode, "Mode", state),
             knob(ParamId::TimeMs, "Time (ms)", state),
             knob(ParamId::TimeNote, "Time (note)", state),

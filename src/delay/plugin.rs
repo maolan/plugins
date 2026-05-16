@@ -4,20 +4,20 @@ use std::{
     ptr::{NonNull, null, null_mut},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicPtr, Ordering},
+        atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering},
     },
 };
 
 use clap_clap::{
     events::{InputEvents, OutputEvents, TransportFlags},
     ffi::{
-        CLAP_AUDIO_PORT_IS_MAIN, CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI, CLAP_EXT_PARAMS,
-        CLAP_EXT_STATE, CLAP_EXT_TAIL, CLAP_INVALID_ID, CLAP_PARAM_REQUIRES_PROCESS,
-        CLAP_PLUGIN_FEATURE_AUDIO_EFFECT, CLAP_PLUGIN_FEATURE_MONO, CLAP_PLUGIN_FEATURE_STEREO,
-        CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_COCOA,
-        CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info, clap_gui_resize_hints,
-        clap_host, clap_host_gui, clap_host_params, clap_host_state, clap_id, clap_istream,
-        clap_ostream, clap_param_info, clap_plugin, clap_plugin_audio_ports,
+        CLAP_AUDIO_PORT_IS_MAIN, CLAP_AUDIO_PORTS_RESCAN_LIST, CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI,
+        CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL, CLAP_INVALID_ID,
+        CLAP_PARAM_REQUIRES_PROCESS, CLAP_PLUGIN_FEATURE_AUDIO_EFFECT, CLAP_PLUGIN_FEATURE_MONO,
+        CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION,
+        CLAP_WINDOW_API_COCOA, CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info,
+        clap_gui_resize_hints, clap_host, clap_host_gui, clap_host_params, clap_host_state,
+        clap_id, clap_istream, clap_ostream, clap_param_info, clap_plugin, clap_plugin_audio_ports,
         clap_plugin_descriptor, clap_plugin_factory, clap_plugin_gui, clap_plugin_params,
         clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status, clap_window,
     },
@@ -36,10 +36,8 @@ use crate::delay::{
     state::PluginState,
 };
 
-const PLUGIN_ID_MONO: &[u8] = b"rs.maolan.delay.mono\0";
-const PLUGIN_NAME_MONO: &[u8] = b"Maolan Delay Mono\0";
-const PLUGIN_ID_STEREO: &[u8] = b"rs.maolan.delay.stereo\0";
-const PLUGIN_NAME_STEREO: &[u8] = b"Maolan Delay Stereo\0";
+const PLUGIN_ID: &[u8] = b"rs.maolan.delay\0";
+const PLUGIN_NAME: &[u8] = b"Maolan Delay\0";
 const PLUGIN_VENDOR: &[u8] = b"Maolan\0";
 const PLUGIN_URL: &[u8] = b"\0";
 const PLUGIN_VERSION: &[u8] = b"0.1.0\0";
@@ -48,42 +46,26 @@ const FEATURE_AUDIO_EFFECT: *const c_char = CLAP_PLUGIN_FEATURE_AUDIO_EFFECT.as_
 const FEATURE_MONO: *const c_char = CLAP_PLUGIN_FEATURE_MONO.as_ptr();
 const FEATURE_STEREO: *const c_char = CLAP_PLUGIN_FEATURE_STEREO.as_ptr();
 
-struct SyncFeatureList([*const c_char; 3]);
+struct SyncFeatureList([*const c_char; 4]);
 unsafe impl Sync for SyncFeatureList {}
 
 struct SyncDescriptor(clap_plugin_descriptor);
 unsafe impl Sync for SyncDescriptor {}
 
-static FEATURES_MONO: SyncFeatureList =
-    SyncFeatureList([FEATURE_AUDIO_EFFECT, FEATURE_MONO, null()]);
+static FEATURES: SyncFeatureList =
+    SyncFeatureList([FEATURE_AUDIO_EFFECT, FEATURE_MONO, FEATURE_STEREO, null()]);
 
-static FEATURES_STEREO: SyncFeatureList =
-    SyncFeatureList([FEATURE_AUDIO_EFFECT, FEATURE_STEREO, null()]);
-
-static DESCRIPTOR_MONO: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor {
+static DESCRIPTOR: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor {
     clap_version: CLAP_VERSION,
-    id: PLUGIN_ID_MONO.as_ptr().cast(),
-    name: PLUGIN_NAME_MONO.as_ptr().cast(),
+    id: PLUGIN_ID.as_ptr().cast(),
+    name: PLUGIN_NAME.as_ptr().cast(),
     vendor: PLUGIN_VENDOR.as_ptr().cast(),
     url: PLUGIN_URL.as_ptr().cast(),
     manual_url: PLUGIN_URL.as_ptr().cast(),
     support_url: PLUGIN_URL.as_ptr().cast(),
     version: PLUGIN_VERSION.as_ptr().cast(),
     description: PLUGIN_DESCRIPTION.as_ptr().cast(),
-    features: FEATURES_MONO.0.as_ptr(),
-});
-
-static DESCRIPTOR_STEREO: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor {
-    clap_version: CLAP_VERSION,
-    id: PLUGIN_ID_STEREO.as_ptr().cast(),
-    name: PLUGIN_NAME_STEREO.as_ptr().cast(),
-    vendor: PLUGIN_VENDOR.as_ptr().cast(),
-    url: PLUGIN_URL.as_ptr().cast(),
-    manual_url: PLUGIN_URL.as_ptr().cast(),
-    support_url: PLUGIN_URL.as_ptr().cast(),
-    version: PLUGIN_VERSION.as_ptr().cast(),
-    description: PLUGIN_DESCRIPTION.as_ptr().cast(),
-    features: FEATURES_STEREO.0.as_ptr(),
+    features: FEATURES.0.as_ptr(),
 });
 
 #[derive(Debug)]
@@ -95,6 +77,7 @@ pub struct SharedState {
     pending_gesture_end: std::sync::atomic::AtomicU32,
     active_local_gestures: std::sync::atomic::AtomicU32,
     host: AtomicPtr<clap_host>,
+    pub channels: AtomicU32,
 }
 
 impl Default for SharedState {
@@ -107,6 +90,7 @@ impl Default for SharedState {
             pending_gesture_end: std::sync::atomic::AtomicU32::new(0),
             active_local_gestures: std::sync::atomic::AtomicU32::new(0),
             host: AtomicPtr::new(null_mut()),
+            channels: AtomicU32::new(1),
         }
     }
 }
@@ -193,6 +177,26 @@ impl SharedState {
         }
     }
 
+    pub fn request_audio_ports_rescan(&self) {
+        let host = self.host.load(Ordering::Acquire);
+        if host.is_null() {
+            return;
+        }
+        unsafe {
+            let Some(get_extension) = (*host).get_extension else {
+                return;
+            };
+            let ext = get_extension(host, c"clap.host.audio-ports".as_ptr());
+            if ext.is_null() {
+                return;
+            }
+            let audio_ports = &*(ext as *const clap_clap::ffi::clap_host_audio_ports);
+            if let Some(rescan) = audio_ports.rescan {
+                rescan(host, CLAP_AUDIO_PORTS_RESCAN_LIST);
+            }
+        }
+    }
+
     fn request_flush(&self) {
         let host = self.host.load(Ordering::Acquire);
         if host.is_null() {
@@ -251,13 +255,13 @@ impl SharedStateExt<ParamId> for SharedState {
         (self.active_local_gestures.load(Ordering::Acquire) & bit) != 0
     }
     fn set_param_from_host(&self, id: ParamId, value: f64) {
-        self.set_param_from_host(id, value);
+        self.set_param_from_host(id, value)
     }
     fn take_pending_param_notifications(&self) -> u32 {
         self.take_pending_param_notifications()
     }
     fn requeue_pending_param_notifications(&self, bits: u32) {
-        self.requeue_pending_param_notifications(bits);
+        self.requeue_pending_param_notifications(bits)
     }
     fn take_pending_gesture_begin(&self) -> u32 {
         self.pending_gesture_begin.swap(0, Ordering::AcqRel)
@@ -381,11 +385,11 @@ struct PluginInstance {
     processor: AtomicPtr<AudioProcessor>,
     retired_processors: Mutex<Vec<*mut AudioProcessor>>,
     gui_bridge: Mutex<GuiBridge>,
-    channels: u32,
+    channels: AtomicU32,
 }
 
 impl PluginInstance {
-    fn new(host: *const clap_host, channels: u32) -> Self {
+    fn new(host: *const clap_host) -> Self {
         let shared = Arc::new(SharedState::default());
         shared.set_host(host);
         Self {
@@ -394,7 +398,7 @@ impl PluginInstance {
             processor: AtomicPtr::new(null_mut()),
             retired_processors: Mutex::new(Vec::new()),
             gui_bridge: Mutex::new(GuiBridge::default()),
-            channels,
+            channels: AtomicU32::new(1),
         }
     }
 }
@@ -436,6 +440,13 @@ fn param_text(id: ParamId, value: f64) -> String {
             NOTE_DIVISIONS[idx].0.to_string()
         }
         ParamId::Feedback | ParamId::DryWet => format!("{:.1}%", value * 100.0),
+        ParamId::Channels => {
+            if value >= 1.5 {
+                "Stereo".to_string()
+            } else {
+                "Mono".to_string()
+            }
+        }
     }
 }
 
@@ -468,6 +479,11 @@ fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
             let cleaned = text.trim().trim_end_matches('%').trim();
             cleaned.parse::<f64>().ok().map(|v| v / 100.0)
         }
+        ParamId::Channels => match text.trim() {
+            "mono" | "Mono" | "MONO" => Some(1.0),
+            "stereo" | "Stereo" | "STEREO" => Some(2.0),
+            _ => text.parse().ok(),
+        },
     }
 }
 
@@ -513,6 +529,13 @@ unsafe extern "C-unwind" fn plugin_deactivate(plugin: *const clap_plugin) {
         instance.retired_processors.lock().push(old);
     }
     instance.active.store(false, Ordering::Release);
+    let channels_param = instance.shared.params.get(ParamId::Channels).round() as u32;
+    let new_channels = channels_param.clamp(1, 2);
+    instance.channels.store(new_channels, Ordering::Release);
+    instance
+        .shared
+        .channels
+        .store(new_channels, Ordering::Release);
 }
 
 unsafe extern "C-unwind" fn plugin_start_processing(_plugin: *const clap_plugin) -> bool {
@@ -560,20 +583,21 @@ unsafe extern "C-unwind" fn ext_audio_ports_count(
         return 0;
     }
     let instance = unsafe { instance(plugin) };
-    instance.channels
+    instance.channels.load(Ordering::Acquire)
 }
 
 unsafe extern "C-unwind" fn ext_audio_ports_get(
     plugin: *const clap_plugin,
     index: u32,
-    _is_input: bool,
+    is_input: bool,
     info: *mut clap_audio_port_info,
 ) -> bool {
     if plugin.is_null() || info.is_null() {
         return false;
     }
     let instance = unsafe { instance(plugin) };
-    if index >= instance.channels {
+    let channels = instance.channels.load(Ordering::Acquire);
+    if index >= channels {
         return false;
     }
     let info = unsafe { &mut *info };
@@ -582,12 +606,18 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
     info.channel_count = 1;
     info.port_type = CLAP_PORT_MONO.as_ptr();
     info.in_place_pair = CLAP_INVALID_ID;
-    let name = if instance.channels == 1 {
-        "Mono"
-    } else if index == 0 {
-        "Left"
+    let name = if channels == 2 {
+        match (is_input, index) {
+            (true, 0) => "in_l",
+            (true, 1) => "in_r",
+            (false, 0) => "out_l",
+            (false, 1) => "out_r",
+            _ => "",
+        }
+    } else if is_input {
+        "in"
     } else {
-        "Right"
+        "out"
     };
     copy_str_to_array(name, &mut info.name);
     true
@@ -999,21 +1029,14 @@ unsafe extern "C-unwind" fn factory_get_plugin_count(_factory: *const clap_plugi
     1
 }
 
-unsafe extern "C-unwind" fn factory_get_plugin_descriptor_mono(
+unsafe extern "C-unwind" fn factory_get_plugin_descriptor(
     _factory: *const clap_plugin_factory,
     _index: u32,
 ) -> *const clap_plugin_descriptor {
-    &raw const DESCRIPTOR_MONO.0
+    &raw const DESCRIPTOR.0
 }
 
-unsafe extern "C-unwind" fn factory_get_plugin_descriptor_stereo(
-    _factory: *const clap_plugin_factory,
-    _index: u32,
-) -> *const clap_plugin_descriptor {
-    &raw const DESCRIPTOR_STEREO.0
-}
-
-unsafe extern "C-unwind" fn factory_create_plugin_mono(
+unsafe extern "C-unwind" fn factory_create_plugin(
     _factory: *const clap_plugin_factory,
     host: *const clap_host,
     plugin_id: *const c_char,
@@ -1022,12 +1045,12 @@ unsafe extern "C-unwind" fn factory_create_plugin_mono(
         return null();
     }
     let plugin_id = unsafe { CStr::from_ptr(plugin_id) };
-    if plugin_id != unsafe { CStr::from_ptr(PLUGIN_ID_MONO.as_ptr().cast()) } {
+    if plugin_id != unsafe { CStr::from_ptr(PLUGIN_ID.as_ptr().cast()) } {
         return null();
     }
-    let instance = Box::new(PluginInstance::new(host, 1));
+    let instance = Box::new(PluginInstance::new(host));
     let plugin = Box::new(clap_plugin {
-        desc: &raw const DESCRIPTOR_MONO.0,
+        desc: &raw const DESCRIPTOR.0,
         plugin_data: Box::into_raw(instance).cast(),
         init: Some(plugin_init),
         destroy: Some(plugin_destroy),
@@ -1043,74 +1066,23 @@ unsafe extern "C-unwind" fn factory_create_plugin_mono(
     Box::into_raw(plugin)
 }
 
-unsafe extern "C-unwind" fn factory_create_plugin_stereo(
-    _factory: *const clap_plugin_factory,
-    host: *const clap_host,
-    plugin_id: *const c_char,
-) -> *const clap_plugin {
-    if host.is_null() || plugin_id.is_null() {
-        return null();
-    }
-    let plugin_id = unsafe { CStr::from_ptr(plugin_id) };
-    if plugin_id != unsafe { CStr::from_ptr(PLUGIN_ID_STEREO.as_ptr().cast()) } {
-        return null();
-    }
-    let instance = Box::new(PluginInstance::new(host, 2));
-    let plugin = Box::new(clap_plugin {
-        desc: &raw const DESCRIPTOR_STEREO.0,
-        plugin_data: Box::into_raw(instance).cast(),
-        init: Some(plugin_init),
-        destroy: Some(plugin_destroy),
-        activate: Some(plugin_activate),
-        deactivate: Some(plugin_deactivate),
-        start_processing: Some(plugin_start_processing),
-        stop_processing: Some(plugin_stop_processing),
-        reset: Some(plugin_reset),
-        process: Some(plugin_process),
-        get_extension: Some(plugin_get_extension),
-        on_main_thread: Some(plugin_on_main_thread),
-    });
-    Box::into_raw(plugin)
-}
-
-static FACTORY_MONO: clap_plugin_factory = clap_plugin_factory {
+static FACTORY: clap_plugin_factory = clap_plugin_factory {
     get_plugin_count: Some(factory_get_plugin_count),
-    get_plugin_descriptor: Some(factory_get_plugin_descriptor_mono),
-    create_plugin: Some(factory_create_plugin_mono),
-};
-
-static FACTORY_STEREO: clap_plugin_factory = clap_plugin_factory {
-    get_plugin_count: Some(factory_get_plugin_count),
-    get_plugin_descriptor: Some(factory_get_plugin_descriptor_stereo),
-    create_plugin: Some(factory_create_plugin_stereo),
+    get_plugin_descriptor: Some(factory_get_plugin_descriptor),
+    create_plugin: Some(factory_create_plugin),
 };
 
 /// # Safety
 /// Caller must ensure valid host pointer.
-pub unsafe fn descriptor_mono_ptr() -> *const clap_plugin_descriptor {
-    &raw const DESCRIPTOR_MONO.0
+pub unsafe fn clap_descriptor_ptr() -> *const clap_plugin_descriptor {
+    &raw const DESCRIPTOR.0
 }
 
 /// # Safety
 /// Caller must ensure valid host and plugin_id pointers.
-pub unsafe fn create_plugin_mono(
+pub unsafe fn clap_create_plugin(
     host: *const clap_host,
     plugin_id: *const c_char,
 ) -> *const clap_plugin {
-    unsafe { factory_create_plugin_mono(&raw const FACTORY_MONO, host, plugin_id) }
-}
-
-/// # Safety
-/// Caller must ensure valid host pointer.
-pub unsafe fn descriptor_stereo_ptr() -> *const clap_plugin_descriptor {
-    &raw const DESCRIPTOR_STEREO.0
-}
-
-/// # Safety
-/// Caller must ensure valid host and plugin_id pointers.
-pub unsafe fn create_plugin_stereo(
-    host: *const clap_host,
-    plugin_id: *const c_char,
-) -> *const clap_plugin {
-    unsafe { factory_create_plugin_stereo(&raw const FACTORY_STEREO, host, plugin_id) }
+    unsafe { factory_create_plugin(&raw const FACTORY, host, plugin_id) }
 }
