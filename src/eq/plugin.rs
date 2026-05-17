@@ -1,12 +1,15 @@
 use std::{
+    collections::HashMap,
     ffi::{CStr, c_char, c_void},
     io::{Read, Write},
     ptr::{NonNull, null, null_mut},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering},
     },
 };
+
+use std::sync::LazyLock;
 
 use clap_clap::{
     events::{EventBuilder, InputEvents, OutputEvents, ParamValue},
@@ -29,13 +32,9 @@ use clap_clap::{
 use parking_lot::Mutex;
 use std::mem::size_of;
 
-use crate::eq::common::gui::{ParentWindowHandle, is_api_supported, preferred_api};
-use crate::eq::common::params::{ParamIdExt, ParamStore, copy_str_to_array, sanitize_param_value};
-use crate::eq::common::plugin::{SPECTRUM_BINS, SharedState};
-use crate::eq::common::state::PluginState;
-use crate::eq::parametric::dsp::ParametricEqualizer;
-use crate::eq::parametric::gui::{EDITOR_HEIGHT, EDITOR_WIDTH, GuiBridge};
-use crate::eq::parametric::params::{PARAMS, ParamId};
+use crate::eq::dsp::ParametricEqualizer;
+use crate::eq::gui::{ParentWindowHandle, is_api_supported, preferred_api, EDITOR_HEIGHT, EDITOR_WIDTH, GuiBridge};
+use crate::eq::params::{ParamDef, ParamIdExt, ParamStore, copy_str_to_array, sanitize_param_value, PARAMS, ParamId};
 
 const PLUGIN_ID: &[u8] = b"rs.maolan.equalizer\0";
 const PLUGIN_NAME: &[u8] = b"Maolan EQ\0";
@@ -43,6 +42,43 @@ const PLUGIN_VENDOR: &[u8] = b"Maolan\0";
 const PLUGIN_URL: &[u8] = b"\0";
 const PLUGIN_VERSION: &[u8] = b"0.1.0\0";
 const PLUGIN_DESCRIPTION: &[u8] = b"Rust CLAP Equalizer\0";
+
+// Sidechain options passed from the host via dlsym.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SidechainPluginInfo {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SidechainTrackInfo {
+    pub name: String,
+    pub outputs: usize,
+    pub plugins: Vec<SidechainPluginInfo>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, Default)]
+pub struct SidechainOptions {
+    pub tracks: Vec<SidechainTrackInfo>,
+}
+
+static SIDECHAIN_OPTIONS: LazyLock<parking_lot::Mutex<HashMap<usize, SidechainOptions>>> =
+    LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
+
+pub fn get_sidechain_options(host_ptr: usize) -> Option<SidechainOptions> {
+    SIDECHAIN_OPTIONS.lock().get(&host_ptr).cloned()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn maolan_eq_set_sidechain_options(host_ptr: usize, json: *const c_char) {
+    if json.is_null() {
+        SIDECHAIN_OPTIONS.lock().remove(&host_ptr);
+        return;
+    }
+    let s = unsafe { std::ffi::CStr::from_ptr(json).to_string_lossy() };
+    if let Ok(opts) = serde_json::from_str::<SidechainOptions>(&s) {
+        SIDECHAIN_OPTIONS.lock().insert(host_ptr, opts);
+    }
+}
 
 const FEATURE_AUDIO_EFFECT: *const c_char = CLAP_PLUGIN_FEATURE_AUDIO_EFFECT.as_ptr();
 const FEATURE_EQUALIZER: *const c_char = CLAP_PLUGIN_FEATURE_EQUALIZER.as_ptr();
@@ -83,6 +119,7 @@ struct AudioProcessor {
     delta_left: Vec<f32>,
     delta_right: Vec<f32>,
     spectrum_samples_since_update: usize,
+    sc_envelope: f32,
 }
 
 impl AudioProcessor {
@@ -96,6 +133,7 @@ impl AudioProcessor {
             delta_left: vec![0.0; max_frames as usize],
             delta_right: vec![0.0; max_frames as usize],
             spectrum_samples_since_update: 0,
+            sc_envelope: 0.0,
         }
     }
 
@@ -120,7 +158,7 @@ impl AudioProcessor {
         for i in 0..32 {
             self.equalizer.set_para_band(
                 i,
-                crate::eq::parametric::dsp::BandParams {
+                crate::eq::dsp::BandParams {
                     freq: shared.params.get(ParamId::para_freq(i)) as f32,
                     gain: shared.params.get(ParamId::para_gain(i)) as f32,
                     q: shared.params.get(ParamId::para_q(i)) as f32,
@@ -159,8 +197,70 @@ impl AudioProcessor {
 
         let inputs_count = process.audio_inputs_count();
         let outputs_count = process.audio_outputs_count();
+        let channels = shared.channels.load(Ordering::Acquire);
+        let sidechain_enabled = shared.params.get(ParamId::SidechainEnable) >= 0.5;
+        let has_sidechain = sidechain_enabled && inputs_count > outputs_count;
 
-        if inputs_count >= 2 && outputs_count >= 2 {
+        // Compute per-sample sidechain envelope and derive reduction for this block.
+        // Sidechain ports follow the main inputs, one per channel.
+        let mut reduction_db = 0.0_f32;
+        if has_sidechain {
+            let sample_rate = self.equalizer.sample_rate();
+            let attack_ms = shared.params.get(ParamId::SidechainAttackMs) as f32;
+            let release_ms = shared.params.get(ParamId::SidechainReleaseMs) as f32;
+            let attack_s = attack_ms / 1000.0;
+            let release_s = release_ms / 1000.0;
+            let attack_coef =
+                if attack_s > 0.0 { (-1.0 / (sample_rate * attack_s)).exp() } else { 0.0 };
+            let release_coef =
+                if release_s > 0.0 { (-1.0 / (sample_rate * release_s)).exp() } else { 0.0 };
+            let threshold_db = shared.params.get(ParamId::SidechainThreshold) as f32;
+            let ratio = shared.params.get(ParamId::SidechainRatio) as f32;
+
+            for sc_port_idx in channels..inputs_count {
+                let sc_port = process.audio_inputs(sc_port_idx);
+                let sc_data = sc_port.data32(0);
+                if sc_data.is_empty() {
+                    continue;
+                }
+                for i in 0..frames {
+                    let input_abs = sc_data[i].abs();
+                    if input_abs > self.sc_envelope {
+                        self.sc_envelope =
+                            attack_coef * self.sc_envelope + (1.0 - attack_coef) * input_abs;
+                    } else {
+                        self.sc_envelope =
+                            release_coef * self.sc_envelope + (1.0 - release_coef) * input_abs;
+                    }
+                }
+            }
+            let sc_db = if self.sc_envelope > 0.0 {
+                20.0 * self.sc_envelope.log10()
+            } else {
+                -90.0
+            };
+            reduction_db = if sc_db > threshold_db {
+                (sc_db - threshold_db) * (1.0 - 1.0 / ratio.max(1.0))
+            } else {
+                0.0
+            };
+        } else {
+            self.sc_envelope = 0.0;
+        }
+
+        // Apply per-band dynamic gain modulation before processing.
+        if reduction_db > 0.0 {
+            for i in 0..32 {
+                let dyn_amount = shared.params.get(ParamId::para_dyn(i)) as f32;
+                if dyn_amount > 0.0 {
+                    let base_gain = shared.params.get(ParamId::para_gain(i)) as f32;
+                    let modulated_gain = base_gain - reduction_db * dyn_amount;
+                    self.equalizer.update_para_band_gain(i, modulated_gain);
+                }
+            }
+        }
+
+        if channels >= 2 && outputs_count >= 2 {
             let input_l = process.audio_inputs(0);
             let input_r = process.audio_inputs(1);
             self.temp_left[..frames].copy_from_slice(input_l.data32(0));
@@ -240,7 +340,7 @@ impl AudioProcessor {
                     self.spectrum_samples_since_update = 0;
                 }
             }
-        } else if inputs_count >= 1 && outputs_count >= 1 {
+        } else if channels >= 1 && outputs_count >= 1 {
             let input_port = process.audio_inputs(0);
             self.temp_left[..frames].copy_from_slice(input_port.data32(0));
 
@@ -573,6 +673,9 @@ fn apply_param_events(shared: &SharedState<ParamId>, events: &InputEvents<'_>) {
                         }
                         let incoming = sanitize_param_value(id, param.value(), &PARAMS);
                         shared.params.set(id, incoming);
+                        if id == ParamId::SidechainEnable {
+                            shared.request_audio_ports_rescan();
+                        }
                     }
                 }
             }
@@ -751,10 +854,20 @@ unsafe extern "C-unwind" fn plugin_on_main_thread(_plugin: *const clap_plugin) {
 
 unsafe extern "C-unwind" fn ext_audio_ports_count(
     plugin: *const clap_plugin,
-    _is_input: bool,
+    is_input: bool,
 ) -> u32 {
     let instance = unsafe { instance(plugin) };
-    instance.channels.load(Ordering::Acquire)
+    let channels = instance.channels.load(Ordering::Acquire);
+    let sidechain_enabled = instance.shared.params.get(ParamId::SidechainEnable) >= 0.5;
+    if is_input {
+        if sidechain_enabled {
+            channels + channels // main inputs + sidechain (one per main channel)
+        } else {
+            channels
+        }
+    } else {
+        channels
+    }
 }
 
 unsafe extern "C-unwind" fn ext_audio_ports_get(
@@ -765,29 +878,50 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
 ) -> bool {
     let instance = unsafe { instance(plugin) };
     let channels = instance.channels.load(Ordering::Acquire);
-    if index >= channels || info.is_null() {
+    let sidechain_enabled = instance.shared.params.get(ParamId::SidechainEnable) >= 0.5;
+    let count = if is_input {
+        if sidechain_enabled { channels + channels } else { channels }
+    } else {
+        channels
+    };
+    if index >= count || info.is_null() {
         return false;
     }
     let info = unsafe { &mut *info };
     info.id = index;
-    info.flags = CLAP_AUDIO_PORT_IS_MAIN;
     info.channel_count = 1;
     info.port_type = CLAP_PORT_MONO.as_ptr();
     info.in_place_pair = CLAP_INVALID_ID;
-    let name = if channels == 2 {
-        match (is_input, index) {
-            (true, 0) => "in_l",
-            (true, 1) => "in_r",
-            (false, 0) => "out_l",
-            (false, 1) => "out_r",
-            _ => "",
-        }
-    } else if is_input {
-        "in"
+    let is_sidechain = is_input && sidechain_enabled && index >= channels;
+    if is_sidechain {
+        info.flags = 0; // not main
+        let sc_name = if channels == 2 {
+            match index {
+                2 => "sc_l",
+                3 => "sc_r",
+                _ => "sc",
+            }
+        } else {
+            "sc"
+        };
+        copy_str_to_array(sc_name, &mut info.name);
     } else {
-        "out"
-    };
-    copy_str_to_array(name, &mut info.name);
+        info.flags = CLAP_AUDIO_PORT_IS_MAIN;
+        let name = if channels == 2 {
+            match (is_input, index) {
+                (true, 0) => "in_l",
+                (true, 1) => "in_r",
+                (false, 0) => "out_l",
+                (false, 1) => "out_r",
+                _ => "",
+            }
+        } else if is_input {
+            "in"
+        } else {
+            "out"
+        };
+        copy_str_to_array(name, &mut info.name);
+    }
     true
 }
 
@@ -932,6 +1066,8 @@ unsafe extern "C-unwind" fn ext_state_load(
         return false;
     };
     state.apply(&instance.shared.params, &PARAMS);
+    // Request port reconfiguration in case sidechain state changed.
+    instance.shared.request_audio_ports_rescan();
     true
 }
 
@@ -1196,4 +1332,416 @@ pub unsafe fn create_plugin(
     plugin_id: *const c_char,
 ) -> *const clap_plugin {
     unsafe { factory_create_plugin(&raw const FACTORY, host, plugin_id) }
+}
+const FADER_MIN_DB: f32 = -90.0;
+pub const SPECTRUM_BINS: usize = 96;
+
+pub struct SharedState<T: ParamIdExt> {
+    pub params: ParamStore<T>,
+    pub sample_rate_bits: AtomicU64,
+    pub pending_param_notifications: Vec<AtomicU32>,
+    pub pending_gesture_begin: Vec<AtomicU32>,
+    pub pending_gesture_end: Vec<AtomicU32>,
+    pub pending_param_values_bits: Vec<AtomicU64>,
+    pub active_gesture_bits: Vec<AtomicU32>,
+    pub active_gesture_count: AtomicU32,
+    pub local_param_overrides: Vec<AtomicU32>,
+    pub host: AtomicPtr<clap_host>,
+    pub input_level_left_db_bits: AtomicU32,
+    pub input_level_right_db_bits: AtomicU32,
+    pub output_level_left_db_bits: AtomicU32,
+    pub output_level_right_db_bits: AtomicU32,
+    pub output_spectrum_db_bits: [AtomicU32; SPECTRUM_BINS],
+    pub ui_visible: AtomicU32,
+    pub channels: AtomicU32,
+    pub listen_band: AtomicU32,
+}
+
+impl<T: ParamIdExt> SharedState<T> {
+    fn decrement_gesture_count(&self) {
+        let mut current = self.active_gesture_count.load(Ordering::Acquire);
+        while current != 0 {
+            match self.active_gesture_count.compare_exchange_weak(
+                current,
+                current - 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(next) => current = next,
+            }
+        }
+    }
+
+    pub fn new(params: ParamStore<T>, host: *const clap_host, channels: u32) -> Self {
+        let count = T::count();
+        let words = count.div_ceil(32);
+        let mut pending = Vec::with_capacity(words);
+        let mut pending_begin = Vec::with_capacity(words);
+        let mut pending_end = Vec::with_capacity(words);
+        let mut pending_values = Vec::with_capacity(count);
+        let mut active = Vec::with_capacity(words);
+        let mut local = Vec::with_capacity(words);
+        for _ in 0..words {
+            pending.push(AtomicU32::new(0));
+            pending_begin.push(AtomicU32::new(0));
+            pending_end.push(AtomicU32::new(0));
+            active.push(AtomicU32::new(0));
+            local.push(AtomicU32::new(0));
+        }
+        for _ in 0..count {
+            pending_values.push(AtomicU64::new(f64::NAN.to_bits()));
+        }
+        Self {
+            params,
+            sample_rate_bits: AtomicU64::new(48_000.0f64.to_bits()),
+            pending_param_notifications: pending,
+            pending_gesture_begin: pending_begin,
+            pending_gesture_end: pending_end,
+            pending_param_values_bits: pending_values,
+            active_gesture_bits: active,
+            active_gesture_count: AtomicU32::new(0),
+            local_param_overrides: local,
+            host: AtomicPtr::new(host.cast_mut()),
+            input_level_left_db_bits: AtomicU32::new(FADER_MIN_DB.to_bits()),
+            input_level_right_db_bits: AtomicU32::new(FADER_MIN_DB.to_bits()),
+            output_level_left_db_bits: AtomicU32::new(FADER_MIN_DB.to_bits()),
+            output_level_right_db_bits: AtomicU32::new(FADER_MIN_DB.to_bits()),
+            output_spectrum_db_bits: std::array::from_fn(|_| {
+                AtomicU32::new(FADER_MIN_DB.to_bits())
+            }),
+            ui_visible: AtomicU32::new(0),
+            channels: AtomicU32::new(channels),
+            listen_band: AtomicU32::new(32),
+        }
+    }
+
+    pub fn sample_rate(&self) -> f32 {
+        f64::from_bits(self.sample_rate_bits.load(Ordering::Acquire)) as f32
+    }
+
+    pub fn set_listen_band(&self, band: u32) {
+        self.listen_band.store(band, Ordering::Release);
+    }
+
+    pub fn get_listen_band(&self) -> u32 {
+        self.listen_band.load(Ordering::Acquire)
+    }
+
+    pub fn mark_param_notification_pending(&self, id: T) {
+        let idx = id.as_index();
+        let word = idx / 32;
+        let bit = 1_u32 << (idx % 32);
+        self.pending_param_notifications[word].fetch_or(bit, Ordering::AcqRel);
+    }
+
+    pub fn mark_gesture_begin_pending(&self, id: T) {
+        let idx = id.as_index();
+        let word = idx / 32;
+        let bit = 1_u32 << (idx % 32);
+        self.pending_gesture_begin[word].fetch_or(bit, Ordering::AcqRel);
+        self.active_gesture_bits[word].fetch_or(bit, Ordering::AcqRel);
+        self.active_gesture_count.fetch_add(1, Ordering::AcqRel);
+        self.mark_dirty();
+    }
+
+    pub fn mark_gesture_end_pending(&self, id: T) {
+        let idx = id.as_index();
+        let word = idx / 32;
+        let bit = 1_u32 << (idx % 32);
+        self.pending_gesture_end[word].fetch_or(bit, Ordering::AcqRel);
+        self.active_gesture_bits[word].fetch_and(!bit, Ordering::AcqRel);
+        self.decrement_gesture_count();
+    }
+
+    pub fn set_gesture_active(&self, id: T, active: bool) {
+        let idx = id.as_index();
+        let word = idx / 32;
+        let bit = 1_u32 << (idx % 32);
+        if active {
+            self.active_gesture_bits[word].fetch_or(bit, Ordering::AcqRel);
+            self.active_gesture_count.fetch_add(1, Ordering::AcqRel);
+        } else {
+            self.active_gesture_bits[word].fetch_and(!bit, Ordering::AcqRel);
+            self.decrement_gesture_count();
+        }
+    }
+
+    pub fn is_gesture_active(&self, id: T) -> bool {
+        let idx = id.as_index();
+        let word = idx / 32;
+        let bit = 1_u32 << (idx % 32);
+        (self.active_gesture_bits[word].load(Ordering::Acquire) & bit) != 0
+    }
+
+    pub fn any_gesture_active(&self) -> bool {
+        self.active_gesture_count.load(Ordering::Acquire) != 0
+    }
+
+    pub fn mark_local_param_override(&self, id: T) {
+        let idx = id.as_index();
+        let word = idx / 32;
+        let bit = 1_u32 << (idx % 32);
+        self.local_param_overrides[word].fetch_or(bit, Ordering::AcqRel);
+    }
+
+    pub fn has_local_param_override(&self, id: T) -> bool {
+        let idx = id.as_index();
+        let word = idx / 32;
+        let bit = 1_u32 << (idx % 32);
+        (self.local_param_overrides[word].load(Ordering::Acquire) & bit) != 0
+    }
+
+    pub fn clear_local_param_override(&self, id: T) {
+        let idx = id.as_index();
+        let word = idx / 32;
+        let bit = !(1_u32 << (idx % 32));
+        self.local_param_overrides[word].fetch_and(bit, Ordering::AcqRel);
+    }
+
+    pub fn request_flush(&self) {
+        let host = self.host.load(Ordering::Acquire);
+        if host.is_null() {
+            return;
+        }
+        unsafe {
+            let Some(get_extension) = (*host).get_extension else {
+                return;
+            };
+            let ext = get_extension(host, c"clap.host.params".as_ptr());
+            if ext.is_null() {
+                return;
+            }
+            let params = &*(ext as *const clap_clap::ffi::clap_host_params);
+            if let Some(request_flush) = params.request_flush {
+                request_flush(host);
+            }
+        }
+    }
+
+    pub fn mark_dirty(&self) {
+        let host = self.host.load(Ordering::Acquire);
+        if host.is_null() {
+            return;
+        }
+        unsafe {
+            let Some(get_extension) = (*host).get_extension else {
+                return;
+            };
+            let ext = get_extension(host, c"clap.host.state".as_ptr());
+            if ext.is_null() {
+                return;
+            }
+            let state = &*(ext as *const clap_clap::ffi::clap_host_state);
+            if let Some(mark_dirty) = state.mark_dirty {
+                mark_dirty(host);
+            }
+        }
+    }
+
+    pub fn set_input_level_left_db(&self, db: f32) {
+        self.input_level_left_db_bits
+            .store(db.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn set_input_level_right_db(&self, db: f32) {
+        self.input_level_right_db_bits
+            .store(db.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn input_level_left_db(&self) -> f32 {
+        f32::from_bits(self.input_level_left_db_bits.load(Ordering::Relaxed))
+    }
+
+    pub fn input_level_right_db(&self) -> f32 {
+        f32::from_bits(self.input_level_right_db_bits.load(Ordering::Relaxed))
+    }
+
+    pub fn set_output_level_left_db(&self, db: f32) {
+        self.output_level_left_db_bits
+            .store(db.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn set_output_level_right_db(&self, db: f32) {
+        self.output_level_right_db_bits
+            .store(db.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn output_level_left_db(&self) -> f32 {
+        f32::from_bits(self.output_level_left_db_bits.load(Ordering::Relaxed))
+    }
+
+    pub fn output_level_right_db(&self) -> f32 {
+        f32::from_bits(self.output_level_right_db_bits.load(Ordering::Relaxed))
+    }
+
+    pub fn set_output_spectrum_db(&self, bins_db: &[f32; SPECTRUM_BINS]) {
+        for (i, db) in bins_db.iter().enumerate() {
+            self.output_spectrum_db_bits[i].store(db.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    pub fn output_spectrum_db(&self) -> [f32; SPECTRUM_BINS] {
+        std::array::from_fn(|i| {
+            f32::from_bits(self.output_spectrum_db_bits[i].load(Ordering::Relaxed))
+        })
+    }
+
+    pub fn set_ui_visible(&self, visible: bool) {
+        self.ui_visible
+            .store(if visible { 1 } else { 0 }, Ordering::Release);
+    }
+
+    pub fn is_ui_visible(&self) -> bool {
+        self.ui_visible.load(Ordering::Acquire) != 0
+    }
+
+    pub fn request_gui_closed(&self) {
+        let host = self.host.load(Ordering::Acquire);
+        if host.is_null() {
+            return;
+        }
+        unsafe {
+            let Some(get_extension) = (*host).get_extension else {
+                return;
+            };
+            let ext = get_extension(host, c"clap.host.gui".as_ptr());
+            if ext.is_null() {
+                return;
+            }
+            let gui = &*(ext as *const clap_clap::ffi::clap_host_gui);
+            if let Some(closed) = gui.closed {
+                closed(host, false);
+            }
+        }
+    }
+
+    pub fn request_audio_ports_rescan(&self) {
+        let host = self.host.load(Ordering::Acquire);
+        if host.is_null() {
+            return;
+        }
+        unsafe {
+            let Some(get_extension) = (*host).get_extension else {
+                return;
+            };
+            let ext = get_extension(host, c"clap.host.audio-ports".as_ptr());
+            if ext.is_null() {
+                return;
+            }
+            let audio_ports = &*(ext as *const clap_clap::ffi::clap_host_audio_ports);
+            if let Some(rescan) = audio_ports.rescan {
+                rescan(host, clap_clap::ffi::CLAP_AUDIO_PORTS_RESCAN_LIST);
+            }
+        }
+    }
+
+    pub fn set_param(&self, id: T, value: f64) {
+        self.params.set(id, value);
+        self.pending_param_values_bits[id.as_index()].store(value.to_bits(), Ordering::Release);
+        self.mark_local_param_override(id);
+        self.mark_param_notification_pending(id);
+        self.request_flush();
+        self.mark_dirty();
+    }
+
+    pub fn set_param_outbound_only(&self, id: T, value: f64) {
+        self.params.set(id, value);
+    }
+
+    pub fn take_pending_param_value_or_current(&self, id: T) -> f64 {
+        let bits = self.pending_param_values_bits[id.as_index()]
+            .swap(f64::NAN.to_bits(), Ordering::AcqRel);
+        let value = f64::from_bits(bits);
+        if value.is_nan() {
+            self.params.get(id)
+        } else {
+            value
+        }
+    }
+
+    pub fn take_pending_gesture_begin_bits(&self) -> Vec<u32> {
+        let mut bits = vec![0_u32; self.pending_gesture_begin.len()];
+        for (i, atomic) in self.pending_gesture_begin.iter().enumerate() {
+            bits[i] = atomic.swap(0, Ordering::AcqRel);
+        }
+        bits
+    }
+
+    pub fn take_pending_gesture_end_bits(&self) -> Vec<u32> {
+        let mut bits = vec![0_u32; self.pending_gesture_end.len()];
+        for (i, atomic) in self.pending_gesture_end.iter().enumerate() {
+            bits[i] = atomic.swap(0, Ordering::AcqRel);
+        }
+        bits
+    }
+}
+use serde::{Deserialize, Serialize};
+const CURRENT_STATE_VERSION: &str = "0.1.0";
+const STATE_HEADER_PREFIX: &str = "maolan-equalizer-state-v";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginState {
+    #[serde(default = "default_version")]
+    pub version: String,
+    #[serde(default)]
+    pub params: HashMap<String, f64>,
+}
+
+fn default_version() -> String {
+    CURRENT_STATE_VERSION.to_string()
+}
+
+impl Default for PluginState {
+    fn default() -> Self {
+        Self {
+            version: CURRENT_STATE_VERSION.to_string(),
+            params: HashMap::new(),
+        }
+    }
+}
+
+impl PluginState {
+    pub fn from_runtime<T: ParamIdExt>(params: &ParamStore<T>, defs: &[ParamDef<T>]) -> Self {
+        let mut params_map = HashMap::new();
+        for def in defs.iter() {
+            params_map.insert(def.name.to_string(), params.get(def.id));
+        }
+        Self {
+            version: CURRENT_STATE_VERSION.to_string(),
+            params: params_map,
+        }
+    }
+
+    pub fn apply<T: ParamIdExt>(self, params: &ParamStore<T>, defs: &[ParamDef<T>]) {
+        for def in defs.iter() {
+            if let Some(&value) = self.params.get(def.name) {
+                params.set(def.id, sanitize_param_value(def.id, value, defs));
+            } else {
+                params.set(def.id, def.default);
+            }
+        }
+    }
+
+    pub fn to_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
+        let mut text = format!("{STATE_HEADER_PREFIX}{}\n", self.version);
+        text.push_str(&serde_json::to_string(self)?);
+        Ok(text.into_bytes())
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        let text =
+            std::str::from_utf8(bytes).map_err(|e| format!("state is not valid UTF-8: {e}"))?;
+        let json_text = if let Some(line_end) = text.find('\n') {
+            let header = &text[..line_end];
+            if header.starts_with(STATE_HEADER_PREFIX) {
+                &text[line_end + 1..]
+            } else {
+                text
+            }
+        } else {
+            text
+        };
+        serde_json::from_str(json_text).map_err(|e| format!("failed to parse plugin state: {e}"))
+    }
 }

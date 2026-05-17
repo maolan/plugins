@@ -3,8 +3,8 @@ use clap_clap::ffi::{
 };
 use std::ffi::c_char;
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use crate::eq::common::params::{ParamDef, ParamIdExt, copy_str_to_array};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u16)]
@@ -205,6 +205,46 @@ pub enum ParamId {
     Para30Slope = 193,
     Para31Slope = 194,
     Para32Slope = 195,
+    SidechainEnable = 196,
+    SidechainSourceTrackIdx = 197,
+    SidechainSourcePort = 198,
+    SidechainSourcePluginIdx = 199,
+    SidechainThreshold = 200,
+    SidechainRatio = 201,
+    SidechainAttackMs = 202,
+    SidechainReleaseMs = 203,
+    Para1Dyn = 204,
+    Para2Dyn = 205,
+    Para3Dyn = 206,
+    Para4Dyn = 207,
+    Para5Dyn = 208,
+    Para6Dyn = 209,
+    Para7Dyn = 210,
+    Para8Dyn = 211,
+    Para9Dyn = 212,
+    Para10Dyn = 213,
+    Para11Dyn = 214,
+    Para12Dyn = 215,
+    Para13Dyn = 216,
+    Para14Dyn = 217,
+    Para15Dyn = 218,
+    Para16Dyn = 219,
+    Para17Dyn = 220,
+    Para18Dyn = 221,
+    Para19Dyn = 222,
+    Para20Dyn = 223,
+    Para21Dyn = 224,
+    Para22Dyn = 225,
+    Para23Dyn = 226,
+    Para24Dyn = 227,
+    Para25Dyn = 228,
+    Para26Dyn = 229,
+    Para27Dyn = 230,
+    Para28Dyn = 231,
+    Para29Dyn = 232,
+    Para30Dyn = 233,
+    Para31Dyn = 234,
+    Para32Dyn = 235,
 }
 
 impl ParamIdExt for ParamId {
@@ -212,7 +252,7 @@ impl ParamIdExt for ParamId {
         self as u16 as usize
     }
     fn count() -> usize {
-        196
+        236
     }
 }
 
@@ -264,6 +304,11 @@ impl ParamId {
 
     pub fn para_slope(index: usize) -> Self {
         let raw = 164 + index;
+        Self::from_raw(raw as u32).unwrap()
+    }
+
+    pub fn para_dyn(index: usize) -> Self {
+        let raw = 204 + index;
         Self::from_raw(raw as u32).unwrap()
     }
 
@@ -342,6 +387,102 @@ pub static PARAMS: LazyLock<Vec<ParamDef<ParamId>>> = LazyLock::new(|| {
         },
         STEPPED_BOOL,
     );
+    params[ParamId::SidechainEnable.as_index()] = make_param(
+        ParamId::SidechainEnable,
+        "Sidechain Enable",
+        "Sidechain",
+        ParamRange {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            step: 1.0,
+        },
+        STEPPED_BOOL,
+    );
+    params[ParamId::SidechainSourceTrackIdx.as_index()] = make_param(
+        ParamId::SidechainSourceTrackIdx,
+        "Sidechain Source Track",
+        "Sidechain",
+        ParamRange {
+            min: 0.0,
+            max: 128.0,
+            default: 0.0,
+            step: 1.0,
+        },
+        STEPPED_BOOL,
+    );
+    params[ParamId::SidechainSourcePort.as_index()] = make_param(
+        ParamId::SidechainSourcePort,
+        "Sidechain Source Port",
+        "Sidechain",
+        ParamRange {
+            min: 0.0,
+            max: 16.0,
+            default: 0.0,
+            step: 1.0,
+        },
+        STEPPED_BOOL,
+    );
+    params[ParamId::SidechainSourcePluginIdx.as_index()] = make_param(
+        ParamId::SidechainSourcePluginIdx,
+        "Sidechain Source Plugin",
+        "Sidechain",
+        ParamRange {
+            min: 0.0,
+            max: 32.0,
+            default: 0.0,
+            step: 1.0,
+        },
+        STEPPED_BOOL,
+    );
+    params[ParamId::SidechainThreshold.as_index()] = make_param(
+        ParamId::SidechainThreshold,
+        "Sidechain Threshold",
+        "Sidechain",
+        ParamRange {
+            min: -60.0,
+            max: 0.0,
+            default: -30.0,
+            step: 0.1,
+        },
+        AUTOMATABLE,
+    );
+    params[ParamId::SidechainRatio.as_index()] = make_param(
+        ParamId::SidechainRatio,
+        "Sidechain Ratio",
+        "Sidechain",
+        ParamRange {
+            min: 1.0,
+            max: 20.0,
+            default: 4.0,
+            step: 0.1,
+        },
+        AUTOMATABLE,
+    );
+    params[ParamId::SidechainAttackMs.as_index()] = make_param(
+        ParamId::SidechainAttackMs,
+        "Sidechain Attack",
+        "Sidechain",
+        ParamRange {
+            min: 0.1,
+            max: 100.0,
+            default: 1.0,
+            step: 0.1,
+        },
+        AUTOMATABLE,
+    );
+    params[ParamId::SidechainReleaseMs.as_index()] = make_param(
+        ParamId::SidechainReleaseMs,
+        "Sidechain Release",
+        "Sidechain",
+        ParamRange {
+            min: 10.0,
+            max: 1000.0,
+            default: 100.0,
+            step: 1.0,
+        },
+        AUTOMATABLE,
+    );
 
     for i in 0..32 {
         params[ParamId::para_freq(i).as_index()] = make_param(
@@ -416,6 +557,18 @@ pub static PARAMS: LazyLock<Vec<ParamDef<ParamId>>> = LazyLock::new(|| {
             },
             STEPPED_BOOL,
         );
+        params[ParamId::para_dyn(i).as_index()] = make_param(
+            ParamId::para_dyn(i),
+            &format!("P{} Dyn", i + 1),
+            "Parametric",
+            ParamRange {
+                min: 0.0,
+                max: 1.0,
+                default: 0.0,
+                step: 0.01,
+            },
+            AUTOMATABLE,
+        );
     }
     params
 });
@@ -446,5 +599,73 @@ fn make_param(
         default: range.default,
         step: range.step,
         flags,
+    }
+}
+pub trait ParamIdExt: Copy + Clone + PartialEq + Eq + Send + Sync {
+    fn as_index(self) -> usize;
+    fn count() -> usize;
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ParamDef<T: ParamIdExt> {
+    pub id: T,
+    pub name: &'static str,
+    pub name_array: [c_char; 256],
+    pub module: &'static str,
+    pub min: f64,
+    pub max: f64,
+    pub default: f64,
+    pub step: f64,
+    pub flags: u32,
+}
+
+pub fn copy_str_to_array<const N: usize>(source: &str, target: &mut [c_char; N]) {
+    target.fill(0);
+    for (dst, src) in target.iter_mut().zip(source.as_bytes().iter().copied()) {
+        *dst = src as c_char;
+    }
+}
+
+pub fn sanitize_param_value<T: ParamIdExt>(id: T, value: f64, params: &[ParamDef<T>]) -> f64 {
+    let def = params[id.as_index()];
+    let clamped = value.clamp(def.min, def.max);
+    if def.step > 0.0 {
+        let ticks = ((clamped - def.min) / def.step).round();
+        (def.min + ticks * def.step).clamp(def.min, def.max)
+    } else {
+        clamped
+    }
+}
+
+#[derive(Debug)]
+pub struct ParamStore<T: ParamIdExt> {
+    pub values: Vec<AtomicU64>,
+    pub dirty: AtomicBool,
+    _marker: std::marker::PhantomData<T>,
+}
+
+impl<T: ParamIdExt> ParamStore<T> {
+    pub fn new(defs: &[ParamDef<T>]) -> Self {
+        Self {
+            values: defs
+                .iter()
+                .map(|param| AtomicU64::new(param.default.to_bits()))
+                .collect(),
+            dirty: AtomicBool::new(false),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    pub fn get(&self, id: T) -> f64 {
+        f64::from_bits(self.values[id.as_index()].load(Ordering::Acquire))
+    }
+
+    pub fn set(&self, id: T, value: f64) {
+        self.values[id.as_index()].store(value.to_bits(), Ordering::Release);
+        self.dirty.store(true, Ordering::Release);
+    }
+
+    pub fn get_bool(&self, id: T) -> bool {
+        self.get(id) >= 0.5
     }
 }

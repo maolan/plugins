@@ -9,11 +9,9 @@ use std::{
     time::Duration,
 };
 
-use crate::eq::common::dsp::Biquad;
-use crate::eq::common::gui::{AnyWindowHandle, ParentWindowHandle, is_api_supported};
-use crate::eq::common::params::ParamIdExt;
-use crate::eq::common::plugin::{SPECTRUM_BINS, SharedState};
-use crate::eq::parametric::params::{PARAMS, ParamId};
+use crate::eq::dsp::Biquad;
+use crate::eq::params::{ParamIdExt, PARAMS, ParamId};
+use crate::eq::plugin::{SidechainOptions, get_sidechain_options, SPECTRUM_BINS, SharedState};
 use maolan_baseview::iced::{
     Alignment, Color, Element, Event, Length, Point, Rectangle, Renderer, Task, Theme,
     alignment::{Horizontal, Vertical},
@@ -21,10 +19,10 @@ use maolan_baseview::iced::{
     widget::{
         canvas,
         canvas::{Action as CanvasAction, Frame, Geometry, Path, Program, Text},
-        column, container, row, text,
+        column, container, mouse_area, row, text, Space,
     },
 };
-use maolan_widgets::arch_slider::arch_slider;
+use maolan_widgets::{arch_slider::arch_slider, menu::{menu_dropdown, menu_item, submenu}};
 
 pub const EDITOR_WIDTH: u32 = 800;
 pub const EDITOR_HEIGHT: u32 = 680;
@@ -153,6 +151,10 @@ pub enum Message {
     DeselectBand,
     DeleteBand,
     SetChannels(ChannelMode),
+    ToggleSidechainDropdown,
+    SetSidechainSource(Option<(usize, usize, Option<usize>)>),
+    TrackHoverEnter(usize),
+    TrackHoverLeave,
     UiTick,
 }
 
@@ -160,6 +162,9 @@ struct State {
     shared: Arc<SharedState<ParamId>>,
     selected_band: Option<usize>,
     active_gestures: HashSet<ParamId>,
+    sidechain_dropdown_open: bool,
+    sidechain_options: Option<SidechainOptions>,
+    hovered_track: Option<usize>,
 }
 
 fn init(shared: Arc<SharedState<ParamId>>) -> (State, Task<Message>) {
@@ -168,6 +173,9 @@ fn init(shared: Arc<SharedState<ParamId>>) -> (State, Task<Message>) {
             shared,
             selected_band: None,
             active_gestures: HashSet::new(),
+            sidechain_dropdown_open: false,
+            sidechain_options: None,
+            hovered_track: None,
         },
         next_ui_tick_task(),
     )
@@ -269,7 +277,59 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .set_param_outbound_only(ParamId::Channels, u32::from(mode) as f64);
             state.shared.request_audio_ports_rescan();
         }
-        Message::UiTick => return next_ui_tick_task(),
+        Message::ToggleSidechainDropdown => {
+            state.sidechain_dropdown_open = !state.sidechain_dropdown_open;
+            if !state.sidechain_dropdown_open {
+                state.hovered_track = None;
+            }
+        }
+        Message::SetSidechainSource(selection) => {
+            state.sidechain_dropdown_open = false;
+            state.hovered_track = None;
+            match selection {
+                None => {
+                    state
+                        .shared
+                        .set_param_outbound_only(ParamId::SidechainEnable, 0.0);
+                    state
+                        .shared
+                        .set_param_outbound_only(ParamId::SidechainSourceTrackIdx, 0.0);
+                    state
+                        .shared
+                        .set_param_outbound_only(ParamId::SidechainSourcePort, 0.0);
+                    state
+                        .shared
+                        .set_param_outbound_only(ParamId::SidechainSourcePluginIdx, 0.0);
+                }
+                Some((track_idx, port, plugin_idx)) => {
+                    state.shared.set_param_outbound_only(
+                        ParamId::SidechainSourceTrackIdx,
+                        (track_idx + 1) as f64,
+                    );
+                    state
+                        .shared
+                        .set_param_outbound_only(ParamId::SidechainSourcePort, port as f64);
+                    state.shared.set_param_outbound_only(
+                        ParamId::SidechainSourcePluginIdx,
+                        plugin_idx.map(|i| i + 1).unwrap_or(0) as f64,
+                    );
+                    state
+                        .shared
+                        .set_param_outbound_only(ParamId::SidechainEnable, 1.0);
+                }
+            }
+        }
+        Message::TrackHoverEnter(idx) => {
+            state.hovered_track = Some(idx);
+        }
+        Message::TrackHoverLeave => {
+            state.hovered_track = None;
+        }
+        Message::UiTick => {
+            let host_ptr = state.shared.host.load(Ordering::Acquire) as usize;
+            state.sidechain_options = get_sidechain_options(host_ptr);
+            return next_ui_tick_task();
+        }
     }
     Task::none()
 }
@@ -344,6 +404,14 @@ fn view(state: &State) -> Element<'_, Message> {
                 Message::UiTick // dummy message to force refresh
             });
 
+        let dyn_knob = knob(
+            "Dyn".to_string(),
+            ParamId::para_dyn(sb),
+            p(ParamId::para_dyn(sb)),
+            "",
+            0.01,
+        );
+
         if matches!(band_type, BandType::LowPass | BandType::HighPass) {
             row![
                 channels_dropdown,
@@ -357,6 +425,7 @@ fn view(state: &State) -> Element<'_, Message> {
                     "",
                     0.01
                 ),
+                dyn_knob,
                 listen_checkbox,
                 maolan_baseview::iced::widget::button("Delete").on_press(Message::DeleteBand),
             ]
@@ -382,6 +451,7 @@ fn view(state: &State) -> Element<'_, Message> {
                     "",
                     0.01
                 ),
+                dyn_knob,
                 listen_checkbox,
                 maolan_baseview::iced::widget::button("Delete").on_press(Message::DeleteBand),
             ]
@@ -399,7 +469,182 @@ fn view(state: &State) -> Element<'_, Message> {
         .into()
     };
 
-    let content = column![response, knobs,]
+    // Sidechain dropdown
+    let sidechain_track_idx = p(ParamId::SidechainSourceTrackIdx).round() as usize;
+    let sidechain_port = p(ParamId::SidechainSourcePort).round() as usize;
+    let sidechain_plugin_idx = p(ParamId::SidechainSourcePluginIdx).round() as usize;
+    let sidechain_enabled = p(ParamId::SidechainEnable) >= 0.5;
+
+    let sidechain_label = if !sidechain_enabled || sidechain_track_idx == 0 {
+        "None".to_string()
+    } else if let Some(ref opts) = state.sidechain_options {
+        if let Some(track) = opts.tracks.get(sidechain_track_idx.saturating_sub(1)) {
+            if sidechain_plugin_idx > 0 {
+                if let Some(plugin) = track.plugins.get(sidechain_plugin_idx.saturating_sub(1)) {
+                    format!("{} / Plugin: {}", track.name, plugin.name)
+                } else {
+                    format!("{} / Plugin ?", track.name)
+                }
+            } else {
+                format!("{} / Output {}", track.name, sidechain_port + 1)
+            }
+        } else {
+            "?".to_string()
+        }
+    } else {
+        format!("Track {} / Port {}", sidechain_track_idx, sidechain_port)
+    };
+
+    let sidechain_button = menu_dropdown(sidechain_label, Message::ToggleSidechainDropdown);
+
+    let sidechain_dropdown = if state.sidechain_dropdown_open {
+        const MENU_ITEM_HEIGHT: f32 = 28.0;
+
+        let mut left_items = maolan_baseview::iced::widget::Column::new().spacing(1);
+        left_items = left_items.push(
+            mouse_area(
+                container(menu_item("None", Message::SetSidechainSource(None)))
+                    .height(Length::Fixed(MENU_ITEM_HEIGHT))
+                    .align_y(Vertical::Center),
+            )
+            .on_enter(Message::TrackHoverLeave),
+        );
+
+        if let Some(ref opts) = state.sidechain_options {
+            for (track_idx, track) in opts.tracks.iter().enumerate() {
+                left_items = left_items.push(
+                    mouse_area(
+                        container(submenu(&track.name, Message::SetSidechainSource(None)))
+                            .height(Length::Fixed(MENU_ITEM_HEIGHT))
+                            .align_y(Vertical::Center),
+                    )
+                    .on_enter(Message::TrackHoverEnter(track_idx)),
+                );
+            }
+        }
+
+        let left_pane = maolan_baseview::iced::widget::scrollable(left_items)
+            .height(Length::Fixed(180.0))
+            .width(Length::Fixed(140.0));
+
+        let right_pane = if let Some(ref opts) = state.sidechain_options {
+            if let Some(track_idx) = state.hovered_track {
+                if let Some(track) = opts.tracks.get(track_idx) {
+                    let mut right_items = maolan_baseview::iced::widget::Column::new().spacing(1);
+                    for port in 0..track.outputs.max(1) {
+                        right_items = right_items.push(
+                            container(
+                                menu_item(
+                                    format!("Output {}", port + 1),
+                                    Message::SetSidechainSource(Some((track_idx, port, None))),
+                                ),
+                            )
+                            .height(Length::Fixed(MENU_ITEM_HEIGHT))
+                            .align_y(Vertical::Center),
+                        );
+                    }
+                    for (plugin_idx, plugin) in track.plugins.iter().enumerate() {
+                        right_items = right_items.push(
+                            container(
+                                menu_item(
+                                    format!("Plugin: {}", plugin.name),
+                                    Message::SetSidechainSource(Some((track_idx, 0, Some(plugin_idx)))),
+                                ),
+                            )
+                            .height(Length::Fixed(MENU_ITEM_HEIGHT))
+                            .align_y(Vertical::Center),
+                        );
+                    }
+                    Some(
+                        maolan_baseview::iced::widget::scrollable(right_items)
+                            .height(Length::Fixed(180.0))
+                            .width(Length::Fixed(160.0)),
+                    )
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let dropdown_inner = if let Some(right) = right_pane {
+            let offset = (state.hovered_track.unwrap() + 1) as f32 * MENU_ITEM_HEIGHT;
+            row![
+                left_pane,
+                column![Space::new().height(Length::Fixed(offset)), right]
+                    .align_x(Alignment::Start)
+            ]
+            .spacing(2)
+            .align_y(Alignment::Start)
+        } else {
+            row![left_pane]
+        };
+
+        Some(
+            container(mouse_area(dropdown_inner).on_exit(Message::TrackHoverLeave))
+                .padding(2)
+                .style(|_theme| container::Style {
+                    background: Some(Color::from_rgb(0.12, 0.12, 0.12).into()),
+                    border: maolan_baseview::iced::Border {
+                        color: Color::from_rgb(0.35, 0.35, 0.35),
+                        width: 1.0,
+                        radius: maolan_baseview::iced::border::Radius::new(4.0),
+                    },
+                    ..Default::default()
+                }),
+        )
+    } else {
+        None
+    };
+
+    let sidechain_source_column = if let Some(dropdown) = sidechain_dropdown {
+        column![sidechain_button, dropdown]
+            .spacing(2)
+            .align_x(Alignment::Start)
+    } else {
+        column![sidechain_button]
+            .spacing(2)
+            .align_x(Alignment::Start)
+    };
+
+    let sidechain_row = row![
+        sidechain_source_column,
+        knob(
+            "Threshold".to_string(),
+            ParamId::SidechainThreshold,
+            p(ParamId::SidechainThreshold),
+            "dB",
+            0.1
+        ),
+        knob(
+            "Ratio".to_string(),
+            ParamId::SidechainRatio,
+            p(ParamId::SidechainRatio),
+            ":1",
+            0.1
+        ),
+        knob(
+            "Attack".to_string(),
+            ParamId::SidechainAttackMs,
+            p(ParamId::SidechainAttackMs),
+            "ms",
+            0.1
+        ),
+        knob(
+            "Release".to_string(),
+            ParamId::SidechainReleaseMs,
+            p(ParamId::SidechainReleaseMs),
+            "ms",
+            1.0
+        ),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+
+    let content = column![response, knobs, sidechain_row]
         .spacing(20)
         .align_x(Alignment::Center);
 
@@ -1112,3 +1357,69 @@ impl GuiBridge {
         true
     }
 }
+use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
+#[cfg(target_os = "macos")]
+use clap_clap::ffi::CLAP_WINDOW_API_COCOA;
+#[cfg(target_os = "windows")]
+use clap_clap::ffi::CLAP_WINDOW_API_WIN32;
+#[cfg(all(unix, not(target_os = "macos")))]
+use clap_clap::ffi::CLAP_WINDOW_API_X11;
+
+pub fn preferred_api() -> &'static CStr {
+    #[cfg(target_os = "windows")]
+    {
+        CLAP_WINDOW_API_WIN32
+    }
+    #[cfg(target_os = "macos")]
+    {
+        CLAP_WINDOW_API_COCOA
+    }
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    {
+        CLAP_WINDOW_API_X11
+    }
+}
+
+pub fn is_api_supported(api: &CStr, _is_floating: bool) -> bool {
+    api == preferred_api()
+}
+
+pub enum ParentWindowHandle {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    X11(u64),
+    #[cfg(target_os = "macos")]
+    Cocoa(*mut std::ffi::c_void),
+    #[cfg(target_os = "windows")]
+    Win32(*mut std::ffi::c_void),
+}
+
+unsafe impl HasRawWindowHandle for ParentWindowHandle {
+    fn raw_window_handle(&self) -> RawWindowHandle {
+        match self {
+            #[cfg(all(unix, not(target_os = "macos")))]
+            ParentWindowHandle::X11(window) => {
+                let mut handle = raw_window_handle::XlibWindowHandle::empty();
+                handle.window = *window;
+                RawWindowHandle::Xlib(handle)
+            }
+            #[cfg(target_os = "macos")]
+            ParentWindowHandle::Cocoa(ns_view) => {
+                let mut handle = raw_window_handle::AppKitWindowHandle::empty();
+                handle.ns_view = *ns_view;
+                RawWindowHandle::AppKit(handle)
+            }
+            #[cfg(target_os = "windows")]
+            ParentWindowHandle::Win32(hwnd) => {
+                let mut handle = raw_window_handle::Win32WindowHandle::empty();
+                handle.hwnd = *hwnd;
+                RawWindowHandle::Win32(handle)
+            }
+        }
+    }
+}
+
+pub struct AnyWindowHandle {
+    pub _inner: Box<dyn std::any::Any>,
+}
+
+unsafe impl Send for AnyWindowHandle {}

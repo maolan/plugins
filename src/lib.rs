@@ -36,8 +36,8 @@ struct PluginApi {
 
 static PLUGINS: [PluginApi; 13] = [
     PluginApi {
-        descriptor: eq::parametric::clap_descriptor_ptr,
-        create: eq::parametric::clap_create_plugin,
+        descriptor: eq::clap_descriptor_ptr,
+        create: eq::clap_create_plugin,
     },
     PluginApi {
         descriptor: compressor::clap_descriptor_ptr,
