@@ -66,7 +66,7 @@ compressor design.
 | Parameter | Range | Default | Description |
 |-----------|-------|---------|-------------|
 | Input Gain | −24.0 ... 24.0 dB | 0.0 | Input gain staging |
-| Output Gain | −24.0 ... 24.0 dB | 0.0 | Output gain staging |
+| Output Gain | −24.0 ... 4.0 dB | −8.0 | Output gain staging |
 | Dry Gain | 0.0 ... 1.0 | 0.0 | Dry mix amount |
 | Wet Gain | 0.0 ... 1.0 | 1.0 | Wet mix amount |
 | Sidechain Mode | 0=Peak, 1=RMS | 1 | Sidechain detection type |
@@ -237,7 +237,7 @@ crossover filters and mid/side processing per band.
 
 | Parameter | Range | Default | Description |
 |-----------|-------|---------|-------------|
-| Output Gain | −4.0 ... 4.0 dB | 0.0 | Output gain staging |
+| Output Gain | −24.0 ... 24.0 dB | 0.0 | Output gain staging |
 | Boost | 0.0 ... 4.0x | 1.0 | Global side boost |
 | Low | 0.0 ... 200.0 % | 100.0 | Low-band width |
 | Mid | 0.0 ... 200.0 % | 100.0 | Mid-band width |

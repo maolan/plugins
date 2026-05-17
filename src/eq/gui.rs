@@ -1,3 +1,21 @@
+use crate::eq::dsp::Biquad;
+use crate::eq::params::{PARAMS, ParamId, ParamIdExt};
+use crate::eq::plugin::{SPECTRUM_BINS, SharedState, SidechainOptions, get_sidechain_options};
+use iced_aw::menu::{Menu, MenuBar, Item};
+use maolan_baseview::iced::{
+    Alignment, Color, Element, Event, Length, Point, Rectangle, Renderer, Task, Theme,
+    alignment::{Horizontal, Vertical},
+    mouse,
+    widget::{
+        canvas,
+        canvas::{Action as CanvasAction, Frame, Geometry, Path, Program, Text},
+        column, container, row, text,
+    },
+};
+use maolan_widgets::{
+    arch_slider::arch_slider,
+    menu::{menu_dropdown, menu_item, submenu},
+};
 use std::{
     collections::HashSet,
     ffi::CStr,
@@ -8,21 +26,6 @@ use std::{
     thread,
     time::Duration,
 };
-
-use crate::eq::dsp::Biquad;
-use crate::eq::params::{ParamIdExt, PARAMS, ParamId};
-use crate::eq::plugin::{SidechainOptions, get_sidechain_options, SPECTRUM_BINS, SharedState};
-use maolan_baseview::iced::{
-    Alignment, Color, Element, Event, Length, Point, Rectangle, Renderer, Task, Theme,
-    alignment::{Horizontal, Vertical},
-    mouse,
-    widget::{
-        canvas,
-        canvas::{Action as CanvasAction, Frame, Geometry, Path, Program, Text},
-        column, container, mouse_area, row, text, Space,
-    },
-};
-use maolan_widgets::{arch_slider::arch_slider, menu::{menu_dropdown, menu_item, submenu}};
 
 pub const EDITOR_WIDTH: u32 = 800;
 pub const EDITOR_HEIGHT: u32 = 680;
@@ -151,10 +154,8 @@ pub enum Message {
     DeselectBand,
     DeleteBand,
     SetChannels(ChannelMode),
-    ToggleSidechainDropdown,
     SetSidechainSource(Option<(usize, usize, Option<usize>)>),
-    TrackHoverEnter(usize),
-    TrackHoverLeave,
+    NoOp,
     UiTick,
 }
 
@@ -162,9 +163,7 @@ struct State {
     shared: Arc<SharedState<ParamId>>,
     selected_band: Option<usize>,
     active_gestures: HashSet<ParamId>,
-    sidechain_dropdown_open: bool,
     sidechain_options: Option<SidechainOptions>,
-    hovered_track: Option<usize>,
 }
 
 fn init(shared: Arc<SharedState<ParamId>>) -> (State, Task<Message>) {
@@ -173,9 +172,7 @@ fn init(shared: Arc<SharedState<ParamId>>) -> (State, Task<Message>) {
             shared,
             selected_band: None,
             active_gestures: HashSet::new(),
-            sidechain_dropdown_open: false,
             sidechain_options: None,
-            hovered_track: None,
         },
         next_ui_tick_task(),
     )
@@ -277,15 +274,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .set_param_outbound_only(ParamId::Channels, u32::from(mode) as f64);
             state.shared.request_audio_ports_rescan();
         }
-        Message::ToggleSidechainDropdown => {
-            state.sidechain_dropdown_open = !state.sidechain_dropdown_open;
-            if !state.sidechain_dropdown_open {
-                state.hovered_track = None;
-            }
-        }
         Message::SetSidechainSource(selection) => {
-            state.sidechain_dropdown_open = false;
-            state.hovered_track = None;
             match selection {
                 None => {
                     state
@@ -319,12 +308,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
             }
         }
-        Message::TrackHoverEnter(idx) => {
-            state.hovered_track = Some(idx);
-        }
-        Message::TrackHoverLeave => {
-            state.hovered_track = None;
-        }
+        Message::NoOp => {}
         Message::UiTick => {
             let host_ptr = state.shared.host.load(Ordering::Acquire) as usize;
             state.sidechain_options = get_sidechain_options(host_ptr);
@@ -495,120 +479,51 @@ fn view(state: &State) -> Element<'_, Message> {
         format!("Track {} / Port {}", sidechain_track_idx, sidechain_port)
     };
 
-    let sidechain_button = menu_dropdown(sidechain_label, Message::ToggleSidechainDropdown);
-
-    let sidechain_dropdown = if state.sidechain_dropdown_open {
-        const MENU_ITEM_HEIGHT: f32 = 28.0;
-
-        let mut left_items = maolan_baseview::iced::widget::Column::new().spacing(1);
-        left_items = left_items.push(
-            mouse_area(
-                container(menu_item("None", Message::SetSidechainSource(None)))
-                    .height(Length::Fixed(MENU_ITEM_HEIGHT))
-                    .align_y(Vertical::Center),
-            )
-            .on_enter(Message::TrackHoverLeave),
-        );
+    let sidechain_button = {
+        let mut items: Vec<Item<'_, Message, Theme, Renderer>> =
+            vec![Item::new(menu_item(
+                "None",
+                Message::SetSidechainSource(None),
+            ))];
 
         if let Some(ref opts) = state.sidechain_options {
             for (track_idx, track) in opts.tracks.iter().enumerate() {
-                left_items = left_items.push(
-                    mouse_area(
-                        container(submenu(&track.name, Message::SetSidechainSource(None)))
-                            .height(Length::Fixed(MENU_ITEM_HEIGHT))
-                            .align_y(Vertical::Center),
-                    )
-                    .on_enter(Message::TrackHoverEnter(track_idx)),
-                );
+                let mut sub_items = Vec::new();
+                for port in 0..track.outputs.max(1) {
+                    sub_items.push(Item::new(menu_item(
+                        format!("Output {}", port + 1),
+                        Message::SetSidechainSource(Some((track_idx, port, None))),
+                    )));
+                }
+                for (plugin_idx, plugin) in track.plugins.iter().enumerate() {
+                    sub_items.push(Item::new(menu_item(
+                        format!("Plugin: {}", plugin.name),
+                        Message::SetSidechainSource(Some((track_idx, 0, Some(plugin_idx)))),
+                    )));
+                }
+                let sub_menu = Menu::new(sub_items)
+                    .max_width(160.0)
+                    .spacing(1.0);
+                items.push(Item::with_menu(
+                    submenu(&track.name, Message::NoOp),
+                    sub_menu,
+                ));
             }
         }
 
-        let left_pane = maolan_baseview::iced::widget::scrollable(left_items)
-            .height(Length::Fixed(180.0))
-            .width(Length::Fixed(140.0));
+        let menu = Menu::new(items)
+            .max_width(180.0)
+            .spacing(1.0);
 
-        let right_pane = if let Some(ref opts) = state.sidechain_options {
-            if let Some(track_idx) = state.hovered_track {
-                if let Some(track) = opts.tracks.get(track_idx) {
-                    let mut right_items = maolan_baseview::iced::widget::Column::new().spacing(1);
-                    for port in 0..track.outputs.max(1) {
-                        right_items = right_items.push(
-                            container(
-                                menu_item(
-                                    format!("Output {}", port + 1),
-                                    Message::SetSidechainSource(Some((track_idx, port, None))),
-                                ),
-                            )
-                            .height(Length::Fixed(MENU_ITEM_HEIGHT))
-                            .align_y(Vertical::Center),
-                        );
-                    }
-                    for (plugin_idx, plugin) in track.plugins.iter().enumerate() {
-                        right_items = right_items.push(
-                            container(
-                                menu_item(
-                                    format!("Plugin: {}", plugin.name),
-                                    Message::SetSidechainSource(Some((track_idx, 0, Some(plugin_idx)))),
-                                ),
-                            )
-                            .height(Length::Fixed(MENU_ITEM_HEIGHT))
-                            .align_y(Vertical::Center),
-                        );
-                    }
-                    Some(
-                        maolan_baseview::iced::widget::scrollable(right_items)
-                            .height(Length::Fixed(180.0))
-                            .width(Length::Fixed(160.0)),
-                    )
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        let dropdown_inner = if let Some(right) = right_pane {
-            let offset = (state.hovered_track.unwrap() + 1) as f32 * MENU_ITEM_HEIGHT;
-            row![
-                left_pane,
-                column![Space::new().height(Length::Fixed(offset)), right]
-                    .align_x(Alignment::Start)
-            ]
-            .spacing(2)
-            .align_y(Alignment::Start)
-        } else {
-            row![left_pane]
-        };
-
-        Some(
-            container(mouse_area(dropdown_inner).on_exit(Message::TrackHoverLeave))
-                .padding(2)
-                .style(|_theme| container::Style {
-                    background: Some(Color::from_rgb(0.12, 0.12, 0.12).into()),
-                    border: maolan_baseview::iced::Border {
-                        color: Color::from_rgb(0.35, 0.35, 0.35),
-                        width: 1.0,
-                        radius: maolan_baseview::iced::border::Radius::new(4.0),
-                    },
-                    ..Default::default()
-                }),
-        )
-    } else {
-        None
+        MenuBar::new(vec![Item::with_menu(
+            menu_dropdown(sidechain_label, Message::NoOp),
+            menu,
+        )])
     };
 
-    let sidechain_source_column = if let Some(dropdown) = sidechain_dropdown {
-        column![sidechain_button, dropdown]
-            .spacing(2)
-            .align_x(Alignment::Start)
-    } else {
-        column![sidechain_button]
-            .spacing(2)
-            .align_x(Alignment::Start)
-    };
+    let sidechain_source_column = column![sidechain_button]
+        .spacing(2)
+        .align_x(Alignment::Start);
 
     let sidechain_row = row![
         sidechain_source_column,
@@ -1215,6 +1130,7 @@ fn freq_knob(id: ParamId, value_hz: f32) -> Element<'static, Message> {
 
 fn build_app(shared: Arc<SharedState<ParamId>>) -> impl maolan_baseview::iced::Program {
     maolan_baseview::iced::application(move || init(shared.clone()), update, view)
+        .font(iced_fonts::LUCIDE_FONT_BYTES)
         .theme(theme)
         .run()
 }
@@ -1357,13 +1273,13 @@ impl GuiBridge {
         true
     }
 }
-use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
 #[cfg(target_os = "macos")]
 use clap_clap::ffi::CLAP_WINDOW_API_COCOA;
 #[cfg(target_os = "windows")]
 use clap_clap::ffi::CLAP_WINDOW_API_WIN32;
 #[cfg(all(unix, not(target_os = "macos")))]
 use clap_clap::ffi::CLAP_WINDOW_API_X11;
+use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
 
 pub fn preferred_api() -> &'static CStr {
     #[cfg(target_os = "windows")]

@@ -608,6 +608,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
+name = "chrono"
+version = "0.4.44"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c673075a2e0e5f4a1dde27ce9dee1ea4558c7ffe648f576438a20ca1d2acc4b0"
+dependencies = [
+ "iana-time-zone",
+ "js-sys",
+ "num-traits",
+ "wasm-bindgen",
+ "windows-link",
+]
+
+[[package]]
 name = "clang-sys"
 version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1714,6 +1727,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "iana-time-zone"
+version = "0.1.65"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e31bc9ad994ba00e440a8aa5c9ef0ec67d5cb5e5cb0cc7f8b744a35b389cc470"
+dependencies = [
+ "android_system_properties",
+ "core-foundation-sys",
+ "iana-time-zone-haiku",
+ "js-sys",
+ "log",
+ "wasm-bindgen",
+ "windows-core 0.62.2",
+]
+
+[[package]]
+name = "iana-time-zone-haiku"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f31827a206f56af32e590ba56d5d2d085f558508192593743f16b2306495269f"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "iced"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1728,6 +1765,22 @@ dependencies = [
  "iced_winit",
  "image",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "iced_aw"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59b7f923642b024c415150b70ef84ee5c11626e3b0af73b954d817d573bcd0a4"
+dependencies = [
+ "cfg-if",
+ "chrono",
+ "iced_core",
+ "iced_fonts",
+ "iced_widget",
+ "num-format",
+ "num-traits",
+ "web-time",
 ]
 
 [[package]]
@@ -2452,9 +2505,9 @@ dependencies = [
 
 [[package]]
 name = "maolan-baseview"
-version = "0.0.2"
+version = "0.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fba1371ea2506fe7082ec966b26021698999bf091a06658780c45675534032a0"
+checksum = "5ce226f3e60294311f0d664202393ba9341b12cedb0115ae68738deff960d781"
 dependencies = [
  "cocoa",
  "core-foundation 0.9.4",
@@ -2488,6 +2541,8 @@ dependencies = [
  "dirs",
  "ffmpeg-next",
  "hound",
+ "iced_aw",
+ "iced_fonts",
  "maolan-baseview",
  "maolan-widgets",
  "parking_lot",
@@ -2750,6 +2805,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "num-format"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a652d9771a63711fd3c3deb670acfbe5c30a4072e664d7a3bf5a9e1056ac72c3"
+dependencies = [
+ "arrayvec",
+ "itoa",
 ]
 
 [[package]]

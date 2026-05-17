@@ -199,7 +199,7 @@ impl Default for Widener {
             smooth_x1: ParamSmoother::new(x1),
             smooth_x2: ParamSmoother::new(x2),
             smooth_strength: ParamSmoother::new(5.0),
-            smooth_output: ParamSmoother::new(0.0),
+            smooth_output: ParamSmoother::new(-8.0),
             smooth_boost: ParamSmoother::new(1.0),
         };
         s.update_band_maxima_from_sample_rate();
@@ -274,7 +274,7 @@ impl Widener {
         self.smooth_x1.reset(self.x1);
         self.smooth_x2.reset(self.x2);
         self.smooth_strength.reset(5.0);
-        self.smooth_output.reset(0.0);
+        self.smooth_output.reset(-8.0);
         self.smooth_boost.reset(1.0);
     }
 
@@ -360,16 +360,27 @@ impl Widener {
                 }
             }
 
-            let wet_l = (low_l + mid_l + high_l) * out_gain;
-            let wet_r = (low_r + mid_r + high_r) * out_gain;
-            let mut out_l = wet_l;
-            let mut out_r = wet_r;
+            let wet_l = low_l + mid_l + high_l;
+            let wet_r = low_r + mid_r + high_r;
             let global_w = (low_w + mid_w + high_w) / 3.0;
             let global_boost = (1.0 + (global_w - 1.0) * 3.0 * boost).clamp(0.0, 8.0);
-            let gmid = 0.5 * (out_l + out_r);
-            let gside = 0.5 * (out_l - out_r) * global_boost;
-            out_l = gmid + gside;
-            out_r = gmid - gside;
+            let gmid = 0.5 * (wet_l + wet_r);
+            let gside = 0.5 * (wet_l - wet_r) * global_boost;
+            let mut out_l = gmid + gside;
+            let mut out_r = gmid - gside;
+
+            // Auto-compensation for width-induced loudness increase.
+            // Assumes a typical stereo mix where mid energy ≈ 2× side energy.
+            let ms_ratio = 2.0;
+            let avg_w_sq = (low_w * low_w + mid_w * mid_w + high_w * high_w) / 3.0;
+            let band_ratio = (ms_ratio + avg_w_sq) / (ms_ratio + 1.0);
+            let global_ratio = (ms_ratio + global_boost * global_boost) / (ms_ratio + 1.0);
+            let auto_comp = 1.0 / (band_ratio * global_ratio).sqrt();
+            let auto_comp = auto_comp.clamp(0.05, 1.0);
+
+            let total_gain = out_gain * auto_comp;
+            out_l *= total_gain;
+            out_r *= total_gain;
 
             match params.monitor_mode {
                 1 => {

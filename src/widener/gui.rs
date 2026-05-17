@@ -289,6 +289,7 @@ fn pretty_value(id: ParamId, value: f32, _units: &'static str) -> String {
 
 fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {
     maolan_baseview::iced::application(move || init(shared.clone()), update, view)
+        .font(iced_fonts::LUCIDE_FONT_BYTES)
         .theme(theme)
         .run()
 }

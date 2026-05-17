@@ -2594,6 +2594,7 @@ fn checkbox_param(label: &'static str, id: ParamId, value: bool) -> Element<'sta
 
 fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {
     maolan_baseview::iced::application(move || init(shared.clone()), update, view)
+        .font(iced_fonts::LUCIDE_FONT_BYTES)
         .theme(theme)
         .run()
 }
