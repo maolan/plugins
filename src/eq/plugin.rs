@@ -249,8 +249,13 @@ impl AudioProcessor {
         }
 
         // Apply per-band dynamic gain modulation before processing.
+        // Sidechain is only available for bell-type bands.
         if reduction_db > 0.0 {
             for i in 0..32 {
+                let band_type = shared.params.get(ParamId::para_type(i));
+                if band_type != 1.0 {
+                    continue;
+                }
                 let dyn_amount = shared.params.get(ParamId::para_dyn(i)) as f32;
                 if dyn_amount > 0.0 {
                     let base_gain = shared.params.get(ParamId::para_gain(i)) as f32;

@@ -180,7 +180,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 "Strength",
                 ParamId::Strength,
                 p(ParamId::Strength),
-                "ms",
+                "",
                 0.1
             ),
         ]
@@ -280,7 +280,7 @@ fn pretty_value(id: ParamId, value: f32, _units: &'static str) -> String {
             _ => "Stereo".to_string(),
         },
         ParamId::Low | ParamId::Mid | ParamId::High => format!("{value:.0} %"),
-        ParamId::Strength => format!("{value:.1} ms"),
+        ParamId::Strength => format!("{value:.1}"),
         ParamId::Boost => format!("{value:.2}x"),
         ParamId::OutputGain => format!("{value:.1} dB"),
         ParamId::X1 | ParamId::X2 => format!("{value:.0} Hz"),

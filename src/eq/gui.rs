@@ -388,14 +388,6 @@ fn view(state: &State) -> Element<'_, Message> {
                 Message::UiTick // dummy message to force refresh
             });
 
-        let dyn_knob = knob(
-            "Dyn".to_string(),
-            ParamId::para_dyn(sb),
-            p(ParamId::para_dyn(sb)),
-            "",
-            0.01,
-        );
-
         if matches!(band_type, BandType::LowPass | BandType::HighPass) {
             row![
                 channels_dropdown,
@@ -409,7 +401,6 @@ fn view(state: &State) -> Element<'_, Message> {
                     "",
                     0.01
                 ),
-                dyn_knob,
                 listen_checkbox,
                 maolan_baseview::iced::widget::button("Delete").on_press(Message::DeleteBand),
             ]
@@ -417,6 +408,13 @@ fn view(state: &State) -> Element<'_, Message> {
             .align_y(Alignment::Center)
             .into()
         } else {
+            let dyn_knob = knob(
+                "Dyn".to_string(),
+                ParamId::para_dyn(sb),
+                p(ParamId::para_dyn(sb)),
+                "",
+                0.01,
+            );
             row![
                 channels_dropdown,
                 type_dropdown,
