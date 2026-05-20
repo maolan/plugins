@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use super::slot::SeqLockSlot;
@@ -13,6 +13,10 @@ static REGISTRY: LazyLock<Mutex<HashMap<InstanceId, Arc<PluginSharedData>>>> =
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Bumps every time a plugin registers or unregisters so consumers can
+/// lazily re-discover peers only when the peer set actually changes.
+static REGISTRY_VERSION: AtomicU64 = AtomicU64::new(0);
+
 /// Opaque handle for a plugin instance on the bus.
 pub type InstanceId = u64;
 
@@ -24,12 +28,20 @@ pub fn next_instance_id() -> InstanceId {
 /// Register a plugin instance so peers can discover it.
 pub fn register(id: InstanceId, data: Arc<PluginSharedData>) {
     REGISTRY.lock().unwrap().insert(id, data);
+    REGISTRY_VERSION.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Unregister a plugin instance.  Consumers holding cloned `Arc`s will still
 /// be able to read the last published data until they drop their reference.
 pub fn unregister(id: InstanceId) {
     REGISTRY.lock().unwrap().remove(&id);
+    REGISTRY_VERSION.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Current registry version.  Consumers cache this and re-discover only when
+/// it has changed.
+pub fn registry_version() -> u64 {
+    REGISTRY_VERSION.load(Ordering::Relaxed)
 }
 
 /// Discover peers matching `filter`.
@@ -54,26 +66,19 @@ pub fn get(id: InstanceId) -> Option<Arc<PluginSharedData>> {
 pub struct PluginSharedData {
     pub plugin_type: PluginType,
 
-    /// Consumers increment this when they want FFT data from this plugin.
-    /// The producer checks `fft_demand.is_active()` and lazily computes.
-    pub fft_demand: Demand,
-
-    /// Consumers increment this when they want EQ-band data.
-    pub bands_demand: Demand,
-
     /// Published data.  `None` if this plugin never produces that type.
     pub fft_slot: Option<SeqLockSlot<FftData>>,
     pub bands_slot: Option<SeqLockSlot<EqBands>>,
+    pub gr_slot: Option<SeqLockSlot<CompressorGrData>>,
 }
 
 impl PluginSharedData {
     pub fn new(plugin_type: PluginType) -> Self {
         Self {
             plugin_type,
-            fft_demand: Demand::new(),
-            bands_demand: Demand::new(),
             fft_slot: None,
             bands_slot: None,
+            gr_slot: None,
         }
     }
 
@@ -86,6 +91,11 @@ impl PluginSharedData {
         self.bands_slot = Some(SeqLockSlot::new(data));
         self
     }
+
+    pub fn with_gr(mut self, data: CompressorGrData) -> Self {
+        self.gr_slot = Some(SeqLockSlot::new(data));
+        self
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -93,41 +103,42 @@ pub enum PluginType {
     Eq,
     Drust,
     Compressor,
-    // extend as needed
+    Deesser,
+    Delay,
+    Limiter,
+    Reverb,
+    Saturator,
+    Stereo,
+    Widener,
+    Kick,
+    RuralModeler,
 }
 
 // ---------------------------------------------------------------------------
-// Demand tracking — lock-free counter
+// Global needs mask — consumers OR in what they want; producers AND-check.
 // ---------------------------------------------------------------------------
 
-/// A simple lock-free demand counter.  Consumers `request()` / `release()`;
-/// the producer checks `is_active()`.
-pub struct Demand {
-    count: AtomicUsize,
+static NEEDS: AtomicU32 = AtomicU32::new(0);
+
+pub const NEED_FFT: u32 = 1;
+pub const NEED_BANDS: u32 = 2;
+pub const NEED_GR: u32 = 4;
+
+/// Declare that this process needs data described by `mask`.
+/// Call once when a consumer comes alive (e.g. GUI opens).
+pub fn add_needs(mask: u32) {
+    NEEDS.fetch_or(mask, Ordering::Relaxed);
 }
 
-impl Demand {
-    pub const fn new() -> Self {
-        Self {
-            count: AtomicUsize::new(0),
-        }
-    }
+/// Revoke a previous `add_needs`.  Call on teardown so producers stop
+/// computing data no-one needs.
+pub fn remove_needs(mask: u32) {
+    NEEDS.fetch_and(!mask, Ordering::Relaxed);
+}
 
-    /// Signal that one more consumer wants this data.
-    pub fn request(&self) {
-        self.count.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Signal that a consumer no longer needs this data.
-    pub fn release(&self) {
-        // Relaxed is fine: the producer only cares whether count > 0.
-        self.count.fetch_sub(1, Ordering::Relaxed);
-    }
-
-    /// True if at least one consumer has requested this data.
-    pub fn is_active(&self) -> bool {
-        self.count.load(Ordering::Relaxed) > 0
-    }
+/// True if any consumer has declared a need in `mask`.
+pub fn needs(mask: u32) -> bool {
+    NEEDS.load(Ordering::Relaxed) & mask != 0
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +203,22 @@ impl Default for EqBands {
         Self {
             len: 0,
             bands: [EqBand::default(); 64],
+        }
+    }
+}
+
+/// Per-band gain-reduction data produced by a dynamics plugin.
+#[derive(Clone, Copy)]
+pub struct CompressorGrData {
+    pub valid_bands: usize,
+    pub gr_db: [f32; 8],
+}
+
+impl Default for CompressorGrData {
+    fn default() -> Self {
+        Self {
+            valid_bands: 0,
+            gr_db: [0.0; 8],
         }
     }
 }

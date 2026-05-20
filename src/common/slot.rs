@@ -56,7 +56,7 @@ impl<T> SeqLockSlot<T> {
         T: Copy,
     {
         let seq_before = self.seq.load(Ordering::Acquire);
-        if seq_before % 2 != 0 {
+        if !seq_before.is_multiple_of(2) {
             return false;
         }
 

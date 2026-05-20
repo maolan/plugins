@@ -74,6 +74,11 @@ impl BandCompressor {
 
         self.smooth_env_db + gain_to_db(self.makeup_lin)
     }
+
+    /// Current gain reduction in dB (negative value = reduction).
+    fn current_gr_db(&self) -> f32 {
+        -self.smooth_env_db
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -401,6 +406,8 @@ pub struct Compressor {
     dry_phase_eq: DryPhaseEq,
     lookahead_l: DelayLine,
     lookahead_r: DelayLine,
+    gr_db_accum: [f32; 4],
+    gr_db_count: usize,
 }
 
 impl Default for Compressor {
@@ -425,6 +432,8 @@ impl Default for Compressor {
             dry_phase_eq: DryPhaseEq::default(),
             lookahead_l: DelayLine::new(max_delay_samples),
             lookahead_r: DelayLine::new(max_delay_samples),
+            gr_db_accum: [0.0; 4],
+            gr_db_count: 0,
         }
     }
 }
@@ -457,6 +466,22 @@ impl Compressor {
         self.dry_phase_eq.reset();
         self.lookahead_l.reset();
         self.lookahead_r.reset();
+        self.gr_db_accum = [0.0; 4];
+        self.gr_db_count = 0;
+    }
+
+    /// Return average GR per band over the last block and reset accumulators.
+    pub fn take_gr_db(&mut self) -> [f32; 4] {
+        let mut out = [0.0f32; 4];
+        if self.gr_db_count > 0 {
+            let inv = 1.0 / self.gr_db_count as f32;
+            for (o, &a) in out.iter_mut().zip(self.gr_db_accum.iter()) {
+                *o = a * inv;
+            }
+        }
+        self.gr_db_accum = [0.0; 4];
+        self.gr_db_count = 0;
+        out
     }
 
     pub fn set_sc_mode(&mut self, mode: u32) {
@@ -602,7 +627,9 @@ impl Compressor {
                 let gain = db_to_gain(gain_db);
                 wet_l += aud_l[band] * gain;
                 wet_r += aud_r[band] * gain;
+                self.gr_db_accum[band] += self.bands[band].current_gr_db();
             }
+            self.gr_db_count += 1;
 
             let (dry_l, dry_r) = self.dry_phase_eq.process_stereo(delayed_l, delayed_r);
             left[i] = (wet_l * self.wet_gain + dry_l * self.dry_gain) * self.output_gain_lin;

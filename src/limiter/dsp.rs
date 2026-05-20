@@ -780,12 +780,7 @@ impl Limiter {
         self.modern.reset();
     }
 
-    pub fn process_stereo(
-        &mut self,
-        left: &mut [f32],
-        right: &mut [f32],
-        params: &LimiterParams,
-    ) {
+    pub fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32], params: &LimiterParams) {
         match params.variant {
             0 => self.vintage.process_stereo(
                 left,
@@ -795,13 +790,9 @@ impl Limiter {
                 params.enhance,
                 params.mode,
             ),
-            1 => self.modern.process_stereo(
-                left,
-                right,
-                params.boost,
-                params.ceiling,
-                params.mode,
-            ),
+            1 => self
+                .modern
+                .process_stereo(left, right, params.boost, params.ceiling, params.mode),
             _ => {}
         }
     }

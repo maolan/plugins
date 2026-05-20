@@ -176,13 +176,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 .align_x(Alignment::Center),
             )
             .width(Length::Fixed(96.0)),
-            knob(
-                "Strength",
-                ParamId::Strength,
-                p(ParamId::Strength),
-                "",
-                0.1
-            ),
+            knob("Strength", ParamId::Strength, p(ParamId::Strength), "", 0.1),
         ]
         .spacing(16),
     );

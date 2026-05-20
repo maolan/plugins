@@ -13,10 +13,7 @@ use maolan_baseview::iced::{
         column, container, row, text,
     },
 };
-use maolan_widgets::{
-    arch_slider::arch_slider,
-
-};
+use maolan_widgets::arch_slider::arch_slider;
 use std::{
     collections::HashSet,
     ffi::CStr,
@@ -163,28 +160,30 @@ struct State {
     shared: Arc<SharedState<ParamId>>,
     selected_band: Option<usize>,
     active_gestures: HashSet<ParamId>,
-    /// Discovered Drust peers on the inter-plugin bus.
-    drust_peers: Vec<Arc<bus::PluginSharedData>>,
+    /// Discovered non-EQ peers on the inter-plugin bus.
+    bus_peers: Vec<Arc<bus::PluginSharedData>>,
     /// Per-band collision score (0.0 = none, 1.0 = heavy overlap with peer FFT).
     collision_scores: [f32; 32],
+    /// Last seen registry version; re-discover only when this changes.
+    last_registry_version: u64,
 }
 
 impl Drop for State {
     fn drop(&mut self) {
-        for peer in &self.drust_peers {
-            peer.fft_demand.release();
-        }
+        bus::remove_needs(bus::NEED_FFT);
     }
 }
 
 fn init(shared: Arc<SharedState<ParamId>>) -> (State, Task<Message>) {
+    bus::add_needs(bus::NEED_FFT);
     (
         State {
             shared,
             selected_band: None,
             active_gestures: HashSet::new(),
-            drust_peers: Vec::new(),
+            bus_peers: Vec::new(),
             collision_scores: [0.0; 32],
+            last_registry_version: 0,
         },
         next_ui_tick_task(),
     )
@@ -237,7 +236,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             state
                 .shared
-                .set_param_outbound_only(id, if value { 1.0 } else { 0.0 })
+                .set_param_outbound_only(id, if value { 1.0 } else { 0.0 });
+            if id == ParamId::SidechainEnable {
+                // Sidechain changed → may affect collision-relevant frequencies.
+                state.last_registry_version = 0;
+            }
         }
         Message::ReleaseParam(id) => {
             if state.active_gestures.remove(&id) {
@@ -266,6 +269,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     break;
                 }
             }
+            // Band count changed → may affect collision-relevant frequencies.
+            state.last_registry_version = 0;
         }
         Message::SelectBand(index) => {
             state.selected_band = Some(index);
@@ -279,6 +284,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.shared.set_param_outbound_only(oid, 0.0);
                 state.selected_band = None;
             }
+            // Band count changed → may affect collision-relevant frequencies.
+            state.last_registry_version = 0;
         }
         Message::SetChannels(mode) => {
             state
@@ -288,18 +295,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::NoOp => {}
         Message::UiTick => {
-            // Discover Drust peers and request their FFT data.
-            if state.drust_peers.is_empty() {
-                state.drust_peers = bus::discover(|p| p.plugin_type == bus::PluginType::Drust);
-                for peer in &state.drust_peers {
-                    peer.fft_demand.request();
-                }
+            // Re-discover peers only when the registry has changed.
+            let version = bus::registry_version();
+            if version != state.last_registry_version {
+                state.bus_peers = bus::discover(|p| p.plugin_type != bus::PluginType::Eq);
+                state.last_registry_version = version;
             }
 
             // Read peer FFTs and compute collision scores for each EQ band.
             state.collision_scores.fill(0.0);
             let mut peer_fft = bus::FftData::default();
-            for peer in &state.drust_peers {
+            for peer in &state.bus_peers {
                 if let Some(ref slot) = peer.fft_slot {
                     if !slot.read(&mut peer_fft) || peer_fft.valid_bins == 0 {
                         continue;
@@ -317,7 +323,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         }
                         // Find the FFT bin closest to this band frequency.
                         let bin_idx = ((freq / nyquist) * peer_fft.valid_bins as f32)
-                            .clamp(0.0, (peer_fft.valid_bins - 1) as f32) as usize;
+                            .clamp(0.0, (peer_fft.valid_bins - 1) as f32)
+                            as usize;
                         let db = peer_fft.bins[bin_idx];
                         if db > -60.0 {
                             // Normalize collision score: -60 dB -> 0.0, 0 dB -> 1.0.
@@ -935,7 +942,11 @@ impl Program<Message> for EqResponseCanvas {
                 },
             );
             let is_selected = Some(*global_idx) == self.selected_band;
-            let collision = self.collision_scores.get(*global_idx).copied().unwrap_or(0.0);
+            let collision = self
+                .collision_scores
+                .get(*global_idx)
+                .copied()
+                .unwrap_or(0.0);
             let node = Path::circle(Point::new(x, y), if is_selected { 6.0 } else { 4.5 });
             frame.fill(
                 &node,
@@ -950,7 +961,11 @@ impl Program<Message> for EqResponseCanvas {
                 frame.stroke(
                     &node,
                     canvas::Stroke::default()
-                        .with_color(Color::from_rgb(1.0, 0.2 * (1.0 - collision), 0.2 * (1.0 - collision)))
+                        .with_color(Color::from_rgb(
+                            1.0,
+                            0.2 * (1.0 - collision),
+                            0.2 * (1.0 - collision),
+                        ))
                         .with_width(1.0 + collision * 2.0),
                 );
             } else {

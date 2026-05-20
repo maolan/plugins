@@ -29,6 +29,7 @@ use parking_lot::Mutex;
 use crate::common::{
     SharedStateExt, apply_param_events, copy_str_to_array, emit_pending_param_events_to_host,
 };
+use crate::common::{bus, fft};
 use crate::saturator::{
     dsp::SingleEndedTriode,
     gui::GuiBridge,
@@ -261,14 +262,26 @@ struct AudioProcessor {
     dsp: SingleEndedTriode,
     temp_left: Vec<f32>,
     temp_right: Vec<f32>,
+    bus_data: Option<Arc<bus::PluginSharedData>>,
+    fft_scratch: Vec<f32>,
+    fft_mag: Vec<f32>,
+    fft_analyzer: fft::SpectrumAnalyzer,
 }
 
 impl AudioProcessor {
-    fn new(_sample_rate: f64, max_frames: u32) -> Self {
+    fn new(
+        _sample_rate: f64,
+        max_frames: u32,
+        bus_data: Option<Arc<bus::PluginSharedData>>,
+    ) -> Self {
         Self {
             dsp: SingleEndedTriode::default(),
             temp_left: vec![0.0; max_frames as usize],
             temp_right: vec![0.0; max_frames as usize],
+            bus_data,
+            fft_scratch: vec![0.0; max_frames as usize],
+            fft_mag: vec![0.0; 1024],
+            fft_analyzer: fft::SpectrumAnalyzer::new(max_frames as usize),
         }
     }
 
@@ -332,6 +345,24 @@ impl AudioProcessor {
             output_port.data32(0)[..frames].copy_from_slice(&self.temp_left[..frames]);
         }
 
+        if let Some(ref bus) = self.bus_data
+            && bus::needs(bus::NEED_FFT)
+        {
+            self.fft_scratch[..frames].fill(0.0);
+            for i in 0..frames {
+                self.fft_scratch[i] = (self.temp_left[i] + self.temp_right[i]) * 0.5;
+            }
+            if let Some(ref slot) = bus.fft_slot {
+                let n = frames.min(1024);
+                self.fft_analyzer
+                    .process(&self.fft_scratch[..frames], &mut self.fft_mag[..n]);
+                slot.write(|fft| {
+                    fft::magnitude_to_db(&self.fft_mag[..n], &mut fft.bins[..n], -90.0);
+                    fft.valid_bins = n;
+                });
+            }
+        }
+
         CLAP_PROCESS_CONTINUE
     }
 }
@@ -342,18 +373,28 @@ struct PluginInstance {
     processor: AtomicPtr<AudioProcessor>,
     retired_processors: Mutex<Vec<*mut AudioProcessor>>,
     gui_bridge: Mutex<GuiBridge>,
+    bus_id: bus::InstanceId,
+    bus_data: Arc<bus::PluginSharedData>,
 }
 
 impl PluginInstance {
     fn new(host: *const clap_host) -> Self {
         let shared = Arc::new(SharedState::default());
         shared.set_host(host);
+        let bus_id = bus::next_instance_id();
+        let bus_data = Arc::new(
+            bus::PluginSharedData::new(bus::PluginType::Saturator)
+                .with_fft(bus::FftData::default()),
+        );
+        bus::register(bus_id, bus_data.clone());
         Self {
             shared,
             active: AtomicBool::new(false),
             processor: AtomicPtr::new(null_mut()),
             retired_processors: Mutex::new(Vec::new()),
             gui_bridge: Mutex::new(GuiBridge::default()),
+            bus_id,
+            bus_data,
         }
     }
 }
@@ -393,6 +434,8 @@ unsafe extern "C-unwind" fn plugin_destroy(plugin: *const clap_plugin) {
     if plugin.is_null() {
         return;
     }
+    let instance = unsafe { &*((*plugin).plugin_data as *mut PluginInstance) };
+    bus::unregister(instance.bus_id);
     let _ = unsafe { Box::from_raw((*plugin).plugin_data as *mut PluginInstance) };
     let _ = unsafe { Box::from_raw(plugin as *mut clap_plugin) };
 }
@@ -408,7 +451,11 @@ unsafe extern "C-unwind" fn plugin_activate(
     }
     let instance = unsafe { instance(plugin) };
     instance.shared.set_sample_rate(sample_rate);
-    let next = Box::into_raw(Box::new(AudioProcessor::new(sample_rate, max_frames)));
+    let next = Box::into_raw(Box::new(AudioProcessor::new(
+        sample_rate,
+        max_frames,
+        Some(instance.bus_data.clone()),
+    )));
     let old = instance.processor.swap(next, Ordering::AcqRel);
     if !old.is_null() {
         instance.retired_processors.lock().push(old);

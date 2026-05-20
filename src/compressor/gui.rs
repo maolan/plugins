@@ -5,7 +5,10 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread,
+    time::Duration,
 };
+
+use crate::common::bus;
 
 #[cfg(target_os = "macos")]
 use clap_clap::ffi::CLAP_WINDOW_API_COCOA;
@@ -127,20 +130,46 @@ pub enum Message {
     SetTopology(u8),
     SetChannels(ChannelMode),
     ReleaseParam(ParamId),
+    UiTick,
 }
 
 struct State {
     shared: Arc<SharedState>,
     active_gestures: Vec<bool>,
+    /// Discovered EQ peers on the inter-plugin bus.
+    eq_peers: Vec<Arc<bus::PluginSharedData>>,
+    /// Cached active EQ band frequencies for display.
+    eq_band_freqs: Vec<f32>,
+    /// Last seen registry version; re-discover only when this changes.
+    last_registry_version: u64,
+}
+
+impl Drop for State {
+    fn drop(&mut self) {
+        bus::remove_needs(bus::NEED_BANDS);
+    }
 }
 
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
+    bus::add_needs(bus::NEED_BANDS);
     (
         State {
             shared,
             active_gestures: vec![false; ParamId::COUNT],
+            eq_peers: Vec::new(),
+            eq_band_freqs: Vec::new(),
+            last_registry_version: 0,
         },
-        Task::none(),
+        next_ui_tick_task(),
+    )
+}
+
+fn next_ui_tick_task() -> Task<Message> {
+    Task::perform(
+        async move {
+            thread::sleep(Duration::from_millis(500));
+        },
+        |_| Message::UiTick,
     )
 }
 
@@ -202,6 +231,33 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .set_param_outbound_only(ParamId::Channels, u32::from(mode) as f64);
             state.shared.request_audio_ports_rescan();
         }
+        Message::UiTick => {
+            // Re-discover peers only when the registry has changed.
+            let version = bus::registry_version();
+            if version != state.last_registry_version {
+                state.eq_peers = bus::discover(|p| p.plugin_type == bus::PluginType::Eq);
+                state.last_registry_version = version;
+            }
+
+            let mut freqs = Vec::new();
+            let mut bands = bus::EqBands::default();
+            for peer in &state.eq_peers {
+                if let Some(ref slot) = peer.bands_slot
+                    && slot.read(&mut bands)
+                {
+                    for i in 0..bands.len.min(bands.bands.len()) {
+                        if bands.bands[i].on {
+                            freqs.push(bands.bands[i].freq);
+                        }
+                    }
+                }
+            }
+            freqs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            freqs.dedup_by(|a, b| (*a - *b).abs() < 5.0);
+            state.eq_band_freqs = freqs;
+
+            return next_ui_tick_task();
+        }
     }
     Task::none()
 }
@@ -259,6 +315,16 @@ fn view(state: &State) -> Element<'_, Message> {
         ]
         .spacing(12),
     );
+
+    if !state.eq_band_freqs.is_empty() {
+        let freq_text = state
+            .eq_band_freqs
+            .iter()
+            .map(|f| format!("{f:.0} Hz"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        content = content.push(row![text(format!("EQ bands: {freq_text}")).size(12)].spacing(4));
+    }
 
     content = content.push(band_row(
         "Band 1",

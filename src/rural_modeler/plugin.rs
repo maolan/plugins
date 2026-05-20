@@ -31,6 +31,7 @@ use parking_lot::{Mutex, RwLock};
 use crate::common::{
     SharedStateExt, apply_param_events, copy_str_to_array, emit_pending_param_events_to_host,
 };
+use crate::common::{bus, fft};
 use crate::rural_modeler::{
     dsp::activations::enable_fast_tanh,
     dsp::{
@@ -439,10 +440,17 @@ struct AudioProcessor {
     dc_block: OnePoleHighPass,
     mono_input: Vec<f32>,
     mono_output: Vec<f32>,
+    bus_data: Option<Arc<bus::PluginSharedData>>,
+    fft_mag: Vec<f32>,
+    fft_analyzer: fft::SpectrumAnalyzer,
 }
 
 impl AudioProcessor {
-    fn new(sample_rate: f64, max_frames: u32) -> Self {
+    fn new(
+        sample_rate: f64,
+        max_frames: u32,
+        bus_data: Option<Arc<bus::PluginSharedData>>,
+    ) -> Self {
         let mut tone_stack = ToneStack::default();
         tone_stack.reset(sample_rate as f32);
         let mut noise_gate_trigger = NoiseGateTrigger::default();
@@ -460,6 +468,9 @@ impl AudioProcessor {
             dc_block,
             mono_input: vec![0.0; max_frames as usize],
             mono_output: vec![0.0; max_frames as usize],
+            bus_data,
+            fft_mag: vec![0.0; 1024],
+            fft_analyzer: fft::SpectrumAnalyzer::new(max_frames as usize),
         }
     }
 
@@ -626,6 +637,20 @@ impl AudioProcessor {
             let out = output_port.data32(channel as u32);
             out[..frames].copy_from_slice(&self.mono_output[..frames]);
         }
+
+        if let Some(ref bus) = self.bus_data
+            && bus::needs(bus::NEED_FFT)
+            && let Some(ref slot) = bus.fft_slot
+        {
+            let n = frames.min(1024);
+            self.fft_analyzer
+                .process(&self.mono_output[..frames], &mut self.fft_mag[..n]);
+            slot.write(|fft| {
+                fft::magnitude_to_db(&self.fft_mag[..n], &mut fft.bins[..n], -90.0);
+                fft.valid_bins = n;
+            });
+        }
+
         CLAP_PROCESS_CONTINUE
     }
 
@@ -643,6 +668,8 @@ struct PluginInstance {
     processor: AtomicPtr<AudioProcessor>,
     retired_processors: Mutex<Vec<*mut AudioProcessor>>,
     gui_bridge: Mutex<GuiBridge>,
+    bus_id: bus::InstanceId,
+    bus_data: Arc<bus::PluginSharedData>,
 }
 
 impl PluginInstance {
@@ -658,12 +685,20 @@ impl PluginInstance {
                 shared.restore_ir_path_and_load(ir_path);
             }
         }
+        let bus_id = bus::next_instance_id();
+        let bus_data = Arc::new(
+            bus::PluginSharedData::new(bus::PluginType::RuralModeler)
+                .with_fft(bus::FftData::default()),
+        );
+        bus::register(bus_id, bus_data.clone());
         Self {
             shared,
             active: AtomicBool::new(false),
             processor: AtomicPtr::new(null_mut()),
             retired_processors: Mutex::new(Vec::new()),
             gui_bridge: Mutex::new(GuiBridge::default()),
+            bus_id,
+            bus_data,
         }
     }
 }
@@ -754,6 +789,8 @@ unsafe extern "C-unwind" fn plugin_destroy(plugin: *const clap_plugin) {
     if plugin.is_null() {
         return;
     }
+    let instance = unsafe { &*((*plugin).plugin_data as *mut PluginInstance) };
+    bus::unregister(instance.bus_id);
     let _ = unsafe { Box::from_raw((*plugin).plugin_data as *mut PluginInstance) };
     let _ = unsafe { Box::from_raw(plugin as *mut clap_plugin) };
 }
@@ -769,7 +806,11 @@ unsafe extern "C-unwind" fn plugin_activate(
     }
     let instance = unsafe { instance(plugin) };
     instance.shared.set_sample_rate(sample_rate);
-    let next = Box::into_raw(Box::new(AudioProcessor::new(sample_rate, max_frames)));
+    let next = Box::into_raw(Box::new(AudioProcessor::new(
+        sample_rate,
+        max_frames,
+        Some(instance.bus_data.clone()),
+    )));
     let old = instance.processor.swap(next, Ordering::AcqRel);
     if !old.is_null() {
         instance.retired_processors.lock().push(old);

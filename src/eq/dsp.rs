@@ -1,4 +1,3 @@
-
 #[derive(Debug, Clone)]
 pub struct ParametricEqualizer {
     sample_rate: f32,

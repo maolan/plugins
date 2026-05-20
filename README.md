@@ -10,7 +10,8 @@ theme.
 
 | Plugin | ID | I/O | Description |
 |--------|-----|-----|-------------|
-| **Drust** | `rs.maolan.drust` | 16× Mono | DrumGizmo-inspired drum sampler |
+| **Drust** | `rs.maolan.drust` | 8× Stereo | DrumGizmo-inspired drum sampler |
+| **Maolan Kick** | `rs.maolan.kick` | 16× Mono | Percussive synthesizer with layered oscillators and noise |
 | **Maolan Compressor** | `rs.maolan.compressor` | Mono / Stereo | 4-band multiband compressor with lookahead and sidechain boost |
 | **Maolan DeEsser** | `rs.maolan.deesser` | Stereo | Sibilance reduction processor |
 | **Maolan Delay** | `rs.maolan.delay` | Mono / Stereo | Delay with ms / note-sync modes and smooth chasing |

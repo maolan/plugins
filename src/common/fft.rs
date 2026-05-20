@@ -43,17 +43,17 @@ impl SpectrumAnalyzer {
 
         let scratch_len = fft.get_inplace_scratch_len();
         if self.scratch.len() < scratch_len {
-            self.scratch.resize(scratch_len, Complex { re: 0.0, im: 0.0 });
+            self.scratch
+                .resize(scratch_len, Complex { re: 0.0, im: 0.0 });
         }
-        fft.process_with_scratch(
-            &mut self.complex_buf[..n],
-            &mut self.scratch[..scratch_len],
-        );
+        fft.process_with_scratch(&mut self.complex_buf[..n], &mut self.scratch[..scratch_len]);
 
         let out_len = output.len().min(self.complex_buf.len());
-        for i in 0..out_len {
-            let c = self.complex_buf[i];
-            output[i] = (c.re * c.re + c.im * c.im).sqrt();
+        for (c, o) in self.complex_buf[..out_len]
+            .iter()
+            .zip(output[..out_len].iter_mut())
+        {
+            *o = (c.re * c.re + c.im * c.im).sqrt();
         }
     }
 }

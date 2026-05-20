@@ -32,8 +32,12 @@ use std::mem::size_of;
 
 use crate::common::bus;
 use crate::eq::dsp::ParametricEqualizer;
-use crate::eq::gui::{ParentWindowHandle, is_api_supported, preferred_api, EDITOR_HEIGHT, EDITOR_WIDTH, GuiBridge};
-use crate::eq::params::{ParamDef, ParamIdExt, ParamStore, copy_str_to_array, sanitize_param_value, PARAMS, ParamId};
+use crate::eq::gui::{
+    EDITOR_HEIGHT, EDITOR_WIDTH, GuiBridge, ParentWindowHandle, is_api_supported, preferred_api,
+};
+use crate::eq::params::{
+    PARAMS, ParamDef, ParamId, ParamIdExt, ParamStore, copy_str_to_array, sanitize_param_value,
+};
 
 const PLUGIN_ID: &[u8] = b"rs.maolan.equalizer\0";
 const PLUGIN_NAME: &[u8] = b"Maolan EQ\0";
@@ -86,7 +90,11 @@ struct AudioProcessor {
 }
 
 impl AudioProcessor {
-    fn new(sample_rate: f64, max_frames: u32, bus_data: Option<Arc<bus::PluginSharedData>>) -> Self {
+    fn new(
+        sample_rate: f64,
+        max_frames: u32,
+        bus_data: Option<Arc<bus::PluginSharedData>>,
+    ) -> Self {
         let sr = sample_rate as f32;
         let equalizer = ParametricEqualizer::new(sr);
         Self {
@@ -133,30 +141,28 @@ impl AudioProcessor {
             );
         }
         // Publish band data to the inter-plugin bus.
-        if let Some(ref bus) = self.bus_data {
-            if let Some(ref slot) = bus.bands_slot {
-                let mut count = 0;
-                let mut bands = [bus::EqBand::default(); 64];
-                for i in 0..32 {
-                    if shared.params.get_bool(ParamId::para_on(i)) {
-                        if count < bands.len() {
-                            bands[count] = bus::EqBand {
-                                freq: shared.params.get(ParamId::para_freq(i)) as f32,
-                                gain: shared.params.get(ParamId::para_gain(i)) as f32,
-                                q: shared.params.get(ParamId::para_q(i)) as f32,
-                                on: true,
-                                typ: shared.params.get(ParamId::para_type(i)) as u8,
-                                slope: shared.params.get(ParamId::para_slope(i)) as u8,
-                            };
-                            count += 1;
-                        }
-                    }
+        if let Some(ref bus) = self.bus_data
+            && let Some(ref slot) = bus.bands_slot
+        {
+            let mut count = 0;
+            let mut bands = [bus::EqBand::default(); 64];
+            for i in 0..32 {
+                if shared.params.get_bool(ParamId::para_on(i)) && count < bands.len() {
+                    bands[count] = bus::EqBand {
+                        freq: shared.params.get(ParamId::para_freq(i)) as f32,
+                        gain: shared.params.get(ParamId::para_gain(i)) as f32,
+                        q: shared.params.get(ParamId::para_q(i)) as f32,
+                        on: true,
+                        typ: shared.params.get(ParamId::para_type(i)) as u8,
+                        slope: shared.params.get(ParamId::para_slope(i)) as u8,
+                    };
+                    count += 1;
                 }
-                slot.write(|data| {
-                    data.len = count;
-                    data.bands = bands;
-                });
             }
+            slot.write(|data| {
+                data.len = count;
+                data.bands = bands;
+            });
         }
     }
 
@@ -200,10 +206,16 @@ impl AudioProcessor {
             let release_ms = shared.params.get(ParamId::SidechainReleaseMs) as f32;
             let attack_s = attack_ms / 1000.0;
             let release_s = release_ms / 1000.0;
-            let attack_coef =
-                if attack_s > 0.0 { (-1.0 / (sample_rate * attack_s)).exp() } else { 0.0 };
-            let release_coef =
-                if release_s > 0.0 { (-1.0 / (sample_rate * release_s)).exp() } else { 0.0 };
+            let attack_coef = if attack_s > 0.0 {
+                (-1.0 / (sample_rate * attack_s)).exp()
+            } else {
+                0.0
+            };
+            let release_coef = if release_s > 0.0 {
+                (-1.0 / (sample_rate * release_s)).exp()
+            } else {
+                0.0
+            };
             let threshold_db = shared.params.get(ParamId::SidechainThreshold) as f32;
             let ratio = shared.params.get(ParamId::SidechainRatio) as f32;
 
@@ -213,8 +225,8 @@ impl AudioProcessor {
                 if sc_data.is_empty() {
                     continue;
                 }
-                for i in 0..frames {
-                    let input_abs = sc_data[i].abs();
+                for &sample in &sc_data[..frames] {
+                    let input_abs = sample.abs();
                     if input_abs > self.sc_envelope {
                         self.sc_envelope =
                             attack_coef * self.sc_envelope + (1.0 - attack_coef) * input_abs;
@@ -333,14 +345,15 @@ impl AudioProcessor {
                     );
                     shared.set_output_spectrum_db(&spectrum);
                     // Publish to inter-plugin bus.
-                    if let Some(ref bus) = self.bus_data {
-                        if let Some(ref slot) = bus.fft_slot {
-                            slot.write(|fft| {
-                                let n = spectrum.len().min(fft.bins.len());
-                                fft.bins[..n].copy_from_slice(&spectrum[..n]);
-                                fft.valid_bins = n;
-                            });
-                        }
+                    if let Some(ref bus) = self.bus_data
+                        && bus::needs(bus::NEED_FFT)
+                        && let Some(ref slot) = bus.fft_slot
+                    {
+                        slot.write(|fft| {
+                            let n = spectrum.len().min(fft.bins.len());
+                            fft.bins[..n].copy_from_slice(&spectrum[..n]);
+                            fft.valid_bins = n;
+                        });
                     }
                     self.spectrum_samples_since_update = 0;
                 }
@@ -391,14 +404,15 @@ impl AudioProcessor {
                     );
                     shared.set_output_spectrum_db(&spectrum);
                     // Publish to inter-plugin bus.
-                    if let Some(ref bus) = self.bus_data {
-                        if let Some(ref slot) = bus.fft_slot {
-                            slot.write(|fft| {
-                                let n = spectrum.len().min(fft.bins.len());
-                                fft.bins[..n].copy_from_slice(&spectrum[..n]);
-                                fft.valid_bins = n;
-                            });
-                        }
+                    if let Some(ref bus) = self.bus_data
+                        && bus::needs(bus::NEED_FFT)
+                        && let Some(ref slot) = bus.fft_slot
+                    {
+                        slot.write(|fft| {
+                            let n = spectrum.len().min(fft.bins.len());
+                            fft.bins[..n].copy_from_slice(&spectrum[..n]);
+                            fft.valid_bins = n;
+                        });
                     }
                     self.spectrum_samples_since_update = 0;
                 }
@@ -825,7 +839,11 @@ unsafe extern "C-unwind" fn plugin_activate(
         .sample_rate_bits
         .store(sample_rate.to_bits(), Ordering::Release);
     let bus_data = Some(instance.bus_data.clone());
-    let next = Box::into_raw(Box::new(AudioProcessor::new(sample_rate, max_frames, bus_data)));
+    let next = Box::into_raw(Box::new(AudioProcessor::new(
+        sample_rate,
+        max_frames,
+        bus_data,
+    )));
     let old = instance.processor.swap(next, Ordering::AcqRel);
     if !old.is_null() {
         instance.retired_processors.lock().push(old);
@@ -908,7 +926,11 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
     let channels = instance.channels.load(Ordering::Acquire);
     let sidechain_enabled = instance.shared.params.get(ParamId::SidechainEnable) >= 0.5;
     let count = if is_input {
-        if sidechain_enabled { channels + channels } else { channels }
+        if sidechain_enabled {
+            channels + channels
+        } else {
+            channels
+        }
     } else {
         channels
     };

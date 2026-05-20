@@ -244,31 +244,32 @@ impl AudioProcessor {
         self.limiter.process_slices(&mut flat_slices, frames);
 
         // Publish FFT to inter-plugin bus if demanded.
-        if let Some(ref bus) = self.bus_data {
-            if bus.fft_demand.is_active() {
-                // Mix down to mono for FFT analysis.
-                self.fft_scratch[..frames].fill(0.0);
-                let mut ch_count = 0;
-                for buf in out_outputs.iter().flatten() {
-                    for i in 0..frames {
-                        self.fft_scratch[i] += buf[i];
-                    }
-                    ch_count += 1;
+        if let Some(ref bus) = self.bus_data
+            && bus::needs(bus::NEED_FFT)
+        {
+            // Mix down to mono for FFT analysis.
+            self.fft_scratch[..frames].fill(0.0);
+            let mut ch_count = 0;
+            for buf in out_outputs.iter().flatten() {
+                for i in 0..frames {
+                    self.fft_scratch[i] += buf[i];
                 }
-                if ch_count > 1 {
-                    for s in &mut self.fft_scratch[..frames] {
-                        *s /= ch_count as f32;
-                    }
+                ch_count += 1;
+            }
+            if ch_count > 1 {
+                for s in &mut self.fft_scratch[..frames] {
+                    *s /= ch_count as f32;
                 }
+            }
 
-                if let Some(ref slot) = bus.fft_slot {
-                    let n = frames.min(1024);
-                    self.fft_analyzer.process(&self.fft_scratch[..frames], &mut self.fft_mag[..n]);
-                    slot.write(|fft| {
-                        fft::magnitude_to_db(&self.fft_mag[..n], &mut fft.bins[..n], -90.0);
-                        fft.valid_bins = n;
-                    });
-                }
+            if let Some(ref slot) = bus.fft_slot {
+                let n = frames.min(1024);
+                self.fft_analyzer
+                    .process(&self.fft_scratch[..frames], &mut self.fft_mag[..n]);
+                slot.write(|fft| {
+                    fft::magnitude_to_db(&self.fft_mag[..n], &mut fft.bins[..n], -90.0);
+                    fft.valid_bins = n;
+                });
             }
         }
 
@@ -296,8 +297,7 @@ impl PluginInstance {
         let engine = Arc::new(DrumGizmoEngine::new());
         let bus_id = bus::next_instance_id();
         let bus_data = Arc::new(
-            bus::PluginSharedData::new(bus::PluginType::Drust)
-                .with_fft(bus::FftData::default()),
+            bus::PluginSharedData::new(bus::PluginType::Drust).with_fft(bus::FftData::default()),
         );
         bus::register(bus_id, bus_data.clone());
         Self {

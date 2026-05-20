@@ -30,6 +30,7 @@ use clap_clap::{
 use parking_lot::Mutex;
 
 use crate::common::copy_str_to_array;
+use crate::common::{bus, fft};
 use crate::kick::{
     dsp::{
         DistortionType, Envelope, FilterType, FreqEnvMode, KickSynthesizer, NoiseType, Waveform,
@@ -796,10 +797,18 @@ struct AudioProcessor {
     master_temp_l: Vec<f32>,
     master_temp_r: Vec<f32>,
     last_kit_version: u64,
+    bus_data: Option<Arc<bus::PluginSharedData>>,
+    fft_scratch: Vec<f32>,
+    fft_mag: Vec<f32>,
+    fft_analyzer: fft::SpectrumAnalyzer,
 }
 
 impl AudioProcessor {
-    fn new(sample_rate: f64, max_frames: u32) -> Self {
+    fn new(
+        sample_rate: f64,
+        max_frames: u32,
+        bus_data: Option<Arc<bus::PluginSharedData>>,
+    ) -> Self {
         let frames = max_frames as usize;
         Self {
             synth: KickSynthesizer::new(sample_rate as f32),
@@ -808,6 +817,10 @@ impl AudioProcessor {
             master_temp_l: vec![0.0; frames],
             master_temp_r: vec![0.0; frames],
             last_kit_version: 0,
+            bus_data,
+            fft_scratch: vec![0.0; frames],
+            fft_mag: vec![0.0; 1024],
+            fft_analyzer: fft::SpectrumAnalyzer::new(frames),
         }
     }
 
@@ -956,6 +969,24 @@ impl AudioProcessor {
             }
         }
 
+        if let Some(ref bus) = self.bus_data
+            && bus::needs(bus::NEED_FFT)
+        {
+            self.fft_scratch[..frames].fill(0.0);
+            for i in 0..frames {
+                self.fft_scratch[i] = (self.master_temp_l[i] + self.master_temp_r[i]) * 0.5;
+            }
+            if let Some(ref slot) = bus.fft_slot {
+                let n = frames.min(1024);
+                self.fft_analyzer
+                    .process(&self.fft_scratch[..frames], &mut self.fft_mag[..n]);
+                slot.write(|fft| {
+                    fft::magnitude_to_db(&self.fft_mag[..n], &mut fft.bins[..n], -90.0);
+                    fft.valid_bins = n;
+                });
+            }
+        }
+
         CLAP_PROCESS_CONTINUE
     }
 }
@@ -970,17 +1001,26 @@ struct PluginInstance {
     processor: AtomicPtr<AudioProcessor>,
     retired_processors: Mutex<Vec<*mut AudioProcessor>>,
     gui_bridge: Mutex<GuiBridge>,
+    bus_id: bus::InstanceId,
+    bus_data: Arc<bus::PluginSharedData>,
 }
 
 impl PluginInstance {
     fn new(host: *const clap_host) -> Self {
         let shared = Arc::new(SharedState::new(host));
+        let bus_id = bus::next_instance_id();
+        let bus_data = Arc::new(
+            bus::PluginSharedData::new(bus::PluginType::Kick).with_fft(bus::FftData::default()),
+        );
+        bus::register(bus_id, bus_data.clone());
         Self {
             shared,
             active: AtomicBool::new(false),
             processor: AtomicPtr::new(null_mut()),
             retired_processors: Mutex::new(Vec::new()),
             gui_bridge: Mutex::new(GuiBridge::default()),
+            bus_id,
+            bus_data,
         }
     }
 
@@ -1014,6 +1054,7 @@ unsafe extern "C-unwind" fn plugin_destroy(plugin: *const clap_plugin) {
         return;
     }
     let inst = unsafe { instance(plugin) };
+    bus::unregister(inst.bus_id);
     inst.drop_retired_processors();
     let old = inst.processor.swap(null_mut(), Ordering::AcqRel);
     if !old.is_null() {
@@ -1037,7 +1078,11 @@ unsafe extern "C-unwind" fn plugin_activate(
     }
     let inst = unsafe { instance(plugin) };
     inst.shared.set_sample_rate(sample_rate);
-    let processor = Box::new(AudioProcessor::new(sample_rate, max_frames));
+    let processor = Box::new(AudioProcessor::new(
+        sample_rate,
+        max_frames,
+        Some(inst.bus_data.clone()),
+    ));
     let ptr = Box::into_raw(processor);
     let old = inst.processor.swap(ptr, Ordering::AcqRel);
     inst.retire_processor(old);
