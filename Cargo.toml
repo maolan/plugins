@@ -26,6 +26,7 @@ quick-xml = { version = "0.37.0", features = ["serialize"] }
 rand = "0.8.5"
 raw-window-handle = "0.5"
 rayon = "1.10"
+rustfft = "6.2"
 wide = "1.4.0"
 rfd = "0.17.2"
 serde = { version = "1.0.228", features = ["derive"] }

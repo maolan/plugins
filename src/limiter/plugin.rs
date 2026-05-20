@@ -29,19 +29,19 @@ use parking_lot::Mutex;
 use crate::common::{
     SharedStateExt, apply_param_events, copy_str_to_array, emit_pending_param_events_to_host,
 };
-use crate::imager::{
-    dsp::{Imager, ImagerParams},
+use crate::limiter::{
+    dsp::Limiter,
     gui::GuiBridge,
     params::{PARAMS, ParamId, ParamStore, sanitize_param_value},
     state::PluginState,
 };
 
-const PLUGIN_ID: &[u8] = b"rs.maolan.imager\0";
-const PLUGIN_NAME: &[u8] = b"Maolan Stereo\0";
+const PLUGIN_ID: &[u8] = b"rs.maolan.limiter\0";
+const PLUGIN_NAME: &[u8] = b"Maolan Limiter\0";
 const PLUGIN_VENDOR: &[u8] = b"Maolan\0";
 const PLUGIN_URL: &[u8] = b"\0";
 const PLUGIN_VERSION: &[u8] = b"0.1.0\0";
-const PLUGIN_DESCRIPTION: &[u8] = b"Rust CLAP Imager\0";
+const PLUGIN_DESCRIPTION: &[u8] = b"Rust CLAP Limiter based on MaximizerVintage\0";
 const FEATURE_AUDIO_EFFECT: *const c_char = CLAP_PLUGIN_FEATURE_AUDIO_EFFECT.as_ptr();
 const FEATURE_STEREO: *const c_char = CLAP_PLUGIN_FEATURE_STEREO.as_ptr();
 
@@ -258,14 +258,14 @@ impl SharedStateExt<ParamId> for SharedState {
 }
 
 struct AudioProcessor {
-    dsp: Imager,
+    dsp: Limiter,
     temp_left: Vec<f32>,
     temp_right: Vec<f32>,
 }
 
 impl AudioProcessor {
     fn new(sample_rate: f64, max_frames: u32) -> Self {
-        let mut dsp = Imager::default();
+        let mut dsp = Limiter::default();
         dsp.set_sample_rate(sample_rate);
         Self {
             dsp,
@@ -277,6 +277,8 @@ impl AudioProcessor {
     fn reset(&mut self) {
         self.dsp.reset();
     }
+
+    fn _apply_params(&mut self, _shared: &SharedState) {}
 
     fn process(&mut self, shared: &SharedState, process: &mut Process) -> clap_process_status {
         apply_param_events(shared, &process.in_events(), sanitize_param_value);
@@ -300,14 +302,18 @@ impl AudioProcessor {
             self.temp_left[..frames].copy_from_slice(input_l.data32(0));
             self.temp_right[..frames].copy_from_slice(input_r.data32(0));
 
+            let params = crate::limiter::dsp::LimiterParams {
+                variant: shared.params.get_enum(ParamId::Variant),
+                boost: shared.params.get(ParamId::Boost),
+                soften: shared.params.get(ParamId::Soften),
+                enhance: shared.params.get(ParamId::Enhance),
+                ceiling: shared.params.get(ParamId::Ceiling),
+                mode: shared.params.get_enum(ParamId::Mode),
+            };
             self.dsp.process_stereo(
                 &mut self.temp_left[..frames],
                 &mut self.temp_right[..frames],
-                &ImagerParams {
-                    width: shared.params.get(ParamId::Width),
-                    focus: shared.params.get(ParamId::Focus),
-                    amount: shared.params.get(ParamId::Amount),
-                },
+                &params,
             );
 
             {
@@ -322,14 +328,18 @@ impl AudioProcessor {
             let input_port = process.audio_inputs(0);
             self.temp_left[..frames].copy_from_slice(input_port.data32(0));
 
+            let params = crate::limiter::dsp::LimiterParams {
+                variant: shared.params.get_enum(ParamId::Variant),
+                boost: shared.params.get(ParamId::Boost),
+                soften: shared.params.get(ParamId::Soften),
+                enhance: shared.params.get(ParamId::Enhance),
+                ceiling: shared.params.get(ParamId::Ceiling),
+                mode: shared.params.get_enum(ParamId::Mode),
+            };
             self.dsp.process_stereo(
                 &mut self.temp_left[..frames],
                 &mut self.temp_right[..frames],
-                &ImagerParams {
-                    width: shared.params.get(ParamId::Width),
-                    focus: shared.params.get(ParamId::Focus),
-                    amount: shared.params.get(ParamId::Amount),
-                },
+                &params,
             );
 
             let mut output_port = process.audio_outputs(0);
@@ -381,12 +391,49 @@ unsafe fn instance<'a>(plugin: *const clap_plugin) -> &'a mut PluginInstance {
     unsafe { &mut *((*plugin).plugin_data as *mut PluginInstance) }
 }
 
-fn param_text(_id: ParamId, value: f64) -> String {
-    format!("{value:.2}")
+fn param_text(id: ParamId, value: f64) -> String {
+    match id {
+        ParamId::Boost => format!("{:.1} dB", value * 18.0),
+        ParamId::Variant => match value.round() as i32 {
+            0 => "Vintage".into(),
+            1 => "Modern".into(),
+            _ => format!("{value:.0}"),
+        },
+        ParamId::Mode => match value.round() as i32 {
+            0 => "Normal".into(),
+            1 => "Atten".into(),
+            2 => "Clips".into(),
+            3 => "Afterbr".into(),
+            4 => "Explode".into(),
+            5 => "Nuke".into(),
+            6 => "Apocaly".into(),
+            7 => "Apothes".into(),
+            _ => format!("{value:.0}"),
+        },
+        _ => format!("{value:.2}"),
+    }
 }
 
-fn parse_param_text(_id: ParamId, text: &str) -> Option<f64> {
-    text.parse().ok()
+fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
+    match id {
+        ParamId::Variant => match text.to_ascii_lowercase().as_str() {
+            "vintage" => Some(0.0),
+            "modern" => Some(1.0),
+            _ => text.parse().ok(),
+        },
+        ParamId::Mode => match text.to_ascii_lowercase().as_str() {
+            "normal" => Some(0.0),
+            "atten" => Some(1.0),
+            "clips" => Some(2.0),
+            "afterbr" => Some(3.0),
+            "explode" => Some(4.0),
+            "nuke" => Some(5.0),
+            "apocaly" => Some(6.0),
+            "apothes" => Some(7.0),
+            _ => text.parse().ok(),
+        },
+        _ => text.parse().ok(),
+    }
 }
 
 unsafe extern "C-unwind" fn plugin_init(plugin: *const clap_plugin) -> bool {
@@ -670,13 +717,13 @@ static STATE_EXT: clap_plugin_state = clap_plugin_state {
     load: Some(ext_state_load),
 };
 
-static TAIL_EXT: clap_plugin_tail = clap_plugin_tail {
-    get: Some(ext_tail_get),
-};
-
 unsafe extern "C-unwind" fn ext_tail_get(_plugin: *const clap_plugin) -> u32 {
     0
 }
+
+static TAIL_EXT: clap_plugin_tail = clap_plugin_tail {
+    get: Some(ext_tail_get),
+};
 
 unsafe extern "C-unwind" fn ext_gui_is_api_supported(
     _plugin: *const clap_plugin,
@@ -687,7 +734,7 @@ unsafe extern "C-unwind" fn ext_gui_is_api_supported(
         return false;
     }
     let api = unsafe { CStr::from_ptr(api) };
-    crate::imager::gui::is_api_supported(api, is_floating)
+    crate::limiter::gui::is_api_supported(api, is_floating)
 }
 
 unsafe extern "C-unwind" fn ext_gui_get_preferred_api(
@@ -698,7 +745,7 @@ unsafe extern "C-unwind" fn ext_gui_get_preferred_api(
     if api.is_null() || is_floating.is_null() {
         return false;
     }
-    let preferred = crate::imager::gui::preferred_api();
+    let preferred = crate::limiter::gui::preferred_api();
     unsafe {
         *api = preferred.as_ptr();
         *is_floating = false;
@@ -747,8 +794,8 @@ unsafe extern "C-unwind" fn ext_gui_get_size(
         return false;
     }
     unsafe {
-        *width = crate::imager::gui::EDITOR_WIDTH;
-        *height = crate::imager::gui::EDITOR_HEIGHT;
+        *width = crate::limiter::gui::EDITOR_WIDTH;
+        *height = crate::limiter::gui::EDITOR_HEIGHT;
     }
     true
 }
@@ -795,7 +842,7 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     let parent = if api == CLAP_WINDOW_API_X11 {
         #[cfg(all(unix, not(target_os = "macos")))]
         {
-            crate::imager::gui::ParentWindowHandle::X11(unsafe { window.clap_window__.x11 })
+            crate::limiter::gui::ParentWindowHandle::X11(unsafe { window.clap_window__.x11 })
         }
         #[cfg(not(all(unix, not(target_os = "macos"))))]
         {
@@ -804,7 +851,7 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     } else if api == CLAP_WINDOW_API_COCOA {
         #[cfg(target_os = "macos")]
         {
-            crate::imager::gui::ParentWindowHandle::Cocoa(unsafe { window.clap_window__.cocoa })
+            crate::limiter::gui::ParentWindowHandle::Cocoa(unsafe { window.clap_window__.cocoa })
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -813,7 +860,7 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     } else if api == CLAP_WINDOW_API_WIN32 {
         #[cfg(target_os = "windows")]
         {
-            crate::imager::gui::ParentWindowHandle::Win32(unsafe { window.clap_window__.win32 })
+            crate::limiter::gui::ParentWindowHandle::Win32(unsafe { window.clap_window__.win32 })
         }
         #[cfg(not(target_os = "windows"))]
         {

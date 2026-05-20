@@ -21,7 +21,7 @@ use maolan_baseview::iced::{
 use maolan_widgets::arch_slider::arch_slider;
 use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
 
-use crate::imager::{
+use crate::stereo::{
     params::{PARAMS, ParamId},
     plugin::SharedState,
 };

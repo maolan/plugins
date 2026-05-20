@@ -16,14 +16,14 @@ pub mod deesser;
 pub mod delay;
 pub mod drust;
 pub mod eq;
-pub mod imager;
 pub mod kick;
-pub mod maximizer;
+pub mod limiter;
 pub mod monitoring;
 pub mod reverb;
 pub mod rural_modeler;
 pub mod saturator;
 pub mod simd;
+pub mod stereo;
 pub mod widener;
 
 type DescriptorFn = unsafe fn() -> *const clap_plugin_descriptor;
@@ -44,12 +44,12 @@ static PLUGINS: [PluginApi; 13] = [
         create: compressor::clap_create_plugin,
     },
     PluginApi {
-        descriptor: maximizer::clap_descriptor_ptr,
-        create: maximizer::clap_create_plugin,
+        descriptor: limiter::clap_descriptor_ptr,
+        create: limiter::clap_create_plugin,
     },
     PluginApi {
-        descriptor: imager::clap_descriptor_ptr,
-        create: imager::clap_create_plugin,
+        descriptor: stereo::clap_descriptor_ptr,
+        create: stereo::clap_create_plugin,
     },
     PluginApi {
         descriptor: monitoring::clap_descriptor_ptr,

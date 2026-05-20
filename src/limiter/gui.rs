@@ -21,7 +21,7 @@ use maolan_baseview::iced::{
 use maolan_widgets::arch_slider::arch_slider;
 use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
 
-use crate::maximizer::{
+use crate::limiter::{
     params::{PARAMS, ParamId},
     plugin::SharedState,
 };

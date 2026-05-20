@@ -48,7 +48,7 @@ pub const PARAMS: [ParamDef; ParamId::COUNT] = [
     ParamDef {
         id: ParamId::Width,
         name: "Width",
-        module: "Imager",
+        module: "Stereo",
         min: 0.0,
         max: 1.0,
         default: 0.5,
@@ -58,7 +58,7 @@ pub const PARAMS: [ParamDef; ParamId::COUNT] = [
     ParamDef {
         id: ParamId::Focus,
         name: "Focus",
-        module: "Imager",
+        module: "Stereo",
         min: 0.0,
         max: 1.0,
         default: 0.5,
@@ -68,7 +68,7 @@ pub const PARAMS: [ParamDef; ParamId::COUNT] = [
     ParamDef {
         id: ParamId::Amount,
         name: "Amount",
-        module: "Imager",
+        module: "Stereo",
         min: 0.0,
         max: 1.0,
         default: 1.0,

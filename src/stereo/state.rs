@@ -4,10 +4,10 @@ use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::fmt;
 
-use crate::maximizer::params::{PARAMS, ParamStore, sanitize_param_value};
+use crate::stereo::params::{PARAMS, ParamStore, sanitize_param_value};
 
 const CURRENT_STATE_VERSION: &str = "0.1.0";
-const STATE_HEADER_PREFIX: &str = "maolan-maximizer-state-v";
+const STATE_HEADER_PREFIX: &str = "maolan-stereo-state-v";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginState {

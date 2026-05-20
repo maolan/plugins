@@ -1,4 +1,4 @@
-pub struct ImagerMild {
+pub struct Mild {
     p: Vec<f64>,
     count: i32,
     fpd_l: u32,
@@ -10,7 +10,7 @@ pub struct ImagerMild {
     temp_wet_r: Vec<f32>,
 }
 
-impl Default for ImagerMild {
+impl Default for Mild {
     fn default() -> Self {
         Self {
             p: vec![0.0; 4099],
@@ -26,7 +26,7 @@ impl Default for ImagerMild {
     }
 }
 
-impl ImagerMild {
+impl Mild {
     pub fn reset(&mut self) {
         self.p.fill(0.0);
         self.count = 2048;
@@ -184,28 +184,28 @@ impl ImagerMild {
     }
 }
 
-pub struct ImagerParams {
+pub struct StereoParams {
     pub width: f64,
     pub focus: f64,
     pub amount: f64,
 }
 
 #[derive(Default)]
-pub struct Imager {
-    pub imager_mild: ImagerMild,
+pub struct Stereo {
+    pub mild: Mild,
 }
 
-impl Imager {
+impl Stereo {
     pub fn set_sample_rate(&mut self, sr: f64) {
-        self.imager_mild.set_sample_rate(sr);
+        self.mild.set_sample_rate(sr);
     }
 
     pub fn reset(&mut self) {
-        self.imager_mild.reset();
+        self.mild.reset();
     }
 
-    pub fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32], params: &ImagerParams) {
-        self.imager_mild
+    pub fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32], params: &StereoParams) {
+        self.mild
             .process_stereo(left, right, params.width, params.focus, params.amount);
     }
 }

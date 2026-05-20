@@ -30,6 +30,7 @@ use clap_clap::{
 use parking_lot::Mutex;
 use std::mem::size_of;
 
+use crate::common::bus;
 use crate::eq::dsp::ParametricEqualizer;
 use crate::eq::gui::{ParentWindowHandle, is_api_supported, preferred_api, EDITOR_HEIGHT, EDITOR_WIDTH, GuiBridge};
 use crate::eq::params::{ParamDef, ParamIdExt, ParamStore, copy_str_to_array, sanitize_param_value, PARAMS, ParamId};
@@ -81,10 +82,11 @@ struct AudioProcessor {
     delta_right: Vec<f32>,
     spectrum_samples_since_update: usize,
     sc_envelope: f32,
+    bus_data: Option<Arc<bus::PluginSharedData>>,
 }
 
 impl AudioProcessor {
-    fn new(sample_rate: f64, max_frames: u32) -> Self {
+    fn new(sample_rate: f64, max_frames: u32, bus_data: Option<Arc<bus::PluginSharedData>>) -> Self {
         let sr = sample_rate as f32;
         let equalizer = ParametricEqualizer::new(sr);
         Self {
@@ -95,6 +97,7 @@ impl AudioProcessor {
             delta_right: vec![0.0; max_frames as usize],
             spectrum_samples_since_update: 0,
             sc_envelope: 0.0,
+            bus_data,
         }
     }
 
@@ -128,6 +131,32 @@ impl AudioProcessor {
                     slope: shared.params.get(ParamId::para_slope(i)) as u8,
                 },
             );
+        }
+        // Publish band data to the inter-plugin bus.
+        if let Some(ref bus) = self.bus_data {
+            if let Some(ref slot) = bus.bands_slot {
+                let mut count = 0;
+                let mut bands = [bus::EqBand::default(); 64];
+                for i in 0..32 {
+                    if shared.params.get_bool(ParamId::para_on(i)) {
+                        if count < bands.len() {
+                            bands[count] = bus::EqBand {
+                                freq: shared.params.get(ParamId::para_freq(i)) as f32,
+                                gain: shared.params.get(ParamId::para_gain(i)) as f32,
+                                q: shared.params.get(ParamId::para_q(i)) as f32,
+                                on: true,
+                                typ: shared.params.get(ParamId::para_type(i)) as u8,
+                                slope: shared.params.get(ParamId::para_slope(i)) as u8,
+                            };
+                            count += 1;
+                        }
+                    }
+                }
+                slot.write(|data| {
+                    data.len = count;
+                    data.bands = bands;
+                });
+            }
         }
     }
 
@@ -303,6 +332,16 @@ impl AudioProcessor {
                         self.equalizer.sample_rate(),
                     );
                     shared.set_output_spectrum_db(&spectrum);
+                    // Publish to inter-plugin bus.
+                    if let Some(ref bus) = self.bus_data {
+                        if let Some(ref slot) = bus.fft_slot {
+                            slot.write(|fft| {
+                                let n = spectrum.len().min(fft.bins.len());
+                                fft.bins[..n].copy_from_slice(&spectrum[..n]);
+                                fft.valid_bins = n;
+                            });
+                        }
+                    }
                     self.spectrum_samples_since_update = 0;
                 }
             }
@@ -351,6 +390,16 @@ impl AudioProcessor {
                         self.equalizer.sample_rate(),
                     );
                     shared.set_output_spectrum_db(&spectrum);
+                    // Publish to inter-plugin bus.
+                    if let Some(ref bus) = self.bus_data {
+                        if let Some(ref slot) = bus.fft_slot {
+                            slot.write(|fft| {
+                                let n = spectrum.len().min(fft.bins.len());
+                                fft.bins[..n].copy_from_slice(&spectrum[..n]);
+                                fft.valid_bins = n;
+                            });
+                        }
+                    }
                     self.spectrum_samples_since_update = 0;
                 }
             }
@@ -570,12 +619,21 @@ struct PluginInstance {
     retired_processors: Mutex<Vec<*mut AudioProcessor>>,
     gui_bridge: Mutex<GuiBridge>,
     channels: AtomicU32,
+    bus_id: bus::InstanceId,
+    bus_data: Arc<bus::PluginSharedData>,
 }
 
 impl PluginInstance {
     fn new(host: *const clap_host, channels: u32) -> Self {
         let params = ParamStore::new(&PARAMS);
         let shared = Arc::new(SharedState::new(params, host, channels));
+        let bus_id = bus::next_instance_id();
+        let bus_data = Arc::new(
+            bus::PluginSharedData::new(bus::PluginType::Eq)
+                .with_fft(bus::FftData::default())
+                .with_bands(bus::EqBands::default()),
+        );
+        bus::register(bus_id, bus_data.clone());
         Self {
             shared,
             active: AtomicBool::new(false),
@@ -583,12 +641,15 @@ impl PluginInstance {
             retired_processors: Mutex::new(Vec::new()),
             gui_bridge: Mutex::new(GuiBridge::default()),
             channels: AtomicU32::new(channels),
+            bus_id,
+            bus_data,
         }
     }
 }
 
 impl Drop for PluginInstance {
     fn drop(&mut self) {
+        bus::unregister(self.bus_id);
         let ptr = self.processor.swap(null_mut(), Ordering::AcqRel);
         if !ptr.is_null() {
             unsafe { drop(Box::from_raw(ptr)) };
@@ -763,7 +824,8 @@ unsafe extern "C-unwind" fn plugin_activate(
         .shared
         .sample_rate_bits
         .store(sample_rate.to_bits(), Ordering::Release);
-    let next = Box::into_raw(Box::new(AudioProcessor::new(sample_rate, max_frames)));
+    let bus_data = Some(instance.bus_data.clone());
+    let next = Box::into_raw(Box::new(AudioProcessor::new(sample_rate, max_frames, bus_data)));
     let old = instance.processor.swap(next, Ordering::AcqRel);
     if !old.is_null() {
         instance.retired_processors.lock().push(old);

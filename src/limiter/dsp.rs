@@ -3,7 +3,7 @@ const FP_NEW: f64 = 1.0 - FP_OLD;
 const BUFFER_SIZE: usize = 22_200;
 const HALF_BUFFER: usize = 11_020;
 
-pub struct MaximizerVintage {
+pub struct Vintage {
     last_sample_l: f64,
     last_sample_r: f64,
     b_l: Vec<f32>,
@@ -22,7 +22,7 @@ pub struct MaximizerVintage {
     sample_rate: f64,
 }
 
-impl Default for MaximizerVintage {
+impl Default for Vintage {
     fn default() -> Self {
         Self {
             last_sample_l: 0.0,
@@ -45,7 +45,7 @@ impl Default for MaximizerVintage {
     }
 }
 
-impl MaximizerVintage {
+impl Vintage {
     pub fn set_sample_rate(&mut self, sr: f64) {
         self.sample_rate = sr;
     }
@@ -533,7 +533,7 @@ impl MaximizerVintage {
     }
 }
 
-pub struct MaximizerModern {
+pub struct Modern {
     last_sample_l: [f64; 8],
     last_sample_r: [f64; 8],
     intermediate_l: [[f64; 8]; 17],
@@ -547,7 +547,7 @@ pub struct MaximizerModern {
     sample_rate: f64,
 }
 
-impl Default for MaximizerModern {
+impl Default for Modern {
     fn default() -> Self {
         Self {
             last_sample_l: [0.0; 8],
@@ -565,7 +565,7 @@ impl Default for MaximizerModern {
     }
 }
 
-impl MaximizerModern {
+impl Modern {
     pub fn set_sample_rate(&mut self, sr: f64) {
         self.sample_rate = sr;
     }
@@ -755,12 +755,12 @@ impl MaximizerModern {
 }
 
 #[derive(Default)]
-pub struct Maximizer {
-    pub maximizer_vintage: MaximizerVintage,
-    pub maximizer_modern: MaximizerModern,
+pub struct Limiter {
+    pub vintage: Vintage,
+    pub modern: Modern,
 }
 
-pub struct MaximizerParams {
+pub struct LimiterParams {
     pub variant: u32,
     pub boost: f64,
     pub soften: f64,
@@ -769,25 +769,25 @@ pub struct MaximizerParams {
     pub mode: u32,
 }
 
-impl Maximizer {
+impl Limiter {
     pub fn set_sample_rate(&mut self, sr: f64) {
-        self.maximizer_vintage.set_sample_rate(sr);
-        self.maximizer_modern.set_sample_rate(sr);
+        self.vintage.set_sample_rate(sr);
+        self.modern.set_sample_rate(sr);
     }
 
     pub fn reset(&mut self) {
-        self.maximizer_vintage.reset();
-        self.maximizer_modern.reset();
+        self.vintage.reset();
+        self.modern.reset();
     }
 
     pub fn process_stereo(
         &mut self,
         left: &mut [f32],
         right: &mut [f32],
-        params: &MaximizerParams,
+        params: &LimiterParams,
     ) {
         match params.variant {
-            0 => self.maximizer_vintage.process_stereo(
+            0 => self.vintage.process_stereo(
                 left,
                 right,
                 params.boost,
@@ -795,7 +795,7 @@ impl Maximizer {
                 params.enhance,
                 params.mode,
             ),
-            1 => self.maximizer_modern.process_stereo(
+            1 => self.modern.process_stereo(
                 left,
                 right,
                 params.boost,

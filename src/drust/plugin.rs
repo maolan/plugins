@@ -26,6 +26,7 @@ use clap_clap::{
 };
 use parking_lot::Mutex;
 
+use crate::common::{bus, fft};
 use crate::drust::{
     download,
     engine::{DrumGizmoEngine, EventType, MAX_CHANNELS, VoiceEvent, limiter::Limiter},
@@ -70,6 +71,10 @@ struct AudioProcessor {
     shared: Arc<SharedState>,
     engine: Arc<DrumGizmoEngine>,
     limiter: Limiter,
+    bus_data: Option<Arc<bus::PluginSharedData>>,
+    fft_scratch: Vec<f32>,
+    fft_mag: Vec<f32>,
+    fft_analyzer: fft::SpectrumAnalyzer,
 }
 
 impl AudioProcessor {
@@ -77,7 +82,8 @@ impl AudioProcessor {
         shared: Arc<SharedState>,
         engine: Arc<DrumGizmoEngine>,
         sample_rate: f64,
-        _max_frames: u32,
+        max_frames: u32,
+        bus_data: Option<Arc<bus::PluginSharedData>>,
     ) -> Self {
         engine.set_sample_rate(sample_rate as f32);
         let mut limiter = Limiter::default();
@@ -86,6 +92,10 @@ impl AudioProcessor {
             shared,
             engine,
             limiter,
+            bus_data,
+            fft_scratch: vec![0.0; max_frames as usize],
+            fft_mag: vec![0.0; 1024],
+            fft_analyzer: fft::SpectrumAnalyzer::new(max_frames as usize),
         }
     }
 
@@ -233,6 +243,35 @@ impl AudioProcessor {
         self.limiter.set_threshold_db(limiter_threshold);
         self.limiter.process_slices(&mut flat_slices, frames);
 
+        // Publish FFT to inter-plugin bus if demanded.
+        if let Some(ref bus) = self.bus_data {
+            if bus.fft_demand.is_active() {
+                // Mix down to mono for FFT analysis.
+                self.fft_scratch[..frames].fill(0.0);
+                let mut ch_count = 0;
+                for buf in out_outputs.iter().flatten() {
+                    for i in 0..frames {
+                        self.fft_scratch[i] += buf[i];
+                    }
+                    ch_count += 1;
+                }
+                if ch_count > 1 {
+                    for s in &mut self.fft_scratch[..frames] {
+                        *s /= ch_count as f32;
+                    }
+                }
+
+                if let Some(ref slot) = bus.fft_slot {
+                    let n = frames.min(1024);
+                    self.fft_analyzer.process(&self.fft_scratch[..frames], &mut self.fft_mag[..n]);
+                    slot.write(|fft| {
+                        fft::magnitude_to_db(&self.fft_mag[..n], &mut fft.bins[..n], -90.0);
+                        fft.valid_bins = n;
+                    });
+                }
+            }
+        }
+
         CLAP_PROCESS_CONTINUE
     }
 }
@@ -246,6 +285,8 @@ struct PluginInstance {
     gui_bridge: Mutex<GuiBridge>,
     /// MIDI note names for the CLAP note-name extension.
     note_names: Mutex<Vec<(u8, String)>>,
+    bus_id: bus::InstanceId,
+    bus_data: Arc<bus::PluginSharedData>,
 }
 
 impl PluginInstance {
@@ -253,6 +294,12 @@ impl PluginInstance {
         let shared = Arc::new(SharedState::default());
         shared.set_host(host);
         let engine = Arc::new(DrumGizmoEngine::new());
+        let bus_id = bus::next_instance_id();
+        let bus_data = Arc::new(
+            bus::PluginSharedData::new(bus::PluginType::Drust)
+                .with_fft(bus::FftData::default()),
+        );
+        bus::register(bus_id, bus_data.clone());
         Self {
             shared,
             engine,
@@ -261,6 +308,8 @@ impl PluginInstance {
             retired_processors: Mutex::new(Vec::new()),
             gui_bridge: Mutex::new(GuiBridge::default()),
             note_names: Mutex::new(Vec::new()),
+            bus_id,
+            bus_data,
         }
     }
 
@@ -392,6 +441,8 @@ unsafe extern "C-unwind" fn plugin_destroy(plugin: *const clap_plugin) {
     if plugin.is_null() {
         return;
     }
+    let instance = unsafe { &*((*plugin).plugin_data as *mut PluginInstance) };
+    bus::unregister(instance.bus_id);
     let _ = unsafe { Box::from_raw((*plugin).plugin_data as *mut PluginInstance) };
     let _ = unsafe { Box::from_raw(plugin as *mut clap_plugin) };
 }
@@ -420,11 +471,13 @@ unsafe extern "C-unwind" fn plugin_activate(
         state.reset(seed);
     }
 
+    let bus_data = Some(inst.bus_data.clone());
     let next = Box::into_raw(Box::new(AudioProcessor::new(
         shared,
         engine,
         sample_rate,
         max_frames,
+        bus_data,
     )));
     let old = inst.processor.swap(next, Ordering::AcqRel);
     if !old.is_null() {
