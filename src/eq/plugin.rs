@@ -9,8 +9,6 @@ use std::{
     },
 };
 
-use std::sync::LazyLock;
-
 use clap_clap::{
     events::{EventBuilder, InputEvents, OutputEvents, ParamValue},
     ffi::{
@@ -42,43 +40,6 @@ const PLUGIN_VENDOR: &[u8] = b"Maolan\0";
 const PLUGIN_URL: &[u8] = b"\0";
 const PLUGIN_VERSION: &[u8] = b"0.1.0\0";
 const PLUGIN_DESCRIPTION: &[u8] = b"Rust CLAP Equalizer\0";
-
-// Sidechain options passed from the host via dlsym.
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct SidechainPluginInfo {
-    pub name: String,
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct SidechainTrackInfo {
-    pub name: String,
-    pub outputs: usize,
-    pub plugins: Vec<SidechainPluginInfo>,
-}
-
-#[derive(Debug, Clone, serde::Deserialize, Default)]
-pub struct SidechainOptions {
-    pub tracks: Vec<SidechainTrackInfo>,
-}
-
-static SIDECHAIN_OPTIONS: LazyLock<parking_lot::Mutex<HashMap<usize, SidechainOptions>>> =
-    LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
-
-pub fn get_sidechain_options(host_ptr: usize) -> Option<SidechainOptions> {
-    SIDECHAIN_OPTIONS.lock().get(&host_ptr).cloned()
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn maolan_eq_set_sidechain_options(host_ptr: usize, json: *const c_char) {
-    if json.is_null() {
-        SIDECHAIN_OPTIONS.lock().remove(&host_ptr);
-        return;
-    }
-    let s = unsafe { std::ffi::CStr::from_ptr(json).to_string_lossy() };
-    if let Ok(opts) = serde_json::from_str::<SidechainOptions>(&s) {
-        SIDECHAIN_OPTIONS.lock().insert(host_ptr, opts);
-    }
-}
 
 const FEATURE_AUDIO_EFFECT: *const c_char = CLAP_PLUGIN_FEATURE_AUDIO_EFFECT.as_ptr();
 const FEATURE_EQUALIZER: *const c_char = CLAP_PLUGIN_FEATURE_EQUALIZER.as_ptr();

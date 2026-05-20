@@ -1,7 +1,7 @@
 use crate::eq::dsp::Biquad;
 use crate::eq::params::{PARAMS, ParamId, ParamIdExt};
-use crate::eq::plugin::{SPECTRUM_BINS, SharedState, SidechainOptions, get_sidechain_options};
-use iced_aw::menu::{Menu, MenuBar, Item};
+use crate::eq::plugin::{SPECTRUM_BINS, SharedState};
+// menu widgets removed with sidechain source dropdown
 use maolan_baseview::iced::{
     Alignment, Color, Element, Event, Length, Point, Rectangle, Renderer, Task, Theme,
     alignment::{Horizontal, Vertical},
@@ -14,7 +14,7 @@ use maolan_baseview::iced::{
 };
 use maolan_widgets::{
     arch_slider::arch_slider,
-    menu::{menu_dropdown, menu_item, submenu},
+
 };
 use std::{
     collections::HashSet,
@@ -154,7 +154,6 @@ pub enum Message {
     DeselectBand,
     DeleteBand,
     SetChannels(ChannelMode),
-    SetSidechainSource(Option<(usize, usize, Option<usize>)>),
     NoOp,
     UiTick,
 }
@@ -163,7 +162,7 @@ struct State {
     shared: Arc<SharedState<ParamId>>,
     selected_band: Option<usize>,
     active_gestures: HashSet<ParamId>,
-    sidechain_options: Option<SidechainOptions>,
+
 }
 
 fn init(shared: Arc<SharedState<ParamId>>) -> (State, Task<Message>) {
@@ -172,7 +171,6 @@ fn init(shared: Arc<SharedState<ParamId>>) -> (State, Task<Message>) {
             shared,
             selected_band: None,
             active_gestures: HashSet::new(),
-            sidechain_options: None,
         },
         next_ui_tick_task(),
     )
@@ -274,44 +272,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .set_param_outbound_only(ParamId::Channels, u32::from(mode) as f64);
             state.shared.request_audio_ports_rescan();
         }
-        Message::SetSidechainSource(selection) => {
-            match selection {
-                None => {
-                    state
-                        .shared
-                        .set_param_outbound_only(ParamId::SidechainEnable, 0.0);
-                    state
-                        .shared
-                        .set_param_outbound_only(ParamId::SidechainSourceTrackIdx, 0.0);
-                    state
-                        .shared
-                        .set_param_outbound_only(ParamId::SidechainSourcePort, 0.0);
-                    state
-                        .shared
-                        .set_param_outbound_only(ParamId::SidechainSourcePluginIdx, 0.0);
-                }
-                Some((track_idx, port, plugin_idx)) => {
-                    state.shared.set_param_outbound_only(
-                        ParamId::SidechainSourceTrackIdx,
-                        (track_idx + 1) as f64,
-                    );
-                    state
-                        .shared
-                        .set_param_outbound_only(ParamId::SidechainSourcePort, port as f64);
-                    state.shared.set_param_outbound_only(
-                        ParamId::SidechainSourcePluginIdx,
-                        plugin_idx.map(|i| i + 1).unwrap_or(0) as f64,
-                    );
-                    state
-                        .shared
-                        .set_param_outbound_only(ParamId::SidechainEnable, 1.0);
-                }
-            }
-        }
         Message::NoOp => {}
         Message::UiTick => {
-            let host_ptr = state.shared.host.load(Ordering::Acquire) as usize;
-            state.sidechain_options = get_sidechain_options(host_ptr);
             return next_ui_tick_task();
         }
     }
@@ -451,80 +413,14 @@ fn view(state: &State) -> Element<'_, Message> {
         .into()
     };
 
-    // Sidechain dropdown
-    let sidechain_track_idx = p(ParamId::SidechainSourceTrackIdx).round() as usize;
-    let sidechain_port = p(ParamId::SidechainSourcePort).round() as usize;
-    let sidechain_plugin_idx = p(ParamId::SidechainSourcePluginIdx).round() as usize;
     let sidechain_enabled = p(ParamId::SidechainEnable) >= 0.5;
 
-    let sidechain_label = if !sidechain_enabled || sidechain_track_idx == 0 {
-        "None".to_string()
-    } else if let Some(ref opts) = state.sidechain_options {
-        if let Some(track) = opts.tracks.get(sidechain_track_idx.saturating_sub(1)) {
-            if sidechain_plugin_idx > 0 {
-                if let Some(plugin) = track.plugins.get(sidechain_plugin_idx.saturating_sub(1)) {
-                    format!("{} / Plugin: {}", track.name, plugin.name)
-                } else {
-                    format!("{} / Plugin ?", track.name)
-                }
-            } else {
-                format!("{} / Output {}", track.name, sidechain_port + 1)
-            }
-        } else {
-            "?".to_string()
-        }
-    } else {
-        format!("Track {} / Port {}", sidechain_track_idx, sidechain_port)
-    };
-
-    let sidechain_button = {
-        let mut items: Vec<Item<'_, Message, Theme, Renderer>> =
-            vec![Item::new(menu_item(
-                "None",
-                Message::SetSidechainSource(None),
-            ))];
-
-        if let Some(ref opts) = state.sidechain_options {
-            for (track_idx, track) in opts.tracks.iter().enumerate() {
-                let mut sub_items = Vec::new();
-                for port in 0..track.outputs.max(1) {
-                    sub_items.push(Item::new(menu_item(
-                        format!("Output {}", port + 1),
-                        Message::SetSidechainSource(Some((track_idx, port, None))),
-                    )));
-                }
-                for (plugin_idx, plugin) in track.plugins.iter().enumerate() {
-                    sub_items.push(Item::new(menu_item(
-                        format!("Plugin: {}", plugin.name),
-                        Message::SetSidechainSource(Some((track_idx, 0, Some(plugin_idx)))),
-                    )));
-                }
-                let sub_menu = Menu::new(sub_items)
-                    .max_width(160.0)
-                    .spacing(1.0);
-                items.push(Item::with_menu(
-                    submenu(&track.name, Message::NoOp),
-                    sub_menu,
-                ));
-            }
-        }
-
-        let menu = Menu::new(items)
-            .max_width(180.0)
-            .spacing(1.0);
-
-        MenuBar::new(vec![Item::with_menu(
-            menu_dropdown(sidechain_label, Message::NoOp),
-            menu,
-        )])
-    };
-
-    let sidechain_source_column = column![sidechain_button]
-        .spacing(2)
-        .align_x(Alignment::Start);
+    let sidechain_enable_toggle = maolan_baseview::iced::widget::checkbox(sidechain_enabled)
+        .label("Sidechain")
+        .on_toggle(|v| Message::SetBoolParam(ParamId::SidechainEnable, v));
 
     let sidechain_row = row![
-        sidechain_source_column,
+        sidechain_enable_toggle,
         knob(
             "Threshold".to_string(),
             ParamId::SidechainThreshold,
