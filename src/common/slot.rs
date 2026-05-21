@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// let mut fft = FftData::default();
 /// if slot.read(&mut fft) { draw(&fft); }
 /// ```
+#[repr(C)]
 pub struct SeqLockSlot<T> {
     seq: AtomicU64,
     data: UnsafeCell<T>,

@@ -137,7 +137,7 @@ struct State {
     shared: Arc<SharedState>,
     active_gestures: Vec<bool>,
     /// Discovered EQ peers on the inter-plugin bus.
-    eq_peers: Vec<Arc<bus::PluginSharedData>>,
+    eq_peers: Vec<bus::PluginSharedData>,
     /// Cached active EQ band frequencies for display.
     eq_band_freqs: Vec<f32>,
     /// Last seen registry version; re-discover only when this changes.
@@ -242,7 +242,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let mut freqs = Vec::new();
             let mut bands = bus::EqBands::default();
             for peer in &state.eq_peers {
-                if let Some(ref slot) = peer.bands_slot
+                if let Some(slot) = peer.bands_slot()
                     && slot.read(&mut bands)
                 {
                     for i in 0..bands.len.min(bands.bands.len()) {

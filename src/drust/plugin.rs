@@ -71,7 +71,7 @@ struct AudioProcessor {
     shared: Arc<SharedState>,
     engine: Arc<DrumGizmoEngine>,
     limiter: Limiter,
-    bus_data: Option<Arc<bus::PluginSharedData>>,
+    bus_data: Option<bus::PluginSharedData>,
     fft_scratch: Vec<f32>,
     fft_mag: Vec<f32>,
     fft_analyzer: fft::SpectrumAnalyzer,
@@ -83,7 +83,7 @@ impl AudioProcessor {
         engine: Arc<DrumGizmoEngine>,
         sample_rate: f64,
         max_frames: u32,
-        bus_data: Option<Arc<bus::PluginSharedData>>,
+        bus_data: Option<bus::PluginSharedData>,
     ) -> Self {
         engine.set_sample_rate(sample_rate as f32);
         let mut limiter = Limiter::default();
@@ -262,7 +262,7 @@ impl AudioProcessor {
                 }
             }
 
-            if let Some(ref slot) = bus.fft_slot {
+            if let Some(slot) = bus.fft_slot() {
                 let n = frames.min(1024);
                 self.fft_analyzer
                     .process(&self.fft_scratch[..frames], &mut self.fft_mag[..n]);
@@ -287,7 +287,7 @@ struct PluginInstance {
     /// MIDI note names for the CLAP note-name extension.
     note_names: Mutex<Vec<(u8, String)>>,
     bus_id: bus::InstanceId,
-    bus_data: Arc<bus::PluginSharedData>,
+    bus_data: bus::PluginSharedData,
 }
 
 impl PluginInstance {
@@ -296,10 +296,8 @@ impl PluginInstance {
         shared.set_host(host);
         let engine = Arc::new(DrumGizmoEngine::new());
         let bus_id = bus::next_instance_id();
-        let bus_data = Arc::new(
-            bus::PluginSharedData::new(bus::PluginType::Drust).with_fft(bus::FftData::default()),
-        );
-        bus::register(bus_id, bus_data.clone());
+        let mut bus_data = bus::PluginSharedData::new(bus::PluginType::Drust).with_fft(bus::FftData::default());
+        bus_data = bus::register(bus_id, bus_data);
         Self {
             shared,
             engine,
@@ -471,7 +469,7 @@ unsafe extern "C-unwind" fn plugin_activate(
         state.reset(seed);
     }
 
-    let bus_data = Some(inst.bus_data.clone());
+    let bus_data = Some(inst.bus_data);
     let next = Box::into_raw(Box::new(AudioProcessor::new(
         shared,
         engine,

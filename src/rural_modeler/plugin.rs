@@ -440,7 +440,7 @@ struct AudioProcessor {
     dc_block: OnePoleHighPass,
     mono_input: Vec<f32>,
     mono_output: Vec<f32>,
-    bus_data: Option<Arc<bus::PluginSharedData>>,
+    bus_data: Option<bus::PluginSharedData>,
     fft_mag: Vec<f32>,
     fft_analyzer: fft::SpectrumAnalyzer,
 }
@@ -449,7 +449,7 @@ impl AudioProcessor {
     fn new(
         sample_rate: f64,
         max_frames: u32,
-        bus_data: Option<Arc<bus::PluginSharedData>>,
+        bus_data: Option<bus::PluginSharedData>,
     ) -> Self {
         let mut tone_stack = ToneStack::default();
         tone_stack.reset(sample_rate as f32);
@@ -640,7 +640,7 @@ impl AudioProcessor {
 
         if let Some(ref bus) = self.bus_data
             && bus::needs(bus::NEED_FFT)
-            && let Some(ref slot) = bus.fft_slot
+            && let Some(slot) = bus.fft_slot()
         {
             let n = frames.min(1024);
             self.fft_analyzer
@@ -669,7 +669,7 @@ struct PluginInstance {
     retired_processors: Mutex<Vec<*mut AudioProcessor>>,
     gui_bridge: Mutex<GuiBridge>,
     bus_id: bus::InstanceId,
-    bus_data: Arc<bus::PluginSharedData>,
+    bus_data: bus::PluginSharedData,
 }
 
 impl PluginInstance {
@@ -686,11 +686,9 @@ impl PluginInstance {
             }
         }
         let bus_id = bus::next_instance_id();
-        let bus_data = Arc::new(
-            bus::PluginSharedData::new(bus::PluginType::RuralModeler)
-                .with_fft(bus::FftData::default()),
-        );
-        bus::register(bus_id, bus_data.clone());
+        let mut bus_data = bus::PluginSharedData::new(bus::PluginType::RuralModeler)
+                .with_fft(bus::FftData::default());
+        bus_data = bus::register(bus_id, bus_data);
         Self {
             shared,
             active: AtomicBool::new(false),
@@ -809,7 +807,7 @@ unsafe extern "C-unwind" fn plugin_activate(
     let next = Box::into_raw(Box::new(AudioProcessor::new(
         sample_rate,
         max_frames,
-        Some(instance.bus_data.clone()),
+        Some(instance.bus_data),
     )));
     let old = instance.processor.swap(next, Ordering::AcqRel);
     if !old.is_null() {

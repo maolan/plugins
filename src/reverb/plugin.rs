@@ -283,7 +283,7 @@ struct AudioProcessor {
     dsp: Reverb,
     temp_left: Vec<f32>,
     temp_right: Vec<f32>,
-    bus_data: Option<Arc<bus::PluginSharedData>>,
+    bus_data: Option<bus::PluginSharedData>,
     fft_scratch: Vec<f32>,
     fft_mag: Vec<f32>,
     fft_analyzer: fft::SpectrumAnalyzer,
@@ -293,7 +293,7 @@ impl AudioProcessor {
     fn new(
         sample_rate: f64,
         max_frames: u32,
-        bus_data: Option<Arc<bus::PluginSharedData>>,
+        bus_data: Option<bus::PluginSharedData>,
     ) -> Self {
         let mut dsp = Reverb::default();
         dsp.set_sample_rate(sample_rate);
@@ -378,7 +378,7 @@ impl AudioProcessor {
             for i in 0..frames {
                 self.fft_scratch[i] = (self.temp_left[i] + self.temp_right[i]) * 0.5;
             }
-            if let Some(ref slot) = bus.fft_slot {
+            if let Some(slot) = bus.fft_slot() {
                 let n = frames.min(1024);
                 self.fft_analyzer
                     .process(&self.fft_scratch[..frames], &mut self.fft_mag[..n]);
@@ -401,7 +401,7 @@ struct PluginInstance {
     gui_bridge: Mutex<GuiBridge>,
     channels: AtomicU32,
     bus_id: bus::InstanceId,
-    bus_data: Arc<bus::PluginSharedData>,
+    bus_data: bus::PluginSharedData,
 }
 
 impl PluginInstance {
@@ -410,10 +410,8 @@ impl PluginInstance {
         shared.set_host(host);
         shared.channels.store(channels, Ordering::Release);
         let bus_id = bus::next_instance_id();
-        let bus_data = Arc::new(
-            bus::PluginSharedData::new(bus::PluginType::Reverb).with_fft(bus::FftData::default()),
-        );
-        bus::register(bus_id, bus_data.clone());
+        let mut bus_data = bus::PluginSharedData::new(bus::PluginType::Reverb).with_fft(bus::FftData::default());
+        bus_data = bus::register(bus_id, bus_data);
         Self {
             shared,
             active: AtomicBool::new(false),
@@ -482,7 +480,7 @@ unsafe extern "C-unwind" fn plugin_activate(
     let next = Box::into_raw(Box::new(AudioProcessor::new(
         sample_rate,
         max_frames,
-        Some(instance.bus_data.clone()),
+        Some(instance.bus_data),
     )));
     let old = instance.processor.swap(next, Ordering::AcqRel);
     if !old.is_null() {

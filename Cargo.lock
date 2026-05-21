@@ -2543,6 +2543,7 @@ dependencies = [
  "hound",
  "iced_aw",
  "iced_fonts",
+ "libc",
  "maolan-baseview",
  "maolan-widgets",
  "parking_lot",

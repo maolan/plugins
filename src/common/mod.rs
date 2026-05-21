@@ -2,6 +2,7 @@ pub mod bus;
 pub mod fft;
 pub mod modulated_delay;
 pub mod param_events;
+pub mod shm;
 pub mod slot;
 
 pub use param_events::{

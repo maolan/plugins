@@ -15,6 +15,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 clap-clap = "0.5.0"
+libc = "0.2"
 base64 = "0.22.1"
 dirs = "6"
 hound = "3.5.1"

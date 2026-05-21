@@ -161,7 +161,7 @@ struct State {
     selected_band: Option<usize>,
     active_gestures: HashSet<ParamId>,
     /// Discovered non-EQ peers on the inter-plugin bus.
-    bus_peers: Vec<Arc<bus::PluginSharedData>>,
+    bus_peers: Vec<bus::PluginSharedData>,
     /// Per-band collision score (0.0 = none, 1.0 = heavy overlap with peer FFT).
     collision_scores: [f32; 32],
     /// Last seen registry version; re-discover only when this changes.
@@ -306,7 +306,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.collision_scores.fill(0.0);
             let mut peer_fft = bus::FftData::default();
             for peer in &state.bus_peers {
-                if let Some(ref slot) = peer.fft_slot {
+                if let Some(slot) = peer.fft_slot() {
                     if !slot.read(&mut peer_fft) || peer_fft.valid_bins == 0 {
                         continue;
                     }

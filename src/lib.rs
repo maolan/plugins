@@ -137,6 +137,9 @@ static FACTORY: clap_plugin_factory = clap_plugin_factory {
 };
 
 unsafe extern "C-unwind" fn entry_init(_plugin_path: *const c_char) -> bool {
+    if let Ok(name) = std::env::var("MAOLAN_BILLBOARD_NAME") {
+        let _ = common::bus::init_billboard(&name);
+    }
     true
 }
 

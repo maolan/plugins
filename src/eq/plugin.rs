@@ -86,14 +86,14 @@ struct AudioProcessor {
     delta_right: Vec<f32>,
     spectrum_samples_since_update: usize,
     sc_envelope: f32,
-    bus_data: Option<Arc<bus::PluginSharedData>>,
+    bus_data: Option<bus::PluginSharedData>,
 }
 
 impl AudioProcessor {
     fn new(
         sample_rate: f64,
         max_frames: u32,
-        bus_data: Option<Arc<bus::PluginSharedData>>,
+        bus_data: Option<bus::PluginSharedData>,
     ) -> Self {
         let sr = sample_rate as f32;
         let equalizer = ParametricEqualizer::new(sr);
@@ -142,7 +142,7 @@ impl AudioProcessor {
         }
         // Publish band data to the inter-plugin bus.
         if let Some(ref bus) = self.bus_data
-            && let Some(ref slot) = bus.bands_slot
+            && let Some(slot) = bus.bands_slot()
         {
             let mut count = 0;
             let mut bands = [bus::EqBand::default(); 64];
@@ -347,7 +347,7 @@ impl AudioProcessor {
                     // Publish to inter-plugin bus.
                     if let Some(ref bus) = self.bus_data
                         && bus::needs(bus::NEED_FFT)
-                        && let Some(ref slot) = bus.fft_slot
+                        && let Some(slot) = bus.fft_slot()
                     {
                         slot.write(|fft| {
                             let n = spectrum.len().min(fft.bins.len());
@@ -406,7 +406,7 @@ impl AudioProcessor {
                     // Publish to inter-plugin bus.
                     if let Some(ref bus) = self.bus_data
                         && bus::needs(bus::NEED_FFT)
-                        && let Some(ref slot) = bus.fft_slot
+                        && let Some(slot) = bus.fft_slot()
                     {
                         slot.write(|fft| {
                             let n = spectrum.len().min(fft.bins.len());
@@ -634,7 +634,7 @@ struct PluginInstance {
     gui_bridge: Mutex<GuiBridge>,
     channels: AtomicU32,
     bus_id: bus::InstanceId,
-    bus_data: Arc<bus::PluginSharedData>,
+    bus_data: bus::PluginSharedData,
 }
 
 impl PluginInstance {
@@ -642,12 +642,10 @@ impl PluginInstance {
         let params = ParamStore::new(&PARAMS);
         let shared = Arc::new(SharedState::new(params, host, channels));
         let bus_id = bus::next_instance_id();
-        let bus_data = Arc::new(
-            bus::PluginSharedData::new(bus::PluginType::Eq)
+        let mut bus_data = bus::PluginSharedData::new(bus::PluginType::Eq)
                 .with_fft(bus::FftData::default())
-                .with_bands(bus::EqBands::default()),
-        );
-        bus::register(bus_id, bus_data.clone());
+                .with_bands(bus::EqBands::default());
+        bus_data = bus::register(bus_id, bus_data);
         Self {
             shared,
             active: AtomicBool::new(false),
@@ -838,7 +836,7 @@ unsafe extern "C-unwind" fn plugin_activate(
         .shared
         .sample_rate_bits
         .store(sample_rate.to_bits(), Ordering::Release);
-    let bus_data = Some(instance.bus_data.clone());
+    let bus_data = Some(instance.bus_data);
     let next = Box::into_raw(Box::new(AudioProcessor::new(
         sample_rate,
         max_frames,
