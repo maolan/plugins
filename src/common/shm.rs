@@ -1,6 +1,5 @@
 //! POSIX shared-memory helpers for the plugin billboard.
 
-
 /// An owned POSIX shared-memory mapping.
 pub struct ShmMapping {
     ptr: *mut u8,

@@ -90,11 +90,7 @@ struct AudioProcessor {
 }
 
 impl AudioProcessor {
-    fn new(
-        sample_rate: f64,
-        max_frames: u32,
-        bus_data: Option<bus::PluginSharedData>,
-    ) -> Self {
+    fn new(sample_rate: f64, max_frames: u32, bus_data: Option<bus::PluginSharedData>) -> Self {
         let sr = sample_rate as f32;
         let equalizer = ParametricEqualizer::new(sr);
         Self {
@@ -643,8 +639,8 @@ impl PluginInstance {
         let shared = Arc::new(SharedState::new(params, host, channels));
         let bus_id = bus::next_instance_id();
         let mut bus_data = bus::PluginSharedData::new(bus::PluginType::Eq)
-                .with_fft(bus::FftData::default())
-                .with_bands(bus::EqBands::default());
+            .with_fft(bus::FftData::default())
+            .with_bands(bus::EqBands::default());
         bus_data = bus::register(bus_id, bus_data);
         Self {
             shared,

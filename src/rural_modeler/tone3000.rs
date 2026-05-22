@@ -8,7 +8,7 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
-use rand::{Rng, distributions::Alphanumeric, rngs::OsRng};
+use rand::{RngExt, distr::Alphanumeric, rng};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -353,20 +353,20 @@ pub fn oauth_login_with_browser(client_id: &str) -> Result<(), String> {
 }
 
 fn generate_pkce_verifier() -> String {
-    let mut rng = OsRng;
+    let mut r = rng();
     let mut verifier = String::with_capacity(64);
     while verifier.len() < 64 {
-        let c: char = rng.sample(Alphanumeric) as char;
+        let c: char = r.sample(Alphanumeric) as char;
         verifier.push(c);
     }
     verifier
 }
 
 fn random_state_token() -> String {
-    let mut rng = OsRng;
+    let mut r = rng();
     let mut state = String::with_capacity(32);
     while state.len() < 32 {
-        let c: char = rng.sample(Alphanumeric) as char;
+        let c: char = r.sample(Alphanumeric) as char;
         state.push(c);
     }
     state
@@ -802,33 +802,18 @@ fn request_token_refresh(
 fn post_oauth_form(params: &[(&str, &str)]) -> Result<OAuthTokenResponse, String> {
     let url = oauth_token_url();
     let response = match ureq::post(&url)
-        .set("User-Agent", "rural-modeler/0.1")
-        .set("Content-Type", "application/x-www-form-urlencoded")
-        .send_form(params)
+        .header("User-Agent", "rural-modeler/0.1")
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .send_form(params.iter().copied())
     {
         Ok(response) => response,
-        Err(ureq::Error::Status(code, response)) => {
-            let retry_after = response.header("Retry-After").map(String::from);
-            let mut body = String::new();
-            let mut reader = response.into_reader();
-            let _ = reader.read_to_string(&mut body);
-            let body = body.trim();
-            let retry_after_str = retry_after.as_deref().unwrap_or("");
+        Err(ureq::Error::StatusCode(code)) => {
             if code == 429 {
-                log_oauth(&format!(
-                    "RATE LIMIT on {url}: retry_after='{retry_after_str}' body='{body}'"
-                ));
-                return Err(format!(
-                    "Tone3000 rate limit hit (retry after {retry_after_str}s)"
-                ));
-            }
-            if body.is_empty() {
-                return Err(format!(
-                    "Tone3000 OAuth request failed for '{url}': status code {code}"
-                ));
+                log_oauth(&format!("RATE LIMIT on {url}"));
+                return Err("Tone3000 rate limit hit".to_string());
             }
             return Err(format!(
-                "Tone3000 OAuth request failed for '{url}': status code {code}; body: {body}"
+                "Tone3000 OAuth request failed for '{url}': status code {code}"
             ));
         }
         Err(err) => {
@@ -837,6 +822,7 @@ fn post_oauth_form(params: &[(&str, &str)]) -> Result<OAuthTokenResponse, String
     };
     let mut body = Vec::new();
     response
+        .into_body()
         .into_reader()
         .read_to_end(&mut body)
         .map_err(|e| format!("Failed to read Tone3000 OAuth response body from '{url}': {e}"))?;
@@ -1058,56 +1044,39 @@ fn get_bytes(url: &str, auth_token: Option<&str>, depth: usize) -> Result<Vec<u8
         return Err("Tone3000 request redirection depth exceeded".to_string());
     }
 
-    let agent: ureq::Agent = ureq::builder()
-        .timeout_connect(std::time::Duration::from_secs(10))
-        .timeout_read(std::time::Duration::from_secs(60))
-        .timeout_write(std::time::Duration::from_secs(60))
+    let config = ureq::config::Config::builder()
+        .timeout_connect(Some(std::time::Duration::from_secs(10)))
+        .timeout_recv_body(Some(std::time::Duration::from_secs(60)))
+        .timeout_send_body(Some(std::time::Duration::from_secs(60)))
         .build();
+    let agent: ureq::Agent = config.into();
 
-    let mut request = agent.get(url).set("User-Agent", "rural-modeler/0.1");
+    let mut request = agent.get(url).header("User-Agent", "rural-modeler/0.1");
     if let Some(key) = auth_token {
         request = request
-            .set("Authorization", &format!("Bearer {key}"))
-            .set("X-API-Key", key);
+            .header("Authorization", &format!("Bearer {key}"))
+            .header("X-API-Key", key);
     }
     let response = match request.call() {
         Ok(response) => response,
-        Err(ureq::Error::Status(code, response)) => {
-            let retry_after = response.header("Retry-After").map(String::from);
-            let mut body = Vec::new();
-            let _ = response.into_reader().read_to_end(&mut body);
-            let preview = preview_bytes(&body, 512);
-            let retry_after_str = retry_after.as_deref().unwrap_or("");
+        Err(ureq::Error::StatusCode(code)) => {
             if code == 429 {
-                log_oauth(&format!(
-                    "RATE LIMIT on {url}: retry_after='{retry_after_str}' preview='{preview}'"
-                ));
-                return Err(format!(
-                    "Tone3000 rate limit hit (retry after {retry_after_str}s)"
-                ));
+                log_oauth(&format!("RATE LIMIT on {url}"));
+                return Err("Tone3000 rate limit hit".to_string());
             }
             return Err(format!(
-                "Tone3000 request failed for '{url}': status code {code}; body_preview: {preview}"
+                "Tone3000 request failed for '{url}': status code {code}"
             ));
         }
         Err(err) => return Err(format!("Tone3000 request failed for '{url}': {err}")),
     };
     let mut body = Vec::new();
     response
+        .into_body()
         .into_reader()
         .read_to_end(&mut body)
         .map_err(|e| format!("Failed to read Tone3000 response body from '{url}': {e}"))?;
     Ok(body)
-}
-
-fn preview_bytes(bytes: &[u8], max: usize) -> String {
-    let clipped = &bytes[..bytes.len().min(max)];
-    let mut text = String::from_utf8_lossy(clipped).into_owned();
-    text = text.replace('\n', "\\n").replace('\r', "\\r");
-    if bytes.len() > max {
-        text.push_str("...(truncated)");
-    }
-    text
 }
 
 fn extract_pagination(value: &Value) -> (u32, u32, u32) {

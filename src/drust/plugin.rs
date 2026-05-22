@@ -296,7 +296,8 @@ impl PluginInstance {
         shared.set_host(host);
         let engine = Arc::new(DrumGizmoEngine::new());
         let bus_id = bus::next_instance_id();
-        let mut bus_data = bus::PluginSharedData::new(bus::PluginType::Drust).with_fft(bus::FftData::default());
+        let mut bus_data =
+            bus::PluginSharedData::new(bus::PluginType::Drust).with_fft(bus::FftData::default());
         bus_data = bus::register(bus_id, bus_data);
         Self {
             shared,

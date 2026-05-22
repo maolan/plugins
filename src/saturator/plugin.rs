@@ -269,11 +269,7 @@ struct AudioProcessor {
 }
 
 impl AudioProcessor {
-    fn new(
-        _sample_rate: f64,
-        max_frames: u32,
-        bus_data: Option<bus::PluginSharedData>,
-    ) -> Self {
+    fn new(_sample_rate: f64, max_frames: u32, bus_data: Option<bus::PluginSharedData>) -> Self {
         Self {
             dsp: SingleEndedTriode::default(),
             temp_left: vec![0.0; max_frames as usize],
@@ -383,7 +379,7 @@ impl PluginInstance {
         shared.set_host(host);
         let bus_id = bus::next_instance_id();
         let mut bus_data = bus::PluginSharedData::new(bus::PluginType::Saturator)
-                .with_fft(bus::FftData::default());
+            .with_fft(bus::FftData::default());
         bus_data = bus::register(bus_id, bus_data);
         Self {
             shared,

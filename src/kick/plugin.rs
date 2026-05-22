@@ -804,11 +804,7 @@ struct AudioProcessor {
 }
 
 impl AudioProcessor {
-    fn new(
-        sample_rate: f64,
-        max_frames: u32,
-        bus_data: Option<bus::PluginSharedData>,
-    ) -> Self {
+    fn new(sample_rate: f64, max_frames: u32, bus_data: Option<bus::PluginSharedData>) -> Self {
         let frames = max_frames as usize;
         Self {
             synth: KickSynthesizer::new(sample_rate as f32),
@@ -1009,7 +1005,8 @@ impl PluginInstance {
     fn new(host: *const clap_host) -> Self {
         let shared = Arc::new(SharedState::new(host));
         let bus_id = bus::next_instance_id();
-        let mut bus_data = bus::PluginSharedData::new(bus::PluginType::Kick).with_fft(bus::FftData::default());
+        let mut bus_data =
+            bus::PluginSharedData::new(bus::PluginType::Kick).with_fft(bus::FftData::default());
         bus_data = bus::register(bus_id, bus_data);
         Self {
             shared,

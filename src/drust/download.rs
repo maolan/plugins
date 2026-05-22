@@ -192,13 +192,15 @@ pub fn download_kit_with_progress(
         .map_err(|e| format!("Download failed: {e}"))?;
 
     let total_size = response
-        .header("Content-Length")
+        .headers()
+        .get("Content-Length")
+        .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(0);
 
     let mut file =
         std::fs::File::create(&tmp_zip).map_err(|e| format!("Failed to create temp file: {e}"))?;
-    let mut reader = response.into_reader();
+    let mut reader = response.into_body().into_reader();
 
     let mut downloaded: u64 = 0;
     let mut buf = [0u8; 65536];

@@ -290,11 +290,7 @@ struct AudioProcessor {
 }
 
 impl AudioProcessor {
-    fn new(
-        sample_rate: f64,
-        max_frames: u32,
-        bus_data: Option<bus::PluginSharedData>,
-    ) -> Self {
+    fn new(sample_rate: f64, max_frames: u32, bus_data: Option<bus::PluginSharedData>) -> Self {
         let mut dsp = Reverb::default();
         dsp.set_sample_rate(sample_rate);
         Self {
@@ -410,7 +406,8 @@ impl PluginInstance {
         shared.set_host(host);
         shared.channels.store(channels, Ordering::Release);
         let bus_id = bus::next_instance_id();
-        let mut bus_data = bus::PluginSharedData::new(bus::PluginType::Reverb).with_fft(bus::FftData::default());
+        let mut bus_data =
+            bus::PluginSharedData::new(bus::PluginType::Reverb).with_fft(bus::FftData::default());
         bus_data = bus::register(bus_id, bus_data);
         Self {
             shared,

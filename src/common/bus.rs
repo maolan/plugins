@@ -163,9 +163,9 @@ fn with_billboard<T>(f: impl FnOnce(*mut u8) -> T) -> Option<T> {
     BILLBOARD.get().map(|m| f(m.as_ptr()))
 }
 
-unsafe fn header_mut(ptr: *mut u8) -> &'static mut BillboardHeader { unsafe {
-    &mut *(ptr as *mut BillboardHeader)
-}}
+unsafe fn header_mut(ptr: *mut u8) -> &'static mut BillboardHeader {
+    unsafe { &mut *(ptr as *mut BillboardHeader) }
+}
 
 unsafe fn slot_ptr(ptr: *mut u8, index: usize) -> *mut BillboardSlot {
     let base = unsafe { ptr.add(std::mem::size_of::<BillboardHeader>()) };
@@ -527,13 +527,11 @@ mod tests {
         let _guard = setup();
         reset_billboard();
         let id1 = next_instance_id();
-        let data1 = PluginSharedData::new(PluginType::Eq)
-            .with_fft(FftData::default());
+        let data1 = PluginSharedData::new(PluginType::Eq).with_fft(FftData::default());
         let handle1 = register(id1, data1);
 
         let id2 = next_instance_id();
-        let data2 = PluginSharedData::new(PluginType::Compressor)
-            .with_fft(FftData::default());
+        let data2 = PluginSharedData::new(PluginType::Compressor).with_fft(FftData::default());
         let handle2 = register(id2, data2);
 
         let peers = discover(|_| true);
@@ -556,8 +554,7 @@ mod tests {
         let _guard = setup();
         reset_billboard();
         let id = next_instance_id();
-        let data = PluginSharedData::new(PluginType::Delay)
-            .with_fft(FftData::default());
+        let data = PluginSharedData::new(PluginType::Delay).with_fft(FftData::default());
         register(id, data);
         assert_eq!(discover(|_| true).len(), 1);
 
@@ -570,8 +567,7 @@ mod tests {
         let _guard = setup();
         reset_billboard();
         let id = next_instance_id();
-        let data = PluginSharedData::new(PluginType::Reverb)
-            .with_fft(FftData::default());
+        let data = PluginSharedData::new(PluginType::Reverb).with_fft(FftData::default());
         register(id, data);
 
         let found = get(id).expect("should find registered plugin");
@@ -616,8 +612,7 @@ mod tests {
             fft.bins[i] = i as f32;
         }
 
-        let data = PluginSharedData::new(PluginType::Eq)
-            .with_fft(fft);
+        let data = PluginSharedData::new(PluginType::Eq).with_fft(fft);
         let handle = register(id, data);
 
         // Read back through the handle returned by register.
@@ -654,12 +649,32 @@ mod tests {
             len: 3,
             ..Default::default()
         };
-        bands.bands[0] = EqBand { freq: 100.0, gain: 1.0, q: 0.7, on: true, typ: 0, slope: 0 };
-        bands.bands[1] = EqBand { freq: 1000.0, gain: -2.0, q: 1.2, on: true, typ: 1, slope: 0 };
-        bands.bands[2] = EqBand { freq: 10000.0, gain: 3.0, q: 2.0, on: false, typ: 2, slope: 0 };
+        bands.bands[0] = EqBand {
+            freq: 100.0,
+            gain: 1.0,
+            q: 0.7,
+            on: true,
+            typ: 0,
+            slope: 0,
+        };
+        bands.bands[1] = EqBand {
+            freq: 1000.0,
+            gain: -2.0,
+            q: 1.2,
+            on: true,
+            typ: 1,
+            slope: 0,
+        };
+        bands.bands[2] = EqBand {
+            freq: 10000.0,
+            gain: 3.0,
+            q: 2.0,
+            on: false,
+            typ: 2,
+            slope: 0,
+        };
 
-        let data = PluginSharedData::new(PluginType::Compressor)
-            .with_bands(bands);
+        let data = PluginSharedData::new(PluginType::Compressor).with_bands(bands);
         let handle = register(id, data);
 
         let mut read_bands = EqBands::default();
@@ -690,8 +705,7 @@ mod tests {
         gr.gr_db[2] = -0.5;
         gr.gr_db[3] = -6.0;
 
-        let data = PluginSharedData::new(PluginType::Compressor)
-            .with_gr(gr);
+        let data = PluginSharedData::new(PluginType::Compressor).with_gr(gr);
         let handle = register(id, data);
 
         let mut read_gr = CompressorGrData::default();
@@ -751,8 +765,7 @@ mod tests {
         let _guard = setup();
         reset_billboard();
         let id = next_instance_id();
-        let data = PluginSharedData::new(PluginType::Stereo)
-            .with_fft(FftData::default());
+        let data = PluginSharedData::new(PluginType::Stereo).with_fft(FftData::default());
         let handle = register(id, data);
 
         // One writer + multiple readers concurrently.
@@ -791,8 +804,7 @@ mod tests {
         let name = BILLBOARD_NAME.get().unwrap().clone();
 
         let id = next_instance_id();
-        let data = PluginSharedData::new(PluginType::Widener)
-            .with_fft(FftData::default());
+        let data = PluginSharedData::new(PluginType::Widener).with_fft(FftData::default());
         let _handle = register(id, data);
 
         // Open a second mapping to the same segment (simulating another process).
