@@ -1,7 +1,7 @@
 //! Full kit state serialization.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use crate::kick::dsp::{
     INSTRUMENTS_PER_KIT, LAYERS_PER_INSTRUMENT, OSCILLATORS_PER_LAYER,
@@ -19,7 +19,7 @@ pub struct KitState {
     #[serde(default)]
     pub kit: KitConfig,
     #[serde(default, deserialize_with = "deserialize_params")]
-    pub params: HashMap<String, f64>,
+    pub params: BTreeMap<String, f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -421,7 +421,7 @@ fn default_flat_env() -> SerdeEnvelope {
 
 impl KitState {
     pub fn from_runtime(params: &ParamStore, kit: &KitConfig) -> Self {
-        let mut params_map = HashMap::new();
+        let mut params_map = BTreeMap::new();
         for id in ParamId::all() {
             params_map.insert(state_key(id), params.get(id));
         }
@@ -502,14 +502,14 @@ impl From<&Envelope> for SerdeEnvelope {
     }
 }
 
-fn deserialize_params<'de, D>(deserializer: D) -> Result<HashMap<String, f64>, D::Error>
+fn deserialize_params<'de, D>(deserializer: D) -> Result<BTreeMap<String, f64>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     struct ParamsVisitor;
 
     impl<'de> serde::de::Visitor<'de> for ParamsVisitor {
-        type Value = HashMap<String, f64>;
+        type Value = BTreeMap<String, f64>;
 
         fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
             formatter.write_str(
@@ -521,7 +521,7 @@ where
         where
             A: serde::de::SeqAccess<'de>,
         {
-            let mut map = HashMap::new();
+            let mut map = BTreeMap::new();
             let mut index = 0usize;
             while let Some(value) = seq.next_element::<f64>()? {
                 if let Some(id) = ParamId::from_index(index) {
@@ -536,7 +536,7 @@ where
         where
             A: serde::de::MapAccess<'de>,
         {
-            let mut map = HashMap::new();
+            let mut map = BTreeMap::new();
             while let Some((key, value)) = map_access.next_entry::<String, f64>()? {
                 map.insert(key, value);
             }

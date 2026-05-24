@@ -304,8 +304,8 @@ impl ParamId {
     }
 
     pub fn para_dyn(index: usize) -> Self {
-        let raw = 204 + index;
-        Self::from_raw(raw as u32).unwrap()
+        let raw: u32 = 201u32 + index as u32;
+        Self::from_raw(raw).unwrap()
     }
 
     pub fn all() -> Vec<ParamId> {

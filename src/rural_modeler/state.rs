@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -14,7 +14,7 @@ pub struct PluginState {
     #[serde(default = "default_version")]
     pub version: String,
     #[serde(default, deserialize_with = "deserialize_params")]
-    pub params: HashMap<String, f64>,
+    pub params: BTreeMap<String, f64>,
     #[serde(default, rename = "NAMPath")]
     pub model_path: String,
     #[serde(default, rename = "IRPath")]
@@ -29,7 +29,7 @@ impl Default for PluginState {
     fn default() -> Self {
         Self {
             version: CURRENT_STATE_VERSION.to_string(),
-            params: HashMap::new(),
+            params: BTreeMap::new(),
             model_path: String::new(),
             ir_path: String::new(),
         }
@@ -38,7 +38,7 @@ impl Default for PluginState {
 
 impl PluginState {
     pub fn from_runtime(params: &ParamStore, model_path: String, ir_path: String) -> Self {
-        let mut params_map = HashMap::new();
+        let mut params_map = BTreeMap::new();
         for def in PARAMS.iter() {
             params_map.insert(def.name.to_string(), params.get(def.id));
         }
@@ -88,14 +88,14 @@ impl PluginState {
     }
 }
 
-fn deserialize_params<'de, D>(deserializer: D) -> Result<HashMap<String, f64>, D::Error>
+fn deserialize_params<'de, D>(deserializer: D) -> Result<BTreeMap<String, f64>, D::Error>
 where
     D: Deserializer<'de>,
 {
     struct ParamsVisitor;
 
     impl<'de> Visitor<'de> for ParamsVisitor {
-        type Value = HashMap<String, f64>;
+        type Value = BTreeMap<String, f64>;
 
         fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
             formatter.write_str(
@@ -107,7 +107,7 @@ where
         where
             A: SeqAccess<'de>,
         {
-            let mut map = HashMap::new();
+            let mut map = BTreeMap::new();
             let mut index = 0usize;
             while let Some(value) = seq.next_element::<f64>()? {
                 if let Some(def) = PARAMS.get(index) {
@@ -122,7 +122,7 @@ where
         where
             A: MapAccess<'de>,
         {
-            let mut map = HashMap::new();
+            let mut map = BTreeMap::new();
             while let Some((key, value)) = map_access.next_entry::<String, f64>()? {
                 map.insert(key, value);
             }

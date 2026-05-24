@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     ffi::{CStr, c_char, c_void},
     io::{Read, Write},
     ptr::{NonNull, null, null_mut},
@@ -1729,7 +1729,7 @@ pub struct PluginState {
     #[serde(default = "default_version")]
     pub version: String,
     #[serde(default)]
-    pub params: HashMap<String, f64>,
+    pub params: BTreeMap<String, f64>,
 }
 
 fn default_version() -> String {
@@ -1740,14 +1740,14 @@ impl Default for PluginState {
     fn default() -> Self {
         Self {
             version: CURRENT_STATE_VERSION.to_string(),
-            params: HashMap::new(),
+            params: BTreeMap::new(),
         }
     }
 }
 
 impl PluginState {
     pub fn from_runtime<T: ParamIdExt>(params: &ParamStore<T>, defs: &[ParamDef<T>]) -> Self {
-        let mut params_map = HashMap::new();
+        let mut params_map = BTreeMap::new();
         for def in defs.iter() {
             params_map.insert(def.name.to_string(), params.get(def.id));
         }

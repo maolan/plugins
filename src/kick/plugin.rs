@@ -15,13 +15,13 @@ use clap_clap::{
         CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END, CLAP_EVENT_PARAM_VALUE,
         CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI, CLAP_EXT_NOTE_PORTS, CLAP_EXT_PARAMS, CLAP_EXT_STATE,
         CLAP_EXT_TAIL, CLAP_INVALID_ID, CLAP_NOTE_DIALECT_MIDI, CLAP_PLUGIN_FEATURE_INSTRUMENT,
-        CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_COCOA, CLAP_WINDOW_API_WIN32,
-        CLAP_WINDOW_API_X11, clap_audio_port_info, clap_event_header, clap_event_param_gesture,
-        clap_gui_resize_hints, clap_host, clap_host_gui, clap_host_params, clap_host_state,
-        clap_id, clap_istream, clap_note_port_info, clap_ostream, clap_param_info, clap_plugin,
-        clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_gui, clap_plugin_note_ports,
-        clap_plugin_params, clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status,
-        clap_window,
+        CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_COCOA,
+        CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info, clap_event_header,
+        clap_event_param_gesture, clap_gui_resize_hints, clap_host, clap_host_gui,
+        clap_host_params, clap_host_state, clap_id, clap_istream, clap_note_port_info,
+        clap_ostream, clap_param_info, clap_plugin, clap_plugin_audio_ports,
+        clap_plugin_descriptor, clap_plugin_gui, clap_plugin_note_ports, clap_plugin_params,
+        clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status, clap_window,
     },
     id::ClapId,
     process::Process,
@@ -1156,7 +1156,8 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
     }
     let info = unsafe { &mut *info };
     info.id = index;
-    info.channel_count = 2;
+    info.channel_count = 1;
+    info.port_type = CLAP_PORT_MONO.as_ptr();
     info.flags = CLAP_AUDIO_PORT_IS_MAIN;
     let name = format!("Inst {}", index + 1);
     copy_str_to_array(&name, &mut info.name);
@@ -1247,79 +1248,12 @@ unsafe extern "C-unwind" fn ext_params_get_value(
 
 unsafe extern "C-unwind" fn ext_params_value_to_text(
     _plugin: *const clap_plugin,
-    param_id: clap_id,
-    value: f64,
-    out_buffer: *mut c_char,
-    out_capacity: u32,
+    _param_id: clap_id,
+    _value: f64,
+    _out_buffer: *mut c_char,
+    _out_capacity: u32,
 ) -> bool {
-    if out_buffer.is_null() || out_capacity == 0 {
-        return false;
-    }
-    let raw: u32 = param_id;
-    let id = match ParamId::from_raw(raw) {
-        Some(id) => id,
-        None => return false,
-    };
-    let text = match id.param_type() {
-        ParamType::Osc0Waveform | ParamType::Osc1Waveform | ParamType::Osc2Waveform => {
-            match value.round() as i32 {
-                0 => "Sine",
-                1 => "Square",
-                2 => "Triangle",
-                3 => "Saw",
-                4 => "Sample",
-                _ => "Sine",
-            }
-        }
-        ParamType::Layer0FilterType
-        | ParamType::Osc0FilterType
-        | ParamType::Osc1FilterType
-        | ParamType::Osc2FilterType
-        | ParamType::NoiseFilterType
-        | ParamType::MasterFilterType => match value.round() as i32 {
-            0 => "Lowpass",
-            1 => "Highpass",
-            2 => "Bandpass",
-            _ => "Lowpass",
-        },
-        ParamType::NoiseType => match value.round() as i32 {
-            0 => "White",
-            1 => "Pink",
-            2 => "Brownian",
-            _ => "White",
-        },
-        ParamType::Layer0DistortionType
-        | ParamType::Osc0DistortionType
-        | ParamType::Osc1DistortionType
-        | ParamType::Osc2DistortionType
-        | ParamType::MasterDistortionType => match value.round() as i32 {
-            0 => "HardClip",
-            1 => "Tanh",
-            2 => "Arctan",
-            3 => "Exp",
-            4 => "Poly",
-            5 => "Log",
-            6 => "Foldback",
-            7 => "HalfRect",
-            8 => "FullRect",
-            _ => "Tanh",
-        },
-        ParamType::Osc0FreqEnvMode | ParamType::Osc1FreqEnvMode | ParamType::Osc2FreqEnvMode => {
-            match value.round() as i32 {
-                0 => "Linear",
-                1 => "Log",
-                _ => "Linear",
-            }
-        }
-        _ => return false,
-    };
-    let buf =
-        unsafe { std::slice::from_raw_parts_mut(out_buffer as *mut u8, out_capacity as usize) };
-    let bytes = text.as_bytes();
-    let len = bytes.len().min(buf.len() - 1);
-    buf[..len].copy_from_slice(&bytes[..len]);
-    buf[len] = 0;
-    true
+    false
 }
 
 unsafe extern "C-unwind" fn ext_params_text_to_value(

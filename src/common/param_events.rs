@@ -24,12 +24,12 @@ pub trait SharedStateExt<P: ClapParamId> {
     fn set_gesture_active(&self, id: P, active: bool);
     fn is_gesture_active(&self, id: P) -> bool;
     fn set_param_from_host(&self, id: P, value: f64);
-    fn take_pending_param_notifications(&self) -> u32;
-    fn requeue_pending_param_notifications(&self, bits: u32);
-    fn take_pending_gesture_begin(&self) -> u32;
-    fn requeue_pending_gesture_begin(&self, bits: u32);
-    fn take_pending_gesture_end(&self) -> u32;
-    fn requeue_pending_gesture_end(&self, bits: u32);
+    fn take_pending_param_notifications(&self) -> u64;
+    fn requeue_pending_param_notifications(&self, bits: u64);
+    fn take_pending_gesture_begin(&self) -> u64;
+    fn requeue_pending_gesture_begin(&self, bits: u64);
+    fn take_pending_gesture_end(&self) -> u64;
+    fn requeue_pending_gesture_end(&self, bits: u64);
 }
 
 impl<P: ClapParamId, S: SharedStateExt<P>> SharedStateExt<P> for std::sync::Arc<S> {
@@ -45,22 +45,22 @@ impl<P: ClapParamId, S: SharedStateExt<P>> SharedStateExt<P> for std::sync::Arc<
     fn set_param_from_host(&self, id: P, value: f64) {
         (**self).set_param_from_host(id, value);
     }
-    fn take_pending_param_notifications(&self) -> u32 {
+    fn take_pending_param_notifications(&self) -> u64 {
         (**self).take_pending_param_notifications()
     }
-    fn requeue_pending_param_notifications(&self, bits: u32) {
+    fn requeue_pending_param_notifications(&self, bits: u64) {
         (**self).requeue_pending_param_notifications(bits);
     }
-    fn take_pending_gesture_begin(&self) -> u32 {
+    fn take_pending_gesture_begin(&self) -> u64 {
         (**self).take_pending_gesture_begin()
     }
-    fn requeue_pending_gesture_begin(&self, bits: u32) {
+    fn requeue_pending_gesture_begin(&self, bits: u64) {
         (**self).requeue_pending_gesture_begin(bits);
     }
-    fn take_pending_gesture_end(&self) -> u32 {
+    fn take_pending_gesture_end(&self) -> u64 {
         (**self).take_pending_gesture_end()
     }
-    fn requeue_pending_gesture_end(&self, bits: u32) {
+    fn requeue_pending_gesture_end(&self, bits: u64) {
         (**self).requeue_pending_gesture_end(bits);
     }
 }
@@ -130,11 +130,11 @@ pub fn emit_pending_param_events_to_host<P: ClapParamId, S: SharedStateExt<P>>(
         return;
     }
 
-    let mut failed_begin = 0_u32;
-    let mut failed_values = 0_u32;
-    let mut failed_end = 0_u32;
+    let mut failed_begin = 0_u64;
+    let mut failed_values = 0_u64;
+    let mut failed_end = 0_u64;
     for id in (0..P::COUNT).filter_map(|i| P::from_raw(i as u32)) {
-        let bit = 1_u32 << (id.as_index() as u32);
+        let bit = 1_u64 << (id.as_index() as u32);
         if pending_begin & bit != 0 {
             let begin = ParamGesture::begin(ClapId::from(id.as_index() as u16));
             if out_events.try_push(begin).is_err() {

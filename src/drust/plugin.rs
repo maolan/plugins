@@ -13,13 +13,12 @@ use clap_clap::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_CHOKE,
         CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_VALUE, CLAP_EXT_NOTE_NAME,
         CLAP_NOTE_DIALECT_MIDI, CLAP_PARAM_REQUIRES_PROCESS, CLAP_PLUGIN_FEATURE_INSTRUMENT,
-        CLAP_PLUGIN_FEATURE_MONO, CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION,
-        clap_audio_port_info, clap_gui_resize_hints, clap_host, clap_id, clap_input_events,
-        clap_istream, clap_note_name, clap_note_port_info, clap_ostream, clap_output_events,
-        clap_param_info, clap_plugin, clap_plugin_audio_ports, clap_plugin_descriptor,
-        clap_plugin_factory, clap_plugin_gui, clap_plugin_latency, clap_plugin_note_name,
-        clap_plugin_note_ports, clap_plugin_params, clap_plugin_state, clap_plugin_tail,
-        clap_process, clap_process_status, clap_window,
+        CLAP_PLUGIN_FEATURE_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION, clap_audio_port_info,
+        clap_gui_resize_hints, clap_host, clap_id, clap_input_events, clap_istream, clap_note_name,
+        clap_note_port_info, clap_ostream, clap_output_events, clap_param_info, clap_plugin,
+        clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_factory, clap_plugin_gui,
+        clap_plugin_latency, clap_plugin_note_name, clap_plugin_note_ports, clap_plugin_params,
+        clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status, clap_window,
     },
     process::Process,
     stream::{IStream, OStream},
@@ -106,13 +105,22 @@ impl AudioProcessor {
 
         let mut out_outputs: Vec<Option<&mut [f32]>> = Vec::with_capacity(MAX_CHANNELS);
         let output_count = process.audio_outputs_count() as usize;
-        for out in 0..output_count.min(MAX_CHANNELS) {
+        for out in 0..output_count.min(MAX_CHANNELS / 2) {
             let mut port = process.audio_outputs(out as u32);
             if port.channel_count() >= 1 {
                 unsafe {
-                    let buf = std::slice::from_raw_parts_mut(port.data32(0).as_mut_ptr(), frames);
-                    buf.fill(0.0);
-                    out_outputs.push(Some(buf));
+                    let buf_l = std::slice::from_raw_parts_mut(port.data32(0).as_mut_ptr(), frames);
+                    buf_l.fill(0.0);
+                    out_outputs.push(Some(buf_l));
+                }
+            } else {
+                out_outputs.push(None);
+            }
+            if port.channel_count() >= 2 {
+                unsafe {
+                    let buf_r = std::slice::from_raw_parts_mut(port.data32(1).as_mut_ptr(), frames);
+                    buf_r.fill(0.0);
+                    out_outputs.push(Some(buf_r));
                 }
             } else {
                 out_outputs.push(None);
@@ -587,7 +595,11 @@ unsafe extern "C-unwind" fn ext_audio_ports_count(
     _plugin: *const clap_plugin,
     is_input: bool,
 ) -> u32 {
-    if is_input { 0 } else { MAX_CHANNELS as u32 }
+    if is_input {
+        0
+    } else {
+        (MAX_CHANNELS / 2) as u32
+    }
 }
 
 unsafe extern "C-unwind" fn ext_audio_ports_get(
@@ -596,32 +608,23 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
     is_input: bool,
     info: *mut clap_audio_port_info,
 ) -> bool {
-    if is_input || index >= MAX_CHANNELS as u32 || info.is_null() {
+    if is_input || index >= (MAX_CHANNELS / 2) as u32 || info.is_null() {
         return false;
     }
     let info = unsafe { &mut *info };
     info.id = index;
     info.flags = CLAP_AUDIO_PORT_IS_MAIN;
-    info.channel_count = 1;
-    info.port_type = CLAP_PORT_MONO.as_ptr();
+    info.channel_count = 2;
     info.in_place_pair = u32::MAX;
     let name = match index {
-        0 => "Kick L",
-        1 => "Kick R",
-        2 => "Snare L",
-        3 => "Snare R",
-        4 => "HiHat L",
-        5 => "HiHat R",
-        6 => "Toms L",
-        7 => "Toms R",
-        8 => "Ride L",
-        9 => "Ride R",
-        10 => "Crash L",
-        11 => "Crash R",
-        12 => "China/Splash L",
-        13 => "China/Splash R",
-        14 => "Ambience L",
-        15 => "Ambience R",
+        0 => "Kick",
+        1 => "Snare",
+        2 => "HiHat",
+        3 => "Toms",
+        4 => "Ride",
+        5 => "Crash",
+        6 => "China/Splash",
+        7 => "Ambience",
         _ => "Out",
     };
     copy_str_to_array(name, &mut info.name);
@@ -785,21 +788,7 @@ unsafe extern "C-unwind" fn ext_state_save(
     }
     let inst = unsafe { instance(plugin) };
 
-    let current_state_id = inst.shared.state_id.read().clone();
-    let state_id = if current_state_id.is_empty() {
-        let new_id = format!(
-            "{}_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis(),
-            rand::random::<u32>()
-        );
-        *inst.shared.state_id.write() = new_id.clone();
-        new_id
-    } else {
-        current_state_id
-    };
+    let state_id = inst.shared.state_id.read().clone();
     let state = PluginState::from_runtime(
         &inst.shared.params,
         inst.shared.kit_path.read().clone(),

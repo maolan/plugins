@@ -80,10 +80,10 @@ static DESCRIPTOR: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor {
 pub struct SharedState {
     pub params: ParamStore,
     sample_rate_bits: std::sync::atomic::AtomicU64,
-    pending_param_notifications: std::sync::atomic::AtomicU32,
-    pending_gesture_begin: std::sync::atomic::AtomicU32,
-    pending_gesture_end: std::sync::atomic::AtomicU32,
-    active_local_gestures: std::sync::atomic::AtomicU32,
+    pending_param_notifications: std::sync::atomic::AtomicU64,
+    pending_gesture_begin: std::sync::atomic::AtomicU64,
+    pending_gesture_end: std::sync::atomic::AtomicU64,
+    active_local_gestures: std::sync::atomic::AtomicU64,
     host: AtomicPtr<clap_host>,
     pub channels: AtomicU32,
 }
@@ -93,10 +93,10 @@ impl Default for SharedState {
         Self {
             params: ParamStore::default(),
             sample_rate_bits: std::sync::atomic::AtomicU64::new(48_000.0f64.to_bits()),
-            pending_param_notifications: std::sync::atomic::AtomicU32::new(0),
-            pending_gesture_begin: std::sync::atomic::AtomicU32::new(0),
-            pending_gesture_end: std::sync::atomic::AtomicU32::new(0),
-            active_local_gestures: std::sync::atomic::AtomicU32::new(0),
+            pending_param_notifications: std::sync::atomic::AtomicU64::new(0),
+            pending_gesture_begin: std::sync::atomic::AtomicU64::new(0),
+            pending_gesture_end: std::sync::atomic::AtomicU64::new(0),
+            active_local_gestures: std::sync::atomic::AtomicU64::new(0),
             host: AtomicPtr::new(null_mut()),
             channels: AtomicU32::new(1),
         }
@@ -127,16 +127,16 @@ impl SharedState {
     }
 
     fn mark_param_notification_pending(&self, id: ParamId) {
-        let bit = 1_u32 << (id.as_index() as u32);
+        let bit = 1_u64 << (id.as_index() as u32);
         self.pending_param_notifications
             .fetch_or(bit, Ordering::AcqRel);
     }
 
-    fn take_pending_param_notifications(&self) -> u32 {
+    fn take_pending_param_notifications(&self) -> u64 {
         self.pending_param_notifications.swap(0, Ordering::AcqRel)
     }
 
-    fn requeue_pending_param_notifications(&self, bits: u32) {
+    fn requeue_pending_param_notifications(&self, bits: u64) {
         if bits != 0 {
             self.pending_param_notifications
                 .fetch_or(bits, Ordering::AcqRel);
@@ -148,14 +148,14 @@ impl SharedState {
     }
 
     pub fn mark_gesture_begin_pending(&self, id: ParamId) {
-        let bit = 1_u32 << (id.as_index() as u32);
+        let bit = 1_u64 << (id.as_index() as u32);
         self.pending_gesture_begin.fetch_or(bit, Ordering::AcqRel);
         self.active_local_gestures.fetch_or(bit, Ordering::AcqRel);
         self.mark_dirty();
     }
 
     pub fn mark_gesture_end_pending(&self, id: ParamId) {
-        let bit = 1_u32 << (id.as_index() as u32);
+        let bit = 1_u64 << (id.as_index() as u32);
         self.pending_gesture_end.fetch_or(bit, Ordering::AcqRel);
         self.active_local_gestures.fetch_and(!bit, Ordering::AcqRel);
         self.mark_dirty();
@@ -251,7 +251,7 @@ impl SharedStateExt<ParamId> for SharedState {
         self.params.get(id)
     }
     fn set_gesture_active(&self, id: ParamId, active: bool) {
-        let bit = 1_u32 << (id.as_index() as u32);
+        let bit = 1_u64 << (id.as_index() as u32);
         if active {
             self.active_local_gestures.fetch_or(bit, Ordering::AcqRel);
         } else {
@@ -259,30 +259,30 @@ impl SharedStateExt<ParamId> for SharedState {
         }
     }
     fn is_gesture_active(&self, id: ParamId) -> bool {
-        let bit = 1_u32 << (id.as_index() as u32);
+        let bit = 1_u64 << (id.as_index() as u32);
         (self.active_local_gestures.load(Ordering::Acquire) & bit) != 0
     }
     fn set_param_from_host(&self, id: ParamId, value: f64) {
         self.set_param_from_host(id, value);
     }
-    fn take_pending_param_notifications(&self) -> u32 {
+    fn take_pending_param_notifications(&self) -> u64 {
         self.take_pending_param_notifications()
     }
-    fn requeue_pending_param_notifications(&self, bits: u32) {
+    fn requeue_pending_param_notifications(&self, bits: u64) {
         self.requeue_pending_param_notifications(bits);
     }
-    fn take_pending_gesture_begin(&self) -> u32 {
+    fn take_pending_gesture_begin(&self) -> u64 {
         self.pending_gesture_begin.swap(0, Ordering::AcqRel)
     }
-    fn requeue_pending_gesture_begin(&self, bits: u32) {
+    fn requeue_pending_gesture_begin(&self, bits: u64) {
         if bits != 0 {
             self.pending_gesture_begin.fetch_or(bits, Ordering::AcqRel);
         }
     }
-    fn take_pending_gesture_end(&self) -> u32 {
+    fn take_pending_gesture_end(&self) -> u64 {
         self.pending_gesture_end.swap(0, Ordering::AcqRel)
     }
-    fn requeue_pending_gesture_end(&self, bits: u32) {
+    fn requeue_pending_gesture_end(&self, bits: u64) {
         if bits != 0 {
             self.pending_gesture_end.fetch_or(bits, Ordering::AcqRel);
         }
@@ -593,6 +593,7 @@ fn param_text(id: ParamId, value: f64) -> String {
 }
 
 fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
+    let text = text.trim();
     match id {
         ParamId::ScMode => match text.to_ascii_lowercase().as_str() {
             "peak" => Some(0.0),
@@ -628,6 +629,43 @@ fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
             "stereo" | "2" => Some(2.0),
             _ => text.parse().ok(),
         },
+        ParamId::B1Attack
+        | ParamId::B1Release
+        | ParamId::B2Attack
+        | ParamId::B2Release
+        | ParamId::B3Attack
+        | ParamId::B3Release
+        | ParamId::B4Attack
+        | ParamId::B4Release => text.trim_end_matches("ms").trim().parse().ok(),
+        ParamId::InputGain
+        | ParamId::OutputGain
+        | ParamId::B1Threshold
+        | ParamId::B1Knee
+        | ParamId::B1Makeup
+        | ParamId::B2Threshold
+        | ParamId::B2Knee
+        | ParamId::B2Makeup
+        | ParamId::B3Threshold
+        | ParamId::B3Knee
+        | ParamId::B3Makeup
+        | ParamId::B4Threshold
+        | ParamId::B4Knee
+        | ParamId::B4Makeup => text
+            .trim_end_matches("db")
+            .trim_end_matches("dB")
+            .trim()
+            .parse()
+            .ok(),
+        ParamId::Split1 | ParamId::Split2 | ParamId::Split3 => text
+            .trim_end_matches("hz")
+            .trim_end_matches("Hz")
+            .trim()
+            .parse()
+            .ok(),
+        ParamId::Lookahead => text.trim_end_matches("ms").trim().parse().ok(),
+        ParamId::B1Ratio | ParamId::B2Ratio | ParamId::B3Ratio | ParamId::B4Ratio => {
+            text.trim_end_matches(":1").trim().parse().ok()
+        }
         _ => text.parse().ok(),
     }
 }

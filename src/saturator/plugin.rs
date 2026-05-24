@@ -121,14 +121,14 @@ impl SharedState {
             .fetch_or(bit, Ordering::AcqRel);
     }
 
-    fn take_pending_param_notifications(&self) -> u32 {
-        self.pending_param_notifications.swap(0, Ordering::AcqRel)
+    fn take_pending_param_notifications(&self) -> u64 {
+        self.pending_param_notifications.swap(0, Ordering::AcqRel) as u64
     }
 
-    fn requeue_pending_param_notifications(&self, bits: u32) {
+    fn requeue_pending_param_notifications(&self, bits: u64) {
         if bits != 0 {
             self.pending_param_notifications
-                .fetch_or(bits, Ordering::AcqRel);
+                .fetch_or(bits as u32, Ordering::AcqRel);
         }
     }
 
@@ -234,26 +234,28 @@ impl SharedStateExt<ParamId> for SharedState {
     fn set_param_from_host(&self, id: ParamId, value: f64) {
         self.set_param_from_host(id, value);
     }
-    fn take_pending_param_notifications(&self) -> u32 {
+    fn take_pending_param_notifications(&self) -> u64 {
         self.take_pending_param_notifications()
     }
-    fn requeue_pending_param_notifications(&self, bits: u32) {
+    fn requeue_pending_param_notifications(&self, bits: u64) {
         self.requeue_pending_param_notifications(bits);
     }
-    fn take_pending_gesture_begin(&self) -> u32 {
-        self.pending_gesture_begin.swap(0, Ordering::AcqRel)
+    fn take_pending_gesture_begin(&self) -> u64 {
+        self.pending_gesture_begin.swap(0, Ordering::AcqRel) as u64
     }
-    fn requeue_pending_gesture_begin(&self, bits: u32) {
+    fn requeue_pending_gesture_begin(&self, bits: u64) {
         if bits != 0 {
-            self.pending_gesture_begin.fetch_or(bits, Ordering::AcqRel);
+            self.pending_gesture_begin
+                .fetch_or(bits as u32, Ordering::AcqRel);
         }
     }
-    fn take_pending_gesture_end(&self) -> u32 {
-        self.pending_gesture_end.swap(0, Ordering::AcqRel)
+    fn take_pending_gesture_end(&self) -> u64 {
+        self.pending_gesture_end.swap(0, Ordering::AcqRel) as u64
     }
-    fn requeue_pending_gesture_end(&self, bits: u32) {
+    fn requeue_pending_gesture_end(&self, bits: u64) {
         if bits != 0 {
-            self.pending_gesture_end.fetch_or(bits, Ordering::AcqRel);
+            self.pending_gesture_end
+                .fetch_or(bits as u32, Ordering::AcqRel);
         }
     }
 }
