@@ -24,6 +24,7 @@ pub mod rural_modeler;
 pub mod saturator;
 pub mod simd;
 pub mod stereo;
+pub mod vumeter;
 pub mod widener;
 
 type DescriptorFn = unsafe fn() -> *const clap_plugin_descriptor;
@@ -34,7 +35,7 @@ struct PluginApi {
     create: CreateFn,
 }
 
-static PLUGINS: [PluginApi; 13] = [
+static PLUGINS: [PluginApi; 14] = [
     PluginApi {
         descriptor: eq::clap_descriptor_ptr,
         create: eq::clap_create_plugin,
@@ -86,6 +87,10 @@ static PLUGINS: [PluginApi; 13] = [
     PluginApi {
         descriptor: kick::clap_descriptor_ptr,
         create: kick::clap_create_plugin,
+    },
+    PluginApi {
+        descriptor: vumeter::clap_descriptor_ptr,
+        create: vumeter::clap_create_plugin,
     },
 ];
 
