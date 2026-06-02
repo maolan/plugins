@@ -2,9 +2,12 @@
 pub struct WidenerParams {
     pub output_gain_db: f64,
     pub boost: f64,
-    pub low: f64,
-    pub mid: f64,
-    pub high: f64,
+    pub low_gain: f64,
+    pub mid_gain: f64,
+    pub high_gain: f64,
+    pub low_delay: f64,
+    pub mid_delay: f64,
+    pub high_delay: f64,
     pub solo_low: bool,
     pub solo_mid: bool,
     pub solo_high: bool,
@@ -12,6 +15,7 @@ pub struct WidenerParams {
     pub x2: f64,
     pub strength: f64,
     pub monitor_mode: u8,
+    pub bypass: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -128,6 +132,44 @@ impl Lr4 {
 }
 
 #[derive(Debug, Clone)]
+struct DelayLine {
+    buffer: Vec<f64>,
+    write_idx: usize,
+}
+
+impl DelayLine {
+    fn new(size: usize) -> Self {
+        Self {
+            buffer: vec![0.0; size.max(1)],
+            write_idx: 0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.buffer.fill(0.0);
+        self.write_idx = 0;
+    }
+
+    fn write(&mut self, sample: f64) {
+        self.buffer[self.write_idx] = sample;
+        self.write_idx += 1;
+        if self.write_idx >= self.buffer.len() {
+            self.write_idx = 0;
+        }
+    }
+
+    fn read(&self, delay_samples: f64) -> f64 {
+        let len = self.buffer.len();
+        let read_pos = (self.write_idx as f64 - delay_samples).rem_euclid(len as f64);
+        let i0 = read_pos.floor() as usize;
+        let frac = read_pos - read_pos.floor();
+        let s0 = self.buffer[i0 % len];
+        let s1 = self.buffer[(i0 + 1) % len];
+        s0 + frac * (s1 - s0)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Widener {
     sample_rate: f64,
     x1: f64,
@@ -140,6 +182,15 @@ pub struct Widener {
     lp_x2_r: Lr4,
     hp_x2_l: Lr4,
     hp_x2_r: Lr4,
+    bypass_mix: f64,
+    bypass_target: f64,
+    bypass_step: f64,
+    bypass_samples_left: u32,
+    bypass_ramp_to_wet: u32,
+    bypass_ramp_to_dry: u32,
+    delay_low: DelayLine,
+    delay_mid: DelayLine,
+    delay_high: DelayLine,
     low_max_a: usize,
     low_max_b: usize,
     mid_max_a: usize,
@@ -153,9 +204,12 @@ pub struct Widener {
     high_lut_a: Vec<f32>,
     high_lut_b: Vec<f32>,
     smooth_coeff: f64,
-    smooth_low: ParamSmoother,
-    smooth_mid: ParamSmoother,
-    smooth_high: ParamSmoother,
+    smooth_low_gain: ParamSmoother,
+    smooth_mid_gain: ParamSmoother,
+    smooth_high_gain: ParamSmoother,
+    smooth_low_delay: ParamSmoother,
+    smooth_mid_delay: ParamSmoother,
+    smooth_high_delay: ParamSmoother,
     smooth_x1: ParamSmoother,
     smooth_x2: ParamSmoother,
     smooth_strength: ParamSmoother,
@@ -168,6 +222,7 @@ impl Default for Widener {
         let sample_rate = 48_000.0;
         let x1 = 400.0;
         let x2 = 4000.0;
+        let max_delay = ((STRENGTH_MAX * sample_rate) / 1000.0).ceil() as usize + 2;
         let mut s = Self {
             sample_rate,
             x1,
@@ -180,6 +235,15 @@ impl Default for Widener {
             lp_x2_r: Lr4::lowpass(x2, sample_rate),
             hp_x2_l: Lr4::highpass(x2, sample_rate),
             hp_x2_r: Lr4::highpass(x2, sample_rate),
+            bypass_mix: 1.0,
+            bypass_target: 1.0,
+            bypass_step: 0.0,
+            bypass_samples_left: 0,
+            bypass_ramp_to_wet: BYPASS_RAMP_TO_WET,
+            bypass_ramp_to_dry: BYPASS_RAMP_TO_DRY,
+            delay_low: DelayLine::new(max_delay),
+            delay_mid: DelayLine::new(max_delay),
+            delay_high: DelayLine::new(max_delay),
             low_max_a: 960,
             low_max_b: 960,
             mid_max_a: 960,
@@ -193,13 +257,16 @@ impl Default for Widener {
             high_lut_a: Vec::new(),
             high_lut_b: Vec::new(),
             smooth_coeff: 0.0,
-            smooth_low: ParamSmoother::new(100.0),
-            smooth_mid: ParamSmoother::new(100.0),
-            smooth_high: ParamSmoother::new(100.0),
+            smooth_low_gain: ParamSmoother::new(50.0),
+            smooth_mid_gain: ParamSmoother::new(50.0),
+            smooth_high_gain: ParamSmoother::new(50.0),
+            smooth_low_delay: ParamSmoother::new(50.0),
+            smooth_mid_delay: ParamSmoother::new(50.0),
+            smooth_high_delay: ParamSmoother::new(50.0),
             smooth_x1: ParamSmoother::new(x1),
             smooth_x2: ParamSmoother::new(x2),
-            smooth_strength: ParamSmoother::new(10.0),
-            smooth_output: ParamSmoother::new(-5.0),
+            smooth_strength: ParamSmoother::new(5.0),
+            smooth_output: ParamSmoother::new(0.0),
             smooth_boost: ParamSmoother::new(1.0),
         };
         s.update_band_maxima_from_sample_rate();
@@ -255,6 +322,10 @@ impl Widener {
         self.update_band_maxima_from_sample_rate();
         self.rebuild_band_luts();
         self.rebuild_filters(self.x1, self.x2);
+        let max_delay = ((STRENGTH_MAX * self.sample_rate) / 1000.0).ceil() as usize + 2;
+        self.delay_low = DelayLine::new(max_delay);
+        self.delay_mid = DelayLine::new(max_delay);
+        self.delay_high = DelayLine::new(max_delay);
     }
 
     pub fn reset(&mut self) {
@@ -266,16 +337,26 @@ impl Widener {
         self.lp_x2_r.reset();
         self.hp_x2_l.reset();
         self.hp_x2_r.reset();
+        self.delay_low.reset();
+        self.delay_mid.reset();
+        self.delay_high.reset();
         self.update_band_maxima_from_sample_rate();
         self.rebuild_band_luts();
-        self.smooth_low.reset(100.0);
-        self.smooth_mid.reset(100.0);
-        self.smooth_high.reset(100.0);
+        self.smooth_low_gain.reset(50.0);
+        self.smooth_mid_gain.reset(50.0);
+        self.smooth_high_gain.reset(50.0);
+        self.smooth_low_delay.reset(50.0);
+        self.smooth_mid_delay.reset(50.0);
+        self.smooth_high_delay.reset(50.0);
         self.smooth_x1.reset(self.x1);
         self.smooth_x2.reset(self.x2);
-        self.smooth_strength.reset(10.0);
-        self.smooth_output.reset(-5.0);
+        self.smooth_strength.reset(5.0);
+        self.smooth_output.reset(0.0);
         self.smooth_boost.reset(1.0);
+        self.bypass_mix = 1.0;
+        self.bypass_target = 1.0;
+        self.bypass_step = 0.0;
+        self.bypass_samples_left = 0;
     }
 
     fn rebuild_filters(&mut self, x1: f64, x2: f64) {
@@ -292,10 +373,37 @@ impl Widener {
     }
 
     pub fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32], params: &WidenerParams) {
+        let target = if params.bypass { 0.0 } else { 1.0 };
+        let diff = target - self.bypass_mix;
+        let abs_eps = 1.175_494_350_822_287_5e-38_f64;
+        let rel_eps = 1.192_092_895_507_812_5e-7_f64;
+        let cur_mag = self.bypass_mix.abs();
+        let min_step = abs_eps.max(cur_mag * rel_eps);
+
+        if diff.abs() > min_step {
+            self.bypass_target = target;
+            let ramp = if target >= BOOL_THRESHOLD {
+                self.bypass_ramp_to_wet
+            } else {
+                self.bypass_ramp_to_dry
+            };
+            if ramp <= 1 {
+                self.bypass_mix = self.bypass_target;
+                self.bypass_step = 0.0;
+                self.bypass_samples_left = 0;
+            } else {
+                self.bypass_samples_left = ramp;
+                self.bypass_step = (self.bypass_target - self.bypass_mix) / (ramp as f64);
+            }
+        }
+
         let nyquist = (self.sample_rate * 0.5 - 1.0).max(21.0);
-        self.smooth_low.target = params.low.clamp(0.0, GAIN_DEN);
-        self.smooth_mid.target = params.mid.clamp(0.0, GAIN_DEN);
-        self.smooth_high.target = params.high.clamp(0.0, GAIN_DEN);
+        self.smooth_low_gain.target = params.low_gain.clamp(0.0, GAIN_DEN);
+        self.smooth_mid_gain.target = params.mid_gain.clamp(0.0, GAIN_DEN);
+        self.smooth_high_gain.target = params.high_gain.clamp(0.0, GAIN_DEN);
+        self.smooth_low_delay.target = params.low_delay.clamp(0.0, 100.0);
+        self.smooth_mid_delay.target = params.mid_delay.clamp(0.0, 100.0);
+        self.smooth_high_delay.target = params.high_delay.clamp(0.0, 100.0);
         self.smooth_strength.target = params.strength.clamp(STRENGTH_MIN, STRENGTH_MAX);
         self.smooth_output.target = params.output_gain_db;
         self.smooth_boost.target = params.boost.clamp(0.0, 4.0);
@@ -311,20 +419,24 @@ impl Widener {
         let any_solo = params.solo_low || params.solo_mid || params.solo_high;
 
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-            let low = Self::step_smoother(&mut self.smooth_low, self.smooth_coeff);
-            let mid = Self::step_smoother(&mut self.smooth_mid, self.smooth_coeff);
-            let high = Self::step_smoother(&mut self.smooth_high, self.smooth_coeff);
+            let low_gain = Self::step_smoother(&mut self.smooth_low_gain, self.smooth_coeff);
+            let mid_gain = Self::step_smoother(&mut self.smooth_mid_gain, self.smooth_coeff);
+            let high_gain = Self::step_smoother(&mut self.smooth_high_gain, self.smooth_coeff);
+            let low_delay = Self::step_smoother(&mut self.smooth_low_delay, self.smooth_coeff);
+            let mid_delay = Self::step_smoother(&mut self.smooth_mid_delay, self.smooth_coeff);
+            let high_delay = Self::step_smoother(&mut self.smooth_high_delay, self.smooth_coeff);
             let strength = Self::step_smoother(&mut self.smooth_strength, self.smooth_coeff);
             let out_gain_db = Self::step_smoother(&mut self.smooth_output, self.smooth_coeff);
             let boost = Self::step_smoother(&mut self.smooth_boost, self.smooth_coeff);
 
             let low_w =
-                strength_shaped_width_from_lut(low, strength, &self.low_lut_a, &self.low_lut_b);
+                strength_shaped_width_from_lut(low_gain * 2.0, strength, &self.low_lut_a, &self.low_lut_b);
             let mid_w =
-                strength_shaped_width_from_lut(mid, strength, &self.mid_lut_a, &self.mid_lut_b);
+                strength_shaped_width_from_lut(mid_gain * 2.0, strength, &self.mid_lut_a, &self.mid_lut_b);
             let high_w =
-                strength_shaped_width_from_lut(high, strength, &self.high_lut_a, &self.high_lut_b);
+                strength_shaped_width_from_lut(high_gain * 2.0, strength, &self.high_lut_a, &self.high_lut_b);
             let out_gain = 10.0_f64.powf(out_gain_db / 20.0);
+            let delay_samples = (strength * self.sample_rate) / 1000.0;
 
             let in_l = *l as f64;
             let in_r = *r as f64;
@@ -341,9 +453,33 @@ impl Widener {
             let high_l = self.hp_x2_l.process(mh_l);
             let high_r = self.hp_x2_r.process(mh_r);
 
-            let (mut low_l, mut low_r) = ms_width(low_l, low_r, low_w);
-            let (mut mid_l, mut mid_r) = ms_width(mid_l, mid_r, mid_w);
-            let (mut high_l, mut high_r) = ms_width(high_l, high_r, high_w);
+            // Widener path: M/S scaling
+            let (low_w_l, low_w_r) = ms_width(low_l, low_r, low_w);
+            let (mid_w_l, mid_w_r) = ms_width(mid_l, mid_r, mid_w);
+            let (high_w_l, high_w_r) = ms_width(high_l, high_r, high_w);
+
+            // Bandwidth path: delay-based mid injection
+            let (low_delay_l, low_delay_r) =
+                bandwidth_shuffler(low_l, low_r, &mut self.delay_low, delay_samples, low_delay / 100.0);
+            let (mid_delay_l, mid_delay_r) =
+                bandwidth_shuffler(mid_l, mid_r, &mut self.delay_mid, delay_samples, mid_delay / 100.0);
+            let (high_delay_l, high_delay_r) =
+                bandwidth_shuffler(high_l, high_r, &mut self.delay_high, delay_samples, high_delay / 100.0);
+
+            // Blend dry + widener delta + bandwidth delta
+            let low_gain_a = low_gain / 100.0;
+            let mid_gain_a = mid_gain / 100.0;
+            let high_gain_a = high_gain / 100.0;
+            let low_delay_a = low_delay / 100.0;
+            let mid_delay_a = mid_delay / 100.0;
+            let high_delay_a = high_delay / 100.0;
+
+            let mut low_l = low_l + (low_w_l - low_l) * low_gain_a + (low_delay_l - low_l) * low_delay_a;
+            let mut low_r = low_r + (low_w_r - low_r) * low_gain_a + (low_delay_r - low_r) * low_delay_a;
+            let mut mid_l = mid_l + (mid_w_l - mid_l) * mid_gain_a + (mid_delay_l - mid_l) * mid_delay_a;
+            let mut mid_r = mid_r + (mid_w_r - mid_r) * mid_gain_a + (mid_delay_r - mid_r) * mid_delay_a;
+            let mut high_l = high_l + (high_w_l - high_l) * high_gain_a + (high_delay_l - high_l) * high_delay_a;
+            let mut high_r = high_r + (high_w_r - high_r) * high_gain_a + (high_delay_r - high_r) * high_delay_a;
 
             if any_solo {
                 if !params.solo_low {
@@ -360,12 +496,12 @@ impl Widener {
                 }
             }
 
-            let wet_l = (low_l + mid_l + high_l) * out_gain;
-            let wet_r = (low_r + mid_r + high_r) * out_gain;
+            let wet_l = low_l + mid_l + high_l;
+            let wet_r = low_r + mid_r + high_r;
             let mut out_l = wet_l;
             let mut out_r = wet_r;
             let global_w = (low_w + mid_w + high_w) / 3.0;
-            let global_boost = (1.0 + (global_w - 1.0) * 3.0 * boost).clamp(0.0, 8.0);
+            let global_boost = (1.0 + (global_w - 1.0) * 0.25 * boost).clamp(0.0, 8.0);
             let gmid = 0.5 * (out_l + out_r);
             let gside = 0.5 * (out_l - out_r) * global_boost;
             out_l = gmid + gside;
@@ -385,6 +521,20 @@ impl Widener {
                 _ => {}
             }
 
+            if self.bypass_samples_left > 0 {
+                self.bypass_mix += self.bypass_step;
+                self.bypass_samples_left -= 1;
+                if self.bypass_samples_left == 0 {
+                    self.bypass_mix = self.bypass_target;
+                }
+            }
+            let wet = self.bypass_mix;
+            out_l = in_l * (1.0 - wet) + out_l * wet;
+            out_r = in_r * (1.0 - wet) + out_r * wet;
+
+            out_l *= out_gain;
+            out_r *= out_gain;
+
             *l = Self::flush_denormal(out_l) as f32;
             *r = Self::flush_denormal(out_r) as f32;
         }
@@ -394,8 +544,22 @@ impl Widener {
 fn ms_width(left: f64, right: f64, width: f64) -> (f64, f64) {
     let mid = (left + right) * 0.5;
     let side = (left - right) * 0.5;
-    let side_scaled = side * width;
+    let side_scaled = side * width.clamp(0.0, STRENGTH_SHAPE_SCALE);
     (mid + side_scaled, mid - side_scaled)
+}
+
+fn bandwidth_shuffler(
+    left: f64,
+    right: f64,
+    delay: &mut DelayLine,
+    delay_samples: f64,
+    amount: f64,
+) -> (f64, f64) {
+    let mid = (left + right) * 0.5;
+    delay.write(mid);
+    let delayed = delay.read(delay_samples);
+    let scaled = delayed * 0.5 * amount.clamp(0.0, 1.0);
+    (left - scaled, right + scaled)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -474,3 +638,6 @@ const GAIN_NORM: f64 = 100.0;
 const STRENGTH_MIN: f64 = 1.0;
 const STRENGTH_MAX: f64 = 20.0;
 const STRENGTH_SHAPE_SCALE: f64 = 2.5;
+const BOOL_THRESHOLD: f64 = 0.5;
+const BYPASS_RAMP_TO_WET: u32 = 1272;
+const BYPASS_RAMP_TO_DRY: u32 = 756;

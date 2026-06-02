@@ -341,9 +341,12 @@ impl AudioProcessor {
                 &WidenerParams {
                     output_gain_db: shared.params.get(ParamId::OutputGain),
                     boost: shared.params.get(ParamId::Boost),
-                    low: shared.params.get(ParamId::Low),
-                    mid: shared.params.get(ParamId::Mid),
-                    high: shared.params.get(ParamId::High),
+                    low_gain: shared.params.get(ParamId::LowGain),
+                    mid_gain: shared.params.get(ParamId::MidGain),
+                    high_gain: shared.params.get(ParamId::HighGain),
+                    low_delay: shared.params.get(ParamId::LowDelay),
+                    mid_delay: shared.params.get(ParamId::MidDelay),
+                    high_delay: shared.params.get(ParamId::HighDelay),
                     solo_low: shared.params.get(ParamId::SoloLow) >= 0.5,
                     solo_mid: shared.params.get(ParamId::SoloMid) >= 0.5,
                     solo_high: shared.params.get(ParamId::SoloHigh) >= 0.5,
@@ -351,6 +354,7 @@ impl AudioProcessor {
                     x2: shared.params.get(ParamId::X2),
                     strength: shared.params.get(ParamId::Strength),
                     monitor_mode: shared.params.get(ParamId::MonitorMode) as u8,
+                    bypass: false,
                 },
             );
 
@@ -372,9 +376,12 @@ impl AudioProcessor {
                 &WidenerParams {
                     output_gain_db: shared.params.get(ParamId::OutputGain),
                     boost: shared.params.get(ParamId::Boost),
-                    low: shared.params.get(ParamId::Low),
-                    mid: shared.params.get(ParamId::Mid),
-                    high: shared.params.get(ParamId::High),
+                    low_gain: shared.params.get(ParamId::LowGain),
+                    mid_gain: shared.params.get(ParamId::MidGain),
+                    high_gain: shared.params.get(ParamId::HighGain),
+                    low_delay: shared.params.get(ParamId::LowDelay),
+                    mid_delay: shared.params.get(ParamId::MidDelay),
+                    high_delay: shared.params.get(ParamId::HighDelay),
                     solo_low: shared.params.get(ParamId::SoloLow) >= 0.5,
                     solo_mid: shared.params.get(ParamId::SoloMid) >= 0.5,
                     solo_high: shared.params.get(ParamId::SoloHigh) >= 0.5,
@@ -382,6 +389,7 @@ impl AudioProcessor {
                     x2: shared.params.get(ParamId::X2),
                     strength: shared.params.get(ParamId::Strength),
                     monitor_mode: shared.params.get(ParamId::MonitorMode) as u8,
+                    bypass: false,
                 },
             );
 
@@ -477,7 +485,7 @@ fn param_text(id: ParamId, value: f64) -> String {
         ParamId::OutputGain => format!("{value:.1} dB"),
         ParamId::Boost => format!("{value:.2}x"),
         ParamId::X1 | ParamId::X2 => format!("{value:.0} Hz"),
-        ParamId::Low | ParamId::Mid | ParamId::High => format!("{value:.0} %"),
+        ParamId::LowGain | ParamId::MidGain | ParamId::HighGain | ParamId::LowDelay | ParamId::MidDelay | ParamId::HighDelay => format!("{value:.0} %"),
         ParamId::Strength => format!("{value:.1} ms"),
     }
 }
@@ -499,7 +507,7 @@ fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
         ParamId::OutputGain => t.trim_end_matches("db").trim().parse::<f64>().ok(),
         ParamId::Boost => t.trim_end_matches('x').trim().parse::<f64>().ok(),
         ParamId::X1 | ParamId::X2 => t.trim_end_matches("hz").trim().parse::<f64>().ok(),
-        ParamId::Low | ParamId::Mid | ParamId::High => {
+        ParamId::LowGain | ParamId::MidGain | ParamId::HighGain | ParamId::LowDelay | ParamId::MidDelay | ParamId::HighDelay => {
             if t.ends_with('%') {
                 let v = t.trim_end_matches('%').trim().parse::<f64>().ok()?;
                 Some(v)

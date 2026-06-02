@@ -26,8 +26,8 @@ use crate::widener::{
     plugin::SharedState,
 };
 
-pub const EDITOR_WIDTH: u32 = 600;
-pub const EDITOR_HEIGHT: u32 = 500;
+pub const EDITOR_WIDTH: u32 = 550;
+pub const EDITOR_HEIGHT: u32 = 690;
 
 pub fn preferred_api() -> &'static CStr {
     #[cfg(target_os = "windows")]
@@ -145,7 +145,7 @@ fn view(state: &State) -> Element<'_, Message> {
         row![
             container(
                 column![
-                    knob("Low", ParamId::Low, p(ParamId::Low), "", 1.0),
+                    knob("Low Gain", ParamId::LowGain, p(ParamId::LowGain), "", 1.0),
                     checkbox(b(ParamId::SoloLow)).label("Solo").on_toggle(|v| {
                         Message::SetParam(ParamId::SoloLow, if v { 1.0 } else { 0.0 })
                     })
@@ -156,7 +156,7 @@ fn view(state: &State) -> Element<'_, Message> {
             .width(Length::Fixed(96.0)),
             container(
                 column![
-                    knob("Mid", ParamId::Mid, p(ParamId::Mid), "", 1.0),
+                    knob("Mid Gain", ParamId::MidGain, p(ParamId::MidGain), "", 1.0),
                     checkbox(b(ParamId::SoloMid)).label("Solo").on_toggle(|v| {
                         Message::SetParam(ParamId::SoloMid, if v { 1.0 } else { 0.0 })
                     })
@@ -167,7 +167,7 @@ fn view(state: &State) -> Element<'_, Message> {
             .width(Length::Fixed(96.0)),
             container(
                 column![
-                    knob("High", ParamId::High, p(ParamId::High), "", 1.0),
+                    knob("High Gain", ParamId::HighGain, p(ParamId::HighGain), "", 1.0),
                     checkbox(b(ParamId::SoloHigh)).label("Solo").on_toggle(|v| {
                         Message::SetParam(ParamId::SoloHigh, if v { 1.0 } else { 0.0 })
                     })
@@ -176,7 +176,14 @@ fn view(state: &State) -> Element<'_, Message> {
                 .align_x(Alignment::Center),
             )
             .width(Length::Fixed(96.0)),
-            knob("Strength", ParamId::Strength, p(ParamId::Strength), "", 0.1),
+        ]
+        .spacing(16),
+    );
+    content = content.push(
+        row![
+            knob("Low Delay", ParamId::LowDelay, p(ParamId::LowDelay), "", 1.0),
+            knob("Mid Delay", ParamId::MidDelay, p(ParamId::MidDelay), "", 1.0),
+            knob("High Delay", ParamId::HighDelay, p(ParamId::HighDelay), "", 1.0),
         ]
         .spacing(16),
     );
@@ -184,9 +191,15 @@ fn view(state: &State) -> Element<'_, Message> {
         row![
             knob("X1", ParamId::X1, p(ParamId::X1), "Hz", 1.0),
             knob("X2", ParamId::X2, p(ParamId::X2), "Hz", 1.0),
+            knob("Strength", ParamId::Strength, p(ParamId::Strength), "", 0.1),
             knob("Boost", ParamId::Boost, p(ParamId::Boost), "x", 0.01),
+        ]
+        .spacing(16),
+    );
+    content = content.push(
+        row![
             knob(
-                "Output",
+                "Volume",
                 ParamId::OutputGain,
                 p(ParamId::OutputGain),
                 "dB",
@@ -273,7 +286,7 @@ fn pretty_value(id: ParamId, value: f32, _units: &'static str) -> String {
             2 => "Side".to_string(),
             _ => "Stereo".to_string(),
         },
-        ParamId::Low | ParamId::Mid | ParamId::High => format!("{value:.0} %"),
+        ParamId::LowGain | ParamId::MidGain | ParamId::HighGain | ParamId::LowDelay | ParamId::MidDelay | ParamId::HighDelay => format!("{value:.0} %"),
         ParamId::Strength => format!("{value:.1}"),
         ParamId::Boost => format!("{value:.2}x"),
         ParamId::OutputGain => format!("{value:.1} dB"),
