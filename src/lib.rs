@@ -24,6 +24,7 @@ pub mod rural_modeler;
 pub mod saturator;
 pub mod simd;
 pub mod stereo;
+pub mod synth;
 pub mod vumeter;
 pub mod widener;
 
@@ -35,7 +36,7 @@ struct PluginApi {
     create: CreateFn,
 }
 
-static PLUGINS: [PluginApi; 14] = [
+static PLUGINS: [PluginApi; 15] = [
     PluginApi {
         descriptor: eq::clap_descriptor_ptr,
         create: eq::clap_create_plugin,
@@ -91,6 +92,10 @@ static PLUGINS: [PluginApi; 14] = [
     PluginApi {
         descriptor: vumeter::clap_descriptor_ptr,
         create: vumeter::clap_create_plugin,
+    },
+    PluginApi {
+        descriptor: synth::clap_descriptor_ptr,
+        create: synth::clap_create_plugin,
     },
 ];
 

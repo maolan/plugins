@@ -2566,6 +2566,7 @@ dependencies = [
  "iced_aw",
  "iced_fonts",
  "libc",
+ "libloading",
  "maolan-baseview",
  "maolan-widgets",
  "parking_lot",

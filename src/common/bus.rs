@@ -100,6 +100,7 @@ pub enum PluginType {
     Widener,
     Kick,
     RuralModeler,
+    Synth,
 }
 
 // ---------------------------------------------------------------------------
