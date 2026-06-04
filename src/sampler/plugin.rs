@@ -15,14 +15,16 @@ use clap_clap::{
     ffi::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI,
         CLAP_EVENT_NOTE_EXPRESSION, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EXT_AUDIO_PORTS,
-        CLAP_EXT_NOTE_PORTS, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_INVALID_ID,
+        CLAP_EXT_GUI, CLAP_EXT_NOTE_PORTS, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_INVALID_ID,
         CLAP_NOTE_DIALECT_MIDI, CLAP_NOTE_EXPRESSION_BRIGHTNESS, CLAP_NOTE_EXPRESSION_PAN,
         CLAP_NOTE_EXPRESSION_PRESSURE, CLAP_NOTE_EXPRESSION_TUNING, CLAP_NOTE_EXPRESSION_VOLUME,
         CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_MONO, CLAP_PLUGIN_FEATURE_STEREO,
-        CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION, clap_audio_port_info, clap_host,
-        clap_id, clap_istream, clap_note_port_info, clap_ostream, clap_plugin,
-        clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_note_ports,
-        clap_plugin_params, clap_plugin_state, clap_process, clap_process_status,
+        CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_COCOA,
+        CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info, clap_host,
+        clap_host_gui, clap_host_params, clap_host_state, clap_id, clap_istream,
+        clap_note_port_info, clap_ostream, clap_plugin, clap_plugin_audio_ports,
+        clap_plugin_descriptor, clap_plugin_gui, clap_plugin_note_ports, clap_plugin_params,
+        clap_plugin_state, clap_process, clap_process_status, clap_window,
     },
     process::Process,
     stream::{IStream, OStream},
@@ -36,6 +38,7 @@ use crate::common::{
 };
 use crate::sampler::{
     dsp::engine::SamplerEngine,
+    gui::GuiBridge,
     params::{PARAMS, ParamId, sanitize_param_value},
 };
 
@@ -80,7 +83,7 @@ static DESCRIPTOR: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor {
 pub struct SharedState {
     sample_rate_bits: AtomicU64,
     host: AtomicPtr<clap_host>,
-    params: ParamStore<ParamId>,
+    pub params: ParamStore<ParamId>,
     pending_param_notifications: AtomicU64,
     pending_gesture_begin: AtomicU64,
     pending_gesture_end: AtomicU64,
@@ -114,6 +117,89 @@ impl SharedState {
     fn set_sample_rate(&self, sample_rate: f64) {
         self.sample_rate_bits
             .store(sample_rate.to_bits(), Ordering::Release);
+    }
+
+    pub fn set_param_outbound_only(&self, id: ParamId, value: f64) {
+        self.params.set(id, sanitize_param_value(id, value));
+        let bit = 1_u64 << (id.as_index() as u64);
+        self.pending_param_notifications
+            .fetch_or(bit, Ordering::AcqRel);
+        self.request_flush();
+        self.mark_dirty();
+    }
+
+    pub fn mark_gesture_begin_pending(&self, id: ParamId) {
+        let bit = 1_u64 << (id.as_index() as u64);
+        self.pending_gesture_begin.fetch_or(bit, Ordering::AcqRel);
+        self.gesture_active[id.as_index()].store(true, Ordering::Release);
+        self.mark_dirty();
+    }
+
+    pub fn mark_gesture_end_pending(&self, id: ParamId) {
+        let bit = 1_u64 << (id.as_index() as u64);
+        self.pending_gesture_end.fetch_or(bit, Ordering::AcqRel);
+        self.gesture_active[id.as_index()].store(false, Ordering::Release);
+        self.mark_dirty();
+    }
+
+    pub fn request_gui_closed(&self) {
+        let host = self.host.load(Ordering::Acquire);
+        if host.is_null() {
+            return;
+        }
+        unsafe {
+            let Some(get_extension) = (*host).get_extension else {
+                return;
+            };
+            let ext = get_extension(host, c"clap.host.gui".as_ptr());
+            if ext.is_null() {
+                return;
+            }
+            let gui = &*(ext as *const clap_host_gui);
+            if let Some(closed) = gui.closed {
+                closed(host, false);
+            }
+        }
+    }
+
+    fn request_flush(&self) {
+        let host = self.host.load(Ordering::Acquire);
+        if host.is_null() {
+            return;
+        }
+        unsafe {
+            let Some(get_extension) = (*host).get_extension else {
+                return;
+            };
+            let ext = get_extension(host, c"clap.host.params".as_ptr());
+            if ext.is_null() {
+                return;
+            }
+            let params = &*(ext as *const clap_host_params);
+            if let Some(request_flush) = params.request_flush {
+                request_flush(host);
+            }
+        }
+    }
+
+    fn mark_dirty(&self) {
+        let host = self.host.load(Ordering::Acquire);
+        if host.is_null() {
+            return;
+        }
+        unsafe {
+            let Some(get_extension) = (*host).get_extension else {
+                return;
+            };
+            let ext = get_extension(host, c"clap.host.state".as_ptr());
+            if ext.is_null() {
+                return;
+            }
+            let state = &*(ext as *const clap_host_state);
+            if let Some(mark_dirty) = state.mark_dirty {
+                mark_dirty(host);
+            }
+        }
     }
 }
 
@@ -381,6 +467,7 @@ struct PluginInstance {
     shared: Arc<SharedState>,
     processor: AtomicPtr<AudioProcessor>,
     retired_processors: Mutex<Vec<*mut AudioProcessor>>,
+    gui_bridge: Mutex<GuiBridge>,
 }
 
 impl PluginInstance {
@@ -391,6 +478,7 @@ impl PluginInstance {
             shared,
             processor: AtomicPtr::new(null_mut()),
             retired_processors: Mutex::new(Vec::new()),
+            gui_bridge: Mutex::new(GuiBridge::default()),
         }
     }
 
@@ -719,6 +807,200 @@ static EXT_STATE: clap_plugin_state = clap_plugin_state {
 };
 
 // ---------------------------------------------------------------------------
+// GUI
+// ---------------------------------------------------------------------------
+
+unsafe extern "C-unwind" fn ext_gui_is_api_supported(
+    _plugin: *const clap_plugin,
+    api: *const c_char,
+    is_floating: bool,
+) -> bool {
+    if api.is_null() {
+        return false;
+    }
+    let api = unsafe { CStr::from_ptr(api) };
+    crate::sampler::gui::is_api_supported(api, is_floating)
+}
+
+unsafe extern "C-unwind" fn ext_gui_get_preferred_api(
+    _plugin: *const clap_plugin,
+    api: *mut *const c_char,
+    is_floating: *mut bool,
+) -> bool {
+    if api.is_null() || is_floating.is_null() {
+        return false;
+    }
+    unsafe {
+        *api = crate::sampler::gui::preferred_api().as_ptr();
+        *is_floating = false;
+    }
+    true
+}
+
+unsafe extern "C-unwind" fn ext_gui_create(
+    plugin: *const clap_plugin,
+    api: *const c_char,
+    is_floating: bool,
+) -> bool {
+    if plugin.is_null() || api.is_null() {
+        return false;
+    }
+    let inst = unsafe { instance(plugin) };
+    let api = unsafe { CStr::from_ptr(api) };
+    inst.gui_bridge
+        .lock()
+        .create(inst.shared.clone(), api, is_floating)
+}
+
+unsafe extern "C-unwind" fn ext_gui_destroy(plugin: *const clap_plugin) {
+    if plugin.is_null() {
+        return;
+    }
+    let inst = unsafe { instance(plugin) };
+    inst.gui_bridge.lock().destroy();
+}
+
+unsafe extern "C-unwind" fn ext_gui_set_scale(_plugin: *const clap_plugin, _scale: f64) -> bool {
+    false
+}
+
+unsafe extern "C-unwind" fn ext_gui_get_size(
+    _plugin: *const clap_plugin,
+    width: *mut u32,
+    height: *mut u32,
+) -> bool {
+    if width.is_null() || height.is_null() {
+        return false;
+    }
+    unsafe {
+        *width = crate::sampler::gui::EDITOR_WIDTH;
+        *height = crate::sampler::gui::EDITOR_HEIGHT;
+    }
+    true
+}
+
+unsafe extern "C-unwind" fn ext_gui_can_resize(_plugin: *const clap_plugin) -> bool {
+    false
+}
+
+unsafe extern "C-unwind" fn ext_gui_get_resize_hints(
+    _plugin: *const clap_plugin,
+    _hints: *mut clap_clap::ffi::clap_gui_resize_hints,
+) -> bool {
+    false
+}
+
+unsafe extern "C-unwind" fn ext_gui_adjust_size(
+    _plugin: *const clap_plugin,
+    _width: *mut u32,
+    _height: *mut u32,
+) -> bool {
+    false
+}
+
+unsafe extern "C-unwind" fn ext_gui_set_size(
+    _plugin: *const clap_plugin,
+    _width: u32,
+    _height: u32,
+) -> bool {
+    false
+}
+
+unsafe extern "C-unwind" fn ext_gui_set_parent(
+    plugin: *const clap_plugin,
+    window: *const clap_window,
+) -> bool {
+    if plugin.is_null() || window.is_null() {
+        return false;
+    }
+    let inst = unsafe { instance(plugin) };
+    let window = unsafe { &*window };
+    let api = unsafe { CStr::from_ptr(window.api) };
+
+    let parent = if api == CLAP_WINDOW_API_X11 {
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            crate::sampler::gui::ParentWindowHandle::X11(unsafe { window.clap_window__.x11 })
+        }
+        #[cfg(not(all(unix, not(target_os = "macos"))))]
+        {
+            return false;
+        }
+    } else if api == CLAP_WINDOW_API_COCOA {
+        #[cfg(target_os = "macos")]
+        {
+            crate::sampler::gui::ParentWindowHandle::Cocoa(unsafe { window.clap_window__.cocoa })
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            return false;
+        }
+    } else if api == CLAP_WINDOW_API_WIN32 {
+        #[cfg(target_os = "windows")]
+        {
+            crate::sampler::gui::ParentWindowHandle::Win32(unsafe { window.clap_window__.win32 })
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            return false;
+        }
+    } else {
+        return false;
+    };
+
+    inst.gui_bridge
+        .lock()
+        .set_parent(inst.shared.clone(), parent)
+}
+
+unsafe extern "C-unwind" fn ext_gui_set_transient(
+    _plugin: *const clap_plugin,
+    _window: *const clap_window,
+) -> bool {
+    false
+}
+
+unsafe extern "C-unwind" fn ext_gui_suggest_title(
+    _plugin: *const clap_plugin,
+    _title: *const c_char,
+) {
+}
+
+unsafe extern "C-unwind" fn ext_gui_show(plugin: *const clap_plugin) -> bool {
+    if plugin.is_null() {
+        return false;
+    }
+    let inst = unsafe { instance(plugin) };
+    inst.gui_bridge.lock().show()
+}
+
+unsafe extern "C-unwind" fn ext_gui_hide(plugin: *const clap_plugin) -> bool {
+    if plugin.is_null() {
+        return false;
+    }
+    let inst = unsafe { instance(plugin) };
+    inst.gui_bridge.lock().hide(inst.shared.clone())
+}
+
+static GUI_EXT: clap_plugin_gui = clap_plugin_gui {
+    is_api_supported: Some(ext_gui_is_api_supported),
+    get_preferred_api: Some(ext_gui_get_preferred_api),
+    create: Some(ext_gui_create),
+    destroy: Some(ext_gui_destroy),
+    set_scale: Some(ext_gui_set_scale),
+    get_size: Some(ext_gui_get_size),
+    can_resize: Some(ext_gui_can_resize),
+    get_resize_hints: Some(ext_gui_get_resize_hints),
+    adjust_size: Some(ext_gui_adjust_size),
+    set_size: Some(ext_gui_set_size),
+    set_parent: Some(ext_gui_set_parent),
+    set_transient: Some(ext_gui_set_transient),
+    suggest_title: Some(ext_gui_suggest_title),
+    show: Some(ext_gui_show),
+    hide: Some(ext_gui_hide),
+};
+
+// ---------------------------------------------------------------------------
 // Extension getter
 // ---------------------------------------------------------------------------
 
@@ -735,6 +1017,8 @@ unsafe extern "C-unwind" fn plugin_get_extension(
         &EXT_PARAMS as *const _ as *const c_void
     } else if id == CLAP_EXT_STATE {
         &EXT_STATE as *const _ as *const c_void
+    } else if id == CLAP_EXT_GUI {
+        &GUI_EXT as *const _ as *const c_void
     } else {
         null()
     }

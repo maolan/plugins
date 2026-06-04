@@ -1796,9 +1796,9 @@ unsafe extern "C-unwind" fn plugin_on_main_thread(_plugin: *const clap_plugin) {
 
 unsafe extern "C-unwind" fn ext_audio_ports_count(
     _plugin: *const clap_plugin,
-    _is_input: bool,
+    is_input: bool,
 ) -> u32 {
-    1
+    if is_input { 0 } else { 1 }
 }
 
 unsafe extern "C-unwind" fn ext_audio_ports_get(
@@ -1810,31 +1810,17 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
     if info.is_null() {
         return false;
     }
-    if is_input {
-        if index != 0 {
-            return false;
-        }
-        let info = unsafe { &mut *info };
-        info.id = 1;
-        info.flags = CLAP_AUDIO_PORT_IS_MAIN;
-        info.channel_count = 2;
-        info.port_type = CLAP_PORT_MONO.as_ptr();
-        info.in_place_pair = CLAP_INVALID_ID;
-        copy_str_to_array("Stereo In", &mut info.name);
-        true
-    } else {
-        if index != 0 {
-            return false;
-        }
-        let info = unsafe { &mut *info };
-        info.id = 0;
-        info.flags = CLAP_AUDIO_PORT_IS_MAIN;
-        info.channel_count = 2;
-        info.port_type = CLAP_PORT_MONO.as_ptr();
-        info.in_place_pair = CLAP_INVALID_ID;
-        copy_str_to_array("Stereo Out", &mut info.name);
-        true
+    if is_input || index != 0 {
+        return false;
     }
+    let info = unsafe { &mut *info };
+    info.id = 0;
+    info.flags = CLAP_AUDIO_PORT_IS_MAIN;
+    info.channel_count = 2;
+    info.port_type = CLAP_PORT_MONO.as_ptr();
+    info.in_place_pair = CLAP_INVALID_ID;
+    copy_str_to_array("Stereo Out", &mut info.name);
+    true
 }
 
 static AUDIO_PORTS_EXT: clap_plugin_audio_ports = clap_plugin_audio_ports {
