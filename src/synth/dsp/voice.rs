@@ -7,14 +7,14 @@
 use rand::random;
 
 use super::{
-    AdsrEnvelope, AttackShape, CharacterFilter, DecayReleaseShape, EnvelopeMode, EnvelopeRetriggerMode, Filter, FilterSubtype, FilterType, Lfo, LfoShape,
-    LfoSyncDivision, LfoSyncMode, LfoTriggerMode, MsegCurve, MsegLoopMode, MSEG_MAX_NODES, MSEG_MAX_SEGMENTS,
-    MtsEspClient, NoiseColorMode, NoiseGenerator, NoiseType, OscType, Oscillator,
-    Waveshape, AliasWaveform, ClassicWaveform, ExciterType, Fm2FeedbackMode, ModernSubWaveform, SineShaperMode, WindowType,
-    Waveshaper,
+    AdsrEnvelope, AliasWaveform, CharacterFilter, ClassicWaveform, EnvelopeSettings, ExciterType,
+    Filter, FilterSettings, FilterType, Fm2FeedbackMode, Lfo, LfoSettings, LfoShape,
+    MSEG_MAX_NODES, MSEG_MAX_SEGMENTS, ModernSubWaveform, MsegCurve, MsegLoopMode, MtsEspClient,
+    NoiseColorMode, NoiseGenerator, NoiseType, OscType, Oscillator, PlayMode, PortamentoCurve,
+    SineShaperMode, Tuning, VoicePriority, Waveshape, Waveshaper, WaveshaperSettings, WindowType,
 };
-use std::sync::Arc;
 use parking_lot::Mutex;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Settings structs
@@ -134,123 +134,12 @@ impl Default for OscSettings {
             string_dual_decay: 0.5,
             string_oversample: false,
             sub_one: false,
-            alias_partials: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            alias_partials: [
+                1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
             route: OscRoute::Both,
             mute: false,
             solo: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct FilterSettings {
-    pub filter_type: FilterType,
-    pub subtype: FilterSubtype,
-    pub cutoff_hz: f32,
-    pub resonance: f32,
-    pub eg_amount: f32,
-    pub key_tracking: f32,
-    pub drive: f32,
-    pub feedback_drive: f32,
-    pub enabled: bool,
-}
-
-impl Default for FilterSettings {
-    fn default() -> Self {
-        Self {
-            filter_type: FilterType::Lowpass,
-            subtype: FilterSubtype::Clean,
-            cutoff_hz: 20000.0,
-            resonance: 0.7,
-            eg_amount: 0.0,
-            key_tracking: 0.0,
-            drive: 0.0,
-            feedback_drive: 0.0,
-            enabled: true,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct EnvelopeSettings {
-    pub attack: f32,
-    pub decay: f32,
-    pub sustain: f32,
-    pub release: f32,
-    pub mode: EnvelopeMode,
-    pub attack_shape: AttackShape,
-    pub decay_shape: DecayReleaseShape,
-    pub release_shape: DecayReleaseShape,
-    pub retrigger_mode: EnvelopeRetriggerMode,
-    pub tempo_sync: bool,
-    pub uber_release: f32,
-    pub gated_release: bool,
-    pub correct_analog_mode: bool,
-}
-
-impl Default for EnvelopeSettings {
-    fn default() -> Self {
-        Self {
-            attack: 0.01,
-            decay: 0.2,
-            sustain: 0.7,
-            release: 0.3,
-            mode: EnvelopeMode::Digital,
-            attack_shape: AttackShape::Convex,
-            decay_shape: DecayReleaseShape::Linear,
-            release_shape: DecayReleaseShape::Linear,
-            retrigger_mode: EnvelopeRetriggerMode::Reset,
-            tempo_sync: false,
-            uber_release: 0.0,
-            gated_release: false,
-            correct_analog_mode: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct LfoSettings {
-    pub rate_hz: f32,
-    pub shape: LfoShape,
-    pub amount: f32,
-    pub deform: f32,
-    pub deform_type: u8,
-    pub enabled: bool,
-    pub sync_mode: LfoSyncMode,
-    pub sync_division: LfoSyncDivision,
-    pub trigger_mode: LfoTriggerMode,
-    pub env_delay: f32,
-    pub env_attack: f32,
-    pub env_hold: f32,
-    pub env_decay: f32,
-    pub env_sustain: f32,
-    pub env_release: f32,
-    pub start_phase: f32,
-    pub unipolar: bool,
-    pub env_tempo_sync: bool,
-}
-
-impl Default for LfoSettings {
-    fn default() -> Self {
-        Self {
-            rate_hz: 1.0,
-            shape: LfoShape::Sine,
-            amount: 0.0,
-            deform: 0.0,
-            deform_type: 0,
-            enabled: true,
-            sync_mode: LfoSyncMode::Free,
-            sync_division: LfoSyncDivision::One4,
-            trigger_mode: LfoTriggerMode::KeyTrigger,
-            env_delay: 0.0,
-            env_attack: 0.01,
-            env_hold: 0.0,
-            env_decay: 0.2,
-            env_sustain: 1.0,
-            env_release: 0.3,
-            start_phase: 0.0,
-            unipolar: false,
-            env_tempo_sync: false,
         }
     }
 }
@@ -292,35 +181,16 @@ impl Default for NoiseSettings {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct WaveshaperSettings {
-    pub shape: Waveshape,
-    pub drive: f32,
-    pub mix: f32,
-    pub enabled: bool,
-}
-
-impl Default for WaveshaperSettings {
-    fn default() -> Self {
-        Self {
-            shape: Waveshape::Off,
-            drive: 0.0,
-            mix: 1.0,
-            enabled: false,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterRouting {
-    Series = 0,     // S1: F1 → WS → F2
-    Parallel = 1,   // D1: F1 || F2 → sum → WS
-    Wide = 2,       // S2 doubled: F2 → WS → F1 (stereo)
-    Split = 3,      // Stereo: L→F1, R→F2 → WS
-    Serial2 = 4,    // F2 → WS → F1
-    Serial3 = 5,    // F1→WS + F2 parallel mix
-    Dual2 = 6,      // F1(WS) || F2 → sum
-    Ring = 7,       // F1 × F2 → WS
+    Series = 0,   // S1: F1 → WS → F2
+    Parallel = 1, // D1: F1 || F2 → sum → WS
+    Wide = 2,     // S2 doubled: F2 → WS → F1 (stereo)
+    Split = 3,    // Stereo: L→F1, R→F2 → WS
+    Serial2 = 4,  // F2 → WS → F1
+    Serial3 = 5,  // F1→WS + F2 parallel mix
+    Dual2 = 6,    // F1(WS) || F2 → sum
+    Ring = 7,     // F1 × F2 → WS
 }
 
 impl FilterRouting {
@@ -512,75 +382,6 @@ fn apply_combinator(a: f32, b: f32, mode: CombinatorMode) -> f32 {
         CombinatorMode::Cxor93_2 => cxor93_2(a, b),
         CombinatorMode::Cxor93_3 => cxor93_3(a, b),
         CombinatorMode::Cxor93_4 => cxor93_4(a, b),
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlayMode {
-    Poly = 0,
-    Mono = 1,
-    MonoLegato = 2,
-    MonoLatch = 3,
-    MonoST = 4,
-    MonoFP = 5,
-    PolyReuseSingle = 6,
-    PolyStackMultiple = 7,
-}
-
-impl PlayMode {
-    pub fn from_u8(v: u8) -> Self {
-        match v {
-            0 => PlayMode::Poly,
-            1 => PlayMode::Mono,
-            2 => PlayMode::MonoLegato,
-            3 => PlayMode::MonoLatch,
-            4 => PlayMode::MonoST,
-            5 => PlayMode::MonoFP,
-            6 => PlayMode::PolyReuseSingle,
-            _ => PlayMode::PolyStackMultiple,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PortamentoCurve {
-    Linear = 0,
-    Exponential = 1,
-    ConstantTime = 2,
-}
-
-impl PortamentoCurve {
-    pub fn from_u8(v: u8) -> Self {
-        match v {
-            0 => PortamentoCurve::Linear,
-            1 => PortamentoCurve::Exponential,
-            _ => PortamentoCurve::ConstantTime,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VoicePriority {
-    Last = 0,
-    High = 1,
-    Low = 2,
-    AlwaysLatest = 3,
-    AlwaysHighest = 4,
-    AlwaysLowest = 5,
-    NoteOnLatestRetriggerHighest = 6,
-}
-
-impl VoicePriority {
-    pub fn from_u8(v: u8) -> Self {
-        match v {
-            0 => VoicePriority::Last,
-            1 => VoicePriority::High,
-            2 => VoicePriority::Low,
-            3 => VoicePriority::AlwaysLatest,
-            4 => VoicePriority::AlwaysHighest,
-            5 => VoicePriority::AlwaysLowest,
-            _ => VoicePriority::NoteOnLatestRetriggerHighest,
-        }
     }
 }
 
@@ -1062,7 +863,7 @@ pub struct VoiceParams {
     pub sustain: f32,
     pub tuning_scale: u8,
     pub tuning_root: u8,
-    pub tuning_override: Option<super::tuning::Tuning>,
+    pub tuning_override: Option<Tuning>,
     pub play_mode: PlayMode,
     pub voice_priority: VoicePriority,
     pub drift_amount: f32,
@@ -1104,7 +905,11 @@ pub struct VoiceParams {
 impl Default for VoiceParams {
     fn default() -> Self {
         Self {
-            oscs: [OscSettings::default(), OscSettings::default(), OscSettings::default()],
+            oscs: [
+                OscSettings::default(),
+                OscSettings::default(),
+                OscSettings::default(),
+            ],
             filter1: FilterSettings::default(),
             filter2: FilterSettings::default(),
             filter_routing: FilterRouting::Series,
@@ -1245,7 +1050,7 @@ pub struct Voice {
     // Portamento
     current_freq: f32,
     pub target_freq: f32,
-    tuning: super::tuning::Tuning,
+    tuning: Tuning,
     last_scale_degree: i32,
 
     // Parameters
@@ -1327,7 +1132,7 @@ impl Voice {
             tempo_bpm: 120.0,
             current_freq: 440.0,
             target_freq: 440.0,
-            tuning: super::tuning::Tuning::default(),
+            tuning: Tuning::default(),
             last_scale_degree: 0,
             params: VoiceParams::default(),
             lfo1_output: 0.0,
@@ -1370,7 +1175,7 @@ impl Voice {
         if let Some(ref tuning) = params.tuning_override {
             self.tuning = tuning.clone();
         } else if params.tuning_scale != old_scale || params.tuning_root != old_root {
-            self.tuning = super::tuning::built_in_tuning(params.tuning_scale);
+            self.tuning = crate::common::tuning::built_in_tuning(params.tuning_scale);
             self.tuning.root_midi_note = params.tuning_root as i32;
         }
 
@@ -1382,12 +1187,17 @@ impl Voice {
             params.amp_eg.release,
         );
         self.amp_eg.set_mode(params.amp_eg.mode);
-        self.amp_eg.set_shapes(params.amp_eg.attack_shape, params.amp_eg.decay_shape, params.amp_eg.release_shape);
+        self.amp_eg.set_shapes(
+            params.amp_eg.attack_shape,
+            params.amp_eg.decay_shape,
+            params.amp_eg.release_shape,
+        );
         self.amp_eg.set_retrigger_mode(params.amp_eg.retrigger_mode);
         self.amp_eg.set_tempo_sync(params.amp_eg.tempo_sync);
         self.amp_eg.set_uber_release(params.amp_eg.uber_release);
         self.amp_eg.set_gated_release(params.amp_eg.gated_release);
-        self.amp_eg.set_correct_analog_mode(params.amp_eg.correct_analog_mode);
+        self.amp_eg
+            .set_correct_analog_mode(params.amp_eg.correct_analog_mode);
 
         self.filter_eg.set_params(
             params.filter_eg.attack,
@@ -1396,12 +1206,20 @@ impl Voice {
             params.filter_eg.release,
         );
         self.filter_eg.set_mode(params.filter_eg.mode);
-        self.filter_eg.set_shapes(params.filter_eg.attack_shape, params.filter_eg.decay_shape, params.filter_eg.release_shape);
-        self.filter_eg.set_retrigger_mode(params.filter_eg.retrigger_mode);
+        self.filter_eg.set_shapes(
+            params.filter_eg.attack_shape,
+            params.filter_eg.decay_shape,
+            params.filter_eg.release_shape,
+        );
+        self.filter_eg
+            .set_retrigger_mode(params.filter_eg.retrigger_mode);
         self.filter_eg.set_tempo_sync(params.filter_eg.tempo_sync);
-        self.filter_eg.set_uber_release(params.filter_eg.uber_release);
-        self.filter_eg.set_gated_release(params.filter_eg.gated_release);
-        self.filter_eg.set_correct_analog_mode(params.filter_eg.correct_analog_mode);
+        self.filter_eg
+            .set_uber_release(params.filter_eg.uber_release);
+        self.filter_eg
+            .set_gated_release(params.filter_eg.gated_release);
+        self.filter_eg
+            .set_correct_analog_mode(params.filter_eg.correct_analog_mode);
 
         self.pitch_eg.set_params(
             params.pitch_eg.attack,
@@ -1410,12 +1228,19 @@ impl Voice {
             params.pitch_eg.release,
         );
         self.pitch_eg.set_mode(params.pitch_eg.mode);
-        self.pitch_eg.set_shapes(params.pitch_eg.attack_shape, params.pitch_eg.decay_shape, params.pitch_eg.release_shape);
-        self.pitch_eg.set_retrigger_mode(params.pitch_eg.retrigger_mode);
+        self.pitch_eg.set_shapes(
+            params.pitch_eg.attack_shape,
+            params.pitch_eg.decay_shape,
+            params.pitch_eg.release_shape,
+        );
+        self.pitch_eg
+            .set_retrigger_mode(params.pitch_eg.retrigger_mode);
         self.pitch_eg.set_tempo_sync(params.pitch_eg.tempo_sync);
         self.pitch_eg.set_uber_release(params.pitch_eg.uber_release);
-        self.pitch_eg.set_gated_release(params.pitch_eg.gated_release);
-        self.pitch_eg.set_correct_analog_mode(params.pitch_eg.correct_analog_mode);
+        self.pitch_eg
+            .set_gated_release(params.pitch_eg.gated_release);
+        self.pitch_eg
+            .set_correct_analog_mode(params.pitch_eg.correct_analog_mode);
 
         // Update LFOs
         self.lfo1.set_rate_hz(params.lfo1.rate_hz);
@@ -1598,10 +1423,14 @@ impl Voice {
         self.lfo6.mseg.loop_mode = params.mseg_loop_mode;
 
         // Update filters
-        self.filter1_l.set_params(params.filter1.cutoff_hz, params.filter1.resonance);
-        self.filter1_r.set_params(params.filter1.cutoff_hz, params.filter1.resonance);
-        self.filter2_l.set_params(params.filter2.cutoff_hz, params.filter2.resonance);
-        self.filter2_r.set_params(params.filter2.cutoff_hz, params.filter2.resonance);
+        self.filter1_l
+            .set_params(params.filter1.cutoff_hz, params.filter1.resonance);
+        self.filter1_r
+            .set_params(params.filter1.cutoff_hz, params.filter1.resonance);
+        self.filter2_l
+            .set_params(params.filter2.cutoff_hz, params.filter2.resonance);
+        self.filter2_r
+            .set_params(params.filter2.cutoff_hz, params.filter2.resonance);
         let lowcut_hz = params.lowcut_hz.clamp(20.0, 20000.0);
         self.lowcut_l.set_params(lowcut_hz, 0.7);
         self.lowcut_l.prepare_block(lowcut_hz, 0.7, 1);
@@ -1615,10 +1444,14 @@ impl Voice {
         self.filter1_r.set_drive(params.filter1.drive);
         self.filter2_l.set_drive(params.filter2.drive);
         self.filter2_r.set_drive(params.filter2.drive);
-        self.filter1_l.set_feedback_drive(params.filter1.feedback_drive);
-        self.filter1_r.set_feedback_drive(params.filter1.feedback_drive);
-        self.filter2_l.set_feedback_drive(params.filter2.feedback_drive);
-        self.filter2_r.set_feedback_drive(params.filter2.feedback_drive);
+        self.filter1_l
+            .set_feedback_drive(params.filter1.feedback_drive);
+        self.filter1_r
+            .set_feedback_drive(params.filter1.feedback_drive);
+        self.filter2_l
+            .set_feedback_drive(params.filter2.feedback_drive);
+        self.filter2_r
+            .set_feedback_drive(params.filter2.feedback_drive);
         self.filter1_l.set_subtype(params.filter1.subtype);
         self.filter1_r.set_subtype(params.filter1.subtype);
         self.filter2_l.set_subtype(params.filter2.subtype);
@@ -1723,8 +1556,14 @@ impl Voice {
         self.noise.filter_enabled = params.noise.filter_enabled;
         if params.noise.filter_enabled {
             self.noise.filter.set_filter_type(params.noise.filter_type);
-            self.noise.filter.set_params(params.noise.filter_cutoff, params.noise.filter_resonance);
-            self.noise.filter.prepare_block(params.noise.filter_cutoff, params.noise.filter_resonance, 1);
+            self.noise
+                .filter
+                .set_params(params.noise.filter_cutoff, params.noise.filter_resonance);
+            self.noise.filter.prepare_block(
+                params.noise.filter_cutoff,
+                params.noise.filter_resonance,
+                1,
+            );
         }
 
         // Update character
@@ -1831,7 +1670,11 @@ impl Voice {
 
         // New random/alternate values per note
         self.random_value = random::<f32>() * 2.0 - 1.0;
-        self.alternate_sign = if self.note_counter % 2 == 0 { 1.0 } else { -1.0 };
+        self.alternate_sign = if self.note_counter.is_multiple_of(2) {
+            1.0
+        } else {
+            -1.0
+        };
     }
 
     pub fn release(&mut self) {
@@ -1895,7 +1738,13 @@ impl Voice {
             ModSource::MpeTimbre => self.params.mpe_timbre,
             ModSource::ReleaseVelocity => self.params.release_velocity,
             ModSource::Constant => 1.0,
-            ModSource::NoteGate => if self.gate { 1.0 } else { 0.0 },
+            ModSource::NoteGate => {
+                if self.gate {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
             ModSource::NoteExpressionVolume => self.params.note_expression_volume,
             ModSource::NoteExpressionPan => self.params.note_expression_pan,
             ModSource::SceneLfo1 => self.scene_lfo1_output,
@@ -1916,7 +1765,7 @@ impl Voice {
 
         // First pass: compute depth modulations using base depths.
         // These routes modulate the depth of other routes.
-        for (_i, routing) in self.params.modulations.iter().enumerate() {
+        for routing in self.params.modulations.iter() {
             if !routing.active || routing.depth == 0.0 {
                 continue;
             }
@@ -2045,7 +1894,13 @@ impl Voice {
         vals
     }
 
-    pub fn process_block(&mut self, out_l: &mut [f32], out_r: &mut [f32], audio_in_l: Option<&[f32]>, audio_in_r: Option<&[f32]>) {
+    pub fn process_block(
+        &mut self,
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+        audio_in_l: Option<&[f32]>,
+        audio_in_r: Option<&[f32]>,
+    ) {
         let frames = out_l.len().min(out_r.len());
         if frames == 0 {
             return;
@@ -2075,8 +1930,10 @@ impl Voice {
         } else {
             0.7
         };
-        self.filter1_l.prepare_block(f1_cutoff_base, f1_res_base, frames);
-        self.filter1_r.prepare_block(f1_cutoff_base, f1_res_base, frames);
+        self.filter1_l
+            .prepare_block(f1_cutoff_base, f1_res_base, frames);
+        self.filter1_r
+            .prepare_block(f1_cutoff_base, f1_res_base, frames);
 
         let f2_cutoff_base = if self.params.filter2.enabled {
             let base = if self.params.f2_cutoff_offset {
@@ -2100,8 +1957,10 @@ impl Voice {
         } else {
             0.7
         };
-        self.filter2_l.prepare_block(f2_cutoff_base, f2_res_base, frames);
-        self.filter2_r.prepare_block(f2_cutoff_base, f2_res_base, frames);
+        self.filter2_l
+            .prepare_block(f2_cutoff_base, f2_res_base, frames);
+        self.filter2_r
+            .prepare_block(f2_cutoff_base, f2_res_base, frames);
 
         for i in 0..frames {
             let audio_l = audio_in_l.map(|b| b[i]).unwrap_or(0.0);
@@ -2122,9 +1981,11 @@ impl Voice {
                         } else {
                             (current_note + step).max(target_note)
                         };
-                        self.current_freq = note_to_freq(next_note as u8, &self.tuning, &self.mts_esp);
+                        self.current_freq =
+                            note_to_freq(next_note as u8, &self.tuning, &self.mts_esp);
                     } else {
-                        self.current_freq = note_to_freq(target_note as u8, &self.tuning, &self.mts_esp);
+                        self.current_freq =
+                            note_to_freq(target_note as u8, &self.tuning, &self.mts_esp);
                     }
                 } else {
                     match self.params.portamento_curve {
@@ -2134,7 +1995,9 @@ impl Voice {
                         }
                         PortamentoCurve::Exponential => {
                             let rate = 1.0 / (portamento_time * self.sample_rate);
-                            self.current_freq += freq_diff * rate.min(1.0) * (self.current_freq / self.target_freq.max(1.0));
+                            self.current_freq += freq_diff
+                                * rate.min(1.0)
+                                * (self.current_freq / self.target_freq.max(1.0));
                         }
                         PortamentoCurve::ConstantTime => {
                             let rate = 1.0 / (portamento_time * self.sample_rate);
@@ -2164,44 +2027,74 @@ impl Voice {
             let mods = self.compute_mod_values();
 
             // Apply modulated params to LFOs
-            self.lfo1.set_rate_hz((self.params.lfo1.rate_hz + mods.lfo1_rate).max(0.001));
-            self.lfo1.set_amount((self.params.lfo1.amount + mods.lfo1_amount).clamp(0.0, 1.0));
-            self.lfo1.set_deform((self.params.lfo1.deform + mods.lfo1_deform).clamp(-1.0, 1.0));
+            self.lfo1
+                .set_rate_hz((self.params.lfo1.rate_hz + mods.lfo1_rate).max(0.001));
+            self.lfo1
+                .set_amount((self.params.lfo1.amount + mods.lfo1_amount).clamp(0.0, 1.0));
+            self.lfo1
+                .set_deform((self.params.lfo1.deform + mods.lfo1_deform).clamp(-1.0, 1.0));
             self.lfo1.phase_offset = (self.params.lfo1.start_phase + mods.lfo1_phase).fract();
-            self.lfo2.set_rate_hz((self.params.lfo2.rate_hz + mods.lfo2_rate).max(0.001));
-            self.lfo2.set_amount((self.params.lfo2.amount + mods.lfo2_amount).clamp(0.0, 1.0));
-            self.lfo2.set_deform((self.params.lfo2.deform + mods.lfo2_deform).clamp(-1.0, 1.0));
+            self.lfo2
+                .set_rate_hz((self.params.lfo2.rate_hz + mods.lfo2_rate).max(0.001));
+            self.lfo2
+                .set_amount((self.params.lfo2.amount + mods.lfo2_amount).clamp(0.0, 1.0));
+            self.lfo2
+                .set_deform((self.params.lfo2.deform + mods.lfo2_deform).clamp(-1.0, 1.0));
             self.lfo2.phase_offset = (self.params.lfo2.start_phase + mods.lfo2_phase).fract();
-            self.lfo3.set_rate_hz((self.params.lfo3.rate_hz + mods.lfo3_rate).max(0.001));
-            self.lfo3.set_amount((self.params.lfo3.amount + mods.lfo3_amount).clamp(0.0, 1.0));
-            self.lfo3.set_deform((self.params.lfo3.deform + mods.lfo3_deform).clamp(-1.0, 1.0));
+            self.lfo3
+                .set_rate_hz((self.params.lfo3.rate_hz + mods.lfo3_rate).max(0.001));
+            self.lfo3
+                .set_amount((self.params.lfo3.amount + mods.lfo3_amount).clamp(0.0, 1.0));
+            self.lfo3
+                .set_deform((self.params.lfo3.deform + mods.lfo3_deform).clamp(-1.0, 1.0));
             self.lfo3.phase_offset = (self.params.lfo3.start_phase + mods.lfo3_phase).fract();
-            self.lfo4.set_rate_hz((self.params.lfo4.rate_hz + mods.lfo4_rate).max(0.001));
-            self.lfo4.set_amount((self.params.lfo4.amount + mods.lfo4_amount).clamp(0.0, 1.0));
-            self.lfo4.set_deform((self.params.lfo4.deform + mods.lfo4_deform).clamp(-1.0, 1.0));
+            self.lfo4
+                .set_rate_hz((self.params.lfo4.rate_hz + mods.lfo4_rate).max(0.001));
+            self.lfo4
+                .set_amount((self.params.lfo4.amount + mods.lfo4_amount).clamp(0.0, 1.0));
+            self.lfo4
+                .set_deform((self.params.lfo4.deform + mods.lfo4_deform).clamp(-1.0, 1.0));
             self.lfo4.phase_offset = (self.params.lfo4.start_phase + mods.lfo4_phase).fract();
-            self.lfo5.set_rate_hz((self.params.lfo5.rate_hz + mods.lfo5_rate).max(0.001));
-            self.lfo5.set_amount((self.params.lfo5.amount + mods.lfo5_amount).clamp(0.0, 1.0));
-            self.lfo5.set_deform((self.params.lfo5.deform + mods.lfo5_deform).clamp(-1.0, 1.0));
+            self.lfo5
+                .set_rate_hz((self.params.lfo5.rate_hz + mods.lfo5_rate).max(0.001));
+            self.lfo5
+                .set_amount((self.params.lfo5.amount + mods.lfo5_amount).clamp(0.0, 1.0));
+            self.lfo5
+                .set_deform((self.params.lfo5.deform + mods.lfo5_deform).clamp(-1.0, 1.0));
             self.lfo5.phase_offset = (self.params.lfo5.start_phase + mods.lfo5_phase).fract();
-            self.lfo6.set_rate_hz((self.params.lfo6.rate_hz + mods.lfo6_rate).max(0.001));
-            self.lfo6.set_amount((self.params.lfo6.amount + mods.lfo6_amount).clamp(0.0, 1.0));
-            self.lfo6.set_deform((self.params.lfo6.deform + mods.lfo6_deform).clamp(-1.0, 1.0));
+            self.lfo6
+                .set_rate_hz((self.params.lfo6.rate_hz + mods.lfo6_rate).max(0.001));
+            self.lfo6
+                .set_amount((self.params.lfo6.amount + mods.lfo6_amount).clamp(0.0, 1.0));
+            self.lfo6
+                .set_deform((self.params.lfo6.deform + mods.lfo6_deform).clamp(-1.0, 1.0));
             self.lfo6.phase_offset = (self.params.lfo6.start_phase + mods.lfo6_phase).fract();
 
             // Apply modulated params to envelopes
-            self.amp_eg.set_attack((self.params.amp_eg.attack + mods.amp_attack).max(0.0));
-            self.amp_eg.set_decay((self.params.amp_eg.decay + mods.amp_decay).max(0.0));
-            self.amp_eg.set_sustain((self.params.amp_eg.sustain + mods.amp_sustain).clamp(0.0, 1.0));
-            self.amp_eg.set_release((self.params.amp_eg.release + mods.amp_release).max(0.0));
-            self.filter_eg.set_attack((self.params.filter_eg.attack + mods.filter_attack).max(0.0));
-            self.filter_eg.set_decay((self.params.filter_eg.decay + mods.filter_decay).max(0.0));
-            self.filter_eg.set_sustain((self.params.filter_eg.sustain + mods.filter_sustain).clamp(0.0, 1.0));
-            self.filter_eg.set_release((self.params.filter_eg.release + mods.filter_release).max(0.0));
-            self.pitch_eg.set_attack((self.params.pitch_eg.attack + mods.pitch_attack).max(0.0));
-            self.pitch_eg.set_decay((self.params.pitch_eg.decay + mods.pitch_decay).max(0.0));
-            self.pitch_eg.set_sustain((self.params.pitch_eg.sustain + mods.pitch_sustain).clamp(0.0, 1.0));
-            self.pitch_eg.set_release((self.params.pitch_eg.release + mods.pitch_release).max(0.0));
+            self.amp_eg
+                .set_attack((self.params.amp_eg.attack + mods.amp_attack).max(0.0));
+            self.amp_eg
+                .set_decay((self.params.amp_eg.decay + mods.amp_decay).max(0.0));
+            self.amp_eg
+                .set_sustain((self.params.amp_eg.sustain + mods.amp_sustain).clamp(0.0, 1.0));
+            self.amp_eg
+                .set_release((self.params.amp_eg.release + mods.amp_release).max(0.0));
+            self.filter_eg
+                .set_attack((self.params.filter_eg.attack + mods.filter_attack).max(0.0));
+            self.filter_eg
+                .set_decay((self.params.filter_eg.decay + mods.filter_decay).max(0.0));
+            self.filter_eg
+                .set_sustain((self.params.filter_eg.sustain + mods.filter_sustain).clamp(0.0, 1.0));
+            self.filter_eg
+                .set_release((self.params.filter_eg.release + mods.filter_release).max(0.0));
+            self.pitch_eg
+                .set_attack((self.params.pitch_eg.attack + mods.pitch_attack).max(0.0));
+            self.pitch_eg
+                .set_decay((self.params.pitch_eg.decay + mods.pitch_decay).max(0.0));
+            self.pitch_eg
+                .set_sustain((self.params.pitch_eg.sustain + mods.pitch_sustain).clamp(0.0, 1.0));
+            self.pitch_eg
+                .set_release((self.params.pitch_eg.release + mods.pitch_release).max(0.0));
 
             // Advance modulation sources with modulated params
             self.lfo1_output = self.lfo1.next();
@@ -2268,7 +2161,9 @@ impl Voice {
                     if self.params.oscs[0].enabled {
                         let sync = (self.params.oscs[0].sync + mods.osc_sync[0]).clamp(0.0, 1.0);
                         self.oscillators[0].set_sync_amount(sync);
-                        let depth = ((self.params.osc_fm_depth + mods.osc_fm_depth) * self.params.oscs[0].fm_depth).clamp(0.0, 1.0);
+                        let depth = ((self.params.osc_fm_depth + mods.osc_fm_depth)
+                            * self.params.oscs[0].fm_depth)
+                            .clamp(0.0, 1.0);
                         let fm_in = (osc_samples[1].0 + osc_samples[1].1) * depth * 20.0;
                         osc_samples[0] = self.oscillators[0].next(fm_in, audio_l, audio_r);
                     }
@@ -2288,7 +2183,9 @@ impl Voice {
                     if self.params.oscs[0].enabled {
                         let sync = (self.params.oscs[0].sync + mods.osc_sync[0]).clamp(0.0, 1.0);
                         self.oscillators[0].set_sync_amount(sync);
-                        let depth = ((self.params.osc_fm_depth + mods.osc_fm_depth) * self.params.oscs[0].fm_depth).clamp(0.0, 1.0);
+                        let depth = ((self.params.osc_fm_depth + mods.osc_fm_depth)
+                            * self.params.oscs[0].fm_depth)
+                            .clamp(0.0, 1.0);
                         let fm_in = (osc_samples[2].0 + osc_samples[2].1) * depth * 20.0;
                         osc_samples[0] = self.oscillators[0].next(fm_in, audio_l, audio_r);
                     }
@@ -2308,7 +2205,9 @@ impl Voice {
                     if self.params.oscs[1].enabled {
                         let sync = (self.params.oscs[1].sync + mods.osc_sync[1]).clamp(0.0, 1.0);
                         self.oscillators[1].set_sync_amount(sync);
-                        let depth = ((self.params.osc_fm_depth + mods.osc_fm_depth) * self.params.oscs[1].fm_depth).clamp(0.0, 1.0);
+                        let depth = ((self.params.osc_fm_depth + mods.osc_fm_depth)
+                            * self.params.oscs[1].fm_depth)
+                            .clamp(0.0, 1.0);
                         let fm_in = (osc_samples[2].0 + osc_samples[2].1) * depth * 20.0;
                         osc_samples[1] = self.oscillators[1].next(fm_in, audio_l, audio_r);
                     }
@@ -2330,7 +2229,9 @@ impl Voice {
                         self.oscillators[1].set_sync_amount(sync);
                         let fm_in = match self.params.osc_fm_mode {
                             OscFmMode::Osc1To2 | OscFmMode::Osc1To2To3 | OscFmMode::Osc1To3 => {
-                                let depth = ((self.params.osc_fm_depth + mods.osc_fm_depth) * self.params.oscs[1].fm_depth).clamp(0.0, 1.0);
+                                let depth = ((self.params.osc_fm_depth + mods.osc_fm_depth)
+                                    * self.params.oscs[1].fm_depth)
+                                    .clamp(0.0, 1.0);
                                 (osc_samples[0].0 + osc_samples[0].1) * depth * 20.0
                             }
                             _ => 0.0,
@@ -2342,11 +2243,15 @@ impl Voice {
                         self.oscillators[2].set_sync_amount(sync);
                         let fm_in = match self.params.osc_fm_mode {
                             OscFmMode::Osc2To3 | OscFmMode::Osc1To2To3 => {
-                                let depth = ((self.params.osc_fm_depth + mods.osc_fm_depth) * self.params.oscs[2].fm_depth).clamp(0.0, 1.0);
+                                let depth = ((self.params.osc_fm_depth + mods.osc_fm_depth)
+                                    * self.params.oscs[2].fm_depth)
+                                    .clamp(0.0, 1.0);
                                 (osc_samples[1].0 + osc_samples[1].1) * depth * 20.0
                             }
                             OscFmMode::Osc1To3 => {
-                                let depth = ((self.params.osc_fm_depth + mods.osc_fm_depth) * self.params.oscs[2].fm_depth).clamp(0.0, 1.0);
+                                let depth = ((self.params.osc_fm_depth + mods.osc_fm_depth)
+                                    * self.params.oscs[2].fm_depth)
+                                    .clamp(0.0, 1.0);
                                 (osc_samples[0].0 + osc_samples[0].1) * depth * 20.0
                             }
                             _ => 0.0,
@@ -2365,14 +2270,15 @@ impl Voice {
                     osc_samples[0].0 = ring_l;
                     osc_samples[0].1 = ring_r;
                 }
-            } else if self.params.osc_fm_mode == OscFmMode::Ring2x3 {
-                if self.params.oscs[1].enabled && self.params.oscs[2].enabled {
-                    let mode = self.params.ring23_combinator;
-                    let ring_l = apply_combinator(osc_samples[1].0, osc_samples[2].0, mode);
-                    let ring_r = apply_combinator(osc_samples[1].1, osc_samples[2].1, mode);
-                    osc_samples[1].0 = ring_l;
-                    osc_samples[1].1 = ring_r;
-                }
+            } else if self.params.osc_fm_mode == OscFmMode::Ring2x3
+                && self.params.oscs[1].enabled
+                && self.params.oscs[2].enabled
+            {
+                let mode = self.params.ring23_combinator;
+                let ring_l = apply_combinator(osc_samples[1].0, osc_samples[2].0, mode);
+                let ring_r = apply_combinator(osc_samples[1].1, osc_samples[2].1, mode);
+                osc_samples[1].0 = ring_l;
+                osc_samples[1].1 = ring_r;
             }
 
             // Mix oscillators with modulation and per-source filter routing
@@ -2386,7 +2292,7 @@ impl Voice {
             let noise_soloed = self.params.noise.solo;
             let any_soloed = any_osc_soloed || noise_soloed;
 
-            for idx in 0..3 {
+            for (idx, osc_sample) in osc_samples.iter_mut().enumerate() {
                 let osc = &self.params.oscs[idx];
                 if !osc.enabled {
                     continue;
@@ -2394,8 +2300,8 @@ impl Voice {
                 let passes = if any_soloed { osc.solo } else { !osc.mute };
                 if passes {
                     let level = (osc.level + mods.osc_level[idx]).clamp(0.0, 2.0);
-                    let s_l = osc_samples[idx].0 * level;
-                    let s_r = osc_samples[idx].1 * level;
+                    let s_l = osc_sample.0 * level;
+                    let s_r = osc_sample.1 * level;
                     match osc.route {
                         OscRoute::Filter1 => {
                             f1_mix_l += s_l;
@@ -2448,7 +2354,8 @@ impl Voice {
                 || self.params.noise.route != OscRoute::Both;
 
             // Character filter on each mix
-            let char_cutoff = (self.params.character_cutoff + mods.character_cutoff).clamp(20.0, 20000.0);
+            let char_cutoff =
+                (self.params.character_cutoff + mods.character_cutoff).clamp(20.0, 20000.0);
             self.character.cutoff_hz = char_cutoff;
             self.character2.cutoff_hz = char_cutoff;
             let (f1_char_l, f1_char_r) = self.character.process(f1_mix_l, f1_mix_r);
@@ -2526,9 +2433,17 @@ impl Voice {
 
             let _f1_cutoff = if f1_enabled {
                 let base = self.params.filter1.cutoff_hz;
-                let eg_mod = self.filter_eg_output * (self.params.filter1.eg_amount + mods.f1_eg_amount) * 10000.0;
-                let has_lfo1_f1 = self.params.modulations.iter().any(|r| r.active && r.source == ModSource::Lfo1 && r.target == ModTarget::Filter1Cutoff);
-                let lfo_mod = if has_lfo1_f1 { 0.0 } else { self.lfo1_output * 5000.0 };
+                let eg_mod = self.filter_eg_output
+                    * (self.params.filter1.eg_amount + mods.f1_eg_amount)
+                    * 10000.0;
+                let has_lfo1_f1 = self.params.modulations.iter().any(|r| {
+                    r.active && r.source == ModSource::Lfo1 && r.target == ModTarget::Filter1Cutoff
+                });
+                let lfo_mod = if has_lfo1_f1 {
+                    0.0
+                } else {
+                    self.lfo1_output * 5000.0
+                };
                 let key_track = self.params.filter1.key_tracking * (self.note as f32 - 60.0) * 50.0;
                 (base + eg_mod + lfo_mod + key_track + mods.f1_cutoff).clamp(20.0, 20000.0)
             } else {
@@ -2551,9 +2466,17 @@ impl Voice {
                 } else {
                     self.params.filter2.cutoff_hz
                 };
-                let eg_mod = self.filter_eg_output * (self.params.filter2.eg_amount + mods.f2_eg_amount) * 10000.0;
-                let has_lfo2_f2 = self.params.modulations.iter().any(|r| r.active && r.source == ModSource::Lfo2 && r.target == ModTarget::Filter2Cutoff);
-                let lfo_mod = if has_lfo2_f2 { 0.0 } else { self.lfo2_output * 5000.0 };
+                let eg_mod = self.filter_eg_output
+                    * (self.params.filter2.eg_amount + mods.f2_eg_amount)
+                    * 10000.0;
+                let has_lfo2_f2 = self.params.modulations.iter().any(|r| {
+                    r.active && r.source == ModSource::Lfo2 && r.target == ModTarget::Filter2Cutoff
+                });
+                let lfo_mod = if has_lfo2_f2 {
+                    0.0
+                } else {
+                    self.lfo2_output * 5000.0
+                };
                 let key_track = self.params.filter2.key_tracking * (self.note as f32 - 60.0) * 50.0;
                 (base + eg_mod + lfo_mod + key_track + mods.f2_cutoff).clamp(20.0, 20000.0)
             } else {
@@ -2574,7 +2497,8 @@ impl Voice {
                 0.0
             };
 
-            let ws_active = self.params.waveshaper.enabled && self.params.waveshaper.shape != Waveshape::Off;
+            let ws_active =
+                self.params.waveshaper.enabled && self.params.waveshaper.shape != Waveshape::Off;
             let ws_drive = if ws_active {
                 (self.params.waveshaper.drive + mods.waveshaper_drive).clamp(0.0, 1.0)
             } else {
@@ -2612,233 +2536,233 @@ impl Voice {
                 (ws_l, ws_r, f1_l, f1_r)
             } else {
                 match self.params.filter_routing {
-                FilterRouting::Series => {
-                    // S1: F1 → WS → F2
-                    let mut s_l = pre_filter_l;
-                    let mut s_r = pre_filter_r;
-                    if f1_enabled {
-                        self.filter1_l.set_drive(f1_drive);
-                        self.filter1_r.set_drive(f1_drive);
-                        s_l = self.filter1_l.process(s_l);
-                        s_r = self.filter1_r.process(s_r);
+                    FilterRouting::Series => {
+                        // S1: F1 → WS → F2
+                        let mut s_l = pre_filter_l;
+                        let mut s_r = pre_filter_r;
+                        if f1_enabled {
+                            self.filter1_l.set_drive(f1_drive);
+                            self.filter1_r.set_drive(f1_drive);
+                            s_l = self.filter1_l.process(s_l);
+                            s_r = self.filter1_r.process(s_r);
+                        }
+                        let (ws_l, ws_r) = if ws_active {
+                            let mut ws = self.waveshaper.clone();
+                            ws.drive = ws_drive;
+                            (ws.process(s_l), ws.process(s_r))
+                        } else {
+                            (s_l, s_r)
+                        };
+                        let mut out_l = ws_l;
+                        let mut out_r = ws_r;
+                        if f2_enabled {
+                            self.filter2_l.set_drive(f2_drive);
+                            self.filter2_r.set_drive(f2_drive);
+                            out_l = self.filter2_l.process(out_l);
+                            out_r = self.filter2_r.process(out_r);
+                        }
+                        (out_l, out_r, ws_l, ws_r)
                     }
-                    let (ws_l, ws_r) = if ws_active {
-                        let mut ws = self.waveshaper.clone();
-                        ws.drive = ws_drive;
-                        (ws.process(s_l), ws.process(s_r))
-                    } else {
-                        (s_l, s_r)
-                    };
-                    let mut out_l = ws_l;
-                    let mut out_r = ws_r;
-                    if f2_enabled {
-                        self.filter2_l.set_drive(f2_drive);
-                        self.filter2_r.set_drive(f2_drive);
-                        out_l = self.filter2_l.process(out_l);
-                        out_r = self.filter2_r.process(out_r);
+                    FilterRouting::Parallel => {
+                        // D1: F1 || F2 → sum → WS
+                        let mut f1_l = pre_filter_l;
+                        let mut f1_r = pre_filter_r;
+                        let mut f2_l = pre_filter_l;
+                        let mut f2_r = pre_filter_r;
+                        if f1_enabled {
+                            self.filter1_l.set_drive(f1_drive);
+                            self.filter1_r.set_drive(f1_drive);
+                            f1_l = self.filter1_l.process(f1_l);
+                            f1_r = self.filter1_r.process(f1_r);
+                        }
+                        if f2_enabled {
+                            self.filter2_l.set_drive(f2_drive);
+                            self.filter2_r.set_drive(f2_drive);
+                            f2_l = self.filter2_l.process(f2_l);
+                            f2_r = self.filter2_r.process(f2_r);
+                        }
+                        let sum_l = (f1_l + f2_l) * 0.5;
+                        let sum_r = (f1_r + f2_r) * 0.5;
+                        let (ws_l, ws_r) = if ws_active {
+                            let mut ws = self.waveshaper.clone();
+                            ws.drive = ws_drive;
+                            (ws.process(sum_l), ws.process(sum_r))
+                        } else {
+                            (sum_l, sum_r)
+                        };
+                        (ws_l, ws_r, f1_l, f1_r)
                     }
-                    (out_l, out_r, ws_l, ws_r)
+                    FilterRouting::Wide => {
+                        // Wide: S2 doubled — F2 → WS → F1 on both channels
+                        let mut s_l = pre_filter_l;
+                        let mut s_r = pre_filter_r;
+                        if f2_enabled {
+                            self.filter2_l.set_drive(f2_drive);
+                            self.filter2_r.set_drive(f2_drive);
+                            s_l = self.filter2_l.process(s_l);
+                            s_r = self.filter2_r.process(s_r);
+                        }
+                        let (ws_l, ws_r) = if ws_active {
+                            let mut ws = self.waveshaper.clone();
+                            ws.drive = ws_drive;
+                            (ws.process(s_l), ws.process(s_r))
+                        } else {
+                            (s_l, s_r)
+                        };
+                        let mut out_l = ws_l;
+                        let mut out_r = ws_r;
+                        if f1_enabled {
+                            self.filter1_l.set_drive(f1_drive);
+                            self.filter1_r.set_drive(f1_drive);
+                            out_l = self.filter1_l.process(out_l);
+                            out_r = self.filter1_r.process(out_r);
+                        }
+                        (out_l, out_r, ws_l, ws_r)
+                    }
+                    FilterRouting::Split => {
+                        // Stereo: L→F1, R→F2 → WS
+                        let mut f1_l = pre_filter_l;
+                        let f1_r = pre_filter_r;
+                        let f2_l = pre_filter_l;
+                        let mut f2_r = pre_filter_r;
+                        if f1_enabled {
+                            self.filter1_l.set_drive(f1_drive);
+                            self.filter1_r.set_drive(f1_drive);
+                            f1_l = self.filter1_l.process(f1_l);
+                            self.filter1_r.process(f1_r);
+                        }
+                        if f2_enabled {
+                            self.filter2_l.set_drive(f2_drive);
+                            self.filter2_r.set_drive(f2_drive);
+                            self.filter2_l.process(f2_l);
+                            f2_r = self.filter2_r.process(f2_r);
+                        }
+                        let stereo_l = f1_l;
+                        let stereo_r = f2_r;
+                        let (ws_l, ws_r) = if ws_active {
+                            let mut ws = self.waveshaper.clone();
+                            ws.drive = ws_drive;
+                            (ws.process(stereo_l), ws.process(stereo_r))
+                        } else {
+                            (stereo_l, stereo_r)
+                        };
+                        (ws_l, ws_r, stereo_l, stereo_r)
+                    }
+                    FilterRouting::Serial2 => {
+                        // F2 → WS → F1
+                        let mut s_l = pre_filter_l;
+                        let mut s_r = pre_filter_r;
+                        if f2_enabled {
+                            self.filter2_l.set_drive(f2_drive);
+                            self.filter2_r.set_drive(f2_drive);
+                            s_l = self.filter2_l.process(s_l);
+                            s_r = self.filter2_r.process(s_r);
+                        }
+                        let (ws_l, ws_r) = if ws_active {
+                            let mut ws = self.waveshaper.clone();
+                            ws.drive = ws_drive;
+                            (ws.process(s_l), ws.process(s_r))
+                        } else {
+                            (s_l, s_r)
+                        };
+                        let mut out_l = ws_l;
+                        let mut out_r = ws_r;
+                        if f1_enabled {
+                            self.filter1_l.set_drive(f1_drive);
+                            self.filter1_r.set_drive(f1_drive);
+                            out_l = self.filter1_l.process(out_l);
+                            out_r = self.filter1_r.process(out_r);
+                        }
+                        (out_l, out_r, ws_l, ws_r)
+                    }
+                    FilterRouting::Serial3 => {
+                        // S3 approximation: F1→WS in series with F2 in parallel
+                        let mut s_l = pre_filter_l;
+                        let mut s_r = pre_filter_r;
+                        if f1_enabled {
+                            self.filter1_l.set_drive(f1_drive);
+                            self.filter1_r.set_drive(f1_drive);
+                            s_l = self.filter1_l.process(s_l);
+                            s_r = self.filter1_r.process(s_r);
+                        }
+                        let (ws_l, ws_r) = if ws_active {
+                            let mut ws = self.waveshaper.clone();
+                            ws.drive = ws_drive;
+                            (ws.process(s_l), ws.process(s_r))
+                        } else {
+                            (s_l, s_r)
+                        };
+                        let mut f2_l = pre_filter_l;
+                        let mut f2_r = pre_filter_r;
+                        if f2_enabled {
+                            self.filter2_l.set_drive(f2_drive);
+                            self.filter2_r.set_drive(f2_drive);
+                            f2_l = self.filter2_l.process(f2_l);
+                            f2_r = self.filter2_r.process(f2_r);
+                        }
+                        let out_l = ws_l * 0.7 + f2_l * 0.3;
+                        let out_r = ws_r * 0.7 + f2_r * 0.3;
+                        (out_l, out_r, ws_l, ws_r)
+                    }
+                    FilterRouting::Dual2 => {
+                        // F1(WS) || F2 → sum
+                        let mut f1_l = pre_filter_l;
+                        let mut f1_r = pre_filter_r;
+                        let mut f2_l = pre_filter_l;
+                        let mut f2_r = pre_filter_r;
+                        if f1_enabled {
+                            self.filter1_l.set_drive(f1_drive);
+                            self.filter1_r.set_drive(f1_drive);
+                            f1_l = self.filter1_l.process(f1_l);
+                            f1_r = self.filter1_r.process(f1_r);
+                        }
+                        let (f1_ws_l, f1_ws_r) = if ws_active {
+                            let mut ws = self.waveshaper.clone();
+                            ws.drive = ws_drive;
+                            (ws.process(f1_l), ws.process(f1_r))
+                        } else {
+                            (f1_l, f1_r)
+                        };
+                        if f2_enabled {
+                            self.filter2_l.set_drive(f2_drive);
+                            self.filter2_r.set_drive(f2_drive);
+                            f2_l = self.filter2_l.process(f2_l);
+                            f2_r = self.filter2_r.process(f2_r);
+                        }
+                        let out_l = (f1_ws_l + f2_l) * 0.5;
+                        let out_r = (f1_ws_r + f2_r) * 0.5;
+                        (out_l, out_r, f1_ws_l, f1_ws_r)
+                    }
+                    FilterRouting::Ring => {
+                        // F1 × F2 → WS
+                        let mut f1_l = pre_filter_l;
+                        let mut f1_r = pre_filter_r;
+                        let mut f2_l = pre_filter_l;
+                        let mut f2_r = pre_filter_r;
+                        if f1_enabled {
+                            self.filter1_l.set_drive(f1_drive);
+                            self.filter1_r.set_drive(f1_drive);
+                            f1_l = self.filter1_l.process(f1_l);
+                            f1_r = self.filter1_r.process(f1_r);
+                        }
+                        if f2_enabled {
+                            self.filter2_l.set_drive(f2_drive);
+                            self.filter2_r.set_drive(f2_drive);
+                            f2_l = self.filter2_l.process(f2_l);
+                            f2_r = self.filter2_r.process(f2_r);
+                        }
+                        let ring_l = f1_l * f2_l;
+                        let ring_r = f1_r * f2_r;
+                        let (ws_l, ws_r) = if ws_active {
+                            let mut ws = self.waveshaper.clone();
+                            ws.drive = ws_drive;
+                            (ws.process(ring_l), ws.process(ring_r))
+                        } else {
+                            (ring_l, ring_r)
+                        };
+                        (ws_l, ws_r, f1_l, f1_r)
+                    }
                 }
-                FilterRouting::Parallel => {
-                    // D1: F1 || F2 → sum → WS
-                    let mut f1_l = pre_filter_l;
-                    let mut f1_r = pre_filter_r;
-                    let mut f2_l = pre_filter_l;
-                    let mut f2_r = pre_filter_r;
-                    if f1_enabled {
-                        self.filter1_l.set_drive(f1_drive);
-                        self.filter1_r.set_drive(f1_drive);
-                        f1_l = self.filter1_l.process(f1_l);
-                        f1_r = self.filter1_r.process(f1_r);
-                    }
-                    if f2_enabled {
-                        self.filter2_l.set_drive(f2_drive);
-                        self.filter2_r.set_drive(f2_drive);
-                        f2_l = self.filter2_l.process(f2_l);
-                        f2_r = self.filter2_r.process(f2_r);
-                    }
-                    let sum_l = (f1_l + f2_l) * 0.5;
-                    let sum_r = (f1_r + f2_r) * 0.5;
-                    let (ws_l, ws_r) = if ws_active {
-                        let mut ws = self.waveshaper.clone();
-                        ws.drive = ws_drive;
-                        (ws.process(sum_l), ws.process(sum_r))
-                    } else {
-                        (sum_l, sum_r)
-                    };
-                    (ws_l, ws_r, f1_l, f1_r)
-                }
-                FilterRouting::Wide => {
-                    // Wide: S2 doubled — F2 → WS → F1 on both channels
-                    let mut s_l = pre_filter_l;
-                    let mut s_r = pre_filter_r;
-                    if f2_enabled {
-                        self.filter2_l.set_drive(f2_drive);
-                        self.filter2_r.set_drive(f2_drive);
-                        s_l = self.filter2_l.process(s_l);
-                        s_r = self.filter2_r.process(s_r);
-                    }
-                    let (ws_l, ws_r) = if ws_active {
-                        let mut ws = self.waveshaper.clone();
-                        ws.drive = ws_drive;
-                        (ws.process(s_l), ws.process(s_r))
-                    } else {
-                        (s_l, s_r)
-                    };
-                    let mut out_l = ws_l;
-                    let mut out_r = ws_r;
-                    if f1_enabled {
-                        self.filter1_l.set_drive(f1_drive);
-                        self.filter1_r.set_drive(f1_drive);
-                        out_l = self.filter1_l.process(out_l);
-                        out_r = self.filter1_r.process(out_r);
-                    }
-                    (out_l, out_r, ws_l, ws_r)
-                }
-                FilterRouting::Split => {
-                    // Stereo: L→F1, R→F2 → WS
-                    let mut f1_l = pre_filter_l;
-                    let f1_r = pre_filter_r;
-                    let f2_l = pre_filter_l;
-                    let mut f2_r = pre_filter_r;
-                    if f1_enabled {
-                        self.filter1_l.set_drive(f1_drive);
-                        self.filter1_r.set_drive(f1_drive);
-                        f1_l = self.filter1_l.process(f1_l);
-                        self.filter1_r.process(f1_r);
-                    }
-                    if f2_enabled {
-                        self.filter2_l.set_drive(f2_drive);
-                        self.filter2_r.set_drive(f2_drive);
-                        self.filter2_l.process(f2_l);
-                        f2_r = self.filter2_r.process(f2_r);
-                    }
-                    let stereo_l = f1_l;
-                    let stereo_r = f2_r;
-                    let (ws_l, ws_r) = if ws_active {
-                        let mut ws = self.waveshaper.clone();
-                        ws.drive = ws_drive;
-                        (ws.process(stereo_l), ws.process(stereo_r))
-                    } else {
-                        (stereo_l, stereo_r)
-                    };
-                    (ws_l, ws_r, stereo_l, stereo_r)
-                }
-                FilterRouting::Serial2 => {
-                    // F2 → WS → F1
-                    let mut s_l = pre_filter_l;
-                    let mut s_r = pre_filter_r;
-                    if f2_enabled {
-                        self.filter2_l.set_drive(f2_drive);
-                        self.filter2_r.set_drive(f2_drive);
-                        s_l = self.filter2_l.process(s_l);
-                        s_r = self.filter2_r.process(s_r);
-                    }
-                    let (ws_l, ws_r) = if ws_active {
-                        let mut ws = self.waveshaper.clone();
-                        ws.drive = ws_drive;
-                        (ws.process(s_l), ws.process(s_r))
-                    } else {
-                        (s_l, s_r)
-                    };
-                    let mut out_l = ws_l;
-                    let mut out_r = ws_r;
-                    if f1_enabled {
-                        self.filter1_l.set_drive(f1_drive);
-                        self.filter1_r.set_drive(f1_drive);
-                        out_l = self.filter1_l.process(out_l);
-                        out_r = self.filter1_r.process(out_r);
-                    }
-                    (out_l, out_r, ws_l, ws_r)
-                }
-                FilterRouting::Serial3 => {
-                    // S3 approximation: F1→WS in series with F2 in parallel
-                    let mut s_l = pre_filter_l;
-                    let mut s_r = pre_filter_r;
-                    if f1_enabled {
-                        self.filter1_l.set_drive(f1_drive);
-                        self.filter1_r.set_drive(f1_drive);
-                        s_l = self.filter1_l.process(s_l);
-                        s_r = self.filter1_r.process(s_r);
-                    }
-                    let (ws_l, ws_r) = if ws_active {
-                        let mut ws = self.waveshaper.clone();
-                        ws.drive = ws_drive;
-                        (ws.process(s_l), ws.process(s_r))
-                    } else {
-                        (s_l, s_r)
-                    };
-                    let mut f2_l = pre_filter_l;
-                    let mut f2_r = pre_filter_r;
-                    if f2_enabled {
-                        self.filter2_l.set_drive(f2_drive);
-                        self.filter2_r.set_drive(f2_drive);
-                        f2_l = self.filter2_l.process(f2_l);
-                        f2_r = self.filter2_r.process(f2_r);
-                    }
-                    let out_l = ws_l * 0.7 + f2_l * 0.3;
-                    let out_r = ws_r * 0.7 + f2_r * 0.3;
-                    (out_l, out_r, ws_l, ws_r)
-                }
-                FilterRouting::Dual2 => {
-                    // F1(WS) || F2 → sum
-                    let mut f1_l = pre_filter_l;
-                    let mut f1_r = pre_filter_r;
-                    let mut f2_l = pre_filter_l;
-                    let mut f2_r = pre_filter_r;
-                    if f1_enabled {
-                        self.filter1_l.set_drive(f1_drive);
-                        self.filter1_r.set_drive(f1_drive);
-                        f1_l = self.filter1_l.process(f1_l);
-                        f1_r = self.filter1_r.process(f1_r);
-                    }
-                    let (f1_ws_l, f1_ws_r) = if ws_active {
-                        let mut ws = self.waveshaper.clone();
-                        ws.drive = ws_drive;
-                        (ws.process(f1_l), ws.process(f1_r))
-                    } else {
-                        (f1_l, f1_r)
-                    };
-                    if f2_enabled {
-                        self.filter2_l.set_drive(f2_drive);
-                        self.filter2_r.set_drive(f2_drive);
-                        f2_l = self.filter2_l.process(f2_l);
-                        f2_r = self.filter2_r.process(f2_r);
-                    }
-                    let out_l = (f1_ws_l + f2_l) * 0.5;
-                    let out_r = (f1_ws_r + f2_r) * 0.5;
-                    (out_l, out_r, f1_ws_l, f1_ws_r)
-                }
-                FilterRouting::Ring => {
-                    // F1 × F2 → WS
-                    let mut f1_l = pre_filter_l;
-                    let mut f1_r = pre_filter_r;
-                    let mut f2_l = pre_filter_l;
-                    let mut f2_r = pre_filter_r;
-                    if f1_enabled {
-                        self.filter1_l.set_drive(f1_drive);
-                        self.filter1_r.set_drive(f1_drive);
-                        f1_l = self.filter1_l.process(f1_l);
-                        f1_r = self.filter1_r.process(f1_r);
-                    }
-                    if f2_enabled {
-                        self.filter2_l.set_drive(f2_drive);
-                        self.filter2_r.set_drive(f2_drive);
-                        f2_l = self.filter2_l.process(f2_l);
-                        f2_r = self.filter2_r.process(f2_r);
-                    }
-                    let ring_l = f1_l * f2_l;
-                    let ring_r = f1_r * f2_r;
-                    let (ws_l, ws_r) = if ws_active {
-                        let mut ws = self.waveshaper.clone();
-                        ws.drive = ws_drive;
-                        (ws.process(ring_l), ws.process(ring_r))
-                    } else {
-                        (ring_l, ring_r)
-                    };
-                    (ws_l, ws_r, f1_l, f1_r)
-                }
-            }
             };
 
             // Apply filter balance after routing
@@ -2898,9 +2822,17 @@ impl Voice {
 
         let pitch_eg_mod = self.pitch_eg_output * 2.0; // ±2 octaves
         let pb_range = if self.pitch_bend_smooth_state >= 0.0 {
-            if self.params.pitch_bend_up > 0.0 { self.params.pitch_bend_up } else { self.params.pitch_bend_range }
+            if self.params.pitch_bend_up > 0.0 {
+                self.params.pitch_bend_up
+            } else {
+                self.params.pitch_bend_range
+            }
         } else {
-            if self.params.pitch_bend_down > 0.0 { self.params.pitch_bend_down } else { self.params.pitch_bend_range }
+            if self.params.pitch_bend_down > 0.0 {
+                self.params.pitch_bend_down
+            } else {
+                self.params.pitch_bend_range
+            }
         };
         let pb_mul = 2.0f32.powf(self.pitch_bend_smooth_state * pb_range / 12.0);
         let current_freq = self.current_freq;
@@ -2931,7 +2863,13 @@ impl Voice {
             let drift_cents = self.drift_phase[idx] * drift_amount * 20.0; // up to 20 cents drift
             let drift_mul = 2.0f32.powf(drift_cents / 1200.0);
 
-            let freq = base_freq * octave_mul * semitone_mul * fine_mul * pb_mul * pitch_mod_mul * drift_mul;
+            let freq = base_freq
+                * octave_mul
+                * semitone_mul
+                * fine_mul
+                * pb_mul
+                * pitch_mod_mul
+                * drift_mul;
             self.oscillators[idx].set_freq_hz(freq);
 
             // Apply shape/skew/formant modulation
@@ -2946,18 +2884,18 @@ impl Voice {
 }
 
 #[inline]
-fn note_to_freq(note: u8, tuning: &super::tuning::Tuning, mts_esp: &Option<Arc<Mutex<MtsEspClient>>>) -> f32 {
-    if let Some(client) = mts_esp {
-        if let Some(freq) = client.lock().note_to_frequency(note, 0) {
-            return freq;
-        }
+fn note_to_freq(note: u8, tuning: &Tuning, mts_esp: &Option<Arc<Mutex<MtsEspClient>>>) -> f32 {
+    if let Some(client) = mts_esp
+        && let Some(freq) = client.lock().note_to_frequency(note, 0)
+    {
+        return freq;
     }
     tuning.note_to_freq(note)
 }
 
 /// Find the nearest scale degree index for a given frequency and tuning.
 #[inline]
-fn freq_to_scale_degree(freq: f32, tuning: &super::tuning::Tuning) -> i32 {
+fn freq_to_scale_degree(freq: f32, tuning: &Tuning) -> i32 {
     let root_freq = 440.0 * 2.0f32.powf((tuning.root_midi_note as f32 - 69.0) / 12.0);
     let cents = 1200.0 * (freq / root_freq.max(1e-6)).log2();
     let octave_cents = tuning.octave_cents();

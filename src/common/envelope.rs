@@ -115,6 +115,11 @@ impl AdsrEnvelope {
         }
     }
 
+    /// Current envelope output without advancing.
+    pub fn value(&self) -> f32 {
+        self.output
+    }
+
     pub fn set_params(&mut self, attack: f32, decay: f32, sustain: f32, release: f32) {
         self.attack = attack.max(0.0);
         self.decay = decay.max(0.0);
@@ -126,7 +131,12 @@ impl AdsrEnvelope {
         self.mode = mode;
     }
 
-    pub fn set_shapes(&mut self, attack: AttackShape, decay: DecayReleaseShape, release: DecayReleaseShape) {
+    pub fn set_shapes(
+        &mut self,
+        attack: AttackShape,
+        decay: DecayReleaseShape,
+        release: DecayReleaseShape,
+    ) {
         self.attack_shape = attack;
         self.decay_shape = decay;
         self.release_shape = release;
@@ -220,6 +230,7 @@ impl AdsrEnvelope {
     }
 
     /// Process one sample and return the envelope value.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> f32 {
         let beat_to_sec = |beats: f32| -> f32 {
             if self.tempo_sync && self.tempo_bpm > 0.0 {

@@ -14,8 +14,8 @@ use clap_clap::{
         CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_COCOA,
         CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info, clap_gui_resize_hints,
         clap_host, clap_plugin, clap_plugin_audio_ports, clap_plugin_descriptor,
-        clap_plugin_factory, clap_plugin_gui, clap_plugin_tail, clap_process,
-        clap_process_status, clap_window,
+        clap_plugin_factory, clap_plugin_gui, clap_plugin_tail, clap_process, clap_process_status,
+        clap_window,
     },
     process::Process,
 };
@@ -137,7 +137,7 @@ impl AudioProcessor {
         let inputs_count = process.audio_inputs_count();
         let outputs_count = process.audio_outputs_count();
 
-        let log_this_cycle = self.log_cycle % 100 == 0;
+        let log_this_cycle = self.log_cycle.is_multiple_of(100);
         self.log_cycle = self.log_cycle.wrapping_add(1);
 
         if inputs_count >= 2 && outputs_count >= 2 {
@@ -148,8 +148,12 @@ impl AudioProcessor {
 
             let (_, _, irms) = Self::buf_stats(&self.temp_left[..frames]);
             let (_, _, irms_r) = Self::buf_stats(&self.temp_right[..frames]);
-            shared.in_l_rms.store((irms as f64).to_bits(), Ordering::Relaxed);
-            shared.in_r_rms.store((irms_r as f64).to_bits(), Ordering::Relaxed);
+            shared
+                .in_l_rms
+                .store((irms as f64).to_bits(), Ordering::Relaxed);
+            shared
+                .in_r_rms
+                .store((irms_r as f64).to_bits(), Ordering::Relaxed);
 
             if log_this_cycle {
                 eprintln!(
@@ -169,8 +173,12 @@ impl AudioProcessor {
 
             let (_, _, orms) = Self::buf_stats(&self.temp_left[..frames]);
             let (_, _, orms_r) = Self::buf_stats(&self.temp_right[..frames]);
-            shared.out_l_rms.store((orms as f64).to_bits(), Ordering::Relaxed);
-            shared.out_r_rms.store((orms_r as f64).to_bits(), Ordering::Relaxed);
+            shared
+                .out_l_rms
+                .store((orms as f64).to_bits(), Ordering::Relaxed);
+            shared
+                .out_r_rms
+                .store((orms_r as f64).to_bits(), Ordering::Relaxed);
 
             if log_this_cycle {
                 eprintln!(
@@ -190,8 +198,12 @@ impl AudioProcessor {
 
             let (_, _, irms) = Self::buf_stats(&self.temp_left[..frames]);
             let (_, _, irms_r) = Self::buf_stats(&self.temp_right[..frames]);
-            shared.in_l_rms.store((irms as f64).to_bits(), Ordering::Relaxed);
-            shared.in_r_rms.store((irms_r as f64).to_bits(), Ordering::Relaxed);
+            shared
+                .in_l_rms
+                .store((irms as f64).to_bits(), Ordering::Relaxed);
+            shared
+                .in_r_rms
+                .store((irms_r as f64).to_bits(), Ordering::Relaxed);
 
             if log_this_cycle {
                 eprintln!(
@@ -208,8 +220,12 @@ impl AudioProcessor {
 
             let (_, _, orms) = Self::buf_stats(&self.temp_left[..frames]);
             let (_, _, orms_r) = Self::buf_stats(&self.temp_right[..frames]);
-            shared.out_l_rms.store((orms as f64).to_bits(), Ordering::Relaxed);
-            shared.out_r_rms.store((orms_r as f64).to_bits(), Ordering::Relaxed);
+            shared
+                .out_l_rms
+                .store((orms as f64).to_bits(), Ordering::Relaxed);
+            shared
+                .out_r_rms
+                .store((orms_r as f64).to_bits(), Ordering::Relaxed);
 
             if log_this_cycle {
                 eprintln!(
@@ -482,6 +498,7 @@ unsafe extern "C-unwind" fn ext_gui_set_size(
     false
 }
 
+#[allow(clippy::needless_bool)]
 unsafe extern "C-unwind" fn ext_gui_set_parent(
     plugin: *const clap_plugin,
     window: *const clap_window,

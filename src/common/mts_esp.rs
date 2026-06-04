@@ -17,11 +17,8 @@ use parking_lot::Mutex;
 type MTSRegisterClient = unsafe extern "C" fn() -> *mut std::ffi::c_void;
 type MTSDeregisterClient = unsafe extern "C" fn(client: *mut std::ffi::c_void);
 type MTSHasMaster = unsafe extern "C" fn(client: *mut std::ffi::c_void) -> bool;
-type MTSNoteToFrequency = unsafe extern "C" fn(
-    client: *mut std::ffi::c_void,
-    note: i8,
-    channel: i8,
-) -> f64;
+type MTSNoteToFrequency =
+    unsafe extern "C" fn(client: *mut std::ffi::c_void, note: i8, channel: i8) -> f64;
 
 // ---------------------------------------------------------------------------
 // Client wrapper
@@ -57,8 +54,7 @@ impl MtsEspClient {
                 lib.get(b"MTS_RegisterClient\0").ok()?;
             let deregister: libloading::Symbol<MTSDeregisterClient> =
                 lib.get(b"MTS_DeregisterClient\0").ok()?;
-            let has_master: libloading::Symbol<MTSHasMaster> =
-                lib.get(b"MTS_HasMaster\0").ok()?;
+            let has_master: libloading::Symbol<MTSHasMaster> = lib.get(b"MTS_HasMaster\0").ok()?;
             let note_to_freq: libloading::Symbol<MTSNoteToFrequency> =
                 lib.get(b"MTS_NoteToFrequency\0").ok()?;
 
@@ -122,11 +118,7 @@ impl MtsEspClient {
             return None;
         }
         let freq = unsafe { (self.note_to_freq)(self.handle, note as i8, channel as i8) };
-        if freq > 0.0 {
-            Some(freq as f32)
-        } else {
-            None
-        }
+        if freq > 0.0 { Some(freq as f32) } else { None }
     }
 }
 

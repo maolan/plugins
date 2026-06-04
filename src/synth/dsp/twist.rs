@@ -369,7 +369,9 @@ impl TwistOsc {
         for i in 0..self.unison_voices {
             let detune = if self.unison_voices > 1 {
                 let spread = self.unison_detune;
-                (i as f32 / (self.unison_voices.saturating_sub(1).max(1) as f32) - 0.5) * spread * 2.0
+                (i as f32 / (self.unison_voices.saturating_sub(1).max(1) as f32) - 0.5)
+                    * spread
+                    * 2.0
             } else {
                 0.0
             };
@@ -378,11 +380,8 @@ impl TwistOsc {
             } else {
                 0.5
             };
-            self.va_voices.push(UnisonVoice::new(
-                0.0,
-                base_inc * (1.0 + detune * 0.02),
-                pan,
-            ));
+            self.va_voices
+                .push(UnisonVoice::new(0.0, base_inc * (1.0 + detune * 0.02), pan));
         }
     }
 
@@ -391,7 +390,9 @@ impl TwistOsc {
         for (i, v) in self.va_voices.iter_mut().enumerate() {
             let detune = if self.unison_voices > 1 {
                 let spread = self.unison_detune;
-                (i as f32 / (self.unison_voices.saturating_sub(1).max(1) as f32) - 0.5) * spread * 2.0
+                (i as f32 / (self.unison_voices.saturating_sub(1).max(1) as f32) - 0.5)
+                    * spread
+                    * 2.0
             } else {
                 0.0
             };
@@ -519,7 +520,7 @@ impl TwistOsc {
     // -----------------------------------------------------------------------
 
     fn next_string(&mut self, fm_input: f32) -> (f32, f32) {
-        let delay_len = (self.sample_rate / self.freq_hz).max(2.0).min(2046.0) as usize;
+        let delay_len = (self.sample_rate / self.freq_hz).clamp(2.0, 2046.0) as usize;
         let decay = 0.9 + self.timbre * 0.099; // 0.9..0.999
         let brightness = self.harmonics; // 0..1
         let pluck_pos = self.morph;
@@ -631,8 +632,8 @@ impl TwistOsc {
         };
         let detune = self.timbre * 0.02; // slight detune for thickness
         let mut sum = 0.0f32;
-        for i in 0..4 {
-            self.chord_phases[i] += base_inc * ratios[i] * (1.0 + detune * (i as f32 - 1.5));
+        for (i, ratio) in ratios.iter().enumerate() {
+            self.chord_phases[i] += base_inc * *ratio * (1.0 + detune * (i as f32 - 1.5));
             while self.chord_phases[i] >= 1.0 {
                 self.chord_phases[i] -= 1.0;
             }
@@ -759,8 +760,8 @@ impl TwistOsc {
         let formants = match vowel {
             1 => ([400.0, 1900.0, 2500.0], [1.0, 0.7, 0.5]), // E
             2 => ([300.0, 2300.0, 2800.0], [1.0, 0.6, 0.4]), // I
-            3 => ([400.0, 800.0, 2400.0],  [1.0, 0.9, 0.5]), // O
-            4 => ([300.0, 800.0, 2200.0],  [1.0, 0.9, 0.5]), // U
+            3 => ([400.0, 800.0, 2400.0], [1.0, 0.9, 0.5]),  // O
+            4 => ([300.0, 800.0, 2200.0], [1.0, 0.9, 0.5]),  // U
             _ => ([700.0, 1200.0, 2600.0], [1.0, 0.8, 0.5]), // A
         };
         let brightness = 0.5 + self.timbre * 0.5; // boost formants
@@ -784,9 +785,27 @@ impl TwistOsc {
             out
         }
 
-        let f1 = formant_filter(exciter, formants.0[0] * brightness, 5.0, sr, &mut self.vowel_f1_state);
-        let f2 = formant_filter(exciter, formants.0[1] * brightness, 5.0, sr, &mut self.vowel_f2_state);
-        let f3 = formant_filter(exciter, formants.0[2] * brightness, 5.0, sr, &mut self.vowel_f3_state);
+        let f1 = formant_filter(
+            exciter,
+            formants.0[0] * brightness,
+            5.0,
+            sr,
+            &mut self.vowel_f1_state,
+        );
+        let f2 = formant_filter(
+            exciter,
+            formants.0[1] * brightness,
+            5.0,
+            sr,
+            &mut self.vowel_f2_state,
+        );
+        let f3 = formant_filter(
+            exciter,
+            formants.0[2] * brightness,
+            5.0,
+            sr,
+            &mut self.vowel_f3_state,
+        );
 
         let out = f1 * formants.1[0] + f2 * formants.1[1] + f3 * formants.1[2];
         let out = out * 0.5;
@@ -810,7 +829,8 @@ impl TwistOsc {
         self.grain_cloud_pos += 1.0;
 
         // Read a grain with window
-        let grain_pos = ((self.grain_cloud_pos as usize).saturating_sub(grain_size_samples)) % self.grain_cloud_buffer.len();
+        let grain_pos = ((self.grain_cloud_pos as usize).saturating_sub(grain_size_samples))
+            % self.grain_cloud_buffer.len();
         let mut sum = 0.0f32;
         let mut active = 0;
         let n_grains = (density * 8.0) as usize + 1;
@@ -843,11 +863,13 @@ impl TwistOsc {
 
         // Read with inharmonic stretch
         let read_offset = delay_samples * (1.0 + inharmonicity);
-        let read_pos_f = self.inh_string_pos as f32 + self.inh_string_buffer.len() as f32 - read_offset;
+        let read_pos_f =
+            self.inh_string_pos as f32 + self.inh_string_buffer.len() as f32 - read_offset;
         let read_pos = (read_pos_f as usize) % self.inh_string_buffer.len();
         let read_pos2 = (read_pos + 1) % self.inh_string_buffer.len();
         let frac = read_pos_f - read_pos_f.floor();
-        let delayed = self.inh_string_buffer[read_pos] * (1.0 - frac) + self.inh_string_buffer[read_pos2] * frac;
+        let delayed = self.inh_string_buffer[read_pos] * (1.0 - frac)
+            + self.inh_string_buffer[read_pos2] * frac;
 
         // Damping + brightness filter
         let filtered = delayed * damping;
@@ -884,8 +906,8 @@ impl TwistOsc {
 
         // Modal frequencies: fundamental + 3 inharmonic overtones
         let ratios = match (material * 3.0) as u8 {
-            1 => [1.0, 2.8, 5.2, 8.1], // metal
-            2 => [1.0, 2.4, 4.5, 6.8], // glass
+            1 => [1.0, 2.8, 5.2, 8.1],  // metal
+            2 => [1.0, 2.4, 4.5, 6.8],  // glass
             _ => [1.0, 3.2, 6.5, 10.8], // wood
         };
 
@@ -900,8 +922,8 @@ impl TwistOsc {
         };
 
         let mut out = 0.0f32;
-        for i in 0..4 {
-            let f = freq * ratios[i];
+        for (i, ratio) in ratios.iter().enumerate() {
+            let f = freq * *ratio;
             let inc = f / sr;
             // Simple resonator: y[n] = decay * (2*cos(omega)*y[n-1] - y[n-2]) + excite
             let omega = 2.0 * PI * inc;
@@ -944,8 +966,7 @@ impl TwistOsc {
 
             let s0 = self.particle_filters[i * 2 % 6];
             let s1 = self.particle_filters[(i * 2 + 1) % 6];
-            let filtered = (b0 * noise + b1 * s0 + b2 * s1) / a0
-                - (a1 * s0 + a2 * s1) / a0;
+            let filtered = (b0 * noise + b1 * s0 + b2 * s1) / a0 - (a1 * s0 + a2 * s1) / a0;
             self.particle_filters[(i * 2 + 1) % 6] = s0;
             self.particle_filters[i * 2 % 6] = filtered;
             out += filtered;
@@ -995,7 +1016,8 @@ impl TwistOsc {
         let b2 = b0;
         let a1 = -2.0 * c;
         let a2 = 1.0 - alpha;
-        let filtered = (b0 * metallic + b1 * self.hihat_noise_state + b2 * self.hihat_noise_state) / a0
+        let filtered = (b0 * metallic + b1 * self.hihat_noise_state + b2 * self.hihat_noise_state)
+            / a0
             - (a1 * self.hihat_noise_state + a2 * self.hihat_noise_state) / a0;
         self.hihat_noise_state = metallic;
 

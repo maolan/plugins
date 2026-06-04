@@ -212,16 +212,15 @@ impl GuiBridge {
                             EDITOR_WIDTH as f64,
                             EDITOR_HEIGHT as f64,
                         ),
-                        scale: maolan_baseview::iced::baseview::WindowScalePolicy::SystemScaleFactor,
+                        scale:
+                            maolan_baseview::iced::baseview::WindowScalePolicy::SystemScaleFactor,
                     },
                     ignore_non_modifier_keys: false,
                     always_redraw: true,
                 };
-                maolan_baseview::iced::shell::open_blocking(
-                    settings,
-                    notifier,
-                    move || build_app(shared),
-                );
+                maolan_baseview::iced::shell::open_blocking(settings, notifier, move || {
+                    build_app(shared)
+                });
                 open_flag.store(false, Ordering::Release);
             });
         }

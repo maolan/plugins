@@ -7,9 +7,9 @@ use super::filter::{Filter, FilterType};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CharacterType {
     Off = 0,
-    Warm = 1,   // gentle lowpass
-    Bright = 2, // gentle highpass
-    Dark = 3,   // steeper lowpass
+    Warm = 1,    // gentle lowpass
+    Bright = 2,  // gentle highpass
+    Dark = 3,    // steeper lowpass
     Neutral = 4, // flat / bypass
 }
 

@@ -9,32 +9,36 @@
 //! - Full modulation matrix with programmable routings
 //! - Noise generator, waveshaper, character filter
 
-mod character;
-mod envelope;
 mod engine;
-mod filter;
-mod lfo;
-mod noise;
-mod mts_esp;
 mod oscillator;
-mod tuning;
 mod twist;
 mod voice;
-mod waveshaper;
 
-pub use character::{CharacterFilter, CharacterType};
-pub use envelope::{AdsrEnvelope, AttackShape, DecayReleaseShape, EnvelopeMode, EnvelopeRetriggerMode};
-pub use engine::{StealMode, SynthEngine};
-pub use filter::{Filter, FilterSubtype, FilterType};
-pub use lfo::{Lfo, LfoShape, LfoSyncDivision, LfoSyncMode, LfoTriggerMode, MsegCurve, MsegLoopMode, MSEG_MAX_NODES, MSEG_MAX_SEGMENTS};
-pub use noise::{NoiseColorMode, NoiseGenerator, NoiseType};
-pub use tuning::Tuning;
-pub use mts_esp::MtsEspClient;
-pub use oscillator::{AliasWaveform, ClassicWaveform, ExciterType, Fm2FeedbackMode, Fm3FeedbackMode, ModernSubWaveform, OscType, Oscillator, SineShaperMode, WindowType};
+pub use crate::common::character::{CharacterFilter, CharacterType};
+pub use crate::common::envelope::{
+    AdsrEnvelope, AttackShape, DecayReleaseShape, EnvelopeMode, EnvelopeRetriggerMode,
+};
+pub use crate::common::filter::{Filter, FilterSubtype, FilterType};
+pub use crate::common::lfo::{
+    Lfo, LfoShape, LfoSyncDivision, LfoSyncMode, LfoTriggerMode, MSEG_MAX_NODES, MSEG_MAX_SEGMENTS,
+    MsegCurve, MsegLoopMode,
+};
+pub use crate::common::mts_esp::MtsEspClient;
+pub use crate::common::noise::{NoiseColorMode, NoiseGenerator, NoiseType};
+pub use crate::common::settings::{
+    EnvelopeSettings, FilterSettings, LfoSettings, WaveshaperSettings,
+};
+pub use crate::common::tuning::Tuning;
+pub use crate::common::voice::{PlayMode, PortamentoCurve, StealMode, VoicePriority};
+pub use crate::common::waveshaper::{Waveshape, Waveshaper};
+
+pub use engine::SynthEngine;
+pub use oscillator::{
+    AliasWaveform, ClassicWaveform, ExciterType, Fm2FeedbackMode, Fm3FeedbackMode,
+    ModernSubWaveform, OscType, Oscillator, SineShaperMode, WindowType,
+};
 pub use twist::{TwistModel, TwistOsc};
 pub use voice::{
-    CombinatorMode, EnvelopeSettings, FilterRouting, FilterSettings, LfoSettings, ModDepthCurve, ModRouting, ModSource, ModTarget,
-    ModValues, NoiseSettings, OscFmMode, OscPhaseMode, OscRoute, OscSettings, PlayMode, PortamentoCurve,
-    VoicePriority, WaveshaperSettings, Voice, VoiceParams,
+    CombinatorMode, FilterRouting, ModDepthCurve, ModRouting, ModSource, ModTarget, ModValues,
+    NoiseSettings, OscFmMode, OscPhaseMode, OscRoute, OscSettings, Voice, VoiceParams,
 };
-pub use waveshaper::{Waveshape, Waveshaper};

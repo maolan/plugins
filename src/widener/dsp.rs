@@ -429,12 +429,24 @@ impl Widener {
             let out_gain_db = Self::step_smoother(&mut self.smooth_output, self.smooth_coeff);
             let boost = Self::step_smoother(&mut self.smooth_boost, self.smooth_coeff);
 
-            let low_w =
-                strength_shaped_width_from_lut(low_gain * 2.0, strength, &self.low_lut_a, &self.low_lut_b);
-            let mid_w =
-                strength_shaped_width_from_lut(mid_gain * 2.0, strength, &self.mid_lut_a, &self.mid_lut_b);
-            let high_w =
-                strength_shaped_width_from_lut(high_gain * 2.0, strength, &self.high_lut_a, &self.high_lut_b);
+            let low_w = strength_shaped_width_from_lut(
+                low_gain * 2.0,
+                strength,
+                &self.low_lut_a,
+                &self.low_lut_b,
+            );
+            let mid_w = strength_shaped_width_from_lut(
+                mid_gain * 2.0,
+                strength,
+                &self.mid_lut_a,
+                &self.mid_lut_b,
+            );
+            let high_w = strength_shaped_width_from_lut(
+                high_gain * 2.0,
+                strength,
+                &self.high_lut_a,
+                &self.high_lut_b,
+            );
             let out_gain = 10.0_f64.powf(out_gain_db / 20.0);
             let delay_samples = (strength * self.sample_rate) / 1000.0;
 
@@ -459,12 +471,27 @@ impl Widener {
             let (high_w_l, high_w_r) = ms_width(high_l, high_r, high_w);
 
             // Bandwidth path: delay-based mid injection
-            let (low_delay_l, low_delay_r) =
-                bandwidth_shuffler(low_l, low_r, &mut self.delay_low, delay_samples, low_delay / 100.0);
-            let (mid_delay_l, mid_delay_r) =
-                bandwidth_shuffler(mid_l, mid_r, &mut self.delay_mid, delay_samples, mid_delay / 100.0);
-            let (high_delay_l, high_delay_r) =
-                bandwidth_shuffler(high_l, high_r, &mut self.delay_high, delay_samples, high_delay / 100.0);
+            let (low_delay_l, low_delay_r) = bandwidth_shuffler(
+                low_l,
+                low_r,
+                &mut self.delay_low,
+                delay_samples,
+                low_delay / 100.0,
+            );
+            let (mid_delay_l, mid_delay_r) = bandwidth_shuffler(
+                mid_l,
+                mid_r,
+                &mut self.delay_mid,
+                delay_samples,
+                mid_delay / 100.0,
+            );
+            let (high_delay_l, high_delay_r) = bandwidth_shuffler(
+                high_l,
+                high_r,
+                &mut self.delay_high,
+                delay_samples,
+                high_delay / 100.0,
+            );
 
             // Blend dry + widener delta + bandwidth delta
             let low_gain_a = low_gain / 100.0;
@@ -474,12 +501,18 @@ impl Widener {
             let mid_delay_a = mid_delay / 100.0;
             let high_delay_a = high_delay / 100.0;
 
-            let mut low_l = low_l + (low_w_l - low_l) * low_gain_a + (low_delay_l - low_l) * low_delay_a;
-            let mut low_r = low_r + (low_w_r - low_r) * low_gain_a + (low_delay_r - low_r) * low_delay_a;
-            let mut mid_l = mid_l + (mid_w_l - mid_l) * mid_gain_a + (mid_delay_l - mid_l) * mid_delay_a;
-            let mut mid_r = mid_r + (mid_w_r - mid_r) * mid_gain_a + (mid_delay_r - mid_r) * mid_delay_a;
-            let mut high_l = high_l + (high_w_l - high_l) * high_gain_a + (high_delay_l - high_l) * high_delay_a;
-            let mut high_r = high_r + (high_w_r - high_r) * high_gain_a + (high_delay_r - high_r) * high_delay_a;
+            let mut low_l =
+                low_l + (low_w_l - low_l) * low_gain_a + (low_delay_l - low_l) * low_delay_a;
+            let mut low_r =
+                low_r + (low_w_r - low_r) * low_gain_a + (low_delay_r - low_r) * low_delay_a;
+            let mut mid_l =
+                mid_l + (mid_w_l - mid_l) * mid_gain_a + (mid_delay_l - mid_l) * mid_delay_a;
+            let mut mid_r =
+                mid_r + (mid_w_r - mid_r) * mid_gain_a + (mid_delay_r - mid_r) * mid_delay_a;
+            let mut high_l =
+                high_l + (high_w_l - high_l) * high_gain_a + (high_delay_l - high_l) * high_delay_a;
+            let mut high_r =
+                high_r + (high_w_r - high_r) * high_gain_a + (high_delay_r - high_r) * high_delay_a;
 
             if any_solo {
                 if !params.solo_low {

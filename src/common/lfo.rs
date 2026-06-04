@@ -72,23 +72,23 @@ impl LfoSyncMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LfoSyncDivision {
-    One1 = 0,     // 1/1
-    One2 = 1,     // 1/2
-    One4 = 2,     // 1/4
-    One8 = 3,     // 1/8
-    One16 = 4,    // 1/16
-    One32 = 5,    // 1/32
-    One64 = 6,    // 1/64
-    One1d = 7,    // 1/1 dotted
-    One2d = 8,    // 1/2 dotted
-    One4d = 9,    // 1/4 dotted
-    One8d = 10,   // 1/8 dotted
-    One16d = 11,  // 1/16 dotted
-    One1t = 12,   // 1/1 triplet
-    One2t = 13,   // 1/2 triplet
-    One4t = 14,   // 1/4 triplet
-    One8t = 15,   // 1/8 triplet
-    One16t = 16,  // 1/16 triplet
+    One1 = 0,    // 1/1
+    One2 = 1,    // 1/2
+    One4 = 2,    // 1/4
+    One8 = 3,    // 1/8
+    One16 = 4,   // 1/16
+    One32 = 5,   // 1/32
+    One64 = 6,   // 1/64
+    One1d = 7,   // 1/1 dotted
+    One2d = 8,   // 1/2 dotted
+    One4d = 9,   // 1/4 dotted
+    One8d = 10,  // 1/8 dotted
+    One16d = 11, // 1/16 dotted
+    One1t = 12,  // 1/1 triplet
+    One2t = 13,  // 1/2 triplet
+    One4t = 14,  // 1/4 triplet
+    One8t = 15,  // 1/8 triplet
+    One16t = 16, // 1/16 triplet
 }
 
 impl LfoSyncDivision {
@@ -318,7 +318,13 @@ impl MsegCurve {
                 let n2 = ((t * 11.1).sin() * (t * 17.3).cos()).abs();
                 t * (1.0 - n1) + n2 * 0.3
             }
-            MsegCurve::SquareWave => if t < 0.5 { 0.0 } else { 1.0 },
+            MsegCurve::SquareWave => {
+                if t < 0.5 {
+                    0.0
+                } else {
+                    1.0
+                }
+            }
             MsegCurve::TriangleWave => 1.0 - (2.0 * t - 1.0).abs(),
             MsegCurve::SawtoothWave => t,
             MsegCurve::Bump => (-((t - 0.5) * 4.0).powi(2)).exp(),
@@ -576,7 +582,15 @@ impl Lfo {
         self.song_pos_beats = pos;
     }
 
-    pub fn set_env_params(&mut self, delay: f32, attack: f32, hold: f32, decay: f32, sustain: f32, release: f32) {
+    pub fn set_env_params(
+        &mut self,
+        delay: f32,
+        attack: f32,
+        hold: f32,
+        decay: f32,
+        sustain: f32,
+        release: f32,
+    ) {
         self.env_delay = delay.max(0.0);
         self.env_attack = attack.max(0.0);
         self.env_hold = hold.max(0.0);
@@ -614,6 +628,12 @@ impl Lfo {
         }
     }
 
+    /// Current LFO value without advancing.
+    pub fn value(&self) -> f32 {
+        self.last_value
+    }
+
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> f32 {
         let phase_inc = self.rate_hz / self.sample_rate;
         // Host-synced FreeRun: derive phase from transport when in FreeRun + Tempo
@@ -631,7 +651,11 @@ impl Lfo {
         }
 
         let effective_phase = (self.phase + self.phase_offset).fract();
-        let effective_phase = if effective_phase < 0.0 { effective_phase + 1.0 } else { effective_phase };
+        let effective_phase = if effective_phase < 0.0 {
+            effective_phase + 1.0
+        } else {
+            effective_phase
+        };
 
         let raw = match self.shape {
             LfoShape::Sine => {
@@ -646,7 +670,7 @@ impl Lfo {
                         }
                         2 => {
                             // Offset sinusoidal
-                            v = v * (1.0 + d * (angle * 2.0).cos());
+                            v *= 1.0 + d * (angle * 2.0).cos();
                         }
                         _ => {
                             // Quadratic warping
@@ -785,11 +809,7 @@ impl Lfo {
                         _ => {
                             // Power function warp
                             let exp = 1.0 + deform * 2.0;
-                            if exp > 0.0 {
-                                env.powf(exp)
-                            } else {
-                                env
-                            }
+                            if exp > 0.0 { env.powf(exp) } else { env }
                         }
                     }
                 } else {

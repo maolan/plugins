@@ -12,12 +12,11 @@ use clap_clap::{
     events::{InputEvents, OutputEvents},
     ffi::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI,
-        CLAP_EVENT_NOTE_EXPRESSION, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON,
-        CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI, CLAP_EXT_NOTE_PORTS, CLAP_EXT_PARAMS,
-        CLAP_EXT_STATE, CLAP_EXT_TAIL, CLAP_INVALID_ID, CLAP_NOTE_DIALECT_MIDI,
-        CLAP_NOTE_EXPRESSION_PRESSURE, CLAP_NOTE_EXPRESSION_TUNING, CLAP_NOTE_EXPRESSION_BRIGHTNESS,
-        CLAP_NOTE_EXPRESSION_VOLUME, CLAP_NOTE_EXPRESSION_PAN,
-        CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_MONO,
+        CLAP_EVENT_NOTE_EXPRESSION, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EXT_AUDIO_PORTS,
+        CLAP_EXT_GUI, CLAP_EXT_NOTE_PORTS, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL,
+        CLAP_INVALID_ID, CLAP_NOTE_DIALECT_MIDI, CLAP_NOTE_EXPRESSION_BRIGHTNESS,
+        CLAP_NOTE_EXPRESSION_PAN, CLAP_NOTE_EXPRESSION_PRESSURE, CLAP_NOTE_EXPRESSION_TUNING,
+        CLAP_NOTE_EXPRESSION_VOLUME, CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_MONO,
         CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION,
         CLAP_WINDOW_API_COCOA, CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info,
         clap_gui_resize_hints, clap_host, clap_host_gui, clap_host_params, clap_host_state,
@@ -38,10 +37,10 @@ use crate::common::{bus, fft};
 use crate::synth::{
     dsp::{
         CharacterType, EnvelopeMode, FilterRouting, FilterSettings, FilterSubtype, FilterType,
-        LfoSettings, LfoSyncDivision, LfoSyncMode, MsegCurve, MSEG_MAX_NODES, MSEG_MAX_SEGMENTS,
-        MtsEspClient, ModRouting, ModSource, ModTarget, NoiseSettings,
-        NoiseType, OscFmMode, OscPhaseMode, OscSettings, OscType, PlayMode, PortamentoCurve,
-        StealMode, SynthEngine, Tuning, VoiceParams, VoicePriority, WaveshaperSettings, Waveshape,
+        LfoSettings, LfoSyncDivision, LfoSyncMode, MSEG_MAX_NODES, MSEG_MAX_SEGMENTS, ModRouting,
+        ModSource, ModTarget, MsegCurve, MtsEspClient, NoiseSettings, NoiseType, OscFmMode,
+        OscPhaseMode, OscSettings, OscType, PlayMode, PortamentoCurve, StealMode, SynthEngine,
+        Tuning, VoiceParams, VoicePriority, Waveshape, WaveshaperSettings,
     },
     gui::GuiBridge,
     params::{PARAMS, ParamId, ParamStore, sanitize_param_value},
@@ -283,22 +282,85 @@ impl SharedStateExt<ParamId> for SharedState {
 // ---------------------------------------------------------------------------
 
 fn build_voice_params(params: &ParamStore) -> VoiceParams {
-    use crate::synth::dsp::{AttackShape, CombinatorMode, DecayReleaseShape, EnvelopeSettings, EnvelopeRetriggerMode, ModDepthCurve, MsegLoopMode, OscRoute};
+    use crate::synth::dsp::{
+        AttackShape, CombinatorMode, DecayReleaseShape, EnvelopeRetriggerMode, EnvelopeSettings,
+        ModDepthCurve, MsegLoopMode, OscRoute,
+    };
 
     let mut modulations = [ModRouting::default(); 12];
     let mod_route_params = [
-        (ParamId::ModRoute1Source, ParamId::ModRoute1Target, ParamId::ModRoute1Depth, ParamId::ModRoute1Curve),
-        (ParamId::ModRoute2Source, ParamId::ModRoute2Target, ParamId::ModRoute2Depth, ParamId::ModRoute2Curve),
-        (ParamId::ModRoute3Source, ParamId::ModRoute3Target, ParamId::ModRoute3Depth, ParamId::ModRoute3Curve),
-        (ParamId::ModRoute4Source, ParamId::ModRoute4Target, ParamId::ModRoute4Depth, ParamId::ModRoute4Curve),
-        (ParamId::ModRoute5Source, ParamId::ModRoute5Target, ParamId::ModRoute5Depth, ParamId::ModRoute5Curve),
-        (ParamId::ModRoute6Source, ParamId::ModRoute6Target, ParamId::ModRoute6Depth, ParamId::ModRoute6Curve),
-        (ParamId::ModRoute7Source, ParamId::ModRoute7Target, ParamId::ModRoute7Depth, ParamId::ModRoute7Curve),
-        (ParamId::ModRoute8Source, ParamId::ModRoute8Target, ParamId::ModRoute8Depth, ParamId::ModRoute8Curve),
-        (ParamId::ModRoute9Source, ParamId::ModRoute9Target, ParamId::ModRoute9Depth, ParamId::ModRoute9Curve),
-        (ParamId::ModRoute10Source, ParamId::ModRoute10Target, ParamId::ModRoute10Depth, ParamId::ModRoute10Curve),
-        (ParamId::ModRoute11Source, ParamId::ModRoute11Target, ParamId::ModRoute11Depth, ParamId::ModRoute11Curve),
-        (ParamId::ModRoute12Source, ParamId::ModRoute12Target, ParamId::ModRoute12Depth, ParamId::ModRoute12Curve),
+        (
+            ParamId::ModRoute1Source,
+            ParamId::ModRoute1Target,
+            ParamId::ModRoute1Depth,
+            ParamId::ModRoute1Curve,
+        ),
+        (
+            ParamId::ModRoute2Source,
+            ParamId::ModRoute2Target,
+            ParamId::ModRoute2Depth,
+            ParamId::ModRoute2Curve,
+        ),
+        (
+            ParamId::ModRoute3Source,
+            ParamId::ModRoute3Target,
+            ParamId::ModRoute3Depth,
+            ParamId::ModRoute3Curve,
+        ),
+        (
+            ParamId::ModRoute4Source,
+            ParamId::ModRoute4Target,
+            ParamId::ModRoute4Depth,
+            ParamId::ModRoute4Curve,
+        ),
+        (
+            ParamId::ModRoute5Source,
+            ParamId::ModRoute5Target,
+            ParamId::ModRoute5Depth,
+            ParamId::ModRoute5Curve,
+        ),
+        (
+            ParamId::ModRoute6Source,
+            ParamId::ModRoute6Target,
+            ParamId::ModRoute6Depth,
+            ParamId::ModRoute6Curve,
+        ),
+        (
+            ParamId::ModRoute7Source,
+            ParamId::ModRoute7Target,
+            ParamId::ModRoute7Depth,
+            ParamId::ModRoute7Curve,
+        ),
+        (
+            ParamId::ModRoute8Source,
+            ParamId::ModRoute8Target,
+            ParamId::ModRoute8Depth,
+            ParamId::ModRoute8Curve,
+        ),
+        (
+            ParamId::ModRoute9Source,
+            ParamId::ModRoute9Target,
+            ParamId::ModRoute9Depth,
+            ParamId::ModRoute9Curve,
+        ),
+        (
+            ParamId::ModRoute10Source,
+            ParamId::ModRoute10Target,
+            ParamId::ModRoute10Depth,
+            ParamId::ModRoute10Curve,
+        ),
+        (
+            ParamId::ModRoute11Source,
+            ParamId::ModRoute11Target,
+            ParamId::ModRoute11Depth,
+            ParamId::ModRoute11Curve,
+        ),
+        (
+            ParamId::ModRoute12Source,
+            ParamId::ModRoute12Target,
+            ParamId::ModRoute12Depth,
+            ParamId::ModRoute12Curve,
+        ),
     ];
 
     for (idx, (src_id, tgt_id, depth_id, curve_id)) in mod_route_params.iter().enumerate() {
@@ -319,10 +381,22 @@ fn build_voice_params(params: &ParamStore) -> VoiceParams {
 
     let mut step_seq = [0.0f32; 16];
     let step_params = [
-        ParamId::StepSeq1, ParamId::StepSeq2, ParamId::StepSeq3, ParamId::StepSeq4,
-        ParamId::StepSeq5, ParamId::StepSeq6, ParamId::StepSeq7, ParamId::StepSeq8,
-        ParamId::StepSeq9, ParamId::StepSeq10, ParamId::StepSeq11, ParamId::StepSeq12,
-        ParamId::StepSeq13, ParamId::StepSeq14, ParamId::StepSeq15, ParamId::StepSeq16,
+        ParamId::StepSeq1,
+        ParamId::StepSeq2,
+        ParamId::StepSeq3,
+        ParamId::StepSeq4,
+        ParamId::StepSeq5,
+        ParamId::StepSeq6,
+        ParamId::StepSeq7,
+        ParamId::StepSeq8,
+        ParamId::StepSeq9,
+        ParamId::StepSeq10,
+        ParamId::StepSeq11,
+        ParamId::StepSeq12,
+        ParamId::StepSeq13,
+        ParamId::StepSeq14,
+        ParamId::StepSeq15,
+        ParamId::StepSeq16,
     ];
     for (i, pid) in step_params.iter().enumerate() {
         step_seq[i] = params.get(*pid) as f32;
@@ -600,15 +674,27 @@ fn build_voice_params(params: &ParamStore) -> VoiceParams {
     // Per-envelope curve shapes: 0=use global, 1-3=actual shape (mapped to 0-2)
     let eg_attack = |per: ParamId| {
         let v = params.get(per) as u8;
-        if v == 0 { params.get(ParamId::EgAttackCurve) as u8 } else { v.saturating_sub(1) }
+        if v == 0 {
+            params.get(ParamId::EgAttackCurve) as u8
+        } else {
+            v.saturating_sub(1)
+        }
     };
     let eg_decay = |per: ParamId| {
         let v = params.get(per) as u8;
-        if v == 0 { params.get(ParamId::EgDecayCurve) as u8 } else { v.saturating_sub(1) }
+        if v == 0 {
+            params.get(ParamId::EgDecayCurve) as u8
+        } else {
+            v.saturating_sub(1)
+        }
     };
     let eg_release = |per: ParamId| {
         let v = params.get(per) as u8;
-        if v == 0 { params.get(ParamId::EgReleaseCurve) as u8 } else { v.saturating_sub(1) }
+        if v == 0 {
+            params.get(ParamId::EgReleaseCurve) as u8
+        } else {
+            v.saturating_sub(1)
+        }
     };
 
     VoiceParams {
@@ -849,7 +935,9 @@ fn build_voice_params(params: &ParamStore) -> VoiceParams {
             attack_shape: AttackShape::from_u8(eg_attack(ParamId::AmpEgAttackCurve)),
             decay_shape: DecayReleaseShape::from_u8(eg_decay(ParamId::AmpEgDecayCurve)),
             release_shape: DecayReleaseShape::from_u8(eg_release(ParamId::AmpEgReleaseCurve)),
-            retrigger_mode: EnvelopeRetriggerMode::from_u8(params.get(ParamId::AmpEgRetrigger) as u8),
+            retrigger_mode: EnvelopeRetriggerMode::from_u8(
+                params.get(ParamId::AmpEgRetrigger) as u8
+            ),
             tempo_sync: params.get_bool(ParamId::AmpEgTempoSync),
             uber_release: params.get(ParamId::AmpEgUberRelease) as f32,
             gated_release: params.get_bool(ParamId::AmpEgGatedRelease),
@@ -868,7 +956,9 @@ fn build_voice_params(params: &ParamStore) -> VoiceParams {
             attack_shape: AttackShape::from_u8(eg_attack(ParamId::FilterEgAttackCurve)),
             decay_shape: DecayReleaseShape::from_u8(eg_decay(ParamId::FilterEgDecayCurve)),
             release_shape: DecayReleaseShape::from_u8(eg_release(ParamId::FilterEgReleaseCurve)),
-            retrigger_mode: EnvelopeRetriggerMode::from_u8(params.get(ParamId::FilterEgRetrigger) as u8),
+            retrigger_mode: EnvelopeRetriggerMode::from_u8(
+                params.get(ParamId::FilterEgRetrigger) as u8
+            ),
             tempo_sync: params.get_bool(ParamId::FilterEgTempoSync),
             uber_release: params.get(ParamId::FilterEgUberRelease) as f32,
             gated_release: params.get_bool(ParamId::FilterEgGatedRelease),
@@ -887,7 +977,9 @@ fn build_voice_params(params: &ParamStore) -> VoiceParams {
             attack_shape: AttackShape::from_u8(eg_attack(ParamId::PitchEgAttackCurve)),
             decay_shape: DecayReleaseShape::from_u8(eg_decay(ParamId::PitchEgDecayCurve)),
             release_shape: DecayReleaseShape::from_u8(eg_release(ParamId::PitchEgReleaseCurve)),
-            retrigger_mode: EnvelopeRetriggerMode::from_u8(params.get(ParamId::PitchEgRetrigger) as u8),
+            retrigger_mode: EnvelopeRetriggerMode::from_u8(
+                params.get(ParamId::PitchEgRetrigger) as u8
+            ),
             tempo_sync: params.get_bool(ParamId::PitchEgTempoSync),
             uber_release: params.get(ParamId::PitchEgUberRelease) as f32,
             gated_release: params.get_bool(ParamId::PitchEgGatedRelease),
@@ -902,7 +994,9 @@ fn build_voice_params(params: &ParamStore) -> VoiceParams {
             enabled: true,
             sync_mode: LfoSyncMode::from_u8(params.get(ParamId::Lfo1SyncMode) as u8),
             sync_division: LfoSyncDivision::from_u8(params.get(ParamId::Lfo1SyncDiv) as u8),
-            trigger_mode: super::dsp::LfoTriggerMode::from_u8(params.get(ParamId::Lfo1Trigger) as u8),
+            trigger_mode: super::dsp::LfoTriggerMode::from_u8(
+                params.get(ParamId::Lfo1Trigger) as u8
+            ),
             env_delay: params.get(ParamId::Lfo1EnvDelay) as f32,
             env_attack: params.get(ParamId::Lfo1EnvAttack) as f32,
             env_hold: params.get(ParamId::Lfo1EnvHold) as f32,
@@ -922,7 +1016,9 @@ fn build_voice_params(params: &ParamStore) -> VoiceParams {
             enabled: true,
             sync_mode: LfoSyncMode::from_u8(params.get(ParamId::Lfo2SyncMode) as u8),
             sync_division: LfoSyncDivision::from_u8(params.get(ParamId::Lfo2SyncDiv) as u8),
-            trigger_mode: super::dsp::LfoTriggerMode::from_u8(params.get(ParamId::Lfo2Trigger) as u8),
+            trigger_mode: super::dsp::LfoTriggerMode::from_u8(
+                params.get(ParamId::Lfo2Trigger) as u8
+            ),
             env_delay: params.get(ParamId::Lfo2EnvDelay) as f32,
             env_attack: params.get(ParamId::Lfo2EnvAttack) as f32,
             env_hold: params.get(ParamId::Lfo2EnvHold) as f32,
@@ -942,7 +1038,9 @@ fn build_voice_params(params: &ParamStore) -> VoiceParams {
             enabled: true,
             sync_mode: LfoSyncMode::from_u8(params.get(ParamId::Lfo3SyncMode) as u8),
             sync_division: LfoSyncDivision::from_u8(params.get(ParamId::Lfo3SyncDiv) as u8),
-            trigger_mode: super::dsp::LfoTriggerMode::from_u8(params.get(ParamId::Lfo3Trigger) as u8),
+            trigger_mode: super::dsp::LfoTriggerMode::from_u8(
+                params.get(ParamId::Lfo3Trigger) as u8
+            ),
             env_delay: params.get(ParamId::Lfo3EnvDelay) as f32,
             env_attack: params.get(ParamId::Lfo3EnvAttack) as f32,
             env_hold: params.get(ParamId::Lfo3EnvHold) as f32,
@@ -962,7 +1060,9 @@ fn build_voice_params(params: &ParamStore) -> VoiceParams {
             enabled: true,
             sync_mode: LfoSyncMode::from_u8(params.get(ParamId::Lfo4SyncMode) as u8),
             sync_division: LfoSyncDivision::from_u8(params.get(ParamId::Lfo4SyncDiv) as u8),
-            trigger_mode: super::dsp::LfoTriggerMode::from_u8(params.get(ParamId::Lfo4Trigger) as u8),
+            trigger_mode: super::dsp::LfoTriggerMode::from_u8(
+                params.get(ParamId::Lfo4Trigger) as u8
+            ),
             env_delay: params.get(ParamId::Lfo4EnvDelay) as f32,
             env_attack: params.get(ParamId::Lfo4EnvAttack) as f32,
             env_hold: params.get(ParamId::Lfo4EnvHold) as f32,
@@ -982,7 +1082,9 @@ fn build_voice_params(params: &ParamStore) -> VoiceParams {
             enabled: true,
             sync_mode: LfoSyncMode::from_u8(params.get(ParamId::Lfo5SyncMode) as u8),
             sync_division: LfoSyncDivision::from_u8(params.get(ParamId::Lfo5SyncDiv) as u8),
-            trigger_mode: super::dsp::LfoTriggerMode::from_u8(params.get(ParamId::Lfo5Trigger) as u8),
+            trigger_mode: super::dsp::LfoTriggerMode::from_u8(
+                params.get(ParamId::Lfo5Trigger) as u8
+            ),
             env_delay: params.get(ParamId::Lfo5EnvDelay) as f32,
             env_attack: params.get(ParamId::Lfo5EnvAttack) as f32,
             env_hold: params.get(ParamId::Lfo5EnvHold) as f32,
@@ -1002,7 +1104,9 @@ fn build_voice_params(params: &ParamStore) -> VoiceParams {
             enabled: true,
             sync_mode: LfoSyncMode::from_u8(params.get(ParamId::Lfo6SyncMode) as u8),
             sync_division: LfoSyncDivision::from_u8(params.get(ParamId::Lfo6SyncDiv) as u8),
-            trigger_mode: super::dsp::LfoTriggerMode::from_u8(params.get(ParamId::Lfo6Trigger) as u8),
+            trigger_mode: super::dsp::LfoTriggerMode::from_u8(
+                params.get(ParamId::Lfo6Trigger) as u8
+            ),
             env_delay: params.get(ParamId::Lfo6EnvDelay) as f32,
             env_attack: params.get(ParamId::Lfo6EnvAttack) as f32,
             env_hold: params.get(ParamId::Lfo6EnvHold) as f32,
@@ -1283,13 +1387,13 @@ impl AudioProcessor {
         let mut files = Vec::new();
         if let Some(config_dir) = dirs::config_dir() {
             let scales_dir = config_dir.join("maolan").join("scales");
-            if scales_dir.is_dir() {
-                if let Ok(entries) = std::fs::read_dir(&scales_dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.extension().and_then(|s| s.to_str()) == Some("scl") {
-                            files.push(path);
-                        }
+            if scales_dir.is_dir()
+                && let Ok(entries) = std::fs::read_dir(&scales_dir)
+            {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|s| s.to_str()) == Some("scl") {
+                        files.push(path);
                     }
                 }
             }
@@ -1304,12 +1408,11 @@ impl AudioProcessor {
         if idx >= self.scl_files.len() {
             return None;
         }
-        if self.scl_cache[idx].is_none() {
-            if let Ok(content) = std::fs::read_to_string(&self.scl_files[idx]) {
-                if let Ok(tuning) = Tuning::from_scl(&content) {
-                    self.scl_cache[idx] = Some(tuning);
-                }
-            }
+        if self.scl_cache[idx].is_none()
+            && let Ok(content) = std::fs::read_to_string(&self.scl_files[idx])
+            && let Ok(tuning) = Tuning::from_scl(&content)
+        {
+            self.scl_cache[idx] = Some(tuning);
         }
         self.scl_cache[idx].clone()
     }
@@ -1334,16 +1437,16 @@ impl AudioProcessor {
         if scl_index != self.last_scl_index {
             self.last_scl_index = scl_index;
         }
-        if scl_index > 0 {
-            if let Some(tuning) = self.get_scl_tuning(scl_index) {
-                params.tuning_override = Some(tuning);
-            }
+        if scl_index > 0
+            && let Some(tuning) = self.get_scl_tuning(scl_index)
+        {
+            params.tuning_override = Some(tuning);
         }
 
         let _polyphony = params.oscs.len(); // Actually polyphony count from param
         let polyphony = shared.params.get(ParamId::Polyphony) as usize;
         if polyphony != self.last_polyphony {
-            self.engine.set_max_voices(polyphony.max(1).min(32));
+            self.engine.set_max_voices(polyphony.clamp(1, 32));
             self.last_polyphony = polyphony;
         }
         let steal_mode = shared.params.get(ParamId::StealMode) as u8;
@@ -1360,7 +1463,8 @@ impl AudioProcessor {
             if tempo > 0.0 {
                 self.engine.set_tempo(tempo);
             }
-            self.engine.set_song_pos_beats(transport.song_pos_beats().0 as f64 / (1i64 << 31) as f64);
+            self.engine
+                .set_song_pos_beats(transport.song_pos_beats().0 as f64 / (1i64 << 31) as f64);
         }
 
         // Handle note events
@@ -1389,22 +1493,22 @@ impl AudioProcessor {
                     }
                 }
                 CLAP_EVENT_NOTE_EXPRESSION => {
-                    if self.engine.params.mpe_enabled {
-                        if let Ok(expr) = header.note_expression() {
-                            let key = expr.key() as u8;
-                            let value = expr.value() as f32;
-                            let expr_id = expr.expression_id() as u32;
-                            if expr_id == CLAP_NOTE_EXPRESSION_PRESSURE as u32 {
-                                self.engine.set_note_pressure(key, value);
-                            } else if expr_id == CLAP_NOTE_EXPRESSION_TUNING as u32 {
-                                self.engine.set_note_tuning(key, value * 100.0);
-                            } else if expr_id == CLAP_NOTE_EXPRESSION_BRIGHTNESS as u32 {
-                                self.engine.set_note_timbre(key, value);
-                            } else if expr_id == CLAP_NOTE_EXPRESSION_VOLUME as u32 {
-                                self.engine.set_note_volume(key, value);
-                            } else if expr_id == CLAP_NOTE_EXPRESSION_PAN as u32 {
-                                self.engine.set_note_pan(key, value * 2.0 - 1.0);
-                            }
+                    if self.engine.params.mpe_enabled
+                        && let Ok(expr) = header.note_expression()
+                    {
+                        let key = expr.key() as u8;
+                        let value = expr.value() as f32;
+                        let expr_id = expr.expression_id() as u32;
+                        if expr_id == CLAP_NOTE_EXPRESSION_PRESSURE as u32 {
+                            self.engine.set_note_pressure(key, value);
+                        } else if expr_id == CLAP_NOTE_EXPRESSION_TUNING as u32 {
+                            self.engine.set_note_tuning(key, value * 100.0);
+                        } else if expr_id == CLAP_NOTE_EXPRESSION_BRIGHTNESS as u32 {
+                            self.engine.set_note_timbre(key, value);
+                        } else if expr_id == CLAP_NOTE_EXPRESSION_VOLUME as u32 {
+                            self.engine.set_note_volume(key, value);
+                        } else if expr_id == CLAP_NOTE_EXPRESSION_PAN as u32 {
+                            self.engine.set_note_pan(key, value * 2.0 - 1.0);
                         }
                     }
                 }
@@ -1469,7 +1573,12 @@ impl AudioProcessor {
             (None, None)
         };
 
-        self.engine.process_block(&mut self.temp_l[..frames], &mut self.temp_r[..frames], audio_in_l, audio_in_r);
+        self.engine.process_block(
+            &mut self.temp_l[..frames],
+            &mut self.temp_r[..frames],
+            audio_in_l,
+            audio_in_r,
+        );
 
         // Write to output
         let outputs_count = process.audio_outputs_count();
@@ -1687,13 +1796,9 @@ unsafe extern "C-unwind" fn plugin_on_main_thread(_plugin: *const clap_plugin) {
 
 unsafe extern "C-unwind" fn ext_audio_ports_count(
     _plugin: *const clap_plugin,
-    is_input: bool,
+    _is_input: bool,
 ) -> u32 {
-    if is_input {
-        1
-    } else {
-        1
-    }
+    1
 }
 
 unsafe extern "C-unwind" fn ext_audio_ports_get(
@@ -1741,11 +1846,7 @@ unsafe extern "C-unwind" fn ext_note_ports_count(
     _plugin: *const clap_plugin,
     is_input: bool,
 ) -> u32 {
-    if is_input {
-        1
-    } else {
-        0
-    }
+    if is_input { 1 } else { 0 }
 }
 
 unsafe extern "C-unwind" fn ext_note_ports_get(
@@ -1830,7 +1931,12 @@ unsafe extern "C-unwind" fn ext_params_value_to_text(
     let cap = out_buffer_capacity as usize;
     unsafe {
         std::ptr::write_bytes(out_buffer, 0, cap);
-        for (index, byte) in bytes.iter().copied().take(cap.saturating_sub(1)).enumerate() {
+        for (index, byte) in bytes
+            .iter()
+            .copied()
+            .take(cap.saturating_sub(1))
+            .enumerate()
+        {
             *out_buffer.add(index) = byte as c_char;
         }
     }

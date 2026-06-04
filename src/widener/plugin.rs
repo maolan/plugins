@@ -485,7 +485,12 @@ fn param_text(id: ParamId, value: f64) -> String {
         ParamId::OutputGain => format!("{value:.1} dB"),
         ParamId::Boost => format!("{value:.2}x"),
         ParamId::X1 | ParamId::X2 => format!("{value:.0} Hz"),
-        ParamId::LowGain | ParamId::MidGain | ParamId::HighGain | ParamId::LowDelay | ParamId::MidDelay | ParamId::HighDelay => format!("{value:.0} %"),
+        ParamId::LowGain
+        | ParamId::MidGain
+        | ParamId::HighGain
+        | ParamId::LowDelay
+        | ParamId::MidDelay
+        | ParamId::HighDelay => format!("{value:.0} %"),
         ParamId::Strength => format!("{value:.1} ms"),
     }
 }
@@ -507,7 +512,12 @@ fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
         ParamId::OutputGain => t.trim_end_matches("db").trim().parse::<f64>().ok(),
         ParamId::Boost => t.trim_end_matches('x').trim().parse::<f64>().ok(),
         ParamId::X1 | ParamId::X2 => t.trim_end_matches("hz").trim().parse::<f64>().ok(),
-        ParamId::LowGain | ParamId::MidGain | ParamId::HighGain | ParamId::LowDelay | ParamId::MidDelay | ParamId::HighDelay => {
+        ParamId::LowGain
+        | ParamId::MidGain
+        | ParamId::HighGain
+        | ParamId::LowDelay
+        | ParamId::MidDelay
+        | ParamId::HighDelay => {
             if t.ends_with('%') {
                 let v = t.trim_end_matches('%').trim().parse::<f64>().ok()?;
                 Some(v)

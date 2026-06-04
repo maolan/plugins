@@ -5,26 +5,9 @@
 //! Manages voice allocation, stealing, and mixing.
 //! Supports polyphonic, monophonic, legato, and latch modes.
 
-use super::{Lfo, MtsEspClient, PlayMode, Voice, VoiceParams, VoicePriority};
-use std::sync::Arc;
+use super::{Lfo, MtsEspClient, PlayMode, StealMode, Voice, VoiceParams, VoicePriority};
 use parking_lot::Mutex;
-
-
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StealMode {
-    Oldest = 0,
-    ReleasedFirst = 1,
-}
-
-impl StealMode {
-    pub fn from_u8(v: u8) -> Self {
-        match v {
-            0 => StealMode::Oldest,
-            _ => StealMode::ReleasedFirst,
-        }
-    }
-}
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct SynthEngine {
@@ -262,14 +245,14 @@ impl SynthEngine {
                 // In latch mode, note off only releases if no notes held
                 if self.held_notes.is_empty() && !sustain_active {
                     self.release_mono(note, false, velocity, false);
-                } else if sustain_active {
-                    if !self.sustained_notes.contains(&note) {
-                        self.sustained_notes.push(note);
-                    }
+                } else if sustain_active && !self.sustained_notes.contains(&note) {
+                    self.sustained_notes.push(note);
                 }
             }
             PlayMode::MonoST => self.release_mono_single_trigger(note, velocity, sustain_active),
-            PlayMode::MonoFP => self.release_mono_fingered_portamento(note, velocity, sustain_active),
+            PlayMode::MonoFP => {
+                self.release_mono_fingered_portamento(note, velocity, sustain_active)
+            }
         }
     }
 
@@ -410,8 +393,12 @@ impl SynthEngine {
             VoicePriority::Last => self.held_notes.last().copied().unwrap_or(self.last_note),
             VoicePriority::High => *self.held_notes.iter().max().unwrap_or(&self.last_note),
             VoicePriority::Low => *self.held_notes.iter().min().unwrap_or(&self.last_note),
-            VoicePriority::AlwaysLatest => self.held_notes.last().copied().unwrap_or(self.last_note),
-            VoicePriority::AlwaysHighest => *self.held_notes.iter().max().unwrap_or(&self.last_note),
+            VoicePriority::AlwaysLatest => {
+                self.held_notes.last().copied().unwrap_or(self.last_note)
+            }
+            VoicePriority::AlwaysHighest => {
+                *self.held_notes.iter().max().unwrap_or(&self.last_note)
+            }
             VoicePriority::AlwaysLowest => *self.held_notes.iter().min().unwrap_or(&self.last_note),
             VoicePriority::NoteOnLatestRetriggerHighest => {
                 *self.held_notes.iter().max().unwrap_or(&self.last_note)
@@ -543,7 +530,13 @@ impl SynthEngine {
         }
     }
 
-    pub fn process_block(&mut self, out_l: &mut [f32], out_r: &mut [f32], audio_in_l: Option<&[f32]>, audio_in_r: Option<&[f32]>) {
+    pub fn process_block(
+        &mut self,
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+        audio_in_l: Option<&[f32]>,
+        audio_in_r: Option<&[f32]>,
+    ) {
         let frames = out_l.len().min(out_r.len());
         if frames == 0 {
             return;
@@ -566,7 +559,9 @@ impl SynthEngine {
         ];
 
         // Compute key-based modulation sources from held/sustained notes
-        let all_notes: Vec<u8> = self.held_notes.iter()
+        let all_notes: Vec<u8> = self
+            .held_notes
+            .iter()
             .chain(self.sustained_notes.iter())
             .copied()
             .collect();
@@ -605,9 +600,7 @@ impl SynthEngine {
     }
 
     fn find_voice_playing_note(&self, note: u8) -> Option<usize> {
-        self.voices
-            .iter()
-            .position(|v| v.note == note && v.gate)
+        self.voices.iter().position(|v| v.note == note && v.gate)
     }
 
     fn find_voice_to_steal(&self) -> Option<usize> {
@@ -653,10 +646,10 @@ impl SynthEngine {
 
 #[inline]
 fn note_to_freq(note: u8, mts_esp: &Option<Arc<Mutex<MtsEspClient>>>) -> f32 {
-    if let Some(client) = mts_esp {
-        if let Some(freq) = client.lock().note_to_frequency(note, 0) {
-            return freq;
-        }
+    if let Some(client) = mts_esp
+        && let Some(freq) = client.lock().note_to_frequency(note, 0)
+    {
+        return freq;
     }
     440.0 * 2.0f32.powf((note as f32 - 69.0) / 12.0)
 }

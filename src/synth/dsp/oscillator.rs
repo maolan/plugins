@@ -11,7 +11,7 @@
 use std::f32::consts::PI;
 
 use super::{Filter, FilterType, TwistOsc};
-use crate::synth::wavetable::Wavetable;
+use crate::common::wavetable::Wavetable;
 
 // ---------------------------------------------------------------------------
 // Utilities
@@ -212,10 +212,13 @@ impl ClassicOsc {
     }
 
     pub fn set_unison(&mut self, voices: usize, detune: f32) {
-        self.unison_voices = voices.max(1).min(16);
+        self.unison_voices = voices.clamp(1, 16);
         self.unison_detune = detune.clamp(0.0, 1.0);
-        self.voices.resize_with(self.unison_voices, || UnisonVoice::new(rand::random(), 0.0, 0.5));
-        self.sync_phases.resize_with(self.unison_voices, || rand::random());
+        self.voices.resize_with(self.unison_voices, || {
+            UnisonVoice::new(rand::random(), 0.0, 0.5)
+        });
+        self.sync_phases
+            .resize_with(self.unison_voices, rand::random);
         self.update_voices();
     }
 
@@ -341,7 +344,11 @@ impl ClassicOsc {
             while self.sub_phase >= 1.0 {
                 self.sub_phase -= 1.0;
             }
-            let sub_out = if self.sub_phase < self.width2 { 1.0 } else { -1.0 };
+            let sub_out = if self.sub_phase < self.width2 {
+                1.0
+            } else {
+                -1.0
+            };
             sum_l += sub_out * self.sub_level;
             sum_r += sub_out * self.sub_level;
         }
@@ -537,9 +544,11 @@ impl SineOsc {
     }
 
     pub fn set_unison(&mut self, voices: usize, detune: f32) {
-        self.unison_voices = voices.max(1).min(16);
+        self.unison_voices = voices.clamp(1, 16);
         self.unison_detune = detune.clamp(0.0, 1.0);
-        self.voices.resize_with(self.unison_voices, || UnisonVoice::new(rand::random(), 0.0, 0.5));
+        self.voices.resize_with(self.unison_voices, || {
+            UnisonVoice::new(rand::random(), 0.0, 0.5)
+        });
         self.voice_feedback.resize(self.unison_voices, 0.0);
         self.update_voices();
     }
@@ -555,7 +564,11 @@ impl SineOsc {
                 0.0
             };
             voice.phase_inc = base_inc * 2.0f32.powf(offset / 12.0);
-            voice.pan = if n > 1 { i as f32 / (n as f32 - 1.0) } else { 0.5 };
+            voice.pan = if n > 1 {
+                i as f32 / (n as f32 - 1.0)
+            } else {
+                0.5
+            };
         }
     }
 
@@ -594,7 +607,11 @@ impl SineOsc {
                 // Frequency modulation: fm shifts increment, feedback shifts phase
                 let modulated_inc = voice.phase_inc * (1.0 + fm);
                 let fb_phase = (voice.phase + fb / (2.0 * PI)).fract();
-                let fb_phase = if fb_phase < 0.0 { fb_phase + 1.0 } else { fb_phase };
+                let fb_phase = if fb_phase < 0.0 {
+                    fb_phase + 1.0
+                } else {
+                    fb_phase
+                };
                 let v = (fb_phase * 2.0 * PI).sin();
                 voice.phase += modulated_inc;
                 while voice.phase >= 1.0 {
@@ -628,7 +645,7 @@ impl SineOsc {
                     SineShaperMode::Abs => s.abs() * 2.0 - 1.0,
                     SineShaperMode::SoftClip => {
                         let x = s * 1.5;
-                        if x > 1.0 { 1.0 } else if x < -1.0 { -1.0 } else { x }
+                        x.clamp(-1.0, 1.0)
                     }
                     SineShaperMode::Fold => {
                         let x = s * 1.5;
@@ -641,64 +658,188 @@ impl SineOsc {
                     // sign(sin)·sin²
                     SineShaperMode::SignSin2 => s.abs() * s,
                     // sin² positive half-wave
-                    SineShaperMode::Sin2PosHalf => if s >= 0.0 { s * s } else { 0.0 },
+                    SineShaperMode::Sin2PosHalf => {
+                        if s >= 0.0 {
+                            s * s
+                        } else {
+                            0.0
+                        }
+                    }
                     // sin(2x) positive half-wave
-                    SineShaperMode::Sin2xPosHalf => if s >= 0.0 { s2 } else { 0.0 },
+                    SineShaperMode::Sin2xPosHalf => {
+                        if s >= 0.0 {
+                            s2
+                        } else {
+                            0.0
+                        }
+                    }
                     // Mode1(2x) positive half = sign(sin2x)·sin²(2x) when sin≥0
-                    SineShaperMode::Mode1_2xPos => if s >= 0.0 { s2.abs() * s2 } else { 0.0 },
+                    SineShaperMode::Mode1_2xPos => {
+                        if s >= 0.0 {
+                            s2.abs() * s2
+                        } else {
+                            0.0
+                        }
+                    }
                     // |sin(2x)| positive half-wave
-                    SineShaperMode::AbsSin2xPos => if s >= 0.0 { s2.abs() } else { 0.0 },
+                    SineShaperMode::AbsSin2xPos => {
+                        if s >= 0.0 {
+                            s2.abs()
+                        } else {
+                            0.0
+                        }
+                    }
                     // sin²(2x) positive half-wave
-                    SineShaperMode::Sin2_2xPos => if s >= 0.0 { s2 * s2 } else { 0.0 },
+                    SineShaperMode::Sin2_2xPos => {
+                        if s >= 0.0 {
+                            s2 * s2
+                        } else {
+                            0.0
+                        }
+                    }
                     // 2·sin−1 positive half, −1 otherwise
-                    SineShaperMode::TwoSinMinus1Pos => if s >= 0.0 { 2.0 * s - 1.0 } else { -1.0 },
+                    SineShaperMode::TwoSinMinus1Pos => {
+                        if s >= 0.0 {
+                            2.0 * s - 1.0
+                        } else {
+                            -1.0
+                        }
+                    }
                     // sin in Q2+Q4 only
-                    SineShaperMode::SinQ24 => if q2 || q4 { s } else { 0.0 },
+                    SineShaperMode::SinQ24 => {
+                        if q2 || q4 {
+                            s
+                        } else {
+                            0.0
+                        }
+                    }
                     // sin in Q1+Q3 only
-                    SineShaperMode::SinQ13 => if q1 || q3 { s } else { 0.0 },
+                    SineShaperMode::SinQ13 => {
+                        if q1 || q3 {
+                            s
+                        } else {
+                            0.0
+                        }
+                    }
                     // 2·sin²−1 positive half, −1 otherwise
-                    SineShaperMode::TwoSin2Minus1Pos => if s >= 0.0 { 2.0 * s * s - 1.0 } else { -1.0 },
+                    SineShaperMode::TwoSin2Minus1Pos => {
+                        if s >= 0.0 {
+                            2.0 * s * s - 1.0
+                        } else {
+                            -1.0
+                        }
+                    }
                     // sin(2x)·sign(cos)
                     SineShaperMode::Sin2xSignCos => s2 * c.signum(),
                     // sin(2x) in Q1+Q3, 0 in Q2+Q4
-                    SineShaperMode::Sin2xQ13 => if q1 || q3 { s2 } else { 0.0 },
+                    SineShaperMode::Sin2xQ13 => {
+                        if q1 || q3 {
+                            s2
+                        } else {
+                            0.0
+                        }
+                    }
                     // |cos(2x)| positive half
-                    SineShaperMode::AbsCos2xPos => if s >= 0.0 { c2.abs() } else { 0.0 },
+                    SineShaperMode::AbsCos2xPos => {
+                        if s >= 0.0 {
+                            c2.abs()
+                        } else {
+                            0.0
+                        }
+                    }
                     // 1−sin in Q1, −1−sin in Q4, 0 in Q2+Q3
                     SineShaperMode::OneMinusSinQ14 => {
-                        if q1 { 1.0 - s } else if q4 { -1.0 - s } else { 0.0 }
+                        if q1 {
+                            1.0 - s
+                        } else if q4 {
+                            -1.0 - s
+                        } else {
+                            0.0
+                        }
                     }
                     // 1−sin in Q1, cos−1 in Q4, 0 in Q2+Q3
                     SineShaperMode::OneMinusSinCosQ14 => {
-                        if q1 { 1.0 - s } else if q4 { c - 1.0 } else { 0.0 }
+                        if q1 {
+                            1.0 - s
+                        } else if q4 {
+                            c - 1.0
+                        } else {
+                            0.0
+                        }
                     }
                     // 1−sin in Q1+Q2, −1−sin in Q3+Q4
                     SineShaperMode::OneMinusSinQ12 => {
-                        if q1 || q2 { 1.0 - s } else { -1.0 - s }
+                        if q1 || q2 {
+                            1.0 - s
+                        } else {
+                            -1.0 - s
+                        }
                     }
                     // sin(2x) in Q1, cos in Q2, −sin(2x) in Q3, sin(2x) in Q4
                     SineShaperMode::MixQ => {
-                        if q1 { s2 } else if q2 { c } else if q3 { -s2 } else { s2 }
+                        if q1 {
+                            s2
+                        } else if q2 {
+                            c
+                        } else if q3 {
+                            -s2
+                        } else {
+                            s2
+                        }
                     }
                     // sin(2x) in Q1, −sin(4x) in Q2, sin in Q3+Q4
                     SineShaperMode::Mix2 => {
-                        if q1 { s2 } else if q2 { -s4 } else { s }
+                        if q1 {
+                            s2
+                        } else if q2 {
+                            -s4
+                        } else {
+                            s
+                        }
                     }
                     // sin in Q1+Q3, 1 in Q2, −1 in Q4
                     SineShaperMode::SinQ13Sat => {
-                        if q1 || q3 { s } else if q2 { 1.0 } else { -1.0 }
+                        if q1 || q3 {
+                            s
+                        } else if q2 {
+                            1.0
+                        } else {
+                            -1.0
+                        }
                     }
                     // 1 in Q1, sin in Q2+Q4, −1 in Q3
                     SineShaperMode::SinQ24Sat => {
-                        if q1 { 1.0 } else if q3 { -1.0 } else { s }
+                        if q1 {
+                            1.0
+                        } else if q3 {
+                            -1.0
+                        } else {
+                            s
+                        }
                     }
                     // sin where cos≥0 (Q1+Q4)
-                    SineShaperMode::SinCosPos => if c >= 0.0 { s } else { 0.0 },
+                    SineShaperMode::SinCosPos => {
+                        if c >= 0.0 {
+                            s
+                        } else {
+                            0.0
+                        }
+                    }
                     // sin where cos≤0 (Q2+Q3)
-                    SineShaperMode::SinCosNeg => if c <= 0.0 { s } else { 0.0 },
+                    SineShaperMode::SinCosNeg => {
+                        if c <= 0.0 {
+                            s
+                        } else {
+                            0.0
+                        }
+                    }
                     // 1−sin in Q1+Q2, sin in Q3+Q4
                     SineShaperMode::OneMinusSinMix => {
-                        if q1 || q2 { 1.0 - s } else { s }
+                        if q1 || q2 {
+                            1.0 - s
+                        } else {
+                            s
+                        }
                     }
                 }
             };
@@ -812,9 +953,10 @@ impl Fm2Osc {
     }
 
     pub fn set_unison(&mut self, voices: usize, detune: f32) {
-        self.unison_voices = voices.max(1).min(16);
+        self.unison_voices = voices.clamp(1, 16);
         self.unison_detune = detune.clamp(0.0, 1.0);
-        self.voice_phases.resize_with(self.unison_voices, || (rand::random(), rand::random()));
+        self.voice_phases
+            .resize_with(self.unison_voices, || (rand::random(), rand::random()));
         self.voice_feedback.resize(self.unison_voices, 0.0);
         self.voice_feedback_prev.resize(self.unison_voices, 0.0);
     }
@@ -866,11 +1008,13 @@ impl Fm2Osc {
             let detune_mul = 2.0f32.powf(offset / 12.0);
 
             let fb = match self.feedback_mode {
-                Fm2FeedbackMode::Classic => {
-                    self.voice_feedback[i] * self.feedback * 2.0 * PI
-                }
+                Fm2FeedbackMode::Classic => self.voice_feedback[i] * self.feedback * 2.0 * PI,
                 Fm2FeedbackMode::Averaged => {
-                    (self.voice_feedback[i] + self.voice_feedback_prev[i]) * 0.5 * self.feedback * 2.0 * PI
+                    (self.voice_feedback[i] + self.voice_feedback_prev[i])
+                        * 0.5
+                        * self.feedback
+                        * 2.0
+                        * PI
                 }
             };
             let modulator = ((*mp * 2.0 * PI + m12phase + fb).sin()) * self.depth;
@@ -996,9 +1140,11 @@ impl Fm3Osc {
     }
 
     pub fn set_unison(&mut self, voices: usize, detune: f32) {
-        self.unison_voices = voices.max(1).min(16);
+        self.unison_voices = voices.clamp(1, 16);
         self.unison_detune = detune.clamp(0.0, 1.0);
-        self.voice_phases.resize_with(self.unison_voices, || [rand::random(), rand::random(), rand::random()]);
+        self.voice_phases.resize_with(self.unison_voices, || {
+            [rand::random(), rand::random(), rand::random()]
+        });
         self.voice_feedback.resize(self.unison_voices, 0.0);
         self.voice_feedback_prev.resize(self.unison_voices, 0.0);
     }
@@ -1038,7 +1184,8 @@ impl Fm3Osc {
 
         for i in 0..self.unison_voices {
             let detune_mul = if self.unison_voices > 1 {
-                let offset = (i as f32 / (self.unison_voices as f32 - 1.0) - 0.5) * 2.0 * detune_scale;
+                let offset =
+                    (i as f32 / (self.unison_voices as f32 - 1.0) - 0.5) * 2.0 * detune_scale;
                 2.0f32.powf(offset / 12.0)
             } else {
                 1.0
@@ -1054,11 +1201,13 @@ impl Fm3Osc {
             };
 
             let fb = match self.feedback_mode {
-                Fm3FeedbackMode::Classic => {
-                    self.voice_feedback[i] * self.feedback * 2.0 * PI
-                }
+                Fm3FeedbackMode::Classic => self.voice_feedback[i] * self.feedback * 2.0 * PI,
                 Fm3FeedbackMode::Averaged => {
-                    (self.voice_feedback[i] + self.voice_feedback_prev[i]) * 0.5 * self.feedback * 2.0 * PI
+                    (self.voice_feedback[i] + self.voice_feedback_prev[i])
+                        * 0.5
+                        * self.feedback
+                        * 2.0
+                        * PI
                 }
             };
 
@@ -1097,9 +1246,15 @@ impl Fm3Osc {
             vp[0] += dt1;
             vp[1] += dt2;
             vp[2] += dt3;
-            while vp[0] >= 1.0 { vp[0] -= 1.0; }
-            while vp[1] >= 1.0 { vp[1] -= 1.0; }
-            while vp[2] >= 1.0 { vp[2] -= 1.0; }
+            while vp[0] >= 1.0 {
+                vp[0] -= 1.0;
+            }
+            while vp[1] >= 1.0 {
+                vp[1] -= 1.0;
+            }
+            while vp[2] >= 1.0 {
+                vp[2] -= 1.0;
+            }
 
             sum += out;
         }
@@ -1118,9 +1273,9 @@ pub struct WavetableOsc {
     sample_rate: f32,
     freq_hz: f32,
     phase: f32,
-    shape: f32, // morph position 0..1
-    skew: f32,  // horizontal phase distortion
-    skew_v: f32, // vertical skew (amplitude shaping)
+    shape: f32,    // morph position 0..1
+    skew: f32,     // horizontal phase distortion
+    skew_v: f32,   // vertical skew (amplitude shaping)
     saturate: f32, // pre-filter saturation
     formant: f32,
     keytrack: f32,
@@ -1189,9 +1344,10 @@ impl WavetableOsc {
     }
 
     pub fn set_unison(&mut self, voices: usize, detune: f32) {
-        self.unison_voices = voices.max(1).min(16);
+        self.unison_voices = voices.clamp(1, 16);
         self.unison_detune = detune.clamp(0.0, 1.0);
-        self.voice_phases.resize_with(self.unison_voices, || rand::random::<f32>());
+        self.voice_phases
+            .resize_with(self.unison_voices, rand::random::<f32>);
     }
 
     pub fn reset(&mut self) {
@@ -1261,13 +1417,22 @@ impl WavetableOsc {
             };
 
             let formant_phase = ((distorted_phase + fm_shift) * self.formant).fract();
-            let formant_phase = if formant_phase < 0.0 { formant_phase + 1.0 } else { formant_phase };
+            let formant_phase = if formant_phase < 0.0 {
+                formant_phase + 1.0
+            } else {
+                formant_phase
+            };
             let mut sample = wt.read_morph(morph_pos, formant_phase, mipmap);
 
             // Vertical skew (amplitude shaping)
             if self.skew_v != 0.0 {
                 let sv = self.skew_v;
-                sample = sample + sv * 4.0 * sample * (sample.abs() - 1.0) * (2.0 * sample.abs() - 1.0) * 1.299038f32;
+                sample = sample
+                    + sv * 4.0
+                        * sample
+                        * (sample.abs() - 1.0)
+                        * (2.0 * sample.abs() - 1.0)
+                        * 1.299038f32;
             }
 
             // Saturation
@@ -1362,12 +1527,28 @@ impl WindowType {
             WindowType::Sine => (std::f32::consts::PI * p).sin(),
             WindowType::Hanning => 0.5 * (1.0 - two_pi_p.cos()),
             WindowType::Hamming => 0.54 - 0.46 * two_pi_p.cos(),
-            WindowType::Blackman => 0.42 - 0.5 * two_pi_p.cos() + 0.08 * (4.0 * std::f32::consts::PI * p).cos(),
+            WindowType::Blackman => {
+                0.42 - 0.5 * two_pi_p.cos() + 0.08 * (4.0 * std::f32::consts::PI * p).cos()
+            }
             WindowType::Triangle => 1.0 - (2.0 * p - 1.0).abs(),
             WindowType::Cosine => (std::f32::consts::PI * (p - 0.5)).cos(),
             WindowType::Sawtooth => 1.0 - 2.0 * p,
-            WindowType::Square => if p < 0.5 { 1.0 } else { -1.0 },
-            WindowType::Rectangle => if p < 0.25 { 1.0 } else if p < 0.75 { -1.0 } else { 1.0 },
+            WindowType::Square => {
+                if p < 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
+            WindowType::Rectangle => {
+                if p < 0.25 {
+                    1.0
+                } else if p < 0.75 {
+                    -1.0
+                } else {
+                    1.0
+                }
+            }
         }
     }
 }
@@ -1443,9 +1624,10 @@ impl WindowOsc {
     }
 
     pub fn set_unison(&mut self, voices: usize, detune: f32) {
-        self.unison_voices = voices.max(1).min(16);
+        self.unison_voices = voices.clamp(1, 16);
         self.unison_detune = detune.clamp(0.0, 1.0);
-        self.voice_phases.resize_with(self.unison_voices, || rand::random::<f32>());
+        self.voice_phases
+            .resize_with(self.unison_voices, rand::random::<f32>);
     }
 
     pub fn reset(&mut self) {
@@ -1492,7 +1674,11 @@ impl WindowOsc {
 
             let phase = self.voice_phases[i];
             let fm_phase = (phase + fm_shift).fract();
-            let fm_phase = if fm_phase < 0.0 { fm_phase + 1.0 } else { fm_phase };
+            let fm_phase = if fm_phase < 0.0 {
+                fm_phase + 1.0
+            } else {
+                fm_phase
+            };
 
             // Window lookup (built-in or external wavetable)
             let win_sample = if use_builtin_window {
@@ -1558,10 +1744,10 @@ impl ModernSubWaveform {
 pub struct ModernOsc {
     sample_rate: f32,
     freq_hz: f32,
-    detune: f32,      // 0..1 controls spread of the 7 saws
-    width: f32,       // -1..1 stereo width
-    sub_mix: f32,     // 0..1 sub-oscillator mix
-    sub_octave: i8,   // -1 or -2
+    detune: f32,    // 0..1 controls spread of the 7 saws
+    width: f32,     // -1..1 stereo width
+    sub_mix: f32,   // 0..1 sub-oscillator mix
+    sub_octave: i8, // -1 or -2
     sub_waveform: ModernSubWaveform,
     sub_one: bool,    // drops sub an additional octave
     phases: [f32; 8], // 7 saws + 1 sub
@@ -1644,8 +1830,8 @@ impl ModernOsc {
             0.0, // sub doesn't use detune
         ];
 
-        for i in 0..7 {
-            let dt = base_inc * 2.0f32.powf(detunes[i] / 1200.0);
+        for (i, detune) in detunes.iter().enumerate().take(7) {
+            let dt = base_inc * 2.0f32.powf(*detune / 1200.0);
             let phase = self.phases[i];
             let t = phase;
             let vdt = dt;
@@ -1679,11 +1865,13 @@ impl ModernOsc {
             let sub_phase = self.phases[7];
             let sub_out = match self.sub_waveform {
                 ModernSubWaveform::Square => {
-                    if sub_phase < 0.5 { 1.0 } else { -1.0 }
+                    if sub_phase < 0.5 {
+                        1.0
+                    } else {
+                        -1.0
+                    }
                 }
-                ModernSubWaveform::Triangle => {
-                    1.0 - 4.0 * (sub_phase - 0.5).abs()
-                }
+                ModernSubWaveform::Triangle => 1.0 - 4.0 * (sub_phase - 0.5).abs(),
                 ModernSubWaveform::Saw => {
                     let mut v = 2.0 * sub_phase - 1.0;
                     v -= poly_blep(sub_phase, sub_inc);
@@ -1775,10 +1963,12 @@ impl ShNoiseOsc {
     }
 
     pub fn set_unison(&mut self, voices: usize, detune: f32) {
-        self.unison_voices = voices.max(1).min(16);
+        self.unison_voices = voices.clamp(1, 16);
         self.unison_detune = detune.clamp(0.0, 1.0);
-        self.voice_phases.resize_with(self.unison_voices, || rand::random());
-        self.voice_values.resize_with(self.unison_voices, || rand::random::<f32>() * 2.0 - 1.0);
+        self.voice_phases
+            .resize_with(self.unison_voices, rand::random);
+        self.voice_values
+            .resize_with(self.unison_voices, || rand::random::<f32>() * 2.0 - 1.0);
         self.voice_sync_phases.resize(self.unison_voices, 0.0);
     }
 
@@ -2050,7 +2240,8 @@ impl StringOsc {
                 for (i, s) in self.buffer.iter_mut().enumerate() {
                     if i < burst_len {
                         let t = i as f32 / burst_len as f32;
-                        *s = (1.0 - t * t) * (i as f32 * 2.0 * std::f32::consts::PI / burst_len as f32).sin();
+                        *s = (1.0 - t * t)
+                            * (i as f32 * 2.0 * std::f32::consts::PI / burst_len as f32).sin();
                     }
                 }
             }
@@ -2070,7 +2261,7 @@ impl StringOsc {
                     _white = rand::random::<f32>() * 2.0 - 1.0;
                     b0 = 0.99886 * b0 + _white * 0.0555179;
                     b1 = 0.99332 * b1 + _white * 0.0750759;
-                    b2 = 0.96900 * b2 + _white * 0.1538520;
+                    b2 = 0.96900 * b2 + _white * 0.153_852;
                     _pink = b0 + b1 + b2 + _white * 0.5362;
                     *s = _pink * 0.3;
                 }
@@ -2122,7 +2313,8 @@ impl StringOsc {
                     if i < burst_len {
                         let t = i as f32 / burst_len as f32;
                         let sweep_freq = freq * (0.5 + t * 4.0);
-                        *s = (1.0 - t) * (i as f32 * 2.0 * std::f32::consts::PI * sweep_freq / sr).sin();
+                        *s = (1.0 - t)
+                            * (i as f32 * 2.0 * std::f32::consts::PI * sweep_freq / sr).sin();
                     }
                 }
             }
@@ -2150,7 +2342,7 @@ impl StringOsc {
                         _white = rand::random::<f32>() * 2.0 - 1.0;
                         b0 = 0.99886 * b0 + _white * 0.0555179;
                         b1 = 0.99332 * b1 + _white * 0.0750759;
-                        b2 = 0.96900 * b2 + _white * 0.1538520;
+                        b2 = 0.96900 * b2 + _white * 0.153_852;
                         _pink = b0 + b1 + b2 + _white * 0.5362;
                         *s = (1.0 - t) * _pink * 0.3;
                     } else {
@@ -2220,8 +2412,10 @@ impl StringOsc {
             let read_offset_l = delay_samples * (1.0 - self.pickup_pos);
             let read_offset_r = delay_samples * (1.0 - self.pickup_pos + self.stereo_spread * 0.1);
 
-            let delayed_l = Self::read_interpolated_buf(&self.buffer, self.write_pos, read_offset_l);
-            let delayed_r = Self::read_interpolated_buf(&self.buffer, self.write_pos, read_offset_r);
+            let delayed_l =
+                Self::read_interpolated_buf(&self.buffer, self.write_pos, read_offset_l);
+            let delayed_r =
+                Self::read_interpolated_buf(&self.buffer, self.write_pos, read_offset_r);
 
             let damp_factor1 = self.damping * 0.5;
             let avg_delayed1 = (delayed_l + delayed_r) * 0.5;
@@ -2248,7 +2442,8 @@ impl StringOsc {
                     let a1 = a1 / a0;
                     let a2 = a2 / a0;
                     let new_out = b0 * out1 + b1 * self.stiffness_state + b2 * self.stiffness_state
-                        - a1 * self.stiffness_state - a2 * self.stiffness_state;
+                        - a1 * self.stiffness_state
+                        - a2 * self.stiffness_state;
                     self.stiffness_state = out1;
                     out1 = new_out;
                 }
@@ -2267,7 +2462,8 @@ impl StringOsc {
                     let a1 = a1 / a0;
                     let a2 = a2 / a0;
                     let new_out = b0 * out1 + b1 * self.stiffness_state + b2 * self.stiffness_state
-                        - a1 * self.stiffness_state - a2 * self.stiffness_state;
+                        - a1 * self.stiffness_state
+                        - a2 * self.stiffness_state;
                     self.stiffness_state = out1;
                     out1 = new_out;
                 }
@@ -2285,10 +2481,13 @@ impl StringOsc {
             let freq2 = self.freq_hz * 2.0f32.powf(self.dual_detune / 12.0);
             let delay_samples2 = self.sample_rate * os_factor / freq2.max(20.0);
             let read_offset_l2 = delay_samples2 * (1.0 - self.pickup_pos);
-            let read_offset_r2 = delay_samples2 * (1.0 - self.pickup_pos + self.stereo_spread * 0.1);
+            let read_offset_r2 =
+                delay_samples2 * (1.0 - self.pickup_pos + self.stereo_spread * 0.1);
 
-            let delayed_l2 = Self::read_interpolated_buf(&self.buffer2, self.write_pos2, read_offset_l2);
-            let delayed_r2 = Self::read_interpolated_buf(&self.buffer2, self.write_pos2, read_offset_r2);
+            let delayed_l2 =
+                Self::read_interpolated_buf(&self.buffer2, self.write_pos2, read_offset_l2);
+            let delayed_r2 =
+                Self::read_interpolated_buf(&self.buffer2, self.write_pos2, read_offset_r2);
 
             let damp_factor2 = self.dual_decay * 0.5;
             let avg_delayed2 = (delayed_l2 + delayed_r2) * 0.5;
@@ -2314,8 +2513,10 @@ impl StringOsc {
                     let b2 = b2 / a0;
                     let a1 = a1 / a0;
                     let a2 = a2 / a0;
-                    let new_out = b0 * out2 + b1 * self.stiffness_state2 + b2 * self.stiffness_state2
-                        - a1 * self.stiffness_state2 - a2 * self.stiffness_state2;
+                    let new_out =
+                        b0 * out2 + b1 * self.stiffness_state2 + b2 * self.stiffness_state2
+                            - a1 * self.stiffness_state2
+                            - a2 * self.stiffness_state2;
                     self.stiffness_state2 = out2;
                     out2 = new_out;
                 }
@@ -2333,8 +2534,10 @@ impl StringOsc {
                     let b2 = b2 / a0;
                     let a1 = a1 / a0;
                     let a2 = a2 / a0;
-                    let new_out = b0 * out2 + b1 * self.stiffness_state2 + b2 * self.stiffness_state2
-                        - a1 * self.stiffness_state2 - a2 * self.stiffness_state2;
+                    let new_out =
+                        b0 * out2 + b1 * self.stiffness_state2 + b2 * self.stiffness_state2
+                            - a1 * self.stiffness_state2
+                            - a2 * self.stiffness_state2;
                     self.stiffness_state2 = out2;
                     out2 = new_out;
                 }
@@ -2480,7 +2683,9 @@ impl AliasOsc {
             ring_buffer: [0.0f32; 256],
             ring_pos: 0,
             lcg_state: 0xACE1_ACE1,
-            partial_amplitudes: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            partial_amplitudes: [
+                1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
         }
     }
 
@@ -2517,9 +2722,10 @@ impl AliasOsc {
     }
 
     pub fn set_unison(&mut self, voices: usize, detune: f32) {
-        self.unison_voices = voices.max(1).min(16);
+        self.unison_voices = voices.clamp(1, 16);
         self.unison_detune = detune.clamp(0.0, 1.0);
-        self.voice_phases.resize_with(self.unison_voices, || rand::random());
+        self.voice_phases
+            .resize_with(self.unison_voices, rand::random);
     }
 
     pub fn set_partial_amplitude(&mut self, index: usize, amplitude: f32) {
@@ -2558,10 +2764,22 @@ impl AliasOsc {
         match self.waveform {
             AliasWaveform::Saw => p * 2.0 - 1.0,
             AliasWaveform::Sine => (p * two_pi).sin(),
-            AliasWaveform::Pulse => if p < 0.25 { 1.0 } else { -1.0 },
+            AliasWaveform::Pulse => {
+                if p < 0.25 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
             AliasWaveform::Triangle => 1.0 - 4.0 * (p - 0.5).abs(),
             AliasWaveform::Noise => self.lcg_noise(),
-            AliasWaveform::Square => if p < 0.5 { 1.0 } else { -1.0 },
+            AliasWaveform::Square => {
+                if p < 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
             AliasWaveform::Tx2 => {
                 let s = (p * two_pi).sin();
                 s + s.abs() * 0.5
@@ -2608,7 +2826,7 @@ impl AliasOsc {
             }
             AliasWaveform::Ramp => 1.0 - p * 2.0,
             AliasWaveform::AliasMem => {
-                let read_offset = ((self.dirty * 254.0) as usize + 1).max(1).min(255);
+                let read_offset = ((self.dirty * 254.0) as usize + 1).clamp(1, 255);
                 let read_pos = (self.ring_pos + 256 - read_offset) & 0xFF;
                 self.ring_buffer[read_pos]
             }
@@ -2811,7 +3029,7 @@ pub enum Oscillator {
     Modern(ModernOsc),
     ShNoise(ShNoiseOsc),
     String(StringOsc),
-    Alias(AliasOsc),
+    Alias(Box<AliasOsc>),
     Twist(TwistOsc),
     AudioInput(AudioInputOsc),
 }
@@ -2828,7 +3046,7 @@ impl Oscillator {
             OscType::Modern => Oscillator::Modern(ModernOsc::new(sample_rate)),
             OscType::ShNoise => Oscillator::ShNoise(ShNoiseOsc::new(sample_rate)),
             OscType::String => Oscillator::String(StringOsc::new(sample_rate)),
-            OscType::Alias => Oscillator::Alias(AliasOsc::new(sample_rate)),
+            OscType::Alias => Oscillator::Alias(Box::new(AliasOsc::new(sample_rate))),
             OscType::Twist => Oscillator::Twist(TwistOsc::new(sample_rate)),
             OscType::AudioInput => Oscillator::AudioInput(AudioInputOsc::new(sample_rate)),
         }
@@ -2944,9 +3162,8 @@ impl Oscillator {
     }
 
     pub fn set_unison_spread(&mut self, spread: f32) {
-        match self {
-            Oscillator::Classic(o) => o.set_unison_spread(spread),
-            _ => {}
+        if let Oscillator::Classic(o) = self {
+            o.set_unison_spread(spread)
         }
     }
 
@@ -3008,191 +3225,164 @@ impl Oscillator {
     }
 
     pub fn set_keytrack(&mut self, keytrack: f32) {
-        match self {
-            Oscillator::Wavetable(o) => o.set_keytrack(keytrack),
-            _ => {}
+        if let Oscillator::Wavetable(o) = self {
+            o.set_keytrack(keytrack)
         }
     }
 
     pub fn set_sync_amount(&mut self, amount: f32) {
-        match self {
-            Oscillator::Classic(o) => o.set_sync_amount(amount),
-            _ => {}
+        if let Oscillator::Classic(o) = self {
+            o.set_sync_amount(amount)
         }
     }
 
     pub fn set_window_type(&mut self, wt: WindowType) {
-        match self {
-            Oscillator::Window(o) => o.set_window_type(wt),
-            _ => {}
+        if let Oscillator::Window(o) = self {
+            o.set_window_type(wt)
         }
     }
 
     pub fn set_sub_waveform(&mut self, wf: ModernSubWaveform) {
-        match self {
-            Oscillator::Modern(o) => o.set_sub_waveform(wf),
-            _ => {}
+        if let Oscillator::Modern(o) = self {
+            o.set_sub_waveform(wf)
         }
     }
 
     pub fn set_sub_one(&mut self, v: bool) {
-        match self {
-            Oscillator::Modern(o) => o.set_sub_one(v),
-            _ => {}
+        if let Oscillator::Modern(o) = self {
+            o.set_sub_one(v)
         }
     }
 
     pub fn set_partial_amplitude(&mut self, index: usize, amplitude: f32) {
-        match self {
-            Oscillator::Alias(o) => o.set_partial_amplitude(index, amplitude),
-            _ => {}
+        if let Oscillator::Alias(o) = self {
+            o.set_partial_amplitude(index, amplitude)
         }
     }
 
     pub fn set_stereo_spread(&mut self, spread: f32) {
-        match self {
-            Oscillator::String(o) => o.set_stereo_spread(spread),
-            _ => {}
+        if let Oscillator::String(o) = self {
+            o.set_stereo_spread(spread)
         }
     }
 
     pub fn set_exciter(&mut self, exciter: ExciterType) {
-        match self {
-            Oscillator::String(o) => o.set_exciter(exciter),
-            _ => {}
+        if let Oscillator::String(o) = self {
+            o.set_exciter(exciter)
         }
     }
 
     pub fn set_fm_amount(&mut self, amount: f32) {
-        match self {
-            Oscillator::Sine(o) => o.set_fm_amount(amount),
-            _ => {}
+        if let Oscillator::Sine(o) = self {
+            o.set_fm_amount(amount)
         }
     }
 
     pub fn set_pm_mode(&mut self, pm: bool) {
-        match self {
-            Oscillator::Sine(o) => o.set_pm_mode(pm),
-            _ => {}
+        if let Oscillator::Sine(o) = self {
+            o.set_pm_mode(pm)
         }
     }
 
     pub fn set_shaper_mode(&mut self, mode: SineShaperMode) {
-        match self {
-            Oscillator::Sine(o) => o.set_shaper_mode(mode),
-            _ => {}
+        if let Oscillator::Sine(o) = self {
+            o.set_shaper_mode(mode)
         }
     }
 
     pub fn set_ratio(&mut self, ratio: f32) {
-        match self {
-            Oscillator::Fm2(o) => o.set_ratio(ratio),
-            _ => {}
+        if let Oscillator::Fm2(o) = self {
+            o.set_ratio(ratio)
         }
     }
 
     pub fn set_depth(&mut self, depth: f32) {
-        match self {
-            Oscillator::Fm2(o) => o.set_depth(depth),
-            _ => {}
+        if let Oscillator::Fm2(o) = self {
+            o.set_depth(depth)
         }
     }
 
     pub fn set_sh_noise_correlation(&mut self, corr: f32) {
-        match self {
-            Oscillator::ShNoise(o) => o.set_correlation(corr),
-            _ => {}
+        if let Oscillator::ShNoise(o) = self {
+            o.set_correlation(corr)
         }
     }
 
     pub fn set_sh_noise_width(&mut self, width: f32) {
-        match self {
-            Oscillator::ShNoise(o) => o.set_width(width),
-            _ => {}
+        if let Oscillator::ShNoise(o) = self {
+            o.set_width(width)
         }
     }
 
     pub fn set_sh_noise_sync(&mut self, sync: f32) {
-        match self {
-            Oscillator::ShNoise(o) => o.set_sync(sync),
-            _ => {}
+        if let Oscillator::ShNoise(o) = self {
+            o.set_sync(sync)
         }
     }
 
     pub fn set_sh_noise_lowcut(&mut self, freq: f32) {
-        match self {
-            Oscillator::ShNoise(o) => o.set_lowcut(freq),
-            _ => {}
+        if let Oscillator::ShNoise(o) = self {
+            o.set_lowcut(freq)
         }
     }
 
     pub fn set_sh_noise_highcut(&mut self, freq: f32) {
-        match self {
-            Oscillator::ShNoise(o) => o.set_highcut(freq),
-            _ => {}
+        if let Oscillator::ShNoise(o) = self {
+            o.set_highcut(freq)
         }
     }
 
     pub fn set_width2(&mut self, w: f32) {
-        match self {
-            Oscillator::Classic(o) => o.set_width2(w),
-            _ => {}
+        if let Oscillator::Classic(o) = self {
+            o.set_width2(w)
         }
     }
 
     pub fn set_skew_v(&mut self, skew_v: f32) {
-        match self {
-            Oscillator::Wavetable(o) => o.set_skew_v(skew_v),
-            _ => {}
+        if let Oscillator::Wavetable(o) = self {
+            o.set_skew_v(skew_v)
         }
     }
 
     pub fn set_saturate(&mut self, saturate: f32) {
-        match self {
-            Oscillator::Wavetable(o) => o.set_saturate(saturate),
-            _ => {}
+        if let Oscillator::Wavetable(o) = self {
+            o.set_saturate(saturate)
         }
     }
 
     pub fn set_tone_lp(&mut self, freq: f32) {
-        match self {
-            Oscillator::String(o) => o.set_tone_lp(freq),
-            _ => {}
+        if let Oscillator::String(o) = self {
+            o.set_tone_lp(freq)
         }
     }
 
     pub fn set_tone_hp(&mut self, freq: f32) {
-        match self {
-            Oscillator::String(o) => o.set_tone_hp(freq),
-            _ => {}
+        if let Oscillator::String(o) = self {
+            o.set_tone_hp(freq)
         }
     }
 
     pub fn set_sampler_mode(&mut self, mode: u8) {
-        match self {
-            Oscillator::Wavetable(o) => o.set_sampler_mode(mode),
-            _ => {}
+        if let Oscillator::Wavetable(o) = self {
+            o.set_sampler_mode(mode)
         }
     }
 
     pub fn set_dual_detune(&mut self, detune: f32) {
-        match self {
-            Oscillator::String(o) => o.set_dual_detune(detune),
-            _ => {}
+        if let Oscillator::String(o) = self {
+            o.set_dual_detune(detune)
         }
     }
 
     pub fn set_dual_decay(&mut self, decay: f32) {
-        match self {
-            Oscillator::String(o) => o.set_dual_decay(decay),
-            _ => {}
+        if let Oscillator::String(o) = self {
+            o.set_dual_decay(decay)
         }
     }
 
     pub fn set_oversample(&mut self, os: bool) {
-        match self {
-            Oscillator::String(o) => o.set_oversample(os),
-            _ => {}
+        if let Oscillator::String(o) = self {
+            o.set_oversample(os)
         }
     }
 }

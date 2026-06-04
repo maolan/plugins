@@ -167,7 +167,13 @@ fn view(state: &State) -> Element<'_, Message> {
             .width(Length::Fixed(96.0)),
             container(
                 column![
-                    knob("High Gain", ParamId::HighGain, p(ParamId::HighGain), "", 1.0),
+                    knob(
+                        "High Gain",
+                        ParamId::HighGain,
+                        p(ParamId::HighGain),
+                        "",
+                        1.0
+                    ),
                     checkbox(b(ParamId::SoloHigh)).label("Solo").on_toggle(|v| {
                         Message::SetParam(ParamId::SoloHigh, if v { 1.0 } else { 0.0 })
                     })
@@ -181,9 +187,27 @@ fn view(state: &State) -> Element<'_, Message> {
     );
     content = content.push(
         row![
-            knob("Low Delay", ParamId::LowDelay, p(ParamId::LowDelay), "", 1.0),
-            knob("Mid Delay", ParamId::MidDelay, p(ParamId::MidDelay), "", 1.0),
-            knob("High Delay", ParamId::HighDelay, p(ParamId::HighDelay), "", 1.0),
+            knob(
+                "Low Delay",
+                ParamId::LowDelay,
+                p(ParamId::LowDelay),
+                "",
+                1.0
+            ),
+            knob(
+                "Mid Delay",
+                ParamId::MidDelay,
+                p(ParamId::MidDelay),
+                "",
+                1.0
+            ),
+            knob(
+                "High Delay",
+                ParamId::HighDelay,
+                p(ParamId::HighDelay),
+                "",
+                1.0
+            ),
         ]
         .spacing(16),
     );
@@ -197,15 +221,13 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(16),
     );
     content = content.push(
-        row![
-            knob(
-                "Volume",
-                ParamId::OutputGain,
-                p(ParamId::OutputGain),
-                "dB",
-                0.1
-            ),
-        ]
+        row![knob(
+            "Volume",
+            ParamId::OutputGain,
+            p(ParamId::OutputGain),
+            "dB",
+            0.1
+        ),]
         .spacing(16),
     );
     let monitor_selected = match p(ParamId::MonitorMode) as i32 {
@@ -286,7 +308,12 @@ fn pretty_value(id: ParamId, value: f32, _units: &'static str) -> String {
             2 => "Side".to_string(),
             _ => "Stereo".to_string(),
         },
-        ParamId::LowGain | ParamId::MidGain | ParamId::HighGain | ParamId::LowDelay | ParamId::MidDelay | ParamId::HighDelay => format!("{value:.0} %"),
+        ParamId::LowGain
+        | ParamId::MidGain
+        | ParamId::HighGain
+        | ParamId::LowDelay
+        | ParamId::MidDelay
+        | ParamId::HighDelay => format!("{value:.0} %"),
         ParamId::Strength => format!("{value:.1}"),
         ParamId::Boost => format!("{value:.2}x"),
         ParamId::OutputGain => format!("{value:.1} dB"),

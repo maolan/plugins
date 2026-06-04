@@ -119,6 +119,12 @@ pub struct Waveshaper {
     pub mix: f32,
 }
 
+impl Default for Waveshaper {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Waveshaper {
     pub fn new() -> Self {
         Self {
@@ -271,7 +277,8 @@ impl Waveshaper {
         let fac = 0.8;
         let x2 = x * x;
         let x3 = x2 * x;
-        (-fac * x + fac * 0.5 * (2.0 * x2 - 1.0) - fac * 0.25 * (4.0 * x3 - 3.0 * x)).clamp(-1.0, 1.0)
+        (-fac * x + fac * 0.5 * (2.0 * x2 - 1.0) - fac * 0.25 * (4.0 * x3 - 3.0 * x))
+            .clamp(-1.0, 1.0)
     }
 
     /// Square approximation: {0, fac, 0, -fac*0.25, 0, fac/16}
@@ -281,7 +288,8 @@ impl Waveshaper {
         let x3 = x2 * x;
         let x4 = x2 * x2;
         let _x5 = x4 * x;
-        (fac * x - fac * 0.25 * (4.0 * x3 - 3.0 * x) + (fac / 16.0) * (16.0 * x4 * x - 20.0 * x3 + 5.0 * x))
+        (fac * x - fac * 0.25 * (4.0 * x3 - 3.0 * x)
+            + (fac / 16.0) * (16.0 * x4 * x - 20.0 * x3 + 5.0 * x))
             .clamp(-1.0, 1.0)
     }
 
@@ -487,5 +495,4 @@ impl Waveshaper {
         let compensated = shaped / drive_gain.max(1.0);
         input + (compensated - input) * self.mix
     }
-
 }

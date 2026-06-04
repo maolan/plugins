@@ -16,12 +16,7 @@ pub struct GuiBridge {
 }
 
 impl GuiBridge {
-    pub fn create(
-        &mut self,
-        _shared: Arc<SharedState>,
-        _api: &CStr,
-        _is_floating: bool,
-    ) -> bool {
+    pub fn create(&mut self, _shared: Arc<SharedState>, _api: &CStr, _is_floating: bool) -> bool {
         false
     }
 
@@ -35,11 +30,7 @@ impl GuiBridge {
         false
     }
 
-    pub fn set_parent(
-        &mut self,
-        _shared: Arc<SharedState>,
-        _parent: ParentWindowHandle,
-    ) -> bool {
+    pub fn set_parent(&mut self, _shared: Arc<SharedState>, _parent: ParentWindowHandle) -> bool {
         false
     }
 }
