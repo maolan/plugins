@@ -170,10 +170,10 @@ pub enum ParamId {
     WaveshaperMix = 128,
     WaveshaperEnabled = 129,
 
-    // Character filter
-    CharacterType = 130,
-    CharacterCutoff = 131,
-    CharacterResonance = 132,
+    // Flavor filter
+    FlavorType = 130,
+    FlavorCutoff = 131,
+    FlavorResonance = 132,
 
     // FM routing
     OscFmMode = 133,
@@ -941,10 +941,10 @@ impl ParamId {
             ParamId::WaveshaperDrive,
             ParamId::WaveshaperMix,
             ParamId::WaveshaperEnabled,
-            // Character
-            ParamId::CharacterType,
-            ParamId::CharacterCutoff,
-            ParamId::CharacterResonance,
+            // Flavor
+            ParamId::FlavorType,
+            ParamId::FlavorCutoff,
+            ParamId::FlavorResonance,
             // FM
             ParamId::OscFmMode,
             // Macros
@@ -1583,7 +1583,8 @@ const ENUM: u32 = CLAP_PARAM_IS_ENUM
     | CLAP_PARAM_IS_STEPPED
     | CLAP_PARAM_IS_AUTOMATABLE
     | CLAP_PARAM_REQUIRES_PROCESS;
-const TOGGLE: u32 = CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_REQUIRES_PROCESS;
+pub const TOGGLE: u32 =
+    CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_REQUIRES_PROCESS;
 #[allow(dead_code)]
 const STEPPED: u32 =
     CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_REQUIRES_PROCESS;
@@ -1653,7 +1654,7 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.0,
         0.01
     ),
-    def_automatable!(ParamId::Osc1Sync, "Sync", "Osc1", 0.0, 1.0, 0.0, 0.01),
+    def_toggle!(ParamId::Osc1Sync, "Sync", "Osc1", 1.0),
     // Oscillator 2
     def_enum!(ParamId::Osc2Type, "Type", "Osc2", 10.0, 1.0),
     def_enum!(ParamId::Osc2Octave, "Octave", "Osc2", 6.0, 3.0),
@@ -1673,7 +1674,7 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.0,
         0.01
     ),
-    def_automatable!(ParamId::Osc2Sync, "Sync", "Osc2", 0.0, 1.0, 0.0, 0.01),
+    def_toggle!(ParamId::Osc2Sync, "Sync", "Osc2", 1.0),
     // Oscillator 3
     def_enum!(ParamId::Osc3Type, "Type", "Osc3", 10.0, 2.0),
     def_enum!(ParamId::Osc3Octave, "Octave", "Osc3", 6.0, 2.0),
@@ -1702,7 +1703,7 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.0,
         0.01
     ),
-    def_automatable!(ParamId::Osc3Sync, "Sync", "Osc3", 0.0, 1.0, 0.0, 0.01),
+    def_toggle!(ParamId::Osc3Sync, "Sync", "Osc3", 1.0),
     // Filter 1
     def_enum!(ParamId::F1Type, "Type", "Filter1", 48.0, 1.0),
     def_automatable!(
@@ -1786,16 +1787,8 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
     // Filter routing
     def_enum!(ParamId::FilterRouting, "Routing", "Filter", 7.0, 0.0),
     // Amp EG
-    def_automatable!(
-        ParamId::AmpAttack,
-        "Attack",
-        "AmpEG",
-        0.0,
-        10.0,
-        0.01,
-        0.001
-    ),
-    def_automatable!(ParamId::AmpDecay, "Decay", "AmpEG", 0.0, 10.0, 0.2, 0.001),
+    def_automatable!(ParamId::AmpAttack, "Attack", "AmpEG", 0.0, 10.0, 0.01, 0.01),
+    def_automatable!(ParamId::AmpDecay, "Decay", "AmpEG", 0.0, 10.0, 0.2, 0.01),
     def_automatable!(ParamId::AmpSustain, "Sustain", "AmpEG", 0.0, 1.0, 0.7, 0.01),
     def_automatable!(
         ParamId::AmpRelease,
@@ -1804,7 +1797,7 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.0,
         10.0,
         0.3,
-        0.001
+        0.01
     ),
     def_enum!(ParamId::AmpEgMode, "Mode", "AmpEG", 1.0, 0.0),
     // Filter EG
@@ -1815,7 +1808,7 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.0,
         10.0,
         0.01,
-        0.001
+        0.01
     ),
     def_automatable!(
         ParamId::FilterDecay,
@@ -1824,7 +1817,7 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.0,
         10.0,
         0.3,
-        0.001
+        0.01
     ),
     def_automatable!(
         ParamId::FilterSustain,
@@ -1842,7 +1835,7 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.0,
         10.0,
         0.4,
-        0.001
+        0.01
     ),
     def_enum!(ParamId::FilterEgMode, "Mode", "FilterEG", 1.0, 0.0),
     // Pitch EG
@@ -1853,7 +1846,7 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.0,
         10.0,
         0.01,
-        0.001
+        0.01
     ),
     def_automatable!(
         ParamId::PitchDecay,
@@ -1862,7 +1855,7 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.0,
         10.0,
         0.2,
-        0.001
+        0.01
     ),
     def_automatable!(
         ParamId::PitchSustain,
@@ -1880,7 +1873,7 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.0,
         10.0,
         0.2,
-        0.001
+        0.01
     ),
     def_enum!(ParamId::PitchEgMode, "Mode", "PitchEG", 1.0, 0.0),
     // LFO 1
@@ -2229,21 +2222,21 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.01
     ),
     def_toggle!(ParamId::WaveshaperEnabled, "Enabled", "Waveshaper", 0.0),
-    // Character
-    def_enum!(ParamId::CharacterType, "Type", "Character", 4.0, 0.0),
+    // Flavor
+    def_enum!(ParamId::FlavorType, "Type", "Flavor", 4.0, 0.0),
     def_automatable!(
-        ParamId::CharacterCutoff,
+        ParamId::FlavorCutoff,
         "Cutoff",
-        "Character",
+        "Flavor",
         20.0,
         20000.0,
         8000.0,
         1.0
     ),
     def_automatable!(
-        ParamId::CharacterResonance,
+        ParamId::FlavorResonance,
         "Resonance",
-        "Character",
+        "Flavor",
         0.01,
         10.0,
         0.5,
@@ -2276,7 +2269,7 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
     def_enum!(ParamId::PlayMode, "Play Mode", "Global", 15.0, 0.0),
     def_enum!(ParamId::VoicePriority, "Priority", "Global", 6.0, 0.0),
     // LFO1 sync + envelope
-    def_enum!(ParamId::Lfo1SyncMode, "Sync Mode", "LFO1", 1.0, 0.0),
+    def_toggle!(ParamId::Lfo1SyncMode, "Sync Mode", "LFO1", 1.0),
     def_enum!(ParamId::Lfo1SyncDiv, "Sync Div", "LFO1", 16.0, 2.0),
     def_automatable!(
         ParamId::Lfo1EnvDelay,
@@ -2333,7 +2326,7 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.001
     ),
     // LFO2 sync + envelope
-    def_enum!(ParamId::Lfo2SyncMode, "Sync Mode", "LFO2", 1.0, 0.0),
+    def_toggle!(ParamId::Lfo2SyncMode, "Sync Mode", "LFO2", 1.0),
     def_enum!(ParamId::Lfo2SyncDiv, "Sync Div", "LFO2", 16.0, 2.0),
     def_automatable!(
         ParamId::Lfo2EnvDelay,
@@ -2519,7 +2512,7 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
     def_automatable!(ParamId::Lfo3Amount, "Amount", "LFO3", 0.0, 1.0, 0.0, 0.01),
     def_automatable!(ParamId::Lfo3Deform, "Deform", "LFO3", -1.0, 1.0, 0.0, 0.01),
     def_enum!(ParamId::Lfo3Trigger, "Trigger", "LFO3", 2.0, 1.0),
-    def_enum!(ParamId::Lfo3SyncMode, "Sync Mode", "LFO3", 1.0, 0.0),
+    def_toggle!(ParamId::Lfo3SyncMode, "Sync Mode", "LFO3", 1.0),
     def_enum!(ParamId::Lfo3SyncDiv, "Sync Div", "LFO3", 16.0, 2.0),
     def_automatable!(
         ParamId::Lfo3EnvDelay,
@@ -2591,7 +2584,7 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
     def_automatable!(ParamId::Lfo4Amount, "Amount", "LFO4", 0.0, 1.0, 0.0, 0.01),
     def_automatable!(ParamId::Lfo4Deform, "Deform", "LFO4", -1.0, 1.0, 0.0, 0.01),
     def_enum!(ParamId::Lfo4Trigger, "Trigger", "LFO4", 2.0, 1.0),
-    def_enum!(ParamId::Lfo4SyncMode, "Sync Mode", "LFO4", 1.0, 0.0),
+    def_toggle!(ParamId::Lfo4SyncMode, "Sync Mode", "LFO4", 1.0),
     def_enum!(ParamId::Lfo4SyncDiv, "Sync Div", "LFO4", 16.0, 2.0),
     def_automatable!(
         ParamId::Lfo4EnvDelay,
@@ -2663,7 +2656,7 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
     def_automatable!(ParamId::Lfo5Amount, "Amount", "LFO5", 0.0, 1.0, 0.0, 0.01),
     def_automatable!(ParamId::Lfo5Deform, "Deform", "LFO5", -1.0, 1.0, 0.0, 0.01),
     def_enum!(ParamId::Lfo5Trigger, "Trigger", "LFO5", 2.0, 1.0),
-    def_enum!(ParamId::Lfo5SyncMode, "Sync Mode", "LFO5", 1.0, 0.0),
+    def_toggle!(ParamId::Lfo5SyncMode, "Sync Mode", "LFO5", 1.0),
     def_enum!(ParamId::Lfo5SyncDiv, "Sync Div", "LFO5", 16.0, 2.0),
     def_automatable!(
         ParamId::Lfo5EnvDelay,
@@ -2735,7 +2728,7 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
     def_automatable!(ParamId::Lfo6Amount, "Amount", "LFO6", 0.0, 1.0, 0.0, 0.01),
     def_automatable!(ParamId::Lfo6Deform, "Deform", "LFO6", -1.0, 1.0, 0.0, 0.01),
     def_enum!(ParamId::Lfo6Trigger, "Trigger", "LFO6", 2.0, 1.0),
-    def_enum!(ParamId::Lfo6SyncMode, "Sync Mode", "LFO6", 1.0, 0.0),
+    def_toggle!(ParamId::Lfo6SyncMode, "Sync Mode", "LFO6", 1.0),
     def_enum!(ParamId::Lfo6SyncDiv, "Sync Div", "LFO6", 16.0, 2.0),
     def_automatable!(
         ParamId::Lfo6EnvDelay,
@@ -4207,8 +4200,14 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
     ),
 ];
 
+pub fn param_def(id: ParamId) -> Option<&'static ParamDef> {
+    PARAMS.iter().find(|d| d.id == id)
+}
+
 pub fn sanitize_param_value(id: ParamId, value: f64) -> f64 {
-    let def = PARAMS[id.as_index()];
+    let Some(def) = param_def(id) else {
+        return value;
+    };
     let clamped = value.clamp(def.min, def.max);
     if def.step > 0.0 {
         let ticks = ((clamped - def.min) / def.step).round();

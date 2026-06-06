@@ -19,10 +19,9 @@ use clap_clap::{
         CLAP_NOTE_DIALECT_MIDI, CLAP_NOTE_EXPRESSION_BRIGHTNESS, CLAP_NOTE_EXPRESSION_PAN,
         CLAP_NOTE_EXPRESSION_PRESSURE, CLAP_NOTE_EXPRESSION_TUNING, CLAP_NOTE_EXPRESSION_VOLUME,
         CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_MONO, CLAP_PLUGIN_FEATURE_STEREO,
-        CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_COCOA,
-        CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info, clap_host,
-        clap_host_gui, clap_host_params, clap_host_state, clap_id, clap_istream,
-        clap_note_port_info, clap_ostream, clap_plugin, clap_plugin_audio_ports,
+        CLAP_PORT_STEREO, CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_X11,
+        clap_audio_port_info, clap_host, clap_host_gui, clap_host_params, clap_host_state, clap_id,
+        clap_istream, clap_note_port_info, clap_ostream, clap_plugin, clap_plugin_audio_ports,
         clap_plugin_descriptor, clap_plugin_gui, clap_plugin_note_ports, clap_plugin_params,
         clap_plugin_state, clap_process, clap_process_status, clap_window,
     },
@@ -596,7 +595,7 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
         info.channel_count = 2;
         copy_str_to_array("Stereo Out", &mut info.name);
         info.flags = CLAP_AUDIO_PORT_IS_MAIN;
-        info.port_type = CLAP_PORT_MONO.as_ptr();
+        info.port_type = CLAP_PORT_STEREO.as_ptr();
         info.in_place_pair = CLAP_INVALID_ID;
         true
     }
@@ -917,40 +916,37 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     let window = unsafe { &*window };
     let api = unsafe { CStr::from_ptr(window.api) };
 
-    let parent = if api == CLAP_WINDOW_API_X11 {
-        #[cfg(all(unix, not(target_os = "macos")))]
-        {
-            crate::sampler::gui::ParentWindowHandle::X11(unsafe { window.clap_window__.x11 })
-        }
-        #[cfg(not(all(unix, not(target_os = "macos"))))]
-        {
-            return false;
-        }
-    } else if api == CLAP_WINDOW_API_COCOA {
-        #[cfg(target_os = "macos")]
-        {
-            crate::sampler::gui::ParentWindowHandle::Cocoa(unsafe { window.clap_window__.cocoa })
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            return false;
-        }
-    } else if api == CLAP_WINDOW_API_WIN32 {
-        #[cfg(target_os = "windows")]
-        {
-            crate::sampler::gui::ParentWindowHandle::Win32(unsafe { window.clap_window__.win32 })
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            return false;
-        }
-    } else {
-        return false;
-    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if api == CLAP_WINDOW_API_X11 {
+        let parent =
+            crate::sampler::gui::ParentWindowHandle::X11(unsafe { window.clap_window__.x11 });
+        return inst
+            .gui_bridge
+            .lock()
+            .set_parent(inst.shared.clone(), parent);
+    }
 
-    inst.gui_bridge
-        .lock()
-        .set_parent(inst.shared.clone(), parent)
+    #[cfg(target_os = "macos")]
+    if api == CLAP_WINDOW_API_COCOA {
+        let parent =
+            crate::sampler::gui::ParentWindowHandle::Cocoa(unsafe { window.clap_window__.cocoa });
+        return inst
+            .gui_bridge
+            .lock()
+            .set_parent(inst.shared.clone(), parent);
+    }
+
+    #[cfg(target_os = "windows")]
+    if api == CLAP_WINDOW_API_WIN32 {
+        let parent =
+            crate::sampler::gui::ParentWindowHandle::Win32(unsafe { window.clap_window__.win32 });
+        return inst
+            .gui_bridge
+            .lock()
+            .set_parent(inst.shared.clone(), parent);
+    }
+
+    false
 }
 
 unsafe extern "C-unwind" fn ext_gui_set_transient(

@@ -1,11 +1,11 @@
 #![allow(dead_code)]
 
-//! Character filter — simple highpass/lowpass on oscillator mix output.
+//! Flavor filter — simple highpass/lowpass on oscillator mix output.
 
 use super::filter::{Filter, FilterType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CharacterType {
+pub enum FlavorType {
     Off = 0,
     Warm = 1,    // gentle lowpass
     Bright = 2,  // gentle highpass
@@ -13,65 +13,65 @@ pub enum CharacterType {
     Neutral = 4, // flat / bypass
 }
 
-impl CharacterType {
+impl FlavorType {
     pub fn from_u8(v: u8) -> Self {
         match v {
-            0 => CharacterType::Off,
-            1 => CharacterType::Warm,
-            2 => CharacterType::Bright,
-            3 => CharacterType::Dark,
-            _ => CharacterType::Neutral,
+            0 => FlavorType::Off,
+            1 => FlavorType::Warm,
+            2 => FlavorType::Bright,
+            3 => FlavorType::Dark,
+            _ => FlavorType::Neutral,
         }
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct CharacterFilter {
+pub struct FlavorFilter {
     filter_l: Filter,
     filter_r: Filter,
-    pub char_type: CharacterType,
+    pub flavor_type: FlavorType,
     pub cutoff_hz: f32,
     pub resonance: f32,
 }
 
-impl CharacterFilter {
+impl FlavorFilter {
     pub fn new(sample_rate: f32) -> Self {
         Self {
             filter_l: Filter::new(FilterType::Lowpass, sample_rate),
             filter_r: Filter::new(FilterType::Lowpass, sample_rate),
-            char_type: CharacterType::Off,
+            flavor_type: FlavorType::Off,
             cutoff_hz: 8000.0,
             resonance: 0.5,
         }
     }
 
     pub fn set_sample_rate(&mut self, sample_rate: f32) {
-        let ty = match self.char_type {
-            CharacterType::Off => FilterType::Lowpass,
-            CharacterType::Warm => FilterType::Lowpass,
-            CharacterType::Bright => FilterType::Highpass,
-            CharacterType::Dark => FilterType::Lowpass,
-            CharacterType::Neutral => FilterType::Lowpass,
+        let ty = match self.flavor_type {
+            FlavorType::Off => FilterType::Lowpass,
+            FlavorType::Warm => FilterType::Lowpass,
+            FlavorType::Bright => FilterType::Highpass,
+            FlavorType::Dark => FilterType::Lowpass,
+            FlavorType::Neutral => FilterType::Lowpass,
         };
         self.filter_l = Filter::new(ty, sample_rate);
         self.filter_r = Filter::new(ty, sample_rate);
     }
 
-    pub fn set_type(&mut self, ty: CharacterType) {
-        self.char_type = ty;
+    pub fn set_type(&mut self, ty: FlavorType) {
+        self.flavor_type = ty;
         let filter_ty = match ty {
-            CharacterType::Off => FilterType::Lowpass,
-            CharacterType::Warm => FilterType::Lowpass,
-            CharacterType::Bright => FilterType::Highpass,
-            CharacterType::Dark => FilterType::Lowpass,
-            CharacterType::Neutral => FilterType::Lowpass,
+            FlavorType::Off => FilterType::Lowpass,
+            FlavorType::Warm => FilterType::Lowpass,
+            FlavorType::Bright => FilterType::Highpass,
+            FlavorType::Dark => FilterType::Lowpass,
+            FlavorType::Neutral => FilterType::Lowpass,
         };
         self.filter_l.set_filter_type(filter_ty);
         self.filter_r.set_filter_type(filter_ty);
     }
 
     pub fn process(&mut self, input_l: f32, input_r: f32) -> (f32, f32) {
-        if self.char_type == CharacterType::Off || self.char_type == CharacterType::Neutral {
+        if self.flavor_type == FlavorType::Off || self.flavor_type == FlavorType::Neutral {
             return (input_l, input_r);
         }
 

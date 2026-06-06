@@ -7,18 +7,18 @@
 //! - LFO modulation with step sequencer and tempo sync
 //! - Polyphonic voice management with mono/legato/latch modes
 //! - Full modulation matrix with programmable routings
-//! - Noise generator, waveshaper, character filter
+//! - Noise generator, waveshaper, flavor filter
 
 mod engine;
 mod oscillator;
 mod twist;
 mod voice;
 
-pub use crate::common::character::{CharacterFilter, CharacterType};
 pub use crate::common::envelope::{
     AdsrEnvelope, AttackShape, DecayReleaseShape, EnvelopeMode, EnvelopeRetriggerMode,
 };
 pub use crate::common::filter::{Filter, FilterSubtype, FilterType};
+pub use crate::common::flavor::{FlavorFilter, FlavorType};
 pub use crate::common::lfo::{
     Lfo, LfoShape, LfoSyncDivision, LfoSyncMode, LfoTriggerMode, MSEG_MAX_NODES, MSEG_MAX_SEGMENTS,
     MsegCurve, MsegLoopMode,

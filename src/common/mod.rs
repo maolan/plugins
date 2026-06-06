@@ -1,11 +1,11 @@
 pub mod bus;
 pub mod byte_reader;
-pub mod character;
 pub mod envelope;
 pub mod envelope_follower;
 pub mod eq;
 pub mod fft;
 pub mod filter;
+pub mod flavor;
 pub mod lfo;
 pub mod macro_param;
 pub mod mmap;

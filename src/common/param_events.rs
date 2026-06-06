@@ -164,20 +164,20 @@ pub fn emit_pending_param_events_to_host<P: ClapParamId, S: SharedStateExt<P>>(
 }
 
 #[derive(Debug, Copy, Clone)]
-struct ParamGesture {
+pub struct ParamGesture {
     inner: clap_event_param_gesture,
 }
 
 impl ParamGesture {
-    fn begin(id: ClapId) -> Self {
+    pub fn begin(id: ClapId) -> Self {
         Self::new(id, CLAP_EVENT_PARAM_GESTURE_BEGIN as u16)
     }
 
-    fn end(id: ClapId) -> Self {
+    pub fn end(id: ClapId) -> Self {
         Self::new(id, CLAP_EVENT_PARAM_GESTURE_END as u16)
     }
 
-    fn new(id: ClapId, event_type: u16) -> Self {
+    pub fn new(id: ClapId, event_type: u16) -> Self {
         Self {
             inner: clap_event_param_gesture {
                 header: clap_event_header {

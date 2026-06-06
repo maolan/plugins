@@ -7,8 +7,8 @@
 use rand::random;
 
 use super::{
-    AdsrEnvelope, AliasWaveform, CharacterFilter, ClassicWaveform, EnvelopeSettings, ExciterType,
-    Filter, FilterSettings, FilterType, Fm2FeedbackMode, Lfo, LfoSettings, LfoShape,
+    AdsrEnvelope, AliasWaveform, ClassicWaveform, EnvelopeSettings, ExciterType, Filter,
+    FilterSettings, FilterType, FlavorFilter, Fm2FeedbackMode, Lfo, LfoSettings, LfoShape,
     MSEG_MAX_NODES, MSEG_MAX_SEGMENTS, ModernSubWaveform, MsegCurve, MsegLoopMode, MtsEspClient,
     NoiseColorMode, NoiseGenerator, NoiseType, OscType, Oscillator, PlayMode, PortamentoCurve,
     SineShaperMode, Tuning, VoicePriority, Waveshape, Waveshaper, WaveshaperSettings, WindowType,
@@ -556,7 +556,7 @@ pub enum ModTarget {
     NoiseLevel = 56,
     WaveshaperDrive = 57,
     Portamento = 58,
-    CharacterCutoff = 59,
+    FlavorCutoff = 59,
     FilterBalance = 60,
     OscFmDepth = 61,
     Osc1Sync = 62,
@@ -644,7 +644,7 @@ impl ModTarget {
             56 => Some(ModTarget::NoiseLevel),
             57 => Some(ModTarget::WaveshaperDrive),
             58 => Some(ModTarget::Portamento),
-            59 => Some(ModTarget::CharacterCutoff),
+            59 => Some(ModTarget::FlavorCutoff),
             60 => Some(ModTarget::FilterBalance),
             61 => Some(ModTarget::OscFmDepth),
             62 => Some(ModTarget::Osc1Sync),
@@ -794,7 +794,7 @@ pub struct ModValues {
     noise_level: f32,
     waveshaper_drive: f32,
     portamento: f32,
-    character_cutoff: f32,
+    flavor_cutoff: f32,
     filter_balance: f32,
     osc_fm_depth: f32,
     osc_sync: [f32; 3],
@@ -829,9 +829,9 @@ pub struct VoiceParams {
     pub scene_lfo6: LfoSettings,
     pub noise: NoiseSettings,
     pub waveshaper: WaveshaperSettings,
-    pub character: super::CharacterType,
-    pub character_cutoff: f32,
-    pub character_resonance: f32,
+    pub flavor: super::FlavorType,
+    pub flavor_cutoff: f32,
+    pub flavor_resonance: f32,
     pub osc_fm_mode: OscFmMode,
     pub osc_fm_depth: f32,
     pub ring12_combinator: CombinatorMode,
@@ -931,9 +931,9 @@ impl Default for VoiceParams {
             scene_lfo6: LfoSettings::default(),
             noise: NoiseSettings::default(),
             waveshaper: WaveshaperSettings::default(),
-            character: super::CharacterType::Off,
-            character_cutoff: 8000.0,
-            character_resonance: 0.5,
+            flavor: super::FlavorType::Off,
+            flavor_cutoff: 8000.0,
+            flavor_resonance: 0.5,
             osc_fm_mode: OscFmMode::Off,
             osc_fm_depth: 0.5,
             ring12_combinator: CombinatorMode::Ring,
@@ -1015,8 +1015,8 @@ pub struct Voice {
     sample_rate: f32,
     oscillators: [Oscillator; 3],
     noise: NoiseGenerator,
-    character: CharacterFilter,
-    character2: CharacterFilter,
+    flavor: FlavorFilter,
+    flavor2: FlavorFilter,
     waveshaper: Waveshaper,
     filter1_l: Filter,
     filter1_r: Filter,
@@ -1101,8 +1101,8 @@ impl Voice {
                 Oscillator::new(OscType::Fm2, sample_rate),
             ],
             noise: NoiseGenerator::new(sample_rate),
-            character: CharacterFilter::new(sample_rate),
-            character2: CharacterFilter::new(sample_rate),
+            flavor: FlavorFilter::new(sample_rate),
+            flavor2: FlavorFilter::new(sample_rate),
             waveshaper: Waveshaper::new(),
             filter1_l: Filter::new(FilterType::Lowpass, sample_rate),
             filter1_r: Filter::new(FilterType::Lowpass, sample_rate),
@@ -1566,13 +1566,13 @@ impl Voice {
             );
         }
 
-        // Update character
-        self.character.set_type(params.character);
-        self.character.cutoff_hz = params.character_cutoff;
-        self.character.resonance = params.character_resonance;
-        self.character2.set_type(params.character);
-        self.character2.cutoff_hz = params.character_cutoff;
-        self.character2.resonance = params.character_resonance;
+        // Update flavor
+        self.flavor.set_type(params.flavor);
+        self.flavor.cutoff_hz = params.flavor_cutoff;
+        self.flavor.resonance = params.flavor_resonance;
+        self.flavor2.set_type(params.flavor);
+        self.flavor2.cutoff_hz = params.flavor_cutoff;
+        self.flavor2.resonance = params.flavor_resonance;
 
         // Update waveshaper
         self.waveshaper.set_shape(params.waveshaper.shape);
@@ -1602,7 +1602,7 @@ impl Voice {
         self.lfo5.set_sample_rate(sample_rate);
         self.lfo6.set_sample_rate(sample_rate);
         self.noise = NoiseGenerator::new(sample_rate);
-        self.character.set_sample_rate(sample_rate);
+        self.flavor.set_sample_rate(sample_rate);
     }
 
     pub fn set_eg_tempo(&mut self, tempo_bpm: f32) {
@@ -1869,7 +1869,7 @@ impl Voice {
                 ModTarget::NoiseLevel => vals.noise_level += delta,
                 ModTarget::WaveshaperDrive => vals.waveshaper_drive += delta,
                 ModTarget::Portamento => vals.portamento += delta,
-                ModTarget::CharacterCutoff => vals.character_cutoff += delta,
+                ModTarget::FlavorCutoff => vals.flavor_cutoff += delta,
                 ModTarget::FilterBalance => vals.filter_balance += delta,
                 ModTarget::OscFmDepth => vals.osc_fm_depth += delta,
                 ModTarget::Osc1Sync => vals.osc_sync[0] += delta,
@@ -2353,13 +2353,13 @@ impl Voice {
             let per_source_routing = self.params.oscs.iter().any(|o| o.route != OscRoute::Both)
                 || self.params.noise.route != OscRoute::Both;
 
-            // Character filter on each mix
-            let char_cutoff =
-                (self.params.character_cutoff + mods.character_cutoff).clamp(20.0, 20000.0);
-            self.character.cutoff_hz = char_cutoff;
-            self.character2.cutoff_hz = char_cutoff;
-            let (f1_char_l, f1_char_r) = self.character.process(f1_mix_l, f1_mix_r);
-            let (f2_char_l, f2_char_r) = self.character2.process(f2_mix_l, f2_mix_r);
+            // Flavor filter on each mix
+            let flavor_cutoff =
+                (self.params.flavor_cutoff + mods.flavor_cutoff).clamp(20.0, 20000.0);
+            self.flavor.cutoff_hz = flavor_cutoff;
+            self.flavor2.cutoff_hz = flavor_cutoff;
+            let (f1_char_l, f1_char_r) = self.flavor.process(f1_mix_l, f1_mix_r);
+            let (f2_char_l, f2_char_r) = self.flavor2.process(f2_mix_l, f2_mix_r);
 
             // Total mix for backward-compatible path
             let sample_l = f1_mix_l + f2_mix_l;
@@ -2367,7 +2367,7 @@ impl Voice {
             let (char_out_l, char_out_r) = if per_source_routing {
                 (f1_char_l, f1_char_r)
             } else {
-                self.character.process(sample_l, sample_r)
+                self.flavor.process(sample_l, sample_r)
             };
 
             // Pre-filter gain

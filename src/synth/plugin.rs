@@ -17,7 +17,7 @@ use clap_clap::{
         CLAP_INVALID_ID, CLAP_NOTE_DIALECT_MIDI, CLAP_NOTE_EXPRESSION_BRIGHTNESS,
         CLAP_NOTE_EXPRESSION_PAN, CLAP_NOTE_EXPRESSION_PRESSURE, CLAP_NOTE_EXPRESSION_TUNING,
         CLAP_NOTE_EXPRESSION_VOLUME, CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_MONO,
-        CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION,
+        CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_STEREO, CLAP_PROCESS_CONTINUE, CLAP_VERSION,
         CLAP_WINDOW_API_COCOA, CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info,
         clap_gui_resize_hints, clap_host, clap_host_gui, clap_host_params, clap_host_state,
         clap_id, clap_istream, clap_note_port_info, clap_ostream, clap_param_info, clap_plugin,
@@ -30,13 +30,12 @@ use clap_clap::{
 };
 use parking_lot::Mutex;
 
-use crate::common::{
-    SharedStateExt, apply_param_events, copy_str_to_array, emit_pending_param_events_to_host,
-};
+use crate::common::copy_str_to_array;
+use crate::common::param_events::ParamGesture;
 use crate::common::{bus, fft};
 use crate::synth::{
     dsp::{
-        CharacterType, EnvelopeMode, FilterRouting, FilterSettings, FilterSubtype, FilterType,
+        EnvelopeMode, FilterRouting, FilterSettings, FilterSubtype, FilterType, FlavorType,
         LfoSettings, LfoSyncDivision, LfoSyncMode, MSEG_MAX_NODES, MSEG_MAX_SEGMENTS, ModRouting,
         ModSource, ModTarget, MsegCurve, MtsEspClient, NoiseSettings, NoiseType, OscFmMode,
         OscPhaseMode, OscSettings, OscType, PlayMode, PortamentoCurve, StealMode, SynthEngine,
@@ -88,10 +87,10 @@ static DESCRIPTOR: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor {
 pub struct SharedState {
     pub params: ParamStore,
     sample_rate_bits: std::sync::atomic::AtomicU64,
-    pending_param_notifications: std::sync::atomic::AtomicU32,
-    pending_gesture_begin: std::sync::atomic::AtomicU32,
-    pending_gesture_end: std::sync::atomic::AtomicU32,
-    active_local_gestures: std::sync::atomic::AtomicU32,
+    pending_param_notifications: Vec<std::sync::atomic::AtomicBool>,
+    pending_gesture_begin: Vec<std::sync::atomic::AtomicBool>,
+    pending_gesture_end: Vec<std::sync::atomic::AtomicBool>,
+    active_local_gestures: Vec<std::sync::atomic::AtomicBool>,
     host: AtomicPtr<clap_host>,
 }
 
@@ -100,10 +99,18 @@ impl Default for SharedState {
         Self {
             params: ParamStore::default(),
             sample_rate_bits: std::sync::atomic::AtomicU64::new(48_000.0f64.to_bits()),
-            pending_param_notifications: std::sync::atomic::AtomicU32::new(0),
-            pending_gesture_begin: std::sync::atomic::AtomicU32::new(0),
-            pending_gesture_end: std::sync::atomic::AtomicU32::new(0),
-            active_local_gestures: std::sync::atomic::AtomicU32::new(0),
+            pending_param_notifications: (0..ParamId::COUNT)
+                .map(|_| std::sync::atomic::AtomicBool::new(false))
+                .collect(),
+            pending_gesture_begin: (0..ParamId::COUNT)
+                .map(|_| std::sync::atomic::AtomicBool::new(false))
+                .collect(),
+            pending_gesture_end: (0..ParamId::COUNT)
+                .map(|_| std::sync::atomic::AtomicBool::new(false))
+                .collect(),
+            active_local_gestures: (0..ParamId::COUNT)
+                .map(|_| std::sync::atomic::AtomicBool::new(false))
+                .collect(),
             host: AtomicPtr::new(null_mut()),
         }
     }
@@ -133,20 +140,7 @@ impl SharedState {
     }
 
     fn mark_param_notification_pending(&self, id: ParamId) {
-        let bit = 1_u32 << (id.as_index() as u32);
-        self.pending_param_notifications
-            .fetch_or(bit, Ordering::AcqRel);
-    }
-
-    fn take_pending_param_notifications(&self) -> u64 {
-        self.pending_param_notifications.swap(0, Ordering::AcqRel) as u64
-    }
-
-    fn requeue_pending_param_notifications(&self, bits: u64) {
-        if bits != 0 {
-            self.pending_param_notifications
-                .fetch_or(bits as u32, Ordering::AcqRel);
-        }
+        self.pending_param_notifications[id.as_index()].store(true, Ordering::Release);
     }
 
     pub fn set_param_outbound_only(&self, id: ParamId, value: f64) {
@@ -154,16 +148,14 @@ impl SharedState {
     }
 
     pub fn mark_gesture_begin_pending(&self, id: ParamId) {
-        let bit = 1_u32 << (id.as_index() as u32);
-        self.pending_gesture_begin.fetch_or(bit, Ordering::AcqRel);
-        self.active_local_gestures.fetch_or(bit, Ordering::AcqRel);
+        self.pending_gesture_begin[id.as_index()].store(true, Ordering::Release);
+        self.active_local_gestures[id.as_index()].store(true, Ordering::Release);
         self.mark_dirty();
     }
 
     pub fn mark_gesture_end_pending(&self, id: ParamId) {
-        let bit = 1_u32 << (id.as_index() as u32);
-        self.pending_gesture_end.fetch_or(bit, Ordering::AcqRel);
-        self.active_local_gestures.fetch_and(!bit, Ordering::AcqRel);
+        self.pending_gesture_end[id.as_index()].store(true, Ordering::Release);
+        self.active_local_gestures[id.as_index()].store(false, Ordering::Release);
         self.mark_dirty();
     }
 
@@ -232,47 +224,98 @@ impl SharedState {
     }
 }
 
-impl SharedStateExt<ParamId> for SharedState {
-    fn params_get(&self, id: ParamId) -> f64 {
+impl SharedState {
+    pub fn params_get(&self, id: ParamId) -> f64 {
         self.params.get(id)
     }
-    fn set_gesture_active(&self, id: ParamId, active: bool) {
-        let bit = 1_u32 << (id.as_index() as u32);
-        if active {
-            self.active_local_gestures.fetch_or(bit, Ordering::AcqRel);
-        } else {
-            self.active_local_gestures.fetch_and(!bit, Ordering::AcqRel);
+    pub fn set_gesture_active(&self, id: ParamId, active: bool) {
+        self.active_local_gestures[id.as_index()].store(active, Ordering::Release);
+    }
+    pub fn is_gesture_active(&self, id: ParamId) -> bool {
+        self.active_local_gestures[id.as_index()].load(Ordering::Acquire)
+    }
+}
+
+fn apply_param_events_synth(
+    shared: &SharedState,
+    events: &clap_clap::events::InputEvents<'_>,
+    sanitize: impl Fn(ParamId, f64) -> f64,
+) {
+    use clap_clap::ffi::{
+        CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END,
+        CLAP_EVENT_PARAM_VALUE, clap_event_header, clap_event_param_gesture,
+    };
+
+    for index in 0..events.size() {
+        let header = events.get(index);
+        if header.space_id() != CLAP_CORE_EVENT_SPACE_ID {
+            continue;
+        }
+        match header.r#type() {
+            t if t == CLAP_EVENT_PARAM_GESTURE_BEGIN as u16 => {
+                let gesture = unsafe {
+                    &*((header.as_clap_event_header() as *const clap_event_header)
+                        as *const clap_event_param_gesture)
+                };
+                if let Some(id) = ParamId::from_raw(gesture.param_id) {
+                    shared.set_gesture_active(id, true);
+                }
+            }
+            t if t == CLAP_EVENT_PARAM_GESTURE_END as u16 => {
+                let gesture = unsafe {
+                    &*((header.as_clap_event_header() as *const clap_event_header)
+                        as *const clap_event_param_gesture)
+                };
+                if let Some(id) = ParamId::from_raw(gesture.param_id) {
+                    shared.set_gesture_active(id, false);
+                }
+            }
+            t if t == CLAP_EVENT_PARAM_VALUE as u16 => {
+                if let Ok(param) = header.param_value() {
+                    let raw: u32 = param.param_id().into();
+                    if let Some(id) = ParamId::from_raw(raw) {
+                        if shared.is_gesture_active(id) {
+                            continue;
+                        }
+                        let incoming = sanitize(id, param.value());
+                        shared.set_param_from_host(id, incoming);
+                    }
+                }
+            }
+            _ => {}
         }
     }
-    fn is_gesture_active(&self, id: ParamId) -> bool {
-        let bit = 1_u32 << (id.as_index() as u32);
-        (self.active_local_gestures.load(Ordering::Acquire) & bit) != 0
-    }
-    fn set_param_from_host(&self, id: ParamId, value: f64) {
-        self.set_param_from_host(id, value);
-    }
-    fn take_pending_param_notifications(&self) -> u64 {
-        self.take_pending_param_notifications()
-    }
-    fn requeue_pending_param_notifications(&self, bits: u64) {
-        self.requeue_pending_param_notifications(bits);
-    }
-    fn take_pending_gesture_begin(&self) -> u64 {
-        self.pending_gesture_begin.swap(0, Ordering::AcqRel) as u64
-    }
-    fn requeue_pending_gesture_begin(&self, bits: u64) {
-        if bits != 0 {
-            self.pending_gesture_begin
-                .fetch_or(bits as u32, Ordering::AcqRel);
+}
+
+fn emit_pending_param_events_to_host_synth(
+    shared: &SharedState,
+    out_events: &mut clap_clap::events::OutputEvents<'_>,
+) {
+    use clap_clap::events::{EventBuilder, ParamValue};
+    use clap_clap::id::ClapId;
+
+    for id in (0..ParamId::COUNT).filter_map(|i| ParamId::from_raw(i as u32)) {
+        let idx = id.as_index();
+        if shared.pending_gesture_begin[idx].swap(false, Ordering::AcqRel) {
+            let begin = ParamGesture::begin(ClapId::from(id.as_index() as u16));
+            if out_events.try_push(begin).is_err() {
+                shared.pending_gesture_begin[idx].store(true, Ordering::Release);
+            }
         }
-    }
-    fn take_pending_gesture_end(&self) -> u64 {
-        self.pending_gesture_end.swap(0, Ordering::AcqRel) as u64
-    }
-    fn requeue_pending_gesture_end(&self, bits: u64) {
-        if bits != 0 {
-            self.pending_gesture_end
-                .fetch_or(bits as u32, Ordering::AcqRel);
+        if shared.pending_param_notifications[idx].swap(false, Ordering::AcqRel) {
+            let event_builder = ParamValue::build()
+                .param_id(ClapId::from(id.as_index() as u16))
+                .value(shared.params_get(id));
+            let event = event_builder.event();
+            if out_events.try_push(event).is_err() {
+                shared.pending_param_notifications[idx].store(true, Ordering::Release);
+            }
+        }
+        if shared.pending_gesture_end[idx].swap(false, Ordering::AcqRel) {
+            let end = ParamGesture::end(ClapId::from(id.as_index() as u16));
+            if out_events.try_push(end).is_err() {
+                shared.pending_gesture_end[idx].store(true, Ordering::Release);
+            }
         }
     }
 }
@@ -1258,9 +1301,9 @@ fn build_voice_params(params: &ParamStore) -> VoiceParams {
             mix: params.get(ParamId::WaveshaperMix) as f32,
             enabled: params.get_bool(ParamId::WaveshaperEnabled),
         },
-        character: CharacterType::from_u8(params.get(ParamId::CharacterType) as u8),
-        character_cutoff: params.get(ParamId::CharacterCutoff) as f32,
-        character_resonance: params.get(ParamId::CharacterResonance) as f32,
+        flavor: FlavorType::from_u8(params.get(ParamId::FlavorType) as u8),
+        flavor_cutoff: params.get(ParamId::FlavorCutoff) as f32,
+        flavor_resonance: params.get(ParamId::FlavorResonance) as f32,
         osc_fm_mode: OscFmMode::from_u8(params.get(ParamId::OscFmMode) as u8),
         osc_fm_depth: params.get(ParamId::OscFmDepth) as f32,
         portamento: params.get(ParamId::Portamento) as f32,
@@ -1423,10 +1466,10 @@ impl AudioProcessor {
 
     fn process(&mut self, shared: &SharedState, process: &mut Process) -> clap_process_status {
         // Apply parameter changes from host
-        apply_param_events(shared, &process.in_events(), sanitize_param_value);
+        apply_param_events_synth(shared, &process.in_events(), sanitize_param_value);
         {
             let mut out_events = process.out_events();
-            emit_pending_param_events_to_host(shared, &mut out_events);
+            emit_pending_param_events_to_host_synth(shared, &mut out_events);
         }
 
         // Update engine params
@@ -1481,6 +1524,7 @@ impl AudioProcessor {
                         let velocity = note.velocity() as f32;
                         let key = note.key() as u8;
                         if velocity > 0.0 {
+                            eprintln!("[SYNTH] NOTE_ON key={} vel={}", key, velocity);
                             self.engine.trigger(key, velocity);
                         }
                     }
@@ -1579,6 +1623,18 @@ impl AudioProcessor {
             audio_in_l,
             audio_in_r,
         );
+
+        let peak_l = self.temp_l[..frames]
+            .iter()
+            .map(|&s| s.abs())
+            .fold(0.0f32, f32::max);
+        let peak_r = self.temp_r[..frames]
+            .iter()
+            .map(|&s| s.abs())
+            .fold(0.0f32, f32::max);
+        if peak_l > 0.001 || peak_r > 0.001 {
+            eprintln!("[SYNTH] AUDIO peak_l={:.4} peak_r={:.4}", peak_l, peak_r);
+        }
 
         // Write to output
         let outputs_count = process.audio_outputs_count();
@@ -1817,7 +1873,7 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
     info.id = 0;
     info.flags = CLAP_AUDIO_PORT_IS_MAIN;
     info.channel_count = 2;
-    info.port_type = CLAP_PORT_MONO.as_ptr();
+    info.port_type = CLAP_PORT_STEREO.as_ptr();
     info.in_place_pair = CLAP_INVALID_ID;
     copy_str_to_array("Stereo Out", &mut info.name);
     true
@@ -1961,11 +2017,11 @@ unsafe extern "C-unwind" fn ext_params_flush(
     let inst = unsafe { instance(plugin) };
     if !in_events.is_null() {
         let input = unsafe { InputEvents::new_unchecked(&*in_events) };
-        apply_param_events(&inst.shared, &input, sanitize_param_value);
+        apply_param_events_synth(&inst.shared, &input, sanitize_param_value);
     }
     if !out_events.is_null() {
         let mut output = unsafe { OutputEvents::new_unchecked(&*out_events) };
-        emit_pending_param_events_to_host(&inst.shared, &mut output);
+        emit_pending_param_events_to_host_synth(&inst.shared, &mut output);
     }
 }
 

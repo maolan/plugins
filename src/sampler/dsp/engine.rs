@@ -22,6 +22,16 @@ struct TriggerArgs {
     exclusive_group: u8,
 }
 
+#[derive(Clone, Copy)]
+struct VoiceParams {
+    group_gain: f32,
+    group_pan: f32,
+    part_gain: f32,
+    part_pan: f32,
+    portamento: f32,
+    prev_increment: Option<f64>,
+}
+
 /// Sampler engine: owns the voice pool, patch, and handles allocation.
 pub struct SamplerEngine {
     sample_rate: f32,
@@ -387,12 +397,14 @@ impl SamplerEngine {
                 };
                 self.trigger_voice_with_sample(
                     &args,
-                    group_gain,
-                    group_pan,
-                    part_gain,
-                    part_pan,
-                    portamento,
-                    prev_increment,
+                    VoiceParams {
+                        group_gain,
+                        group_pan,
+                        part_gain,
+                        part_pan,
+                        portamento,
+                        prev_increment,
+                    },
                 );
             }
             return;
@@ -413,12 +425,14 @@ impl SamplerEngine {
             PlayMode::Poly => {
                 self.trigger_voice_with_hierarchy(
                     &args,
-                    group_gain,
-                    group_pan,
-                    part_gain,
-                    part_pan,
-                    portamento,
-                    prev_increment,
+                    VoiceParams {
+                        group_gain,
+                        group_pan,
+                        part_gain,
+                        part_pan,
+                        portamento,
+                        prev_increment,
+                    },
                 );
             }
             PlayMode::Mono | PlayMode::MonoLatch => {
@@ -429,12 +443,14 @@ impl SamplerEngine {
                 }
                 self.trigger_voice_with_hierarchy(
                     &args,
-                    group_gain,
-                    group_pan,
-                    part_gain,
-                    part_pan,
-                    portamento,
-                    prev_increment,
+                    VoiceParams {
+                        group_gain,
+                        group_pan,
+                        part_gain,
+                        part_pan,
+                        portamento,
+                        prev_increment,
+                    },
                 );
             }
             PlayMode::MonoST | PlayMode::MonoLegato | PlayMode::MonoFP => {
@@ -447,12 +463,14 @@ impl SamplerEngine {
                 } else {
                     self.trigger_voice_with_hierarchy(
                         &args,
-                        group_gain,
-                        group_pan,
-                        part_gain,
-                        part_pan,
-                        portamento,
-                        prev_increment,
+                        VoiceParams {
+                            group_gain,
+                            group_pan,
+                            part_gain,
+                            part_pan,
+                            portamento,
+                            prev_increment,
+                        },
                     );
                 }
             }
@@ -466,23 +484,27 @@ impl SamplerEngine {
                 }
                 self.trigger_voice_with_hierarchy(
                     &args,
-                    group_gain,
-                    group_pan,
-                    part_gain,
-                    part_pan,
-                    portamento,
-                    prev_increment,
+                    VoiceParams {
+                        group_gain,
+                        group_pan,
+                        part_gain,
+                        part_pan,
+                        portamento,
+                        prev_increment,
+                    },
                 );
             }
             PlayMode::PolyStackMultiple => {
                 self.trigger_voice_with_hierarchy(
                     &args,
-                    group_gain,
-                    group_pan,
-                    part_gain,
-                    part_pan,
-                    portamento,
-                    prev_increment,
+                    VoiceParams {
+                        group_gain,
+                        group_pan,
+                        part_gain,
+                        part_pan,
+                        portamento,
+                        prev_increment,
+                    },
                 );
             }
         }
@@ -706,40 +728,17 @@ impl SamplerEngine {
     // Internal helpers
     // -----------------------------------------------------------------------
 
-    fn trigger_voice_with_hierarchy(
-        &mut self,
-        args: &TriggerArgs,
-        group_gain: f32,
-        group_pan: f32,
-        part_gain: f32,
-        part_pan: f32,
-        portamento: f32,
-        prev_increment: Option<f64>,
-    ) {
+    fn trigger_voice_with_hierarchy(&mut self, args: &TriggerArgs, params: VoiceParams) {
         self.trigger_voice_with_sample(
             &TriggerArgs {
                 sample: None,
                 ..args.clone()
             },
-            group_gain,
-            group_pan,
-            part_gain,
-            part_pan,
-            portamento,
-            prev_increment,
+            params,
         );
     }
 
-    fn trigger_voice_with_sample(
-        &mut self,
-        args: &TriggerArgs,
-        group_gain: f32,
-        group_pan: f32,
-        part_gain: f32,
-        part_pan: f32,
-        portamento: f32,
-        prev_increment: Option<f64>,
-    ) {
+    fn trigger_voice_with_sample(&mut self, args: &TriggerArgs, params: VoiceParams) {
         // Choke other voices in the same exclusive group.
         if args.exclusive_group != 0 {
             for voice in &mut self.voices {
@@ -864,7 +863,12 @@ impl SamplerEngine {
         self.voices[index].set_lfo1_params(lfo1_rate, lfo1_amount, lfo1_shape, lfo1_enabled);
         let (lfo2_rate, lfo2_amount, lfo2_shape, lfo2_enabled) = self.lfo2_params;
         self.voices[index].set_lfo2_params(lfo2_rate, lfo2_amount, lfo2_shape, lfo2_enabled);
-        self.voices[index].set_hierarchy_gain_pan(group_gain, group_pan, part_gain, part_pan);
+        self.voices[index].set_hierarchy_gain_pan(
+            params.group_gain,
+            params.group_pan,
+            params.part_gain,
+            params.part_pan,
+        );
         self.voices[index].set_group_part_index(args.group_index, args.part_index);
         let microtuning = self
             .patch
@@ -880,8 +884,8 @@ impl SamplerEngine {
             args.exclusive_group,
             args.sample.clone(),
         );
-        if let Some(prev_inc) = prev_increment {
-            self.voices[index].setup_portamento(prev_inc, portamento);
+        if let Some(prev_inc) = params.prev_increment {
+            self.voices[index].setup_portamento(prev_inc, params.portamento);
         }
     }
 
