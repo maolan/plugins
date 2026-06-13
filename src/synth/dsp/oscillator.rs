@@ -103,6 +103,25 @@ impl OscType {
     }
 }
 
+impl std::fmt::Display for OscType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OscType::Classic => write!(f, "Classic"),
+            OscType::Sine => write!(f, "Sine"),
+            OscType::Fm2 => write!(f, "FM2"),
+            OscType::Wavetable => write!(f, "Wavetable"),
+            OscType::Window => write!(f, "Window"),
+            OscType::Modern => write!(f, "Modern"),
+            OscType::ShNoise => write!(f, "ShNoise"),
+            OscType::String => write!(f, "String"),
+            OscType::Fm3 => write!(f, "FM3"),
+            OscType::Alias => write!(f, "Alias"),
+            OscType::Twist => write!(f, "Twist"),
+            OscType::AudioInput => write!(f, "Audio In"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClassicWaveform {
     Saw = 0,
@@ -176,7 +195,7 @@ impl ClassicOsc {
     }
 
     pub fn set_sync_amount(&mut self, amount: f32) {
-        self.sync_amount = amount.clamp(0.0, 1.0);
+        self.sync_amount = amount.clamp(0.0, 60.0);
     }
 
     pub fn set_freq_hz(&mut self, freq: f32) {
@@ -316,7 +335,7 @@ impl ClassicOsc {
 
             // Hard sync: advance sync phase at higher frequency, reset voice phase on wrap
             if self.sync_amount > 0.0 {
-                let sync_ratio = 1.0 + self.sync_amount * 15.0;
+                let sync_ratio = 2.0f32.powf(self.sync_amount / 12.0);
                 let sync_inc = vdt * sync_ratio;
                 self.sync_phases[i] += sync_inc;
                 while self.sync_phases[i] >= 1.0 {
@@ -1947,7 +1966,7 @@ impl ShNoiseOsc {
     }
 
     pub fn set_sync(&mut self, sync: f32) {
-        self.sync = sync.clamp(0.0, 1.0);
+        self.sync = sync.clamp(0.0, 60.0);
     }
 
     pub fn set_lowcut(&mut self, freq: f32) {
@@ -2007,7 +2026,7 @@ impl ShNoiseOsc {
 
             // Hard sync: sync phase runs at higher frequency, resets main phase on wrap
             if self.sync > 0.0 {
-                let sync_ratio = 1.0 + self.sync * 15.0;
+                let sync_ratio = 2.0f32.powf(self.sync / 12.0);
                 self.voice_sync_phases[i] += phase_inc * sync_ratio;
                 if self.voice_sync_phases[i] >= 1.0 {
                     self.voice_sync_phases[i] -= 1.0;

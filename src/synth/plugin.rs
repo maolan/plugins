@@ -1524,7 +1524,6 @@ impl AudioProcessor {
                         let velocity = note.velocity() as f32;
                         let key = note.key() as u8;
                         if velocity > 0.0 {
-                            eprintln!("[SYNTH] NOTE_ON key={} vel={}", key, velocity);
                             self.engine.trigger(key, velocity);
                         }
                     }
@@ -1623,18 +1622,6 @@ impl AudioProcessor {
             audio_in_l,
             audio_in_r,
         );
-
-        let peak_l = self.temp_l[..frames]
-            .iter()
-            .map(|&s| s.abs())
-            .fold(0.0f32, f32::max);
-        let peak_r = self.temp_r[..frames]
-            .iter()
-            .map(|&s| s.abs())
-            .fold(0.0f32, f32::max);
-        if peak_l > 0.001 || peak_r > 0.001 {
-            eprintln!("[SYNTH] AUDIO peak_l={:.4} peak_r={:.4}", peak_l, peak_r);
-        }
 
         // Write to output
         let outputs_count = process.audio_outputs_count();

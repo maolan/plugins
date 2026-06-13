@@ -1654,7 +1654,7 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.0,
         0.01
     ),
-    def_toggle!(ParamId::Osc1Sync, "Sync", "Osc1", 1.0),
+    def_automatable!(ParamId::Osc1Sync, "Sync", "Osc1", 0.0, 60.0, 0.0, 0.0),
     // Oscillator 2
     def_enum!(ParamId::Osc2Type, "Type", "Osc2", 10.0, 1.0),
     def_enum!(ParamId::Osc2Octave, "Octave", "Osc2", 6.0, 3.0),
@@ -1674,7 +1674,7 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.0,
         0.01
     ),
-    def_toggle!(ParamId::Osc2Sync, "Sync", "Osc2", 1.0),
+    def_automatable!(ParamId::Osc2Sync, "Sync", "Osc2", 0.0, 60.0, 0.0, 0.0),
     // Oscillator 3
     def_enum!(ParamId::Osc3Type, "Type", "Osc3", 10.0, 2.0),
     def_enum!(ParamId::Osc3Octave, "Octave", "Osc3", 6.0, 2.0),
@@ -1703,7 +1703,7 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.0,
         0.01
     ),
-    def_toggle!(ParamId::Osc3Sync, "Sync", "Osc3", 1.0),
+    def_automatable!(ParamId::Osc3Sync, "Sync", "Osc3", 0.0, 60.0, 0.0, 0.0),
     // Filter 1
     def_enum!(ParamId::F1Type, "Type", "Filter1", 48.0, 1.0),
     def_automatable!(
@@ -4238,5 +4238,17 @@ impl crate::common::ClapParamId for ParamId {
 
     fn from_raw(id: u32) -> Option<Self> {
         Self::from_raw(id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ParamId, param_def};
+
+    #[test]
+    fn oscillator_sync_defaults_are_off() {
+        assert_eq!(param_def(ParamId::Osc1Sync).unwrap().default, 0.0);
+        assert_eq!(param_def(ParamId::Osc2Sync).unwrap().default, 0.0);
+        assert_eq!(param_def(ParamId::Osc3Sync).unwrap().default, 0.0);
     }
 }

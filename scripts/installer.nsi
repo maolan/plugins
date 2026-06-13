@@ -1,6 +1,6 @@
 ; Maolan Plugins Installer
 ; Run with: makensis.exe installer.nsi
-; Requires all binaries to be staged in C:\maolan-staging\plugins
+; Requires all binaries and DLLs to be staged in C:\maolan-staging\plugins
 
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
@@ -17,10 +17,10 @@ RequestExecutionLevel user
 ;--------------------------------
 ; Version Info
 ;--------------------------------
-VIProductVersion "0.0.1.0"
+VIProductVersion "0.0.3.0"
 VIAddVersionKey "ProductName" "Maolan Plugins"
-VIAddVersionKey "ProductVersion" "0.0.1"
-VIAddVersionKey "FileVersion" "0.0.1"
+VIAddVersionKey "ProductVersion" "0.0.3"
+VIAddVersionKey "FileVersion" "0.0.3"
 VIAddVersionKey "FileDescription" "Maolan CLAP Audio Plugins"
 VIAddVersionKey "LegalCopyright" "BSD-2-Clause"
 
@@ -35,6 +35,7 @@ VIAddVersionKey "LegalCopyright" "BSD-2-Clause"
 ; Pages
 ;--------------------------------
 !insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_LICENSE "LICENSE"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
@@ -55,7 +56,7 @@ VIAddVersionKey "LegalCopyright" "BSD-2-Clause"
 Section "Install"
     SetOutPath "$INSTDIR"
 
-    ; Copy all staged binaries
+    ; Copy all staged binaries and DLLs
     File "C:\maolan-staging\plugins\*.*"
 
     ; Run VC++ Redistributable installer
@@ -74,7 +75,7 @@ Section "Install"
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MaolanPlugins" \
         "UninstallString" "$\"$INSTDIR\Uninstall-Maolan-Plugins.exe$\""
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MaolanPlugins" \
-        "DisplayVersion" "0.0.1"
+        "DisplayVersion" "0.0.3"
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MaolanPlugins" \
         "Publisher" "Maolan Team"
     WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MaolanPlugins" \
@@ -92,6 +93,12 @@ SectionEnd
 ;--------------------------------
 Section "Uninstall"
     Delete "$INSTDIR\maolan_plugins.dll"
+    Delete "$INSTDIR\avcodec-62.dll"
+    Delete "$INSTDIR\avdevice-62.dll"
+    Delete "$INSTDIR\avfilter-11.dll"
+    Delete "$INSTDIR\avformat-62.dll"
+    Delete "$INSTDIR\avutil-60.dll"
+    Delete "$INSTDIR\swresample-6.dll"
     Delete "$INSTDIR\Uninstall-Maolan-Plugins.exe"
 
     Delete "$SMPROGRAMS\Maolan Plugins\Uninstall.lnk"

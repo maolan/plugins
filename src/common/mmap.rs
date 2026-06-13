@@ -2,14 +2,21 @@
 //!
 //! Provides a cross-platform abstraction over mmap for WAV/AIFF samples.
 
+#[cfg(unix)]
 use std::fs::File;
 use std::path::Path;
 
 /// A memory-mapped file view.
+#[cfg(unix)]
 pub struct MmapView {
-    #[cfg(unix)]
     ptr: *mut u8,
     len: usize,
+}
+
+/// A memory-mapped file view (non-Unix fallback: read the file into memory).
+#[cfg(not(unix))]
+pub struct MmapView {
+    data: Vec<u8>,
 }
 
 #[cfg(unix)]
@@ -71,12 +78,6 @@ impl Drop for MmapView {
             libc::munmap(self.ptr as *mut libc::c_void, self.len);
         }
     }
-}
-
-// Non-Unix fallback: just read the file into memory.
-#[cfg(not(unix))]
-pub struct MmapView {
-    data: Vec<u8>,
 }
 
 #[cfg(not(unix))]

@@ -23,9 +23,13 @@ use maolan_widgets::horizontal_slider::HorizontalSlider;
 use maolan_widgets::slider::Slider;
 use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
 
-use crate::synth::{
-    params::{ParamId, param_def},
-    plugin::SharedState,
+use crate::{
+    common::filter::FilterType,
+    synth::{
+        dsp::OscType,
+        params::{ParamId, param_def},
+        plugin::SharedState,
+    },
 };
 
 pub const EDITOR_WIDTH: u32 = 1000;
@@ -197,11 +201,7 @@ fn small_knob<'a>(
     .width(Length::Fixed(48.0))
     .height(Length::Fixed(48.0));
 
-    let value_text = if def.step >= 1.0 {
-        format!("{value:.0}")
-    } else {
-        format!("{value:.2}")
-    };
+    let value_text = param_value_text(id, value, def.step);
 
     container(
         column![text(label).size(11), slider, text(value_text).size(10)]
@@ -235,6 +235,57 @@ fn param_control<'a>(id: ParamId, label: &'a str, state: &'a State) -> Element<'
     }
 }
 
+fn osc_type_dropdown<'a>(id: ParamId, state: &'a State) -> Element<'a, Message> {
+    let value = state.shared.params.get(id) as f32;
+    let osc_type = OscType::from_u8(value as u8);
+    let options: Vec<OscType> = (0..=10).map(OscType::from_u8).collect();
+    let dropdown = maolan_baseview::iced::widget::pick_list(options, Some(osc_type), move |t| {
+        Message::SetParam(id, t as u8 as f32)
+    })
+    .placeholder("Type")
+    .width(Length::Fixed(84.0));
+
+    container(
+        column![text("Type").size(11), dropdown]
+            .spacing(2)
+            .align_x(Alignment::Center),
+    )
+    .width(Length::Fixed(90.0))
+    .into()
+}
+
+fn filter_type_dropdown<'a>(id: ParamId, state: &'a State) -> Element<'a, Message> {
+    let value = state.shared.params.get(id) as f32;
+    let filter_type = FilterType::from_u8(value as u8);
+    let options: Vec<FilterType> = (1..=48).map(FilterType::from_u8).collect();
+    let dropdown = maolan_baseview::iced::widget::pick_list(options, Some(filter_type), move |t| {
+        Message::SetParam(id, t as u8 as f32)
+    })
+    .placeholder("Type")
+    .width(Length::Fixed(84.0));
+
+    container(
+        column![text("Type").size(11), dropdown]
+            .spacing(2)
+            .align_x(Alignment::Center),
+    )
+    .width(Length::Fixed(90.0))
+    .into()
+}
+
+fn param_value_text(id: ParamId, value: f32, step: f64) -> String {
+    match id {
+        ParamId::Osc1Octave | ParamId::Osc2Octave | ParamId::Osc3Octave => {
+            format!("{:.0}", value - 3.0)
+        }
+        ParamId::F1Type | ParamId::F2Type | ParamId::NoiseFilterType => {
+            FilterType::from_u8(value as u8).name().to_string()
+        }
+        _ if step >= 1.0 => format!("{value:.0}"),
+        _ => format!("{value:.2}"),
+    }
+}
+
 fn vslider<'a>(id: ParamId, label: &'a str, state: &'a State) -> Element<'a, Message> {
     let value = state.shared.params.get(id) as f32;
     let def = param_def(id).expect("valid param id");
@@ -247,11 +298,7 @@ fn vslider<'a>(id: ParamId, label: &'a str, state: &'a State) -> Element<'a, Mes
     .width(Length::Fixed(20.0))
     .height(Length::Fixed(80.0));
 
-    let value_text = if def.step >= 1.0 {
-        format!("{value:.0}")
-    } else {
-        format!("{value:.2}")
-    };
+    let value_text = param_value_text(id, value, def.step);
 
     container(
         column![text(label).size(11), slider, text(value_text).size(10)]
@@ -275,11 +322,7 @@ fn hslider<'a>(id: ParamId, label: &'a str, state: &'a State) -> Element<'a, Mes
     .width(Length::Fixed(120.0))
     .height(Length::Fixed(16.0));
 
-    let value_text = if def.step >= 1.0 {
-        format!("{value:.0}")
-    } else {
-        format!("{value:.2}")
-    };
+    let value_text = param_value_text(id, value, def.step);
 
     container(
         column![text(label).size(11), slider, text(value_text).size(10)]
@@ -445,7 +488,7 @@ fn view(state: &State) -> Element<'_, Message> {
     let osc1 = panel_no_title(
         column![
             knob_row(vec![
-                param_control(ParamId::Osc1Type, "Type", state),
+                osc_type_dropdown(ParamId::Osc1Type, state),
                 param_control(ParamId::Osc1Waveform, "Wave", state),
                 param_control(ParamId::Osc1Octave, "Oct", state),
                 param_control(ParamId::Osc1Semitone, "Semi", state),
@@ -471,7 +514,7 @@ fn view(state: &State) -> Element<'_, Message> {
     let osc2 = panel_no_title(
         column![
             knob_row(vec![
-                param_control(ParamId::Osc2Type, "Type", state),
+                osc_type_dropdown(ParamId::Osc2Type, state),
                 param_control(ParamId::Osc2Waveform, "Wave", state),
                 param_control(ParamId::Osc2Octave, "Oct", state),
                 param_control(ParamId::Osc2Semitone, "Semi", state),
@@ -497,7 +540,7 @@ fn view(state: &State) -> Element<'_, Message> {
     let osc3 = panel_no_title(
         column![
             knob_row(vec![
-                param_control(ParamId::Osc3Type, "Type", state),
+                osc_type_dropdown(ParamId::Osc3Type, state),
                 param_control(ParamId::Osc3Waveform, "Wave", state),
                 param_control(ParamId::Osc3Octave, "Oct", state),
                 param_control(ParamId::Osc3Semitone, "Semi", state),
@@ -541,7 +584,7 @@ fn view(state: &State) -> Element<'_, Message> {
     let filter1 = panel_no_title(
         column![
             knob_row(vec![
-                param_control(ParamId::F1Type, "Type", state),
+                filter_type_dropdown(ParamId::F1Type, state),
                 param_control(ParamId::F1Subtype, "Sub", state),
                 param_control(ParamId::F1Cutoff, "Cut", state),
                 param_control(ParamId::F1Resonance, "Res", state),
@@ -558,7 +601,7 @@ fn view(state: &State) -> Element<'_, Message> {
     let filter2 = panel_no_title(
         column![
             knob_row(vec![
-                param_control(ParamId::F2Type, "Type", state),
+                filter_type_dropdown(ParamId::F2Type, state),
                 param_control(ParamId::F2Subtype, "Sub", state),
                 param_control(ParamId::F2Cutoff, "Cut", state),
                 param_control(ParamId::F2Resonance, "Res", state),
@@ -962,5 +1005,19 @@ impl GuiBridge {
         }
         self.window_handle = None;
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ParamId, param_value_text};
+
+    #[test]
+    fn octave_readout_shows_musical_offset() {
+        assert_eq!(param_value_text(ParamId::Osc1Octave, 1.0, 1.0), "-2");
+        assert_eq!(param_value_text(ParamId::Osc1Octave, 2.0, 1.0), "-1");
+        assert_eq!(param_value_text(ParamId::Osc1Octave, 3.0, 1.0), "0");
+        assert_eq!(param_value_text(ParamId::Osc1Octave, 4.0, 1.0), "1");
+        assert_eq!(param_value_text(ParamId::Osc1Octave, 5.0, 1.0), "2");
     }
 }

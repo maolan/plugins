@@ -16,6 +16,8 @@ use super::{
 use parking_lot::Mutex;
 use std::sync::Arc;
 
+const NOTE_ON_DECLICK_SAMPLES: usize = 64;
+
 // ---------------------------------------------------------------------------
 // Settings structs
 // ---------------------------------------------------------------------------
@@ -1655,6 +1657,10 @@ impl Voice {
             }
         }
         self.noise.reset();
+        self.filter1_l.reset();
+        self.filter1_r.reset();
+        self.filter2_l.reset();
+        self.filter2_r.reset();
 
         self.amp_eg.trigger();
         self.filter_eg.trigger();
@@ -1697,6 +1703,15 @@ impl Voice {
 
     pub fn is_active(&self) -> bool {
         self.active && (self.amp_eg.is_active() || self.gate)
+    }
+
+    fn note_on_declick_gain(&self) -> f32 {
+        let x = (self.sample_counter as f32 / NOTE_ON_DECLICK_SAMPLES as f32).clamp(0.0, 1.0);
+        x * x * (3.0 - 2.0 * x)
+    }
+
+    fn osc_sync_amount(&self, idx: usize, mods: &ModValues) -> f32 {
+        (self.params.oscs[idx].sync + mods.osc_sync[idx]).clamp(0.0, 60.0)
     }
 
     // -----------------------------------------------------------------------
@@ -2154,12 +2169,12 @@ impl Voice {
                 OscFmMode::Osc2To1 => {
                     // Generate osc2 first, then osc1 with FM from osc2, then osc3
                     if self.params.oscs[1].enabled {
-                        let sync = (self.params.oscs[1].sync + mods.osc_sync[1]).clamp(0.0, 1.0);
+                        let sync = self.osc_sync_amount(1, &mods);
                         self.oscillators[1].set_sync_amount(sync);
                         osc_samples[1] = self.oscillators[1].next(0.0, audio_l, audio_r);
                     }
                     if self.params.oscs[0].enabled {
-                        let sync = (self.params.oscs[0].sync + mods.osc_sync[0]).clamp(0.0, 1.0);
+                        let sync = self.osc_sync_amount(0, &mods);
                         self.oscillators[0].set_sync_amount(sync);
                         let depth = ((self.params.osc_fm_depth + mods.osc_fm_depth)
                             * self.params.oscs[0].fm_depth)
@@ -2168,7 +2183,7 @@ impl Voice {
                         osc_samples[0] = self.oscillators[0].next(fm_in, audio_l, audio_r);
                     }
                     if self.params.oscs[2].enabled {
-                        let sync = (self.params.oscs[2].sync + mods.osc_sync[2]).clamp(0.0, 1.0);
+                        let sync = self.osc_sync_amount(2, &mods);
                         self.oscillators[2].set_sync_amount(sync);
                         osc_samples[2] = self.oscillators[2].next(0.0, audio_l, audio_r);
                     }
@@ -2176,12 +2191,12 @@ impl Voice {
                 OscFmMode::Osc3To1 => {
                     // Generate osc3 first, then osc1 with FM from osc3, then osc2
                     if self.params.oscs[2].enabled {
-                        let sync = (self.params.oscs[2].sync + mods.osc_sync[2]).clamp(0.0, 1.0);
+                        let sync = self.osc_sync_amount(2, &mods);
                         self.oscillators[2].set_sync_amount(sync);
                         osc_samples[2] = self.oscillators[2].next(0.0, audio_l, audio_r);
                     }
                     if self.params.oscs[0].enabled {
-                        let sync = (self.params.oscs[0].sync + mods.osc_sync[0]).clamp(0.0, 1.0);
+                        let sync = self.osc_sync_amount(0, &mods);
                         self.oscillators[0].set_sync_amount(sync);
                         let depth = ((self.params.osc_fm_depth + mods.osc_fm_depth)
                             * self.params.oscs[0].fm_depth)
@@ -2190,7 +2205,7 @@ impl Voice {
                         osc_samples[0] = self.oscillators[0].next(fm_in, audio_l, audio_r);
                     }
                     if self.params.oscs[1].enabled {
-                        let sync = (self.params.oscs[1].sync + mods.osc_sync[1]).clamp(0.0, 1.0);
+                        let sync = self.osc_sync_amount(1, &mods);
                         self.oscillators[1].set_sync_amount(sync);
                         osc_samples[1] = self.oscillators[1].next(0.0, audio_l, audio_r);
                     }
@@ -2198,12 +2213,12 @@ impl Voice {
                 OscFmMode::Osc3To2 => {
                     // Generate osc3 first, then osc2 with FM from osc3, then osc1
                     if self.params.oscs[2].enabled {
-                        let sync = (self.params.oscs[2].sync + mods.osc_sync[2]).clamp(0.0, 1.0);
+                        let sync = self.osc_sync_amount(2, &mods);
                         self.oscillators[2].set_sync_amount(sync);
                         osc_samples[2] = self.oscillators[2].next(0.0, audio_l, audio_r);
                     }
                     if self.params.oscs[1].enabled {
-                        let sync = (self.params.oscs[1].sync + mods.osc_sync[1]).clamp(0.0, 1.0);
+                        let sync = self.osc_sync_amount(1, &mods);
                         self.oscillators[1].set_sync_amount(sync);
                         let depth = ((self.params.osc_fm_depth + mods.osc_fm_depth)
                             * self.params.oscs[1].fm_depth)
@@ -2212,7 +2227,7 @@ impl Voice {
                         osc_samples[1] = self.oscillators[1].next(fm_in, audio_l, audio_r);
                     }
                     if self.params.oscs[0].enabled {
-                        let sync = (self.params.oscs[0].sync + mods.osc_sync[0]).clamp(0.0, 1.0);
+                        let sync = self.osc_sync_amount(0, &mods);
                         self.oscillators[0].set_sync_amount(sync);
                         osc_samples[0] = self.oscillators[0].next(0.0, audio_l, audio_r);
                     }
@@ -2220,12 +2235,12 @@ impl Voice {
                 _ => {
                     // Default order: osc1, osc2, osc3
                     if self.params.oscs[0].enabled {
-                        let sync = (self.params.oscs[0].sync + mods.osc_sync[0]).clamp(0.0, 1.0);
+                        let sync = self.osc_sync_amount(0, &mods);
                         self.oscillators[0].set_sync_amount(sync);
                         osc_samples[0] = self.oscillators[0].next(0.0, audio_l, audio_r);
                     }
                     if self.params.oscs[1].enabled {
-                        let sync = (self.params.oscs[1].sync + mods.osc_sync[1]).clamp(0.0, 1.0);
+                        let sync = self.osc_sync_amount(1, &mods);
                         self.oscillators[1].set_sync_amount(sync);
                         let fm_in = match self.params.osc_fm_mode {
                             OscFmMode::Osc1To2 | OscFmMode::Osc1To2To3 | OscFmMode::Osc1To3 => {
@@ -2239,7 +2254,7 @@ impl Voice {
                         osc_samples[1] = self.oscillators[1].next(fm_in, audio_l, audio_r);
                     }
                     if self.params.oscs[2].enabled {
-                        let sync = (self.params.oscs[2].sync + mods.osc_sync[2]).clamp(0.0, 1.0);
+                        let sync = self.osc_sync_amount(2, &mods);
                         self.oscillators[2].set_sync_amount(sync);
                         let fm_in = match self.params.osc_fm_mode {
                             OscFmMode::Osc2To3 | OscFmMode::Osc1To2To3 => {
@@ -2353,22 +2368,24 @@ impl Voice {
             let per_source_routing = self.params.oscs.iter().any(|o| o.route != OscRoute::Both)
                 || self.params.noise.route != OscRoute::Both;
 
+            // Total mix for backward-compatible path
+            let sample_l = f1_mix_l + f2_mix_l;
+            let sample_r = f1_mix_r + f2_mix_r;
+
             // Flavor filter on each mix
             let flavor_cutoff =
                 (self.params.flavor_cutoff + mods.flavor_cutoff).clamp(20.0, 20000.0);
             self.flavor.cutoff_hz = flavor_cutoff;
             self.flavor2.cutoff_hz = flavor_cutoff;
-            let (f1_char_l, f1_char_r) = self.flavor.process(f1_mix_l, f1_mix_r);
-            let (f2_char_l, f2_char_r) = self.flavor2.process(f2_mix_l, f2_mix_r);
-
-            // Total mix for backward-compatible path
-            let sample_l = f1_mix_l + f2_mix_l;
-            let sample_r = f1_mix_r + f2_mix_r;
-            let (char_out_l, char_out_r) = if per_source_routing {
-                (f1_char_l, f1_char_r)
-            } else {
-                self.flavor.process(sample_l, sample_r)
-            };
+            let (f1_char_l, f1_char_r, f2_char_l, f2_char_r, char_out_l, char_out_r) =
+                if per_source_routing {
+                    let (f1c_l, f1c_r) = self.flavor.process(f1_mix_l, f1_mix_r);
+                    let (f2c_l, f2c_r) = self.flavor2.process(f2_mix_l, f2_mix_r);
+                    (f1c_l, f1c_r, f2c_l, f2c_r, f1c_l, f1c_r)
+                } else {
+                    let (c_l, c_r) = self.flavor.process(sample_l, sample_r);
+                    (c_l, c_r, c_l, c_r, c_l, c_r)
+                };
 
             // Pre-filter gain
             let pfg = self.params.pre_filter_gain.clamp(0.0, 2.0);
@@ -2534,6 +2551,17 @@ impl Voice {
                     (sum_l, sum_r)
                 };
                 (ws_l, ws_r, f1_l, f1_r)
+            } else if !f1_enabled && !f2_enabled {
+                // Treat both filters off as a true filter-block bypass. Some
+                // routing modes, such as Ring, still transform two dry paths.
+                let (ws_l, ws_r) = if ws_active {
+                    let mut ws = self.waveshaper.clone();
+                    ws.drive = ws_drive;
+                    (ws.process(pre_filter_l), ws.process(pre_filter_r))
+                } else {
+                    (pre_filter_l, pre_filter_r)
+                };
+                (ws_l, ws_r, ws_l, ws_r)
             } else {
                 match self.params.filter_routing {
                     FilterRouting::Series => {
@@ -2781,8 +2809,9 @@ impl Voice {
             let vca_level = self.params.vca_level.clamp(0.0, 2.0);
             let vel_sense = self.params.vca_velsense.clamp(0.0, 1.0);
             let effective_vel = 1.0 - vel_sense + vel_sense * self.velocity;
-            char_l *= self.amp_eg_output * effective_vel * vol * vca_level;
-            char_r *= self.amp_eg_output * effective_vel * vol * vca_level;
+            let de_click = self.note_on_declick_gain();
+            char_l *= self.amp_eg_output * effective_vel * vol * vca_level * de_click;
+            char_r *= self.amp_eg_output * effective_vel * vol * vca_level * de_click;
 
             // Pan and width
             let pan = (self.params.pan + mods.output_pan).clamp(-1.0, 1.0);

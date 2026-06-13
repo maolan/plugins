@@ -121,6 +121,66 @@ impl FilterType {
             _ => FilterType::ResonanceWarpAp,
         }
     }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            FilterType::Off => "Off",
+            FilterType::Lowpass => "LP 24",
+            FilterType::Bandpass => "BP 24",
+            FilterType::Highpass => "HP 24",
+            FilterType::Notch => "Notch",
+            FilterType::Peak => "Peak",
+            FilterType::CombPos => "Comb+",
+            FilterType::CombNeg => "Comb-",
+            FilterType::Allpass => "Allpass",
+            FilterType::Ladder => "Ladder",
+            FilterType::K35Lp => "K35 LP",
+            FilterType::K35Hp => "K35 HP",
+            FilterType::DiodeLadder => "Diode Ldr",
+            FilterType::CutoffWarp => "CW LP",
+            FilterType::ResonanceWarp => "RW LP",
+            FilterType::Lowpass12dB => "LP 12",
+            FilterType::Highpass12dB => "HP 12",
+            FilterType::Bandpass12dB => "BP 12",
+            FilterType::LowShelf => "Lo Shelf",
+            FilterType::HighShelf => "Hi Shelf",
+            FilterType::Bell => "Bell",
+            FilterType::Notch12dB => "Notch 12",
+            FilterType::VintageLadder => "Vintage Ldr",
+            FilterType::CytomicLp => "SVF LP",
+            FilterType::CytomicHp => "SVF HP",
+            FilterType::CytomicBp => "SVF BP",
+            FilterType::CytomicNotch => "SVF Notch",
+            FilterType::CytomicPeak => "SVF Peak",
+            FilterType::CytomicAp => "SVF AP",
+            FilterType::CytomicBell => "SVF Bell",
+            FilterType::CytomicLs => "SVF Lo Shf",
+            FilterType::CytomicHs => "SVF Hi Shf",
+            FilterType::TriPole => "TriPole",
+            FilterType::SampleHold => "S&H",
+            FilterType::CutoffWarpHp => "CW HP",
+            FilterType::CutoffWarpBp => "CW BP",
+            FilterType::CutoffWarpNotch => "CW Notch",
+            FilterType::CutoffWarpAp => "CW AP",
+            FilterType::ResonanceWarpLp => "RW LP",
+            FilterType::ResonanceWarpHp => "RW HP",
+            FilterType::ResonanceWarpNotch => "RW Notch",
+            FilterType::ResonanceWarpAp => "RW AP",
+            FilterType::Obxd2PoleLp => "OBXd 2p LP",
+            FilterType::Obxd2PoleHp => "OBXd 2p HP",
+            FilterType::Obxd2PoleBp => "OBXd 2p BP",
+            FilterType::Obxd2PoleNotch => "OBXd 2p Nt",
+            FilterType::Obxd4Pole => "OBXd 4p",
+            FilterType::ObxdXpander => "OBXd Xpndr",
+            FilterType::Notch24dB => "Notch 24",
+        }
+    }
+}
+
+impl std::fmt::Display for FilterType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -193,16 +253,18 @@ pub struct SvfFilter {
     pub gain_db: f32,
     pub subtype: FilterSubtype,
     pub drive: f32,
-    l1: f32,
-    b1: f32,
-    l2: f32,
-    b2: f32,
-    f1: f32,
-    f2: f32,
-    q: f32,
-    df1: f32,
-    df2: f32,
-    dq: f32,
+    // TPT SVF states for stage 1
+    s1_1: f32,
+    s2_1: f32,
+    // TPT SVF states for stage 2
+    s1_2: f32,
+    s2_2: f32,
+    // Target coefficients
+    g: f32,
+    k: f32,
+    // Per-sample deltas
+    dg: f32,
+    dk: f32,
 }
 
 impl SvfFilter {
@@ -215,16 +277,14 @@ impl SvfFilter {
             gain_db: 0.0,
             subtype: FilterSubtype::Clean,
             drive: 0.0,
-            l1: 0.0,
-            b1: 0.0,
-            l2: 0.0,
-            b2: 0.0,
-            f1: 0.0,
-            f2: 0.0,
-            q: 0.0,
-            df1: 0.0,
-            df2: 0.0,
-            dq: 0.0,
+            s1_1: 0.0,
+            s2_1: 0.0,
+            s1_2: 0.0,
+            s2_2: 0.0,
+            g: 0.0,
+            k: 0.0,
+            dg: 0.0,
+            dk: 0.0,
         }
     }
 
@@ -233,10 +293,10 @@ impl SvfFilter {
     }
 
     pub fn reset(&mut self) {
-        self.l1 = 0.0;
-        self.b1 = 0.0;
-        self.l2 = 0.0;
-        self.b2 = 0.0;
+        self.s1_1 = 0.0;
+        self.s2_1 = 0.0;
+        self.s1_2 = 0.0;
+        self.s2_2 = 0.0;
     }
 
     pub fn set_params(&mut self, cutoff: f32, resonance: f32) {
@@ -255,41 +315,55 @@ impl SvfFilter {
     pub fn prepare_block(&mut self, cutoff: f32, resonance: f32, block_size: usize) {
         let bs = block_size.max(1) as f32;
         let omega = (cutoff / self.sample_rate).clamp(0.0001, 0.4999);
-        let q_val = calc_q(resonance.max(0.1));
-        let f = calc_f(omega);
-        self.df1 = (f - self.f1) / bs;
-        self.df2 = (f - self.f2) / bs;
-        self.dq = (q_val - self.q) / bs;
+        let g_target = (std::f32::consts::PI * omega).tan();
+        let k_target = 1.0 / resonance.max(0.1);
+        self.dg = (g_target - self.g) / bs;
+        self.dk = (k_target - self.k) / bs;
     }
 
     pub fn process(&mut self, input: f32) -> f32 {
         if self.filter_type == FilterType::Off {
             return input;
         }
-        self.f1 += self.df1;
-        self.f2 += self.df2;
-        self.q += self.dq;
+        self.g += self.dg;
+        self.k += self.dk;
         let gain = 10.0f32.powf(self.gain_db / 20.0);
 
         // Apply drive/saturation based on subtype
         let driven = apply_subtype(input, self.subtype, self.drive);
 
-        // Stage 1
-        self.l1 = self.f1.mul_add(self.b1, self.l1);
-        let h1 = self.q.mul_add(-self.b1, driven * self.q - self.l1);
-        self.b1 = self.f1.mul_add(h1, self.b1);
+        // Stage 1 (TPT SVF)
+        let denom1 = 1.0 / (1.0 + self.g * (self.g + self.k));
+        let u1_1 = (self.s1_1 + self.g * (driven - self.s2_1)) * denom1;
+        let u2_1 = self.s2_1 + self.g * u1_1;
+        self.s1_1 = 2.0 * u1_1 - self.s1_1;
+        self.s2_1 = 2.0 * u2_1 - self.s2_1;
+        let lp1 = u2_1;
+        let bp1 = u1_1;
+        let hp1 = driven - self.k * u1_1 - u2_1;
 
-        // Stage 2
-        self.l2 = self.f2.mul_add(self.b2, self.l2);
-        let h2 = self.q.mul_add(-self.b2, self.b1 * self.q - self.l2);
-        self.b2 = self.f2.mul_add(h2, self.b2);
+        // Stage 2 (TPT SVF) — 4-pole cascade: feed same-mode output of stage 1 into stage 2.
+        // LP→LP gives -24 dB/oct LP; HP→HP gives +24 dB/oct HP; LP→HP gives -12/+12 BP.
+        // Notch and Peak are computed from stage 1 only (standard 2-pole Cytomic formulas).
+        let input2 = match self.filter_type {
+            FilterType::Lowpass => lp1,
+            FilterType::Highpass => hp1,
+            _ => lp1, // Bandpass: LP→HP cascade; Notch/Peak: state kept live but output from stage 1
+        };
+        let denom2 = 1.0 / (1.0 + self.g * (self.g + self.k));
+        let u1_2 = (self.s1_2 + self.g * (input2 - self.s2_2)) * denom2;
+        let u2_2 = self.s2_2 + self.g * u1_2;
+        self.s1_2 = 2.0 * u1_2 - self.s1_2;
+        self.s2_2 = 2.0 * u2_2 - self.s2_2;
+        let lp2 = u2_2;
+        let hp2 = input2 - self.k * u1_2 - u2_2;
 
         let out = match self.filter_type {
-            FilterType::Lowpass => self.l2,
-            FilterType::Bandpass => self.b2,
-            FilterType::Highpass => h2,
-            FilterType::Notch => driven - self.b2,
-            FilterType::Peak => driven - self.b2 * 2.0,
+            FilterType::Lowpass => lp2,
+            FilterType::Bandpass => hp2, // HP of LP1 = bandpass shape
+            FilterType::Highpass => hp2,
+            FilterType::Notch => driven - self.k * bp1, // 2-pole notch (Cytomic)
+            FilterType::Peak => driven - self.k * bp1 - 2.0 * lp1, // 2-pole peak (Cytomic)
             _ => driven,
         };
 
@@ -2152,9 +2226,7 @@ impl Filter {
 #[inline]
 fn fast_tanh(x: f32) -> f32 {
     // Approximation: x / (1 + |x|) for cheap tanh
-    // More accurate: x * (27 + x*x) / (27 + 9*x*x)
-    let x2 = x * x;
-    x * (27.0 + x2) / (27.0 + 9.0 * x2)
+    x / (1.0 + x.abs())
 }
 
 #[inline]

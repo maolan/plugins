@@ -10,6 +10,12 @@ use std::{
     },
 };
 
+#[cfg(all(unix, not(target_os = "macos")))]
+use clap_clap::ffi::CLAP_WINDOW_API_X11;
+#[cfg(target_os = "macos")]
+use clap_clap::ffi::CLAP_WINDOW_API_COCOA;
+#[cfg(target_os = "windows")]
+use clap_clap::ffi::CLAP_WINDOW_API_WIN32;
 use clap_clap::{
     events::{InputEvents, OutputEvents},
     ffi::{
@@ -19,7 +25,7 @@ use clap_clap::{
         CLAP_NOTE_DIALECT_MIDI, CLAP_NOTE_EXPRESSION_BRIGHTNESS, CLAP_NOTE_EXPRESSION_PAN,
         CLAP_NOTE_EXPRESSION_PRESSURE, CLAP_NOTE_EXPRESSION_TUNING, CLAP_NOTE_EXPRESSION_VOLUME,
         CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_MONO, CLAP_PLUGIN_FEATURE_STEREO,
-        CLAP_PORT_STEREO, CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_X11,
+        CLAP_PORT_STEREO, CLAP_PROCESS_CONTINUE, CLAP_VERSION,
         clap_audio_port_info, clap_host, clap_host_gui, clap_host_params, clap_host_state, clap_id,
         clap_istream, clap_note_port_info, clap_ostream, clap_plugin, clap_plugin_audio_ports,
         clap_plugin_descriptor, clap_plugin_gui, clap_plugin_note_ports, clap_plugin_params,

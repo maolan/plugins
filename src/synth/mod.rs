@@ -1,4 +1,4 @@
-mod dsp;
+pub mod dsp;
 pub mod gui;
 mod params;
 pub mod plugin;
