@@ -63,16 +63,14 @@ fn test_svf_filter_stability() {
     filter.prepare_block(20000.0, 0.7, 1024);
 
     let mut max_val = 0.0f32;
-    for i in 0..1024 {
+    for _i in 0..1024 {
         let out = filter.process(0.5);
         max_val = max_val.max(out.abs());
         if out.is_nan() || out.is_infinite() {
-            println!("NaN/INF at sample {}", i);
             break;
         }
     }
 
-    println!("SvfFilter max output after 1024 samples: {:.6}", max_val);
     assert!(
         !max_val.is_nan() && !max_val.is_infinite(),
         "SvfFilter produced NaN/INF: {}",
@@ -86,9 +84,8 @@ fn test_svf_step_response() {
     let mut filter = SvfFilter::new(48000.0);
     filter.prepare_block(20000.0, 0.7, 1024);
 
-    for i in 0..20 {
-        let out = filter.process(1.0);
-        println!("sample {}: out={:.6}", i, out);
+    for _i in 0..20 {
+        let _out = filter.process(1.0);
     }
 
     let mut max_val = 0.0f32;
@@ -96,7 +93,6 @@ fn test_svf_step_response() {
         let out = filter.process(1.0);
         max_val = max_val.max(out.abs());
     }
-    println!("SvfFilter step response max: {:.6}", max_val);
     assert!(max_val < 10.0, "Step response too large: {}", max_val);
 }
 
@@ -114,8 +110,6 @@ fn test_synth_no_nan_after_trigger() {
 
     let peak_l = out_l.iter().map(|&s| s.abs()).fold(0.0f32, f32::max);
     let peak_r = out_r.iter().map(|&s| s.abs()).fold(0.0f32, f32::max);
-
-    println!("peak_l = {:.6}, peak_r = {:.6}", peak_l, peak_r);
 
     let has_nan = out_l.iter().any(|&s| s.is_nan() || s.is_infinite())
         || out_r.iter().any(|&s| s.is_nan() || s.is_infinite());
@@ -139,13 +133,11 @@ fn test_osc1_only_single_pitch() {
     let mut engine = SynthEngine::new(48000.0, 8);
     engine.params = VoiceParams::default();
 
-    // Disable OSC2 and OSC3, keep only OSC1
     engine.params.oscs[1].enabled = false;
     engine.params.oscs[2].enabled = false;
 
-    // Ensure OSC1 is Classic/Saw at base pitch
     engine.params.oscs[0].osc_type = OscType::Classic;
-    engine.params.oscs[0].waveform = 0; // Saw
+    engine.params.oscs[0].waveform = 0;
     engine.params.oscs[0].octave = 0;
     engine.params.oscs[0].semitone = 0;
     engine.params.oscs[0].fine = 0.0;
@@ -153,14 +145,12 @@ fn test_osc1_only_single_pitch() {
     engine.params.oscs[0].sync = 0.0;
     engine.params.oscs[0].level = 0.8;
 
-    // Disable filters to hear raw oscillator
     engine.params.filter1.enabled = false;
     engine.params.filter2.enabled = false;
     engine.params.flavor = maolan_plugins::common::flavor::FlavorType::Off;
     engine.params.noise.enabled = false;
     engine.params.waveshaper.enabled = false;
 
-    // Disable pitch EG so it doesn't raise the pitch
     engine.params.pitch_eg.attack = 0.0;
     engine.params.pitch_eg.decay = 0.0;
     engine.params.pitch_eg.sustain = 0.0;
@@ -170,17 +160,15 @@ fn test_osc1_only_single_pitch() {
 
     engine.update_params();
 
-    let mut out_l = vec![0.0f32; 48000]; // 1 second
+    let mut out_l = vec![0.0f32; 48000];
     let mut out_r = vec![0.0f32; 48000];
 
-    engine.trigger(60, 0.8); // Middle C = 261.63 Hz
+    engine.trigger(60, 0.8);
     engine.process_block(&mut out_l, &mut out_r, None, None);
 
-    // Check for NaN/INF
     let has_nan = out_l.iter().any(|&s| s.is_nan() || s.is_infinite());
     assert!(!has_nan, "NaN/INF in output");
 
-    // Simple zero-crossing period estimation
     let mut crossings = vec![];
     for i in 1..out_l.len() {
         if out_l[i - 1] < 0.0 && out_l[i] >= 0.0 {
@@ -193,17 +181,9 @@ fn test_osc1_only_single_pitch() {
     if periods.len() >= 2 {
         let avg_period = periods.iter().sum::<f32>() / periods.len() as f32;
         let est_freq = 48000.0 / avg_period;
-        println!(
-            "Estimated fundamental freq: {:.1} Hz (expected ~261.6 Hz)",
-            est_freq
-        );
-        println!("Zero crossings: {}", crossings.len());
 
-        // A sawtooth at 261.6 Hz should have ~48000/261.6 ≈ 183.5 samples per period
-        // Allow 10% tolerance for transient/filter effects
         let expected_period = 48000.0 / 261.63;
         let ratio = avg_period / expected_period;
-        println!("Period ratio: {:.3} (expected ~1.0)", ratio);
         assert!(
             ratio > 0.8 && ratio < 1.3,
             "Fundamental frequency way off: est={:.1}Hz expected={:.1}Hz",
@@ -212,9 +192,7 @@ fn test_osc1_only_single_pitch() {
         );
     }
 
-    // Check that output is not silent
     let peak = out_l.iter().map(|&s| s.abs()).fold(0.0f32, f32::max);
-    println!("Peak output: {:.6}", peak);
     assert!(peak > 0.001, "Output is silent!");
     assert!(peak < 2.0, "Output too loud: {}", peak);
 }
@@ -224,7 +202,6 @@ fn test_osc1_pitch_eg_effect() {
     let mut engine = SynthEngine::new(48000.0, 8);
     engine.params = VoiceParams::default();
 
-    // Disable OSC2 and OSC3, keep only OSC1
     engine.params.oscs[1].enabled = false;
     engine.params.oscs[2].enabled = false;
 
@@ -233,7 +210,6 @@ fn test_osc1_pitch_eg_effect() {
     engine.params.oscs[0].sub_level = 0.0;
     engine.params.oscs[0].sync = 0.0;
 
-    // Disable filters
     engine.params.filter1.enabled = false;
     engine.params.filter2.enabled = false;
     engine.params.flavor = maolan_plugins::common::flavor::FlavorType::Off;
@@ -248,7 +224,6 @@ fn test_osc1_pitch_eg_effect() {
     engine.trigger(60, 0.8);
     engine.process_block(&mut out_l, &mut out_r, None, None);
 
-    // Measure frequency from the last 0.5s (steady state)
     let start = 24000;
     let mut crossings = vec![];
     for i in (start + 1)..out_l.len() {
@@ -260,21 +235,9 @@ fn test_osc1_pitch_eg_effect() {
     if crossings.len() >= 2 {
         let avg_period = (crossings.last().unwrap() - crossings.first().unwrap()) as f32
             / (crossings.len() - 1) as f32;
-        let est_freq = 48000.0 / avg_period;
-        println!(
-            "Steady-state estimated freq: {:.1} Hz (expected ~261.6 Hz)",
-            est_freq
-        );
-        println!(
-            "Expected with pitch_eg sustain=0.7: {:.1} Hz",
-            261.63 * 2.0f32.powf(0.7 * 2.0)
-        );
+        let _est_freq = 48000.0 / avg_period;
     }
 
-    // Now test with pitch_eg disabled by zeroing its params.
-    // Use a fresh engine so that voice 0 from the first render is not still active.
-    // When two voices play the same sawtooth at the same frequency but different phases,
-    // the sum always measures at 2× the frequency via zero-crossing detection.
     let mut engine2 = SynthEngine::new(48000.0, 8);
     engine2.params = VoiceParams::default();
     engine2.params.oscs[1].enabled = false;
@@ -311,12 +274,7 @@ fn test_osc1_pitch_eg_effect() {
         let avg_period = (crossings.last().unwrap() - crossings.first().unwrap()) as f32
             / (crossings.len() - 1) as f32;
         let est_freq = 48000.0 / avg_period;
-        println!(
-            "With pitch_eg disabled: {:.1} Hz (expected ~261.6 Hz)",
-            est_freq
-        );
         let ratio = est_freq / 261.63;
-        println!("Ratio to expected: {:.3}", ratio);
         assert!(
             ratio > 0.9 && ratio < 1.1,
             "Frequency still wrong after disabling pitch_eg: {:.1} Hz",
@@ -343,39 +301,21 @@ fn test_osc1_debug_freq() {
     engine.params.noise.enabled = false;
     engine.params.waveshaper.enabled = false;
 
-    // Disable pitch_eg by zeroing sustain
     engine.params.pitch_eg.sustain = 0.0;
     engine.params.pitch_eg.attack = 0.0;
     engine.params.pitch_eg.decay = 0.0;
     engine.params.pitch_eg.release = 0.0;
 
-    // Disable portamento
     engine.params.portamento = 0.0;
 
     engine.update_params();
 
-    let mut out_l = vec![0.0f32; 4800]; // 0.1s
+    let mut out_l = vec![0.0f32; 4800];
     let mut out_r = vec![0.0f32; 4800];
 
     engine.trigger(60, 0.8);
 
     engine.process_block(&mut out_l, &mut out_r, None, None);
-
-    // Print first 20 samples
-    println!("First 20 samples: {:?}", &out_l[..20]);
-
-    // Count sign changes
-    let mut sign_changes = 0;
-    for i in 1..out_l.len() {
-        if out_l[i - 1] * out_l[i] < 0.0 {
-            sign_changes += 1;
-        }
-    }
-    println!("Sign changes in 0.1s: {}", sign_changes);
-    println!(
-        "Estimated freq from sign changes: {:.1} Hz",
-        sign_changes as f32 * 48000.0 / 4800.0 / 2.0
-    );
 }
 
 #[test]
@@ -522,7 +462,6 @@ fn test_osc_sync_semitone_scaling() {
         out_l
     }
 
-    // sync=0: fundamental must be at note 60 (~261.6 Hz)
     let off = render(0.0);
     let off_freq = estimate_positive_zero_cross_freq(&off, 48000.0, 4096).expect("off freq");
     assert!(
@@ -530,8 +469,6 @@ fn test_osc_sync_semitone_scaling() {
         "sync=0 should produce note pitch ~261.6 Hz, got {off_freq}"
     );
 
-    // sync=12 semitones → ratio 2^(12/12)=2: sync oscillator resets main phase twice per
-    // fundamental period, producing ~2× positive zero crossings per second
     let on_12 = render(12.0);
     let on_12_freq = estimate_positive_zero_cross_freq(&on_12, 48000.0, 4096).expect("12st freq");
     let ratio_12 = on_12_freq / off_freq;

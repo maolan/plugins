@@ -2,27 +2,13 @@ pub fn amp_to_power_db(power: f32) -> f32 {
     10.0 * power.max(1.0e-12).log10()
 }
 
-/// Default max buffer size used by `prewarm` when none has been set.
-/// Override at compile time if desired.
 pub const NAM_DEFAULT_MAX_BUFFER_SIZE: usize = 4096;
 
-/// Re-implementation of NAM C++ `nam::DSP`: the common base trait for all
-/// neural network-based audio processing models.
 pub trait Dsp {
-    /// Process a block of audio frames.
-    ///
-    /// `input` and `output` are flat mono buffers of `num_frames` samples.
-    /// Multi-channel support can be added later to match the C++ `NAM_SAMPLE**`
-    /// interface.
     fn process_block(&mut self, input: &[f32], output: &mut [f32]);
 
-    /// Reset the DSP unit to a clean state.
     fn reset(&mut self);
 
-    /// Prewarm the model by feeding silence so initial conditions settle.
-    ///
-    /// The default implementation processes in blocks of `max_buffer_size()`
-    /// to match the C++ reference.
     fn prewarm(&mut self, samples: usize) {
         if samples == 0 {
             return;
@@ -38,76 +24,55 @@ pub trait Dsp {
         }
     }
 
-    /// Reset the DSP unit, then prewarm it.
-    ///
-    /// Matches C++ `nam::DSP::ResetAndPrewarm`.
     fn reset_and_prewarm(&mut self, sample_rate: f32, max_buffer_size: usize) {
         self.set_external_sample_rate(sample_rate);
         self.set_max_buffer_size(max_buffer_size);
         self.reset();
     }
 
-    /// Convenience helper for a single sample.
     fn process_sample(&mut self, input: f32) -> f32 {
         let mut out = [0.0f32];
         self.process_block(&[input], &mut out);
         out[0]
     }
 
-    /// Expected sample rate in Hz, if known.
     fn expected_sample_rate(&self) -> Option<f32>;
 
-    /// The external sample rate currently in use, if set.
     fn external_sample_rate(&self) -> Option<f32> {
         None
     }
 
-    /// Set the external sample rate.
     fn set_external_sample_rate(&mut self, _rate: f32) {}
 
-    /// Number of input channels.
     fn num_input_channels(&self) -> usize;
 
-    /// Number of output channels.
     fn num_output_channels(&self) -> usize;
 
-    /// The largest buffer size this DSP expects to process in a single call.
     fn max_buffer_size(&self) -> usize {
         NAM_DEFAULT_MAX_BUFFER_SIZE
     }
 
-    /// Set the maximum buffer size.
     fn set_max_buffer_size(&mut self, _size: usize) {}
 
-    /// Loudness in dB, if known.
     fn loudness(&self) -> Option<f32> {
         None
     }
 
-    /// Input level in dBu, if known.
     fn input_level(&self) -> Option<f32> {
         None
     }
 
-    /// Output level in dBu, if known.
     fn output_level(&self) -> Option<f32> {
         None
     }
 
-    /// Set the loudness.
     fn set_loudness(&mut self, _loudness: f32) {}
 
-    /// Set the input level.
     fn set_input_level(&mut self, _level: f32) {}
 
-    /// Set the output level.
     fn set_output_level(&mut self, _level: f32) {}
 }
 
-/// Save the current floating-point environment, disable subnormals (flush to
-/// zero / denormals are zero) on x86_64, and return a guard that restores the
-/// previous state when dropped.  This mirrors the C++ NAM reference which
-/// calls `disable_denormals()` inside `ProcessBlock`.
 pub fn disable_denormals() -> DenormalGuard {
     DenormalGuard::new()
 }
@@ -152,8 +117,6 @@ impl Drop for DenormalGuard {
     }
 }
 
-/// Re-implementation of NAM C++ `nam::Buffer`: a linear input buffer with
-/// explicit rewind for models that need history longer than one block.
 #[derive(Debug, Clone)]
 pub struct Buffer {
     receptive_field: usize,
@@ -208,8 +171,6 @@ impl Buffer {
         self.input_buffer_offset += num_frames;
     }
 
-    /// Returns a slice of the receptive-field history valid for the given output index.
-    /// The slice length equals `self.receptive_field`.
     pub fn history_slice(&self, output_index: usize) -> &[f32] {
         let base = self.input_buffer_offset - self.receptive_field + 1 + output_index;
         &self.input_buffer[base..base + self.receptive_field]

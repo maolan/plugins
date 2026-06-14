@@ -1,7 +1,5 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
-/// Lock-free xorshift32 RNG safe for real-time audio threads.
-/// No allocations, no locks, no thread-local storage lookup.
 #[derive(Debug)]
 pub struct LockFreeRandom {
     state: AtomicU32,
@@ -36,13 +34,11 @@ impl LockFreeRandom {
         x
     }
 
-    /// Uniform float in [0, 1)
     pub fn next_f32(&self) -> f32 {
         (self.next_u32() >> 8) as f32 * (1.0 / 16_777_216.0)
     }
 }
 
-/// Simple atomic LCG-based random generator (kept for compatibility).
 #[derive(Debug)]
 pub struct Random {
     state: AtomicU32,

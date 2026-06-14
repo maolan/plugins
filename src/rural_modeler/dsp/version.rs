@@ -1,9 +1,7 @@
 use crate::rural_modeler::dsp::error::NamError;
 
-/// Latest fully-supported NAM file version.
 pub const LATEST_FULLY_SUPPORTED_NAM_FILE_VERSION: &str = "0.7.0";
 
-/// Earliest supported NAM file version.
 pub const EARLIEST_SUPPORTED_NAM_FILE_VERSION: &str = "0.5.0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -46,7 +44,6 @@ pub fn parse_version(s: &str) -> Result<Version, NamError> {
     Ok(Version::new(major, minor, patch))
 }
 
-/// Verify that a model file version is supported, matching NAM C++ behavior.
 pub fn verify_config_version(version_str: &str) -> Result<(), NamError> {
     let version = parse_version(version_str)?;
     let current = parse_version(LATEST_FULLY_SUPPORTED_NAM_FILE_VERSION)?;

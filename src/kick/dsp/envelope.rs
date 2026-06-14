@@ -1,12 +1,9 @@
-//! Bézier-capable multi-point envelope.
-
-/// A single point in an envelope.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EnvPoint {
-    pub t: f32,    // normalized time 0..1
-    pub v: f32,    // value
-    pub cp_t: f32, // control point t offset (relative to segment)
-    pub cp_v: f32, // control point v offset
+    pub t: f32,
+    pub v: f32,
+    pub cp_t: f32,
+    pub cp_v: f32,
 }
 
 impl EnvPoint {
@@ -24,7 +21,6 @@ impl EnvPoint {
     }
 }
 
-/// Envelope with linear or Bézier interpolation between points.
 #[derive(Debug, Clone)]
 pub struct Envelope {
     points: Vec<EnvPoint>,
@@ -67,7 +63,6 @@ impl Envelope {
         self.points.dedup_by(|a, b| (a.t - b.t).abs() < 1.0e-6);
     }
 
-    /// Evaluate envelope at normalized time `t` (0..1).
     pub fn value(&self, t: f32) -> f32 {
         if self.points.is_empty() {
             return 0.0;
@@ -87,7 +82,7 @@ impl Envelope {
                     return p0.v;
                 }
                 let frac = (t - p0.t) / dt;
-                // Cubic Bezier interpolation
+
                 let _cp0_t = p0.t + p0.cp_t * dt;
                 let cp0_v = p0.v + p0.cp_v;
                 let _cp1_t = p1.t - p1.cp_t * dt;
@@ -98,28 +93,27 @@ impl Envelope {
         self.points.last().unwrap().v
     }
 
-    /// Fill `out` with envelope values for each sample.
     pub fn fill_buffer(&self, out: &mut [f32], dt_per_sample: f32) {
         if out.is_empty() {
             return;
         }
-        // Fast path: constant envelope (all points have the same value).
+
         if let Some(first) = self.points.first()
             && self.points.iter().all(|p| (p.v - first.v).abs() < 1.0e-9)
         {
             out.fill(first.v);
             return;
         }
-        // Fast path: single point.
+
         if self.points.len() == 1 {
             out.fill(self.points[0].v);
             return;
         }
-        // Monotonic access: track segment instead of restarting search each sample.
+
         let mut seg = 0usize;
         for (i, s) in out.iter_mut().enumerate() {
             let t = i as f32 * dt_per_sample;
-            // Advance segment while t is past the next point.
+
             while seg + 1 < self.points.len() && t > self.points[seg + 1].t {
                 seg += 1;
             }
@@ -127,7 +121,6 @@ impl Envelope {
         }
     }
 
-    /// Evaluate at time `t` knowing it lies in or near segment `seg`.
     #[inline]
     fn value_at_segment(&self, t: f32, seg: usize) -> f32 {
         if self.points.is_empty() {
@@ -162,7 +155,6 @@ impl Envelope {
     }
 }
 
-/// Cubic Bezier interpolation at t (0..1).
 #[inline]
 fn cubic_bezier(t: f32, p0: f32, p1: f32, p2: f32, p3: f32) -> f32 {
     let u = 1.0 - t;
@@ -197,7 +189,7 @@ mod tests {
             EnvPoint::with_control(1.0, 1.0, 0.33, 0.0),
         ]);
         let v = env.value(0.5);
-        // With control points pulling up, v should be > 0.5 at t=0.5
+
         assert!(v > 0.5, "bezier should curve above linear: {v}");
     }
 }

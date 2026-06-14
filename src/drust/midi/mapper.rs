@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, Default)]
 pub struct MidiMapper {
-    /// Map from MIDI note number to instrument name.
+
     pub map: HashMap<u8, String>,
 }
 

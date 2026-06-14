@@ -1,5 +1,3 @@
-//! Portable SIMD helper routines for buffer math (plugin-local copy).
-
 #![allow(unsafe_op_in_unsafe_fn)]
 
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
@@ -10,7 +8,6 @@ mod x86 {
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 use x86::*;
 
-/// dst[i] += src[i]
 pub fn add_inplace(dst: &mut [f32], src: &[f32]) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     unsafe {
@@ -26,7 +23,6 @@ pub fn add_inplace(dst: &mut [f32], src: &[f32]) {
     add_inplace_scalar(dst, src);
 }
 
-/// dst[i] += src[i] * gain
 pub fn add_scaled_inplace(dst: &mut [f32], src: &[f32], gain: f32) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     unsafe {
@@ -46,7 +42,6 @@ pub fn add_scaled_inplace(dst: &mut [f32], src: &[f32], gain: f32) {
     add_scaled_inplace_scalar(dst, src, gain);
 }
 
-/// dst[i] = dst[i] * scale[i] + loc[i]
 pub fn affine_inplace(dst: &mut [f32], scale: &[f32], loc: &[f32]) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     unsafe {
@@ -66,7 +61,6 @@ pub fn affine_inplace(dst: &mut [f32], scale: &[f32], loc: &[f32]) {
     affine_inplace_scalar(dst, scale, loc);
 }
 
-/// dst[i] *= gain
 pub fn mul_inplace(dst: &mut [f32], gain: f32) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     unsafe {
@@ -82,7 +76,6 @@ pub fn mul_inplace(dst: &mut [f32], gain: f32) {
     mul_inplace_scalar(dst, gain);
 }
 
-/// dst[i] *= src[i]
 pub fn mul_per_sample_inplace(dst: &mut [f32], src: &[f32]) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     unsafe {
@@ -98,7 +91,6 @@ pub fn mul_per_sample_inplace(dst: &mut [f32], src: &[f32]) {
     mul_per_sample_inplace_scalar(dst, src);
 }
 
-/// sum(a[i] * b[i])
 pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     unsafe {
@@ -115,7 +107,6 @@ pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
     dot_product_scalar(a, b)
 }
 
-/// dst[i] = src[i] * gain
 pub fn copy_scaled_inplace(dst: &mut [f32], src: &[f32], gain: f32) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     unsafe {
@@ -131,7 +122,6 @@ pub fn copy_scaled_inplace(dst: &mut [f32], src: &[f32], gain: f32) {
     copy_scaled_inplace_scalar(dst, src, gain);
 }
 
-/// Replace NaN / ±Inf with 0.0 in place.
 pub fn sanitize_finite_inplace(buf: &mut [f32]) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     unsafe {
@@ -147,7 +137,6 @@ pub fn sanitize_finite_inplace(buf: &mut [f32]) {
     sanitize_finite_inplace_scalar(buf);
 }
 
-/// Horizontal max of abs(buf[i]).
 pub fn peak_abs(buf: &[f32]) -> f32 {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     unsafe {
@@ -627,12 +616,6 @@ unsafe fn dot_product_avx_fma(a: &[f32], b: &[f32]) -> f32 {
     scalar
 }
 
-// ---------------------------------------------------------------------------
-// Ramp-scaled copy / add — dst[i] = src[i] * ramp(i)  or  dst[i] += src[i] * ramp(i)
-// ramp(i) = start_gain + i * delta,  delta = (end_gain - start_gain) / (len - 1)
-// ---------------------------------------------------------------------------
-
-/// dst[i] = src[i] * ramp(i)
 pub fn copy_ramp_scaled_inplace(dst: &mut [f32], src: &[f32], start_gain: f32, end_gain: f32) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     unsafe {
@@ -648,7 +631,6 @@ pub fn copy_ramp_scaled_inplace(dst: &mut [f32], src: &[f32], start_gain: f32, e
     copy_ramp_scaled_inplace_scalar(dst, src, start_gain, end_gain);
 }
 
-/// dst[i] += src[i] * ramp(i)
 pub fn add_ramp_scaled_inplace(dst: &mut [f32], src: &[f32], start_gain: f32, end_gain: f32) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     unsafe {
@@ -893,11 +875,6 @@ unsafe fn add_ramp_scaled_inplace_avx_fma(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Activation SIMD helpers
-// ---------------------------------------------------------------------------
-
-/// Fast tanh approximation using the same coefficients as NAM C++.
 #[inline]
 pub fn fast_tanh(x: f32) -> f32 {
     let ax = x.abs();
@@ -907,13 +884,11 @@ pub fn fast_tanh(x: f32) -> f32 {
     num / den
 }
 
-/// Fast sigmoid approximation via fast_tanh.
 #[inline]
 pub fn fast_sigmoid(x: f32) -> f32 {
     0.5 * (fast_tanh(x * 0.5) + 1.0)
 }
 
-/// Apply fast_tanh in-place with SIMD dispatch.
 pub fn fast_tanh_inplace(buf: &mut [f32]) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     unsafe {
@@ -931,7 +906,6 @@ pub fn fast_tanh_inplace(buf: &mut [f32]) {
     }
 }
 
-/// Apply fast_sigmoid in-place with SIMD dispatch.
 pub fn fast_sigmoid_inplace(buf: &mut [f32]) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     unsafe {
@@ -949,7 +923,6 @@ pub fn fast_sigmoid_inplace(buf: &mut [f32]) {
     }
 }
 
-/// ReLU in-place with SIMD dispatch.
 pub fn relu_inplace(buf: &mut [f32]) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     unsafe {
@@ -969,7 +942,6 @@ pub fn relu_inplace(buf: &mut [f32]) {
     }
 }
 
-/// Hard tanh in-place with SIMD dispatch.
 pub fn hardtanh_inplace(buf: &mut [f32]) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     unsafe {
@@ -987,7 +959,6 @@ pub fn hardtanh_inplace(buf: &mut [f32]) {
     }
 }
 
-/// Leaky ReLU in-place with SIMD dispatch.
 pub fn leaky_relu_inplace(buf: &mut [f32], negative_slope: f32) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     unsafe {
@@ -1007,7 +978,6 @@ pub fn leaky_relu_inplace(buf: &mut [f32], negative_slope: f32) {
     }
 }
 
-/// dst[i] += fast_sigmoid(src[i]) * mul_src[i]
 pub fn sigmoid_mul_add_inplace(dst: &mut [f32], src: &[f32], mul_src: &[f32]) {
     let n = dst.len().min(src.len()).min(mul_src.len());
     if n == 0 {
@@ -1321,7 +1291,6 @@ unsafe fn sigmoid_mul_add_inplace_avx(dst: &mut [f32], src: &[f32], mul_src: &[f
     }
 }
 
-/// Softsign in-place with SIMD dispatch.
 pub fn softsign_inplace(buf: &mut [f32]) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     unsafe {
@@ -1339,7 +1308,6 @@ pub fn softsign_inplace(buf: &mut [f32]) {
     }
 }
 
-/// Hardswish in-place with SIMD dispatch.
 pub fn hardswish_inplace(buf: &mut [f32]) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     unsafe {

@@ -1,16 +1,14 @@
 #![allow(dead_code)]
 
-//! Flavor filter — simple highpass/lowpass on oscillator mix output.
-
 use super::filter::{Filter, FilterType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlavorType {
     Off = 0,
-    Warm = 1,    // gentle lowpass
-    Bright = 2,  // gentle highpass
-    Dark = 3,    // steeper lowpass
-    Neutral = 4, // flat / bypass
+    Warm = 1,
+    Bright = 2,
+    Dark = 3,
+    Neutral = 4,
 }
 
 impl FlavorType {

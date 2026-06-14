@@ -1,31 +1,24 @@
-//! Insert processor framework for zone and group effect chains.
-//!
-//! Supports 4 slots per zone/group with configurable routing patterns.
-
 use crate::common::eq::Eq3Band;
 use crate::common::filter::{FilterType, SvfFilter};
 
-/// Routing pattern for 4 insert processors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ProcessorRouting {
-    /// Linear: 1 → 2 → 3 → 4
     #[default]
     S1,
-    /// → {1|2} → {3|4} →
+
     S2,
-    /// → 1 → {2|3} → 4 →
+
     S3,
-    /// All parallel
+
     P1,
-    /// → {{1→2}|{3→4}} →
+
     P2,
-    /// → {1|2|3} → 4
+
     P3,
-    /// Bypass all processors.
+
     Bypass,
 }
 
-/// Types of insert processors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ProcessorType {
     #[default]
@@ -47,68 +40,67 @@ pub enum ProcessorType {
     Bonsai,
 }
 
-/// A single insert processor slot.
 #[derive(Debug, Clone)]
 pub struct ProcessorSlot {
     pub proc_type: ProcessorType,
     pub enabled: bool,
-    /// Filter-specific params.
+
     pub filter_type: FilterType,
     pub filter_cutoff: f32,
     pub filter_resonance: f32,
-    /// Gain in dB (for Gain processor).
+
     pub gain_db: f32,
-    /// Pan (-1..1) for Pan processor.
+
     pub pan: f32,
-    /// Width (0..2) for Width processor. 1 = normal, 0 = mono, 2 = extra wide.
+
     pub width: f32,
-    /// Waveshaper drive (0..1).
+
     pub drive: f32,
-    /// Delay time in seconds.
+
     pub delay_time: f32,
-    /// Delay feedback (0..1).
+
     pub delay_feedback: f32,
-    /// Delay mix (0 = dry, 1 = wet).
+
     pub delay_mix: f32,
-    /// Chorus rate in Hz.
+
     pub chorus_rate: f32,
-    /// Chorus depth (0..1).
+
     pub chorus_depth: f32,
-    /// Bitcrusher bit depth (1..16).
+
     pub bitcrush_bits: f32,
-    /// Bitcrusher sample rate divider (1..32).
+
     pub bitcrush_rate: f32,
-    /// Reverb size (0..1).
+
     pub reverb_size: f32,
-    /// Reverb damping (0..1).
+
     pub reverb_damp: f32,
-    /// Reverb mix (0 = dry, 1 = wet).
+
     pub reverb_mix: f32,
-    // EQ3Band params
+
     pub eq_low_freq: f32,
     pub eq_low_gain: f32,
     pub eq_mid_freq: f32,
     pub eq_mid_gain: f32,
     pub eq_high_freq: f32,
     pub eq_high_gain: f32,
-    // FloatyDelay params
+
     pub floaty_time: f32,
     pub floaty_feedback: f32,
     pub floaty_mix: f32,
     pub floaty_rate: f32,
     pub floaty_depth: f32,
-    // TreeMonster params
+
     pub tree_drive: f32,
     pub tree_tone: f32,
     pub tree_mix: f32,
-    // Nimbus params
+
     pub nimbus_size: f32,
     pub nimbus_density: f32,
     pub nimbus_mix: f32,
-    // RotarySpeaker params
+
     pub rotary_speed: f32,
     pub rotary_mix: f32,
-    // Bonsai params
+
     pub bonsai_drive: f32,
     pub bonsai_tone: f32,
     pub bonsai_mix: f32,
@@ -162,47 +154,46 @@ impl Default for ProcessorSlot {
     }
 }
 
-/// Per-slot runtime state (delay lines, etc.).
 #[derive(Debug, Clone)]
 pub struct ProcessorState {
     delay_line_l: Vec<f32>,
     delay_line_r: Vec<f32>,
     delay_pos: usize,
     sample_rate: f32,
-    /// Chorus LFO phase.
+
     chorus_phase: f32,
-    /// Bitcrusher sample hold value.
+
     bitcrush_hold_l: f32,
     bitcrush_hold_r: f32,
     bitcrush_counter: usize,
-    /// Simple reverb comb filters.
+
     reverb_combs_l: [Vec<f32>; 4],
     reverb_combs_r: [Vec<f32>; 4],
     reverb_combs_pos: [usize; 4],
     reverb_allpass_l: Vec<f32>,
     reverb_allpass_r: Vec<f32>,
     reverb_allpass_pos: usize,
-    // EQ3Band state
+
     eq: Eq3Band,
-    // FloatyDelay state
+
     floaty_phase: f32,
     floaty_z1_l: f32,
     floaty_z1_r: f32,
-    // TreeMonster state
+
     tree_phase: f32,
     tree_z1_l: f32,
     tree_z1_r: f32,
-    // Nimbus state: 4 short granular delay lines
+
     nimbus_lines_l: [Vec<f32>; 4],
     nimbus_lines_r: [Vec<f32>; 4],
     nimbus_pos: [usize; 4],
     nimbus_phase: f32,
-    // RotarySpeaker state
+
     rotary_horn_phase: f32,
     rotary_woofer_phase: f32,
     rotary_crossover_z1_l: f32,
     rotary_crossover_z1_r: f32,
-    // Bonsai state
+
     bonsai_hp_z1_l: f32,
     bonsai_hp_z1_r: f32,
     bonsai_lp_z1_l: f32,
@@ -211,7 +202,7 @@ pub struct ProcessorState {
 
 impl ProcessorState {
     pub fn new(sample_rate: f32) -> Self {
-        let max_delay_samples = (sample_rate * 2.0) as usize; // 2 seconds max
+        let max_delay_samples = (sample_rate * 2.0) as usize;
         let nimbus_len = (sample_rate * 0.05) as usize + 1;
         Self {
             delay_line_l: vec![0.0; max_delay_samples],
@@ -400,7 +391,7 @@ impl ProcessorState {
 
     fn process_reverb(&mut self, input_l: f32, input_r: f32, size: f32, damp: f32) -> (f32, f32) {
         let feedback = size * 0.84 + 0.1;
-        // Comb filters.
+
         let mut out_l = 0.0f32;
         let mut out_r = 0.0f32;
         for i in 0..4 {
@@ -418,7 +409,6 @@ impl ProcessorState {
         out_l *= 0.25;
         out_r *= 0.25;
 
-        // Allpass filter.
         let ap_pos = self.reverb_allpass_pos;
         let delayed_l = self.reverb_allpass_l[ap_pos];
         let delayed_r = self.reverb_allpass_r[ap_pos];
@@ -452,7 +442,6 @@ impl ProcessorState {
         let delayed_l = self.delay_line_l[read_pos];
         let delayed_r = self.delay_line_r[read_pos];
 
-        // Lowpass filter in feedback path for "floaty" feel.
         let alpha = 0.3;
         let fb_l = delayed_l * alpha + self.floaty_z1_l * (1.0 - alpha);
         let fb_r = delayed_r * alpha + self.floaty_z1_r * (1.0 - alpha);
@@ -478,12 +467,12 @@ impl ProcessorState {
             self.tree_phase -= 1.0;
         }
         let lfo = (self.tree_phase * 2.0 * std::f32::consts::PI).sin();
-        // Ring-mod-ish distortion.
+
         let carrier = 1.0 + lfo * 0.3;
         let d = 1.0 + drive * 20.0;
         let mut dl = (input_l * d * carrier).tanh();
         let mut dr = (input_r * d * carrier).tanh();
-        // Simple 1-pole tone control.
+
         let alpha = tone.clamp(0.01, 0.99);
         dl = dl * alpha + self.tree_z1_l * (1.0 - alpha);
         dr = dr * alpha + self.tree_z1_r * (1.0 - alpha);
@@ -530,8 +519,7 @@ impl ProcessorState {
     }
 
     fn process_rotary_speaker(&mut self, input_l: f32, input_r: f32, speed: f32) -> (f32, f32) {
-        // Simple crossover: 1-pole lowpass for woofer, hipass for horn.
-        let alpha = 0.15; // crossover around ~1kHz at 48kHz
+        let alpha = 0.15;
         let woofer_l = input_l * alpha + self.rotary_crossover_z1_l * (1.0 - alpha);
         let woofer_r = input_r * alpha + self.rotary_crossover_z1_r * (1.0 - alpha);
         let horn_l = input_l - woofer_l;
@@ -539,7 +527,6 @@ impl ProcessorState {
         self.rotary_crossover_z1_l = woofer_l;
         self.rotary_crossover_z1_r = woofer_r;
 
-        // Horn spins faster, woofer slower.
         self.rotary_horn_phase += (speed * 4.0 + 2.0) / self.sample_rate;
         while self.rotary_horn_phase >= 1.0 {
             self.rotary_horn_phase -= 1.0;
@@ -552,7 +539,6 @@ impl ProcessorState {
         let horn_lfo = (self.rotary_horn_phase * 2.0 * std::f32::consts::PI).sin();
         let woofer_lfo = (self.rotary_woofer_phase * 2.0 * std::f32::consts::PI).sin();
 
-        // Tremolo + stereo pan.
         let horn_amp = 0.5 + horn_lfo * 0.3;
         let horn_pan_l = 0.7 + horn_lfo * 0.3;
         let horn_pan_r = 0.7 - horn_lfo * 0.3;
@@ -564,7 +550,6 @@ impl ProcessorState {
     }
 
     fn process_bonsai(&mut self, input_l: f32, input_r: f32, drive: f32, tone: f32) -> (f32, f32) {
-        // Tube-style asymmetrical distortion.
         let d = 1.0 + drive * 15.0;
         let mut dl = input_l * d;
         let mut dr = input_r * d;
@@ -578,7 +563,7 @@ impl ProcessorState {
         } else {
             (dr * 0.5).tanh() * 2.0
         };
-        // Highpass to remove DC, then lowpass tone.
+
         let hp_alpha = 0.02;
         dl -= self.bonsai_hp_z1_l;
         dr -= self.bonsai_hp_z1_r;
@@ -593,13 +578,12 @@ impl ProcessorState {
     }
 }
 
-/// A chain of 4 insert processors with a routing pattern.
 #[derive(Debug, Clone)]
 pub struct ProcessorChain {
     pub slots: Vec<ProcessorSlot>,
     pub routing: ProcessorRouting,
     states: Vec<ProcessorState>,
-    /// Pre-allocated scratch buffers for parallel routing (4 stereo pairs).
+
     scratch_l: Vec<Vec<f32>>,
     scratch_r: Vec<Vec<f32>>,
 }
@@ -813,8 +797,6 @@ impl ProcessorChain {
         self.scratch_r[idx][..src_r.len()].copy_from_slice(src_r);
     }
 
-    /// Process a stereo buffer through the enabled processors in this chain.
-    /// `buf_l` and `buf_r` must be the same length.
     pub fn process(&mut self, buf_l: &mut [f32], buf_r: &mut [f32]) {
         if self.routing == ProcessorRouting::Bypass {
             return;
@@ -825,13 +807,11 @@ impl ProcessorChain {
 
         match self.routing {
             ProcessorRouting::S1 => {
-                // Linear: 1 → 2 → 3 → 4
                 for si in 0..4 {
                     Self::process_single_slot(&self.slots[si], &mut self.states[si], buf_l, buf_r);
                 }
             }
             ProcessorRouting::S2 => {
-                // → {1|2} → {3|4} →
                 let active_01: Vec<usize> = (0..2)
                     .filter(|&i| {
                         self.slots[i].enabled && self.slots[i].proc_type != ProcessorType::None
@@ -868,7 +848,6 @@ impl ProcessorChain {
                 }
             }
             ProcessorRouting::S3 => {
-                // → 1 → {2|3} → 4 →
                 Self::process_single_slot(&self.slots[0], &mut self.states[0], buf_l, buf_r);
                 let active_12: Vec<usize> = (1..3)
                     .filter(|&i| {
@@ -890,7 +869,6 @@ impl ProcessorChain {
                 Self::process_single_slot(&self.slots[3], &mut self.states[3], buf_l, buf_r);
             }
             ProcessorRouting::P1 => {
-                // All parallel
                 let active: Vec<usize> = (0..4)
                     .filter(|&i| {
                         self.slots[i].enabled && self.slots[i].proc_type != ProcessorType::None
@@ -910,7 +888,6 @@ impl ProcessorChain {
                 }
             }
             ProcessorRouting::P2 => {
-                // → {{1→2}|{3→4}} →
                 let active_01 = self.slots[0].enabled
                     && self.slots[0].proc_type != ProcessorType::None
                     || self.slots[1].enabled && self.slots[1].proc_type != ProcessorType::None;
@@ -959,7 +936,6 @@ impl ProcessorChain {
                 }
             }
             ProcessorRouting::P3 => {
-                // → {1|2|3} → 4
                 let active_012: Vec<usize> = (0..3)
                     .filter(|&i| {
                         self.slots[i].enabled && self.slots[i].proc_type != ProcessorType::None
@@ -993,7 +969,7 @@ mod tests {
         let mut chain = ProcessorChain::new(48000.0);
         chain.slots[0].proc_type = ProcessorType::Gain;
         chain.slots[0].enabled = true;
-        chain.slots[0].gain_db = 6.0; // ~2x gain
+        chain.slots[0].gain_db = 6.0;
 
         let mut l = vec![0.5f32; 4];
         let mut r = vec![0.5f32; 4];
@@ -1008,14 +984,14 @@ mod tests {
         let mut chain = ProcessorChain::new(48000.0);
         chain.slots[0].proc_type = ProcessorType::Pan;
         chain.slots[0].enabled = true;
-        chain.slots[0].pan = 1.0; // full right
+        chain.slots[0].pan = 1.0;
 
         let mut l = vec![1.0f32; 4];
         let mut r = vec![1.0f32; 4];
         chain.process(&mut l, &mut r);
 
-        assert!(l[0] < 0.1); // left should be near 0
-        assert!(r[0] > 0.9); // right should be near 1
+        assert!(l[0] < 0.1);
+        assert!(r[0] > 0.9);
     }
 
     #[test]
@@ -1023,13 +999,12 @@ mod tests {
         let mut chain = ProcessorChain::new(48000.0);
         chain.slots[0].proc_type = ProcessorType::Width;
         chain.slots[0].enabled = true;
-        chain.slots[0].width = 0.0; // mono
+        chain.slots[0].width = 0.0;
 
         let mut l = vec![1.0f32; 4];
         let mut r = vec![-1.0f32; 4];
         chain.process(&mut l, &mut r);
 
-        // Mono: both channels should equal the mid signal (0).
         assert!(l[0].abs() < 0.01);
         assert!(r[0].abs() < 0.01);
     }
@@ -1039,13 +1014,12 @@ mod tests {
         let mut chain = ProcessorChain::new(48000.0);
         chain.slots[0].proc_type = ProcessorType::Waveshaper;
         chain.slots[0].enabled = true;
-        chain.slots[0].drive = 1.0; // max drive
+        chain.slots[0].drive = 1.0;
 
         let mut l = vec![10.0f32; 4];
         let mut r = vec![10.0f32; 4];
         chain.process(&mut l, &mut r);
 
-        // tanh should clamp to ~1.0.
         assert!(l[0] < 1.1);
         assert!(l[0] > 0.9);
     }
@@ -1061,7 +1035,6 @@ mod tests {
         let mut r = vec![0.5f32; 64];
         chain.process(&mut l, &mut r);
 
-        // DC-ish signal won't change much with shelf at 250 Hz, but it should not explode.
         assert!(l[0].is_finite());
         assert!(r[0].is_finite());
     }
@@ -1074,12 +1047,10 @@ mod tests {
         chain.slots[0].floaty_time = 0.001;
         chain.slots[0].floaty_mix = 1.0;
 
-        // Process enough samples for delay to fill (1ms ≈ 48 samples).
         let mut l = vec![1.0f32; 256];
         let mut r = vec![1.0f32; 256];
         chain.process(&mut l, &mut r);
 
-        // With full mix and short delay, some delayed energy should appear after fill.
         assert!(l[200].abs() > 0.01);
     }
 
@@ -1095,7 +1066,6 @@ mod tests {
         let mut r = vec![0.5f32; 64];
         chain.process(&mut l, &mut r);
 
-        // Distortion should change amplitude.
         assert!(l[10].abs() != 0.5);
     }
 
@@ -1106,12 +1076,10 @@ mod tests {
         chain.slots[0].enabled = true;
         chain.slots[0].nimbus_mix = 1.0;
 
-        // Need enough samples for granular delays (13-29ms ≈ 600-1400 samples) to fill.
         let mut l = vec![1.0f32; 2048];
         let mut r = vec![1.0f32; 2048];
         chain.process(&mut l, &mut r);
 
-        // Granular cloud should produce some output after delay lines fill.
         assert!(l[1500].abs() > 0.0);
     }
 
@@ -1127,7 +1095,6 @@ mod tests {
         let mut r = vec![0.5f32; 64];
         chain.process(&mut l, &mut r);
 
-        // Rotary should modulate amplitude.
         assert!(l[10] != l[20]);
     }
 
@@ -1143,7 +1110,6 @@ mod tests {
         let mut r = vec![0.5f32; 64];
         chain.process(&mut l, &mut r);
 
-        // Distortion should change amplitude.
         assert!(l[10].abs() != 0.5);
     }
 
@@ -1151,11 +1117,11 @@ mod tests {
     fn test_routing_s2_parallel_pairs() {
         let mut chain = ProcessorChain::new(48000.0);
         chain.routing = ProcessorRouting::S2;
-        // Slot 0: gain +6dB (~2x)
+
         chain.slots[0].proc_type = ProcessorType::Gain;
         chain.slots[0].enabled = true;
         chain.slots[0].gain_db = 6.0;
-        // Slot 1: gain -6dB (~0.5x)
+
         chain.slots[1].proc_type = ProcessorType::Gain;
         chain.slots[1].enabled = true;
         chain.slots[1].gain_db = -6.0;
@@ -1164,7 +1130,6 @@ mod tests {
         let mut r = vec![1.0f32; 4];
         chain.process(&mut l, &mut r);
 
-        // Parallel mix of 2x and 0.5x = (2 + 0.5) / 2 = 1.25
         assert!((l[0] - 1.25).abs() < 0.05);
     }
 
@@ -1172,7 +1137,7 @@ mod tests {
     fn test_routing_p1_all_parallel() {
         let mut chain = ProcessorChain::new(48000.0);
         chain.routing = ProcessorRouting::P1;
-        // 4 slots: two gain +6dB, two bypassed
+
         chain.slots[0].proc_type = ProcessorType::Gain;
         chain.slots[0].enabled = true;
         chain.slots[0].gain_db = 6.0;
@@ -1184,7 +1149,6 @@ mod tests {
         let mut r = vec![1.0f32; 4];
         chain.process(&mut l, &mut r);
 
-        // Average of 2x and 2x = 2.0
         assert!((l[0] - 2.0).abs() < 0.05);
     }
 
@@ -1192,7 +1156,7 @@ mod tests {
     fn test_routing_p2_serial_parallel() {
         let mut chain = ProcessorChain::new(48000.0);
         chain.routing = ProcessorRouting::P2;
-        // Chain 1→2: two +6dB gains in series = 4x
+
         chain.slots[0].proc_type = ProcessorType::Gain;
         chain.slots[0].enabled = true;
         chain.slots[0].gain_db = 6.0;
@@ -1204,7 +1168,6 @@ mod tests {
         let mut r = vec![1.0f32; 4];
         chain.process(&mut l, &mut r);
 
-        // Only chain 1→2 active, average of 1 branch = 4.0
         assert!((l[0] - 4.0).abs() < 0.1);
     }
 }

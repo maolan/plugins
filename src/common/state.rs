@@ -1,5 +1,3 @@
-//! Generic plugin state serialization for CLAP plugins.
-
 use serde::{Deserialize, Serialize};
 
 use crate::common::ClapParamId;

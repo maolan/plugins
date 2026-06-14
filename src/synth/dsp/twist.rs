@@ -1,18 +1,8 @@
 #![allow(dead_code)]
 
-//! Twist oscillator — Plaits-inspired macro-oscillator.
-//!
-//! Six synthesis models covering virtual analog, wavefolding, FM, additive,
-//! physical modeling, and noise.  No external lookup tables — everything is
-//! computed in real time.
-
 use std::f32::consts::PI;
 
 use super::oscillator::UnisonVoice;
-
-// ---------------------------------------------------------------------------
-// Models
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TwistModel {
@@ -57,25 +47,19 @@ impl TwistModel {
     }
 }
 
-// ---------------------------------------------------------------------------
-// TwistOsc
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone)]
 pub struct TwistOsc {
     sample_rate: f32,
     freq_hz: f32,
     model: TwistModel,
-    harmonics: f32, // 0..1  -> model-specific "timbre"
-    timbre: f32,    // 0..1  -> model-specific "brightness"
-    morph: f32,     // 0..1  -> model-specific "shape"
+    harmonics: f32,
+    timbre: f32,
+    morph: f32,
 
-    // VA state
     va_voices: Vec<UnisonVoice>,
     va_pulse_width: f32,
-    va_shape: f32, // 0=saw, 1=square
+    va_shape: f32,
 
-    // FM state
     fm_carrier_phase: f32,
     fm_mod_phase: f32,
     fm_ratio: f32,
@@ -83,10 +67,8 @@ pub struct TwistOsc {
     fm_feedback: f32,
     fm_fb_buf: f32,
 
-    // Harmonic state
     har_phases: [f32; 16],
 
-    // String state
     string_buffer: Vec<f32>,
     string_pos: usize,
     string_exciter: f32,
@@ -94,60 +76,47 @@ pub struct TwistOsc {
     string_brightness: f32,
     string_filter: f32,
 
-    // Noise state
     noise_filter_l: f32,
     noise_filter_r: f32,
     noise_filter_bp: f32,
     noise_resonance: f32,
 
-    // Chords state
     chord_phases: [f32; 4],
 
-    // Filtered noise state
     fn_filter_state: f32,
 
-    // Kick state
     kick_env: f32,
     kick_phase: f32,
     kick_trigger: bool,
 
-    // Snare state
     snare_tone_env: f32,
     snare_noise_env: f32,
     snare_tone_phase: f32,
 
-    // Vowels state (3 formant filters: f1, f2, f3 — each with 2-pole BP)
     vowel_f1_state: [f32; 2],
     vowel_f2_state: [f32; 2],
     vowel_f3_state: [f32; 2],
 
-    // Granular cloud state
     grain_cloud_buffer: Vec<f32>,
     grain_cloud_pos: f32,
     grain_env: f32,
 
-    // Inharmonic string state
     inh_string_buffer: Vec<f32>,
     inh_string_pos: usize,
     inh_string_exciter: f32,
 
-    // Modal resonator state
     modal_modes: [f32; 4],
     modal_velocities: [f32; 4],
 
-    // Particle noise state
     particle_filters: [f32; 6],
 
-    // Hi-hat state
     hihat_env: f32,
     hihat_noise_state: f32,
 
-    // Shared
     unison_voices: usize,
     unison_detune: f32,
     aux_mix: f32,
 
-    // LPG (lowpass gate)
     lpg_response: f32,
     lpg_decay: f32,
     lpg_env: f32,
@@ -299,10 +268,6 @@ impl TwistOsc {
         self.rebuild_va_voices();
     }
 
-    // -----------------------------------------------------------------------
-    // Main output
-    // -----------------------------------------------------------------------
-
     pub fn next(&mut self, fm_input: f32) -> (f32, f32) {
         let (l, r) = match self.model {
             TwistModel::VirtualAnalog => self.next_va(),
@@ -322,22 +287,22 @@ impl TwistOsc {
             TwistModel::ParticleNoise => self.next_particle_noise(),
             TwistModel::AnalogHiHat => self.next_analog_hihat(),
         };
-        // Apply LPG (lowpass gate) if response or decay is non-zero
+
         let (l, r) = if self.lpg_response > 0.0 || self.lpg_decay > 0.0 {
             let sr = self.sample_rate;
-            // Attack: higher response = slower attack
+
             let attack_coef = 1.0 - (-1.0 / (sr * (0.001 + self.lpg_response * 0.1))).exp();
-            // Decay: higher decay = slower decay
+
             let decay_coef = 1.0 - (-1.0 / (sr * (0.001 + self.lpg_decay * 0.5))).exp();
             if self.lpg_env < 0.999 {
                 self.lpg_env += (1.0 - self.lpg_env) * attack_coef;
             } else {
                 self.lpg_env -= self.lpg_env * decay_coef;
             }
-            // Amplitude
+
             let l = l * self.lpg_env;
             let r = r * self.lpg_env;
-            // Lowpass tracking: cutoff = 20 Hz .. 8000 Hz based on envelope
+
             let fc = 20.0 + self.lpg_env * 8000.0;
             let alpha = 1.0 - (-2.0 * PI * fc / sr).exp();
             self.lpg_filter_l += alpha * (l - self.lpg_filter_l);
@@ -358,10 +323,6 @@ impl TwistOsc {
             (l, r)
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Model 0: Virtual Analog
-    // -----------------------------------------------------------------------
 
     fn rebuild_va_voices(&mut self) {
         self.va_voices.clear();
@@ -411,7 +372,7 @@ impl TwistOsc {
             }
 
             let t = voice.phase;
-            // Crossfade between saw and square
+
             let saw = 2.0 * t - 1.0;
             let square = if t < self.va_pulse_width { 1.0 } else { -1.0 };
             let out = saw * (1.0 - self.va_shape) + square * self.va_shape;
@@ -424,14 +385,10 @@ impl TwistOsc {
         (sum_l * atten, sum_r * atten)
     }
 
-    // -----------------------------------------------------------------------
-    // Model 1: Wavefolder
-    // -----------------------------------------------------------------------
-
     fn next_wavefolder(&mut self, fm_input: f32) -> (f32, f32) {
         let drive = 1.0 + self.harmonics * 8.0;
         let asym = (self.morph - 0.5) * 2.0;
-        let waveform = self.timbre; // 0=sine, 1=triangle
+        let waveform = self.timbre;
 
         let base_phase = self.fm_carrier_phase;
         let inc = self.freq_hz / self.sample_rate;
@@ -444,22 +401,16 @@ impl TwistOsc {
 
         let phase = (base_phase + fm).fract();
 
-        // Input waveform: sine ↔ triangle
         let sin_in = (phase * 2.0 * PI).sin();
         let tri_in = 1.0 - 4.0 * (phase - 0.5).abs();
         let input = sin_in * (1.0 - waveform) + tri_in * waveform;
 
-        // Asymmetric wavefolding
         let x = (input + asym) * drive;
-        // Polynomial soft fold
+
         let folded = (x * 0.5).sin() * 2.0;
 
         (folded, folded)
     }
-
-    // -----------------------------------------------------------------------
-    // Model 2: FM (2-operator)
-    // -----------------------------------------------------------------------
 
     fn next_fm(&mut self, fm_input: f32) -> (f32, f32) {
         let carrier_inc = self.freq_hz / self.sample_rate;
@@ -487,15 +438,11 @@ impl TwistOsc {
         (out, out)
     }
 
-    // -----------------------------------------------------------------------
-    // Model 3: Harmonic (additive)
-    // -----------------------------------------------------------------------
-
     fn next_harmonic(&mut self, fm_input: f32) -> (f32, f32) {
         let base_inc = self.freq_hz / self.sample_rate;
         let num_harm = (self.harmonics * 15.0 + 1.0) as usize;
-        let tilt = self.timbre; // 0=dark, 1=bright
-        let inharm = self.morph * 0.1; // inharmonicity
+        let tilt = self.timbre;
+        let inharm = self.morph * 0.1;
 
         let fm = fm_input * 0.02;
 
@@ -515,20 +462,14 @@ impl TwistOsc {
         (out * norm, out * norm)
     }
 
-    // -----------------------------------------------------------------------
-    // Model 4: String (Karplus-Strong)
-    // -----------------------------------------------------------------------
-
     fn next_string(&mut self, fm_input: f32) -> (f32, f32) {
         let delay_len = (self.sample_rate / self.freq_hz).clamp(2.0, 2046.0) as usize;
-        let decay = 0.9 + self.timbre * 0.099; // 0.9..0.999
-        let brightness = self.harmonics; // 0..1
+        let decay = 0.9 + self.timbre * 0.099;
+        let brightness = self.harmonics;
         let pluck_pos = self.morph;
 
-        // Simple 1-pole lowpass filter coefficient
         let lp_coef = brightness * 0.9;
 
-        // Excite with noise burst on first call or when fm_input is strong
         if fm_input.abs() > 0.5 && self.string_exciter <= 0.0 {
             self.string_exciter = 1.0;
         }
@@ -544,29 +485,21 @@ impl TwistOsc {
             0.0
         };
 
-        // Read from delay line
         let read_pos = (self.string_pos + delay_len) % self.string_buffer.len();
         let sample = self.string_buffer[read_pos];
 
-        // Lowpass filter
         self.string_filter = self.string_filter + lp_coef * (sample - self.string_filter);
 
-        // Average + feedback
         let next = (self.string_filter + sample) * 0.5 * decay + excite;
 
-        // Write
         self.string_buffer[self.string_pos] = next;
         self.string_pos = (self.string_pos + 1) % self.string_buffer.len();
 
         (sample, sample)
     }
 
-    // -----------------------------------------------------------------------
-    // Model 5: Noise (filtered)
-    // -----------------------------------------------------------------------
-
     fn next_noise(&mut self) -> (f32, f32) {
-        let filter_type = self.harmonics; // 0=LP, 0.5=BP, 1=HP
+        let filter_type = self.harmonics;
         let cutoff = 20.0 + self.timbre.powf(2.0) * 19980.0;
         let resonance = self.morph * 4.0 + 0.5;
 
@@ -596,7 +529,6 @@ impl TwistOsc {
 
         let noise = fast_rand() * 2.0 - 1.0;
 
-        // Mix filter types
         let b0 = b0_lp * (1.0 - filter_type * 2.0).max(0.0)
             + b0_bp * (1.0 - (filter_type * 2.0 - 1.0).abs())
             + b0_hp * (filter_type * 2.0 - 1.0).max(0.0);
@@ -616,21 +548,17 @@ impl TwistOsc {
         (out, out)
     }
 
-    // -----------------------------------------------------------------------
-    // Model 6: Chords
-    // -----------------------------------------------------------------------
-
     fn next_chords(&mut self) -> (f32, f32) {
         let base_inc = self.freq_hz / self.sample_rate;
-        // Chord type from harmonics: 0=major, 0.33=minor, 0.66=dim, 1.0=aug
+
         let chord_type = (self.harmonics * 3.0) as u8;
         let ratios = match chord_type {
-            1 => [1.0, 1.2, 1.5, 2.0],     // minor
-            2 => [1.0, 1.189, 1.414, 2.0], // diminished
-            3 => [1.0, 1.25, 1.6, 2.0],    // augmented
-            _ => [1.0, 1.25, 1.5, 2.0],    // major
+            1 => [1.0, 1.2, 1.5, 2.0],
+            2 => [1.0, 1.189, 1.414, 2.0],
+            3 => [1.0, 1.25, 1.6, 2.0],
+            _ => [1.0, 1.25, 1.5, 2.0],
         };
-        let detune = self.timbre * 0.02; // slight detune for thickness
+        let detune = self.timbre * 0.02;
         let mut sum = 0.0f32;
         for (i, ratio) in ratios.iter().enumerate() {
             self.chord_phases[i] += base_inc * *ratio * (1.0 + detune * (i as f32 - 1.5));
@@ -647,10 +575,6 @@ impl TwistOsc {
         let r = out * (1.0 + spread * 0.3);
         (l, r)
     }
-
-    // -----------------------------------------------------------------------
-    // Model 7: Filtered Noise
-    // -----------------------------------------------------------------------
 
     fn next_filtered_noise(&mut self) -> (f32, f32) {
         let cutoff = 20.0 + self.timbre.powf(2.0) * 19980.0;
@@ -674,14 +598,10 @@ impl TwistOsc {
         (out, out)
     }
 
-    // -----------------------------------------------------------------------
-    // Model 8: Analog Kick
-    // -----------------------------------------------------------------------
-
     fn next_analog_kick(&mut self) -> (f32, f32) {
         let sr = self.sample_rate;
-        // Envelope: fast attack, exponential decay
-        let decay = 0.995 + self.timbre * 0.004; // decay speed
+
+        let decay = 0.995 + self.timbre * 0.004;
         if self.kick_trigger {
             self.kick_env = 1.0;
             self.kick_trigger = false;
@@ -691,7 +611,6 @@ impl TwistOsc {
             self.kick_env = 0.0;
         }
 
-        // Pitch sweep: start high, drop to freq_hz
         let start_freq = self.freq_hz * (4.0 + self.harmonics * 4.0);
         let sweep = self.kick_env.powf(2.0 + self.morph * 2.0);
         let current_freq = start_freq * sweep + self.freq_hz * (1.0 - sweep);
@@ -706,32 +625,26 @@ impl TwistOsc {
         (out, out)
     }
 
-    // -----------------------------------------------------------------------
-    // Model 9: Analog Snare
-    // -----------------------------------------------------------------------
-
     fn next_analog_snare(&mut self) -> (f32, f32) {
         let sr = self.sample_rate;
-        // Tone envelope (fast decay)
+
         let tone_decay = 0.98 + self.timbre * 0.015;
         self.snare_tone_env *= tone_decay;
         if self.snare_tone_env < 0.001 {
             self.snare_tone_env = 0.0;
         }
-        // Noise envelope (medium decay)
+
         let noise_decay = 0.97 + self.morph * 0.025;
         self.snare_noise_env *= noise_decay;
         if self.snare_noise_env < 0.001 {
             self.snare_noise_env = 0.0;
         }
 
-        // Trigger on first call or when both envelopes have decayed
         if self.snare_tone_env <= 0.001 && self.snare_noise_env <= 0.001 {
             self.snare_tone_env = 1.0;
             self.snare_noise_env = 1.0;
         }
 
-        // Tone: tuned sine around 200Hz
         let tone_freq = 180.0 + self.harmonics * 120.0;
         let tone_inc = tone_freq / sr;
         self.snare_tone_phase += tone_inc;
@@ -740,32 +653,27 @@ impl TwistOsc {
         }
         let tone = (self.snare_tone_phase * 2.0 * PI).sin() * self.snare_tone_env;
 
-        // Noise: filtered broadband
         let noise = fast_rand() * 2.0 - 1.0;
         let filtered_noise = noise * self.snare_noise_env;
 
-        let mix = 0.3; // tone/noise balance
+        let mix = 0.3;
         let out = tone * mix + filtered_noise * (1.0 - mix);
         (out, out)
     }
 
-    // -----------------------------------------------------------------------
-    // Model 10: Vowels / Speech
-    // -----------------------------------------------------------------------
-
     fn next_vowels(&mut self) -> (f32, f32) {
         let sr = self.sample_rate;
-        let vowel = (self.harmonics * 4.0) as u8; // 0-4: A, E, I, O, U
-        // Formant frequencies (F1, F2, F3) in Hz for each vowel
+        let vowel = (self.harmonics * 4.0) as u8;
+
         let formants = match vowel {
-            1 => ([400.0, 1900.0, 2500.0], [1.0, 0.7, 0.5]), // E
-            2 => ([300.0, 2300.0, 2800.0], [1.0, 0.6, 0.4]), // I
-            3 => ([400.0, 800.0, 2400.0], [1.0, 0.9, 0.5]),  // O
-            4 => ([300.0, 800.0, 2200.0], [1.0, 0.9, 0.5]),  // U
-            _ => ([700.0, 1200.0, 2600.0], [1.0, 0.8, 0.5]), // A
+            1 => ([400.0, 1900.0, 2500.0], [1.0, 0.7, 0.5]),
+            2 => ([300.0, 2300.0, 2800.0], [1.0, 0.6, 0.4]),
+            3 => ([400.0, 800.0, 2400.0], [1.0, 0.9, 0.5]),
+            4 => ([300.0, 800.0, 2200.0], [1.0, 0.9, 0.5]),
+            _ => ([700.0, 1200.0, 2600.0], [1.0, 0.8, 0.5]),
         };
-        let brightness = 0.5 + self.timbre * 0.5; // boost formants
-        let exciter = fast_rand() * 2.0 - 1.0; // glottal source approximated by noise
+        let brightness = 0.5 + self.timbre * 0.5;
+        let exciter = fast_rand() * 2.0 - 1.0;
 
         fn formant_filter(sample: f32, freq: f32, q: f32, sr: f32, state: &mut [f32; 2]) -> f32 {
             let omega = 2.0 * PI * freq / sr;
@@ -812,23 +720,17 @@ impl TwistOsc {
         (out, out)
     }
 
-    // -----------------------------------------------------------------------
-    // Model 11: Granular Cloud
-    // -----------------------------------------------------------------------
-
     fn next_granular_cloud(&mut self) -> (f32, f32) {
         let sr = self.sample_rate;
-        let density = self.harmonics; // 0-1 grain density
-        let grain_size = 10.0 + self.timbre * 100.0; // ms
+        let density = self.harmonics;
+        let grain_size = 10.0 + self.timbre * 100.0;
         let grain_size_samples = (grain_size * sr / 1000.0) as usize;
-        let spread = self.morph * 0.5; // stereo spread
+        let spread = self.morph * 0.5;
 
-        // Write noise into buffer
         let idx = self.grain_cloud_pos as usize % self.grain_cloud_buffer.len();
         self.grain_cloud_buffer[idx] = fast_rand() * 2.0 - 1.0;
         self.grain_cloud_pos += 1.0;
 
-        // Read a grain with window
         let grain_pos = ((self.grain_cloud_pos as usize).saturating_sub(grain_size_samples))
             % self.grain_cloud_buffer.len();
         let mut sum = 0.0f32;
@@ -849,19 +751,14 @@ impl TwistOsc {
         (l, r)
     }
 
-    // -----------------------------------------------------------------------
-    // Model 12: Inharmonic String
-    // -----------------------------------------------------------------------
-
     fn next_inharmonic_string(&mut self) -> (f32, f32) {
         let sr = self.sample_rate;
         let freq = self.freq_hz;
         let delay_samples = sr / freq;
-        let inharmonicity = self.harmonics * 0.1; // detune upper partials
+        let inharmonicity = self.harmonics * 0.1;
         let brightness = self.timbre;
         let damping = 0.9 + self.morph * 0.09;
 
-        // Read with inharmonic stretch
         let read_offset = delay_samples * (1.0 + inharmonicity);
         let read_pos_f =
             self.inh_string_pos as f32 + self.inh_string_buffer.len() as f32 - read_offset;
@@ -871,14 +768,12 @@ impl TwistOsc {
         let delayed = self.inh_string_buffer[read_pos] * (1.0 - frac)
             + self.inh_string_buffer[read_pos2] * frac;
 
-        // Damping + brightness filter
         let filtered = delayed * damping;
         let bright = filtered * (1.0 + brightness);
 
-        // Excite on first call or when decayed
         if self.inh_string_exciter < 0.001 {
             self.inh_string_exciter = 1.0;
-            // Fill buffer with noise burst
+
             let burst_len = (self.inh_string_buffer.len() as f32 * 0.3) as usize;
             for i in 0..burst_len {
                 self.inh_string_buffer[i] = fast_rand() * 2.0 - 1.0;
@@ -886,32 +781,25 @@ impl TwistOsc {
         }
         self.inh_string_exciter *= 0.999;
 
-        // Write back
         self.inh_string_buffer[self.inh_string_pos] = bright.clamp(-1.0, 1.0);
         self.inh_string_pos = (self.inh_string_pos + 1) % self.inh_string_buffer.len();
 
         (delayed, delayed)
     }
 
-    // -----------------------------------------------------------------------
-    // Model 13: Modal Resonator
-    // -----------------------------------------------------------------------
-
     fn next_modal_resonator(&mut self) -> (f32, f32) {
         let sr = self.sample_rate;
         let freq = self.freq_hz;
-        let material = self.harmonics; // 0=wood, 0.5=metal, 1.0=glass
+        let material = self.harmonics;
         let decay = 0.95 + self.timbre * 0.04;
         let brightness = self.morph;
 
-        // Modal frequencies: fundamental + 3 inharmonic overtones
         let ratios = match (material * 3.0) as u8 {
-            1 => [1.0, 2.8, 5.2, 8.1],  // metal
-            2 => [1.0, 2.4, 4.5, 6.8],  // glass
-            _ => [1.0, 3.2, 6.5, 10.8], // wood
+            1 => [1.0, 2.8, 5.2, 8.1],
+            2 => [1.0, 2.4, 4.5, 6.8],
+            _ => [1.0, 3.2, 6.5, 10.8],
         };
 
-        // Excitation impulse
         let _excite = if self.modal_velocities.iter().all(|&v| v.abs() < 0.001) {
             for v in &mut self.modal_velocities {
                 *v = fast_rand() * 2.0 - 1.0;
@@ -925,7 +813,7 @@ impl TwistOsc {
         for (i, ratio) in ratios.iter().enumerate() {
             let f = freq * *ratio;
             let inc = f / sr;
-            // Simple resonator: y[n] = decay * (2*cos(omega)*y[n-1] - y[n-2]) + excite
+
             let omega = 2.0 * PI * inc;
             let c = omega.cos();
             let new_mode = decay * (2.0 * c * self.modal_modes[i] - self.modal_velocities[i]);
@@ -938,13 +826,9 @@ impl TwistOsc {
         (out, out)
     }
 
-    // -----------------------------------------------------------------------
-    // Model 14: Particle Noise
-    // -----------------------------------------------------------------------
-
     fn next_particle_noise(&mut self) -> (f32, f32) {
         let sr = self.sample_rate;
-        let n_particles = (self.harmonics * 6.0) as usize + 2; // 2-8 filter bands
+        let n_particles = (self.harmonics * 6.0) as usize + 2;
         let base_cutoff = 100.0 + self.timbre * 8000.0;
         let resonance = 2.0 + self.morph * 8.0;
 
@@ -975,24 +859,19 @@ impl TwistOsc {
         (out, out)
     }
 
-    // -----------------------------------------------------------------------
-    // Model 15: Analog Hi-Hat
-    // -----------------------------------------------------------------------
-
     fn next_analog_hihat(&mut self) -> (f32, f32) {
         let sr = self.sample_rate;
-        // Fast decay envelope
+
         let decay = 0.9 + self.timbre * 0.08;
         self.hihat_env *= decay;
         if self.hihat_env < 0.001 {
             self.hihat_env = 0.0;
         }
-        // Retrigger
+
         if self.hihat_env <= 0.001 {
             self.hihat_env = 1.0;
         }
 
-        // Metallic noise: 6 square waves at inharmonic ratios
         let ratios = [2.0, 3.0, 4.16, 5.43, 6.79, 8.21];
         let mut metallic = 0.0f32;
         for (i, &ratio) in ratios.iter().enumerate() {
@@ -1004,7 +883,6 @@ impl TwistOsc {
         }
         metallic /= 6.0;
 
-        // HP filter the result
         let hp_cutoff = 5000.0 + self.morph * 10000.0;
         let fc = (hp_cutoff / sr).clamp(0.0001, 0.45);
         let omega = 2.0 * PI * fc;
@@ -1025,10 +903,6 @@ impl TwistOsc {
         (out, out)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Fast RNG (xorshift) — deterministic, no std
-// ---------------------------------------------------------------------------
 
 #[inline]
 fn fast_rand() -> f32 {

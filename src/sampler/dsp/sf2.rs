@@ -1,8 +1,3 @@
-//! SoundFont 2 (SF2) format parser.
-//!
-//! Parses the SF2 RIFF structure and extracts presets, instruments, and samples
-//! into the Patch/Part/Group/Zone hierarchy.
-
 #![allow(dead_code)]
 
 use std::collections::HashMap;
@@ -15,7 +10,6 @@ use crate::sampler::dsp::patch::Patch;
 use crate::sampler::dsp::sample::Sample;
 use crate::sampler::dsp::zone::Zone;
 
-/// Parse an SF2 file and build a Patch.
 pub fn parse_sf2(path: &str) -> Result<Patch, String> {
     let data = std::fs::read(path).map_err(|e| format!("Failed to read SF2 file: {}", e))?;
     parse_sf2_data(&data)
@@ -24,7 +18,6 @@ pub fn parse_sf2(path: &str) -> Result<Patch, String> {
 fn parse_sf2_data(data: &[u8]) -> Result<Patch, String> {
     let mut reader = ByteReader::new(data);
 
-    // RIFF header.
     let riff = reader.read_fourcc()?;
     if riff != *b"RIFF" {
         return Err(format!("Expected RIFF, got {}", fourcc_str(riff)));
@@ -37,7 +30,6 @@ fn parse_sf2_data(data: &[u8]) -> Result<Patch, String> {
 
     let end_pos = 8 + file_size as usize;
 
-    // Parse the three main lists: INFO, sdta, pdta.
     let mut sdta_data = Vec::new();
     let mut pdta_data = Vec::new();
 
@@ -62,13 +54,10 @@ fn parse_sf2_data(data: &[u8]) -> Result<Patch, String> {
         }
     }
 
-    // Parse sample data.
     let smpl_data = extract_smpl(&sdta_data)?;
 
-    // Parse preset data.
     let pdta = Pdta::parse(&pdta_data)?;
 
-    // Build Patch from parsed data.
     build_patch(&pdta, &smpl_data)
 }
 
@@ -90,10 +79,6 @@ fn extract_smpl(sdta: &[u8]) -> Result<Vec<i16>, String> {
     }
     Ok(Vec::new())
 }
-
-// ---------------------------------------------------------------------------
-// PDTA parsing
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 struct Pdta {
@@ -151,9 +136,7 @@ impl Default for GenAmount {
 }
 
 #[derive(Debug, Clone, Default)]
-struct Modulator {
-    // Not used in basic parsing.
-}
+struct Modulator {}
 
 #[derive(Debug, Clone)]
 struct Instrument {
@@ -175,11 +158,10 @@ struct SampleHeader {
     sample_type: u16,
 }
 
-// SF2 generator operators.
 const GEN_KEY_RANGE: u16 = 43;
 const GEN_VEL_RANGE: u16 = 44;
-const GEN_OVERRIDE_KEY: u16 = 46; // forced MIDI key number
-const GEN_OVERRIDE_VEL: u16 = 47; // forced velocity
+const GEN_OVERRIDE_KEY: u16 = 46;
+const GEN_OVERRIDE_VEL: u16 = 47;
 const GEN_INITIAL_ATTENUATION: u16 = 48;
 const GEN_PAN: u16 = 17;
 const GEN_COARSE_TUNE: u16 = 51;
@@ -337,7 +319,6 @@ fn build_patch(pdta: &Pdta, smpl_data: &[i16]) -> Result<Patch, String> {
     let mut patch = Patch::default();
     patch.parts.clear();
 
-    // Build samples from shdr + smpl.
     let mut samples: Vec<Arc<Sample>> = Vec::new();
     for shdr in &pdta.sample_headers {
         let start = shdr.start as usize;
@@ -358,8 +339,6 @@ fn build_patch(pdta: &Pdta, smpl_data: &[i16]) -> Result<Patch, String> {
         samples.push(Arc::new(sample));
     }
 
-    // Build instruments from ibag/igen.
-    // Each instrument defines a set of zones (bags).
     let mut part = Part::default();
 
     for inst in &pdta.instruments {
@@ -368,7 +347,6 @@ fn build_patch(pdta: &Pdta, smpl_data: &[i16]) -> Result<Patch, String> {
             ..Default::default()
         };
 
-        // Find the range of bags for this instrument.
         let start_bag = inst.inst_bag_ndx as usize;
         let end_bag = if let Some(next_inst) = pdta
             .instruments
@@ -380,7 +358,6 @@ fn build_patch(pdta: &Pdta, smpl_data: &[i16]) -> Result<Patch, String> {
             pdta.inst_bags.len().saturating_sub(1)
         };
 
-        // The first bag is the global zone; subsequent bags are regions.
         let mut global_gens: HashMap<u16, i16> = HashMap::new();
         let bag_range = start_bag..=end_bag.min(pdta.inst_bags.len().saturating_sub(1));
 
@@ -401,17 +378,14 @@ fn build_patch(pdta: &Pdta, smpl_data: &[i16]) -> Result<Patch, String> {
             }
 
             if bi == 0 && !region_gens.contains_key(&GEN_SAMPLE_ID) {
-                // Global zone.
                 global_gens = region_gens;
                 continue;
             }
 
-            // Merge global into region.
             for (k, v) in &global_gens {
                 region_gens.entry(*k).or_insert(*v);
             }
 
-            // Build Zone from generators.
             if let Some(&sample_id) = region_gens.get(&GEN_SAMPLE_ID) {
                 let sample_id = sample_id as usize;
                 if sample_id >= samples.len() {
@@ -420,7 +394,6 @@ fn build_patch(pdta: &Pdta, smpl_data: &[i16]) -> Result<Patch, String> {
                 let mut zone = Zone::default();
                 zone.sample = samples[sample_id].clone();
 
-                // Key range.
                 if let Some(&val) = region_gens.get(&GEN_KEY_RANGE) {
                     let bytes = val.to_le_bytes();
                     zone.key_low = bytes[0];
@@ -430,7 +403,6 @@ fn build_patch(pdta: &Pdta, smpl_data: &[i16]) -> Result<Patch, String> {
                     zone.key_high = 127;
                 }
 
-                // Velocity range.
                 if let Some(&val) = region_gens.get(&GEN_VEL_RANGE) {
                     let bytes = val.to_le_bytes();
                     zone.vel_low = bytes[0];
@@ -440,7 +412,6 @@ fn build_patch(pdta: &Pdta, smpl_data: &[i16]) -> Result<Patch, String> {
                     zone.vel_high = 127;
                 }
 
-                // Root key.
                 if let Some(&val) = region_gens.get(&GEN_OVERRIDING_ROOT_KEY) {
                     if (0..=127).contains(&val) {
                         zone.root_key = val as u8;
@@ -449,22 +420,18 @@ fn build_patch(pdta: &Pdta, smpl_data: &[i16]) -> Result<Patch, String> {
                     zone.root_key = shdr.original_key;
                 }
 
-                // Tuning: coarse + fine.
                 let coarse = region_gens.get(&GEN_COARSE_TUNE).copied().unwrap_or(0) as f32;
                 let fine = region_gens.get(&GEN_FINE_TUNE).copied().unwrap_or(0) as f32;
                 zone.pitch_offset = coarse * 100.0 + fine;
 
-                // Volume (attenuation in cB, convert to dB).
                 if let Some(&att) = region_gens.get(&GEN_INITIAL_ATTENUATION) {
                     zone.gain_db = -(att as f32) / 10.0;
                 }
 
-                // Pan (-500 to +500, map to -1..1).
                 if let Some(&pan) = region_gens.get(&GEN_PAN) {
                     zone.pan = pan as f32 / 500.0;
                 }
 
-                // Loop mode.
                 if let Some(&mode) = region_gens.get(&GEN_SAMPLE_MODES) {
                     match mode {
                         1 => zone.loop_mode = crate::sampler::dsp::zone::LoopMode::DuringVoice,
@@ -473,12 +440,10 @@ fn build_patch(pdta: &Pdta, smpl_data: &[i16]) -> Result<Patch, String> {
                     }
                 }
 
-                // Key tracking.
                 if let Some(&kt) = region_gens.get(&GEN_SCALE_TUNING) {
                     zone.key_tracking = (kt as f32 / 100.0).clamp(0.0, 1.0);
                 }
 
-                // Exclusive group.
                 if let Some(&eg) = region_gens.get(&GEN_EXCLUSIVE_CLASS) {
                     group.exclusive_group = eg as u8;
                 }
@@ -498,10 +463,6 @@ fn build_patch(pdta: &Pdta, smpl_data: &[i16]) -> Result<Patch, String> {
 
     Ok(patch)
 }
-
-// ---------------------------------------------------------------------------
-// Byte reader helpers
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

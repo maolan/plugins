@@ -251,11 +251,9 @@ impl AudioProcessor {
         self.limiter.set_threshold_db(limiter_threshold);
         self.limiter.process_slices(&mut flat_slices, frames);
 
-        // Publish FFT to inter-plugin bus if demanded.
         if let Some(ref bus) = self.bus_data
             && bus::needs(bus::NEED_FFT)
         {
-            // Mix down to mono for FFT analysis.
             self.fft_scratch[..frames].fill(0.0);
             let mut ch_count = 0;
             for buf in out_outputs.iter().flatten() {
@@ -292,7 +290,7 @@ struct PluginInstance {
     processor: AtomicPtr<AudioProcessor>,
     retired_processors: Mutex<Vec<*mut AudioProcessor>>,
     gui_bridge: Mutex<GuiBridge>,
-    /// MIDI note names for the CLAP note-name extension.
+
     note_names: Mutex<Vec<(u8, String)>>,
     bus_id: bus::InstanceId,
     bus_data: bus::PluginSharedData,
@@ -1188,21 +1186,19 @@ static FACTORY: clap_plugin_factory = clap_plugin_factory {
     create_plugin: Some(factory_create_plugin),
 };
 
-/// Returns the address of this plugin's static CLAP descriptor.
-///
 /// # Safety
-/// The returned pointer is valid for the lifetime of the process and must be
-/// used according to the CLAP ABI's descriptor lifetime rules.
+///
+/// The returned pointer is valid for the lifetime of the program and points to
+/// a static CLAP plugin descriptor.
 pub unsafe fn descriptor_ptr() -> *const clap_plugin_descriptor {
     &raw const DESCRIPTOR.0
 }
 
-/// Creates a CLAP plugin instance for the given host and descriptor id.
-///
 /// # Safety
-/// `host` and `plugin_id` must be valid non-null pointers that satisfy CLAP ABI
-/// requirements for `create_plugin`. The returned pointer must be managed by the
-/// caller following CLAP plugin lifetime rules.
+///
+/// `host` and `plugin_id` must be valid pointers suitable for the CLAP plugin
+/// factory `create_plugin` callback. The returned plugin pointer must be handled
+/// according to the CLAP lifetime rules.
 pub unsafe fn create_plugin(
     host: *const clap_host,
     plugin_id: *const c_char,

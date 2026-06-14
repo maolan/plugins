@@ -1,8 +1,3 @@
-//! EXS24 (Logic Pro) format parser.
-//!
-//! Parses the binary EXS instrument format into the Patch/Part/Group/Zone
-//! hierarchy. Based on publicly documented reverse-engineered structure.
-
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -14,20 +9,18 @@ use crate::sampler::dsp::patch::Patch;
 use crate::sampler::dsp::sample::{Sample, load_audio};
 use crate::sampler::dsp::zone::Zone;
 
-/// Parse an EXS24 file and build a Patch.
 pub fn parse_exs(path: &str) -> Result<Patch, String> {
     let data = std::fs::read(path).map_err(|e| format!("Failed to read EXS file: {}", e))?;
     let base_dir = Path::new(path).parent().unwrap_or(Path::new("."));
     parse_exs_data(&data, base_dir)
 }
 
-/// Size of the EXS24 instrument header in bytes.
 const EXS_HEADER_SIZE: usize = 0x80;
-/// Size of a single zone record in bytes.
+
 const EXS_ZONE_SIZE: usize = 0x80;
-/// Size of a single sample record in bytes.
+
 const EXS_SAMPLE_RECORD_SIZE: usize = 0x40;
-/// Offset within a sample record where the file path starts.
+
 const EXS_SAMPLE_PATH_OFFSET: usize = 0x0C;
 
 fn parse_exs_data(data: &[u8], base_dir: &Path) -> Result<Patch, String> {
@@ -35,7 +28,6 @@ fn parse_exs_data(data: &[u8], base_dir: &Path) -> Result<Patch, String> {
         return Err("File too small for EXS header".to_string());
     }
 
-    // Verify magic.
     if &data[0..4] != b"TBOD" {
         return Err(format!(
             "Invalid EXS magic: expected TBOD, got {:?}",
@@ -53,14 +45,12 @@ fn parse_exs_data(data: &[u8], base_dir: &Path) -> Result<Patch, String> {
     let _num_groups = reader.read_u32()? as usize;
     let num_samples = reader.read_u32()? as usize;
 
-    // Parse sample paths.
     let sample_paths = if sample_offset > 0 && num_samples > 0 && sample_offset < data.len() {
         extract_sample_paths(&data[sample_offset..], num_samples)
     } else {
         Vec::new()
     };
 
-    // Parse zones.
     let mut exs_zones: Vec<ExsZone> = Vec::new();
     if zone_offset > 0 && num_zones > 0 && zone_offset + num_zones * EXS_ZONE_SIZE <= data.len() {
         for i in 0..num_zones {
@@ -72,7 +62,6 @@ fn parse_exs_data(data: &[u8], base_dir: &Path) -> Result<Patch, String> {
     build_patch(&exs_zones, &sample_paths, base_dir)
 }
 
-/// Raw zone data as stored in an EXS file.
 #[derive(Debug, Clone)]
 struct ExsZone {
     key_low: u8,
@@ -102,11 +91,6 @@ fn parse_zone_record(data: &[u8]) -> ExsZone {
     }
 }
 
-/// Extract sample file paths from the sample section.
-///
-/// Each sample record is assumed to be `EXS_SAMPLE_RECORD_SIZE` bytes,
-/// with a null-terminated path starting at `EXS_SAMPLE_PATH_OFFSET`.
-/// If the fixed-offset path is empty, a heuristic scan is used as fallback.
 fn extract_sample_paths(section: &[u8], num_samples: usize) -> Vec<String> {
     let mut paths = Vec::with_capacity(num_samples);
 
@@ -119,7 +103,6 @@ fn extract_sample_paths(section: &[u8], num_samples: usize) -> Vec<String> {
         let record = &section[record_off..record_off + EXS_SAMPLE_RECORD_SIZE];
         let path_bytes = &record[EXS_SAMPLE_PATH_OFFSET..];
 
-        // Find null terminator.
         let len = path_bytes
             .iter()
             .position(|&b| b == 0)
@@ -129,14 +112,11 @@ fn extract_sample_paths(section: &[u8], num_samples: usize) -> Vec<String> {
         if !path.is_empty() {
             paths.push(path);
         } else {
-            // Fallback: scan the whole record for the longest printable string
-            // that looks like a file path.
             let fallback = heuristic_extract_path(record);
             paths.push(fallback);
         }
     }
 
-    // Pad with empty strings if we couldn't read enough.
     while paths.len() < num_samples {
         paths.push(String::new());
     }
@@ -149,7 +129,6 @@ fn heuristic_extract_path(data: &[u8]) -> String {
     let mut i = 0;
 
     while i < data.len() {
-        // Skip non-printable / control bytes.
         while i < data.len() && (data[i] < 32 || data[i] > 126) {
             i += 1;
         }
@@ -159,7 +138,7 @@ fn heuristic_extract_path(data: &[u8]) -> String {
         }
         if i > start {
             let s = String::from_utf8_lossy(&data[start..i]);
-            // Heuristic: prefer strings containing path separators or extensions.
+
             if s.len() > best.len() && (s.contains('/') || s.contains('\\') || s.contains('.')) {
                 best = s.to_string();
             }
@@ -211,16 +190,15 @@ fn build_patch(
         zone.vel_high = ez.vel_high;
         zone.root_key = ez.root_key;
         zone.pitch_offset = ez.fine_tune as f32;
-        // EXS volume is stored in 0.1 dB steps.
+
         zone.gain_db = ez.volume as f32 * 0.1;
-        // EXS pan is -64..+64; map to -1.0..1.0.
+
         zone.pan = (ez.pan as f32 / 64.0).clamp(-1.0, 1.0);
 
         let group = group_map.entry(ez.group_index).or_default();
         group.zones.push(zone);
     }
 
-    // Sort groups by index for deterministic output.
     let mut indices: Vec<u32> = group_map.keys().copied().collect();
     indices.sort();
 
@@ -234,46 +212,34 @@ fn build_patch(
     Ok(patch)
 }
 
-// ---------------------------------------------------------------------------
-// Byte reader helpers
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn make_test_exs() -> Vec<u8> {
-        // Header (0x80) + 1 zone (0x80) + 1 sample (0x40) = 0x1A0 bytes
         let mut data = vec![0u8; 0x1A0];
 
-        // Header
         data[0..4].copy_from_slice(b"TBOD");
-        data[4..8].copy_from_slice(&1u32.to_le_bytes()); // version
-        data[8..12].copy_from_slice(&0x80u32.to_le_bytes()); // zone_offset
-        data[12..16].copy_from_slice(&0x00u32.to_le_bytes()); // group_offset (unused)
-        data[16..20].copy_from_slice(&0x100u32.to_le_bytes()); // sample_offset
-        data[20..24].copy_from_slice(&1u32.to_le_bytes()); // num_zones
-        data[24..28].copy_from_slice(&0u32.to_le_bytes()); // num_groups
-        data[28..32].copy_from_slice(&1u32.to_le_bytes()); // num_samples
+        data[4..8].copy_from_slice(&1u32.to_le_bytes());
+        data[8..12].copy_from_slice(&0x80u32.to_le_bytes());
+        data[12..16].copy_from_slice(&0x00u32.to_le_bytes());
+        data[16..20].copy_from_slice(&0x100u32.to_le_bytes());
+        data[20..24].copy_from_slice(&1u32.to_le_bytes());
+        data[24..28].copy_from_slice(&0u32.to_le_bytes());
+        data[28..32].copy_from_slice(&1u32.to_le_bytes());
 
-        // Zone at offset 0x80
         let zo = 0x80;
-        data[zo] = 48; // key_low
-        data[zo + 1] = 72; // key_high
-        data[zo + 2] = 1; // vel_low
-        data[zo + 3] = 127; // vel_high
-        data[zo + 4] = 60; // root_key
-        data[zo + 5] = 5u8.wrapping_neg(); // fine_tune = -5 cents (0xFB)
-        data[zo + 6] = 6u8.wrapping_neg(); // volume = -0.6 dB (0xFA)
-        data[zo + 7] = 32; // pan = +0.5
-        data[zo + 0x10..zo + 0x14].copy_from_slice(&0u32.to_le_bytes()); // sample_index
-        data[zo + 0x14..zo + 0x18].copy_from_slice(&0u32.to_le_bytes()); // group_index
+        data[zo] = 48;
+        data[zo + 1] = 72;
+        data[zo + 2] = 1;
+        data[zo + 3] = 127;
+        data[zo + 4] = 60;
+        data[zo + 5] = 5u8.wrapping_neg();
+        data[zo + 6] = 6u8.wrapping_neg();
+        data[zo + 7] = 32;
+        data[zo + 0x10..zo + 0x14].copy_from_slice(&0u32.to_le_bytes());
+        data[zo + 0x14..zo + 0x18].copy_from_slice(&0u32.to_le_bytes());
 
-        // Sample at offset 0x100
         let so = 0x100;
         let path = b"test.wav";
         data[so + EXS_SAMPLE_PATH_OFFSET..so + EXS_SAMPLE_PATH_OFFSET + path.len()]
@@ -310,7 +276,7 @@ mod tests {
         let mut data = vec![0u8; EXS_HEADER_SIZE];
         data[0..4].copy_from_slice(b"TBOD");
         data[4..8].copy_from_slice(&1u32.to_le_bytes());
-        // All offsets/counts zero -> empty patch
+
         let patch = parse_exs_data(&data, Path::new("/tmp")).unwrap();
         assert_eq!(patch.parts.len(), 1);
         assert!(patch.parts[0].groups.is_empty());

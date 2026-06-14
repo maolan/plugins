@@ -1,6 +1,3 @@
-//! Audio-rate envelope follower with independent attack/release ballistics.
-
-/// Stereo-linked envelope follower.
 pub struct EnvelopeFollower {
     sample_rate: f32,
     attack_coeff: f32,
@@ -20,17 +17,14 @@ impl EnvelopeFollower {
         }
     }
 
-    /// Set attack time in seconds.
     pub fn set_attack(&mut self, seconds: f32) {
         self.attack_coeff = Self::time_to_coeff(seconds, self.sample_rate);
     }
 
-    /// Set release time in seconds.
     pub fn set_release(&mut self, seconds: f32) {
         self.release_coeff = Self::time_to_coeff(seconds, self.sample_rate);
     }
 
-    /// Enable/disable stereo linking (uses max of L/R when linked).
     pub fn set_stereo_link(&mut self, link: bool) {
         self.stereo_link = link;
     }
@@ -47,7 +41,6 @@ impl EnvelopeFollower {
         self.envelope = 0.0;
     }
 
-    /// Process a single stereo sample, return current envelope value.
     pub fn process(&mut self, input_l: f32, input_r: f32) -> f32 {
         let input = if self.stereo_link {
             input_l.abs().max(input_r.abs())
@@ -65,7 +58,6 @@ impl EnvelopeFollower {
         self.envelope
     }
 
-    /// Process a stereo block in-place, returning the final envelope value.
     pub fn process_block(&mut self, block_l: &[f32], block_r: &[f32]) -> f32 {
         assert_eq!(block_l.len(), block_r.len());
         for (&l, &r) in block_l.iter().zip(block_r.iter()) {
@@ -74,7 +66,6 @@ impl EnvelopeFollower {
         self.envelope
     }
 
-    /// Get current envelope value.
     pub fn envelope(&self) -> f32 {
         self.envelope
     }
@@ -90,12 +81,10 @@ mod tests {
         ef.set_attack(0.001);
         ef.set_release(0.1);
 
-        // Feed DC signal.
         for _ in 0..480 {
             ef.process(1.0, 1.0);
         }
 
-        // Should have risen close to 1.0.
         assert!(ef.envelope() > 0.9);
     }
 
@@ -105,13 +94,11 @@ mod tests {
         ef.set_attack(0.001);
         ef.set_release(0.001);
 
-        // Charge up.
         for _ in 0..4800 {
             ef.process(1.0, 1.0);
         }
         assert!(ef.envelope() > 0.99);
 
-        // Release.
         for _ in 0..4800 {
             ef.process(0.0, 0.0);
         }

@@ -1,7 +1,3 @@
-//! Kick-specific SIMD routines.
-//!
-//! Uses runtime feature detection for AVX2, AVX, and SSE fallbacks.
-
 #![allow(unsafe_op_in_unsafe_fn)]
 
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
@@ -12,7 +8,6 @@ mod x86 {
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 use x86::*;
 
-/// Apply gain to a buffer: `buf[i] *= gain`
 pub fn mul_gain_inplace(buf: &mut [f32], gain: f32) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     unsafe {
@@ -59,7 +54,7 @@ unsafe fn mul_gain_inplace_avx(buf: &mut [f32], gain: f32) {
         _mm256_storeu_ps(buf.as_mut_ptr().add(i), r);
         i += 8;
     }
-    // Process remaining with SSE or scalar
+
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     if is_x86_feature_detected!("sse") && i + 4 <= buf.len() {
         let gain_vec = _mm_set1_ps(gain);
@@ -75,7 +70,6 @@ unsafe fn mul_gain_inplace_avx(buf: &mut [f32], gain: f32) {
     }
 }
 
-/// Apply hard clip to a buffer: `buf[i] = clamp(buf[i], -limit, +limit)`
 pub fn clip_inplace(buf: &mut [f32], limit: f32) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     unsafe {

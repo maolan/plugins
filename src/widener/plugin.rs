@@ -1091,16 +1091,20 @@ static FACTORY: clap_plugin_factory = clap_plugin_factory {
     get_plugin_descriptor: Some(factory_get_plugin_descriptor),
     create_plugin: Some(factory_create_plugin),
 };
+
 /// # Safety
-/// The returned pointer is a static reference to the plugin descriptor.
-/// It must not be dereferenced after the library is unloaded.
+///
+/// The returned pointer is valid for the lifetime of the program and points to
+/// a static CLAP plugin descriptor.
 pub unsafe fn descriptor_ptr() -> *const clap_plugin_descriptor {
     &raw const DESCRIPTOR.0
 }
 
 /// # Safety
-/// `host` must be a valid, non-null pointer to a `clap_host`.
-/// `plugin_id` must be a valid C string matching a supported plugin ID.
+///
+/// `host` and `plugin_id` must be valid pointers suitable for the CLAP plugin
+/// factory `create_plugin` callback. The returned plugin pointer must be handled
+/// according to the CLAP lifetime rules.
 pub unsafe fn create_plugin(
     host: *const clap_host,
     plugin_id: *const c_char,

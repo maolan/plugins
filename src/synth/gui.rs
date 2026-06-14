@@ -179,10 +179,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
     Task::none()
 }
 
-// ---------------------------------------------------------------------------
-// Layout helpers
-// ---------------------------------------------------------------------------
-
 fn small_knob<'a>(
     id: ParamId,
     label: &'a str,
@@ -417,14 +413,7 @@ fn tab_button(label: &'static str, active: bool, msg: Message) -> Element<'stati
     .into()
 }
 
-// ---------------------------------------------------------------------------
-// Main view – organised like Surge XT
-// ---------------------------------------------------------------------------
-
 fn view(state: &State) -> Element<'_, Message> {
-    // -----------------------------------------------------------------------
-    // Top bar: Output / Play Mode / Drift
-    // -----------------------------------------------------------------------
     let fm_panel = panel_no_title(knob_row(vec![
         param_control(ParamId::OscFmMode, "Mode", state),
         param_control(ParamId::OscFmDepth, "Depth", state),
@@ -482,9 +471,6 @@ fn view(state: &State) -> Element<'_, Message> {
     .spacing(10)
     .align_y(Alignment::Start);
 
-    // -----------------------------------------------------------------------
-    // Oscillators (left column)
-    // -----------------------------------------------------------------------
     let osc1 = panel_no_title(
         column![
             knob_row(vec![
@@ -576,10 +562,6 @@ fn view(state: &State) -> Element<'_, Message> {
         1 => osc2,
         _ => osc3,
     };
-
-    // -----------------------------------------------------------------------
-    // Middle column: FM / Filters / Waveshaper / Envelopes
-    // -----------------------------------------------------------------------
 
     let filter1 = panel_no_title(
         column![
@@ -856,16 +838,10 @@ fn view(state: &State) -> Element<'_, Message> {
     ]
     .spacing(10);
 
-    // -----------------------------------------------------------------------
-    // Main content row
-    // -----------------------------------------------------------------------
     let main_content = row![left_column, right_column]
         .spacing(12)
         .align_y(Alignment::Start);
 
-    // -----------------------------------------------------------------------
-    // Root
-    // -----------------------------------------------------------------------
     let content = column![top_bar, main_content]
         .spacing(12)
         .padding(16)

@@ -6,7 +6,6 @@ pub enum EventType {
     Choke,
 }
 
-/// Which side(s) of a stereo output a channel plays on.
 #[derive(Debug, Clone, Copy)]
 pub enum ChannelSide {
     Left,
@@ -28,7 +27,7 @@ pub struct Voice {
     pub sample_index: usize,
     pub velocity: f32,
     pub active: bool,
-    /// Maximum playback position across all channels, used for voice stealing.
+
     pub playback_position: usize,
     pub playbacks: Vec<ChannelPlayback>,
 }

@@ -496,8 +496,6 @@ impl ConvNetModel {
         self.head_bias + crate::simd::dot_product(&self.current, &self.head_weight)
     }
 
-    /// Process a block of samples, matching the C++ `nam::convnet::ConvNet::process`
-    /// block-based API.
     fn process_block(&mut self, input: &[f32], output: &mut [f32]) {
         for (x, out) in input.iter().zip(output.iter_mut()) {
             *out = self.process_sample(*x);
@@ -604,7 +602,6 @@ impl LstmCell {
     }
 }
 
-/// c = sigmoid(f) * c + sigmoid(i) * tanh(g)
 fn lstm_gates_inplace(c: &mut [f32], i: &[f32], f: &[f32], g: &[f32]) {
     let n = c.len().min(i.len()).min(f.len()).min(g.len());
     if n == 0 {
@@ -649,7 +646,6 @@ unsafe fn lstm_gates_inplace_sse(c: &mut [f32], i: &[f32], f: &[f32], g: &[f32])
     }
 }
 
-/// out = sigmoid(o) * tanh(c)
 fn lstm_output_inplace(out: &mut [f32], o: &[f32], c: &[f32]) {
     let n = out.len().min(o.len()).min(c.len());
     if n == 0 {
@@ -803,8 +799,6 @@ impl LstmModel {
         self.head_bias + crate::simd::dot_product(&current, &self.head_weight)
     }
 
-    /// Process a block of samples, matching the C++ `nam::lstm::LSTM::process`
-    /// block-based API.
     fn process_block(&mut self, input: &[f32], output: &mut [f32]) {
         for (x, out) in input.iter().zip(output.iter_mut()) {
             *out = self.process_sample(*x);
@@ -913,8 +907,6 @@ impl WaveNetHead {
         }
     }
 
-    /// Process a frame through the head.  `input` is a slice of `in_channels`
-    /// values for the current frame.  Returns a slice of `out_channels` values.
     fn process_frame(&mut self, input: &[f32]) -> &[f32] {
         self.scratch.clear();
         self.scratch.extend_from_slice(input);
@@ -1837,8 +1829,6 @@ impl NamModel {
         }
     }
 
-    /// Process a block of samples.  This matches the C++ `nam::DSP::process`
-    /// API where `input` and `output` are separate buffers of `num_frames`.
     pub fn process_block(&mut self, input: &[f32], output: &mut [f32]) {
         match &mut self.model {
             ModelImpl::WaveNet(model) => model.process_block(input, output),
@@ -1920,8 +1910,6 @@ impl crate::rural_modeler::dsp::core::Dsp for NamModel {
     }
 }
 
-/// Simple sample-rate converter that works sample-by-sample using linear
-/// interpolation.  `ratio` is `output_rate / input_rate`.
 #[derive(Debug, Clone)]
 struct RateConverter {
     step: f64,
@@ -2038,9 +2026,6 @@ impl RateConverter {
     }
 }
 
-/// Wraps a [`NamModel`] and transparently resamples when the host sample rate
-/// differs from the model's expected rate.  This brings the Rust plugin closer
-/// to the C++ reference which uses a `ResamplingNAM` with Lanczos filters.
 #[derive(Debug, Clone)]
 pub struct ResamplingNamModel {
     model: NamModel,
@@ -2113,8 +2098,6 @@ impl ResamplingNamModel {
         self.prewarm_resampling_pipeline();
     }
 
-    /// Update the host sample rate. If it changed, the internal converters are
-    /// recreated but the encapsulated model state is preserved.
     pub fn set_host_rate(&mut self, rate: f32) {
         if self.host_rate == rate {
             return;
@@ -2130,9 +2113,6 @@ impl ResamplingNamModel {
         self.model.set_slimmable_size(value);
     }
 
-    /// Process a block of samples, transparently handling any required
-    /// sample-rate conversion.  This matches the C++ `ResamplingNAM::process`
-    /// block-based API.
     pub fn process_block(&mut self, input: &[f32], output: &mut [f32]) {
         if self.host_rate == self.model_rate {
             self.model.process_block(input, output);

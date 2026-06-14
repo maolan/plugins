@@ -1,18 +1,12 @@
-//! Sample loading and storage.
-//!
-//! Uses ffmpeg-next for multi-format audio decoding (WAV, AIFF, FLAC, MP3, Opus, etc.).
-
 use std::path::Path;
 use std::sync::Arc;
 
-/// Interpolation quality for sample playback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InterpolationMode {
-    /// Zero-order-hold (nearest sample). Fastest, lowest quality.
     Zoh = 0,
-    /// Linear interpolation. Good balance of speed/quality.
+
     Linear = 1,
-    /// Sinc interpolation (16-point window). Highest quality.
+
     Sinc = 2,
 }
 
@@ -26,21 +20,19 @@ impl InterpolationMode {
     }
 }
 
-/// Loaded audio sample stored as planar f32.
 #[derive(Debug, Clone)]
 pub struct Sample {
     pub sample_rate: f32,
     pub data_l: Vec<f32>,
     pub data_r: Vec<f32>,
     pub frames: usize,
-    /// Peak amplitude before normalization (1.0 if not normalized).
+
     pub peak: f32,
-    /// RMS amplitude before normalization.
+
     pub rms: f32,
 }
 
 impl Sample {
-    /// Create a silent placeholder sample.
     pub fn silent(sample_rate: f32) -> Self {
         Self {
             sample_rate,
@@ -52,7 +44,6 @@ impl Sample {
         }
     }
 
-    /// Read a single frame (mono or stereo) with the chosen interpolation.
     pub fn read(&self, phase: f64, mode: InterpolationMode) -> (f32, f32) {
         match mode {
             InterpolationMode::Zoh => self.read_zoh(phase),
@@ -61,14 +52,12 @@ impl Sample {
         }
     }
 
-    /// Zero-order-hold (nearest sample).
     fn read_zoh(&self, phase: f64) -> (f32, f32) {
         let idx = phase.round() as usize;
         let idx = idx.min(self.frames.saturating_sub(1));
         (self.data_l[idx], self.data_r[idx])
     }
 
-    /// Linear interpolation.
     pub fn read_linear(&self, phase: f64) -> (f32, f32) {
         let frames = self.frames;
         if frames == 0 {
@@ -87,7 +76,6 @@ impl Sample {
         (l0 + (l1 - l0) * frac, r0 + (r1 - r0) * frac)
     }
 
-    /// Normalize the sample so peak = 1.0 (or target_peak).
     pub fn normalize_peak(&mut self, target_peak: f32) {
         if self.peak > 1e-10 {
             let scale = target_peak / self.peak;
@@ -102,7 +90,6 @@ impl Sample {
         }
     }
 
-    /// Normalize the sample so RMS = 1.0 (or target_rms).
     pub fn normalize_rms(&mut self, target_rms: f32) {
         if self.rms > 1e-10 {
             let scale = target_rms / self.rms;
@@ -117,7 +104,6 @@ impl Sample {
         }
     }
 
-    /// Sinc interpolation with a 16-point window.
     fn read_sinc(&self, phase: f64) -> (f32, f32) {
         let frames = self.frames;
         if frames == 0 {
@@ -155,7 +141,6 @@ impl Sample {
     }
 }
 
-/// Blackman-Harris window for sinc interpolation.
 fn window_blackman_harris(n: f32, half_width: f32) -> f32 {
     let x = n / half_width;
     let a0 = 0.35875;
@@ -166,7 +151,6 @@ fn window_blackman_harris(n: f32, half_width: f32) -> f32 {
         - a3 * (3.0 * std::f32::consts::PI * x).cos()
 }
 
-/// Errors that can occur during sample loading.
 #[derive(Debug)]
 pub enum LoadError {
     Ffmpeg(String),
@@ -186,7 +170,6 @@ impl std::fmt::Display for LoadError {
 
 impl std::error::Error for LoadError {}
 
-/// Compute peak and RMS of a slice.
 fn compute_stats(data: &[f32]) -> (f32, f32) {
     let mut peak = 0.0f32;
     let mut sum_sq = 0.0f64;
@@ -201,9 +184,7 @@ fn compute_stats(data: &[f32]) -> (f32, f32) {
     (peak, rms)
 }
 
-/// Load an audio file using ffmpeg-next.
 pub fn load_audio(path: &Path) -> Result<Arc<Sample>, LoadError> {
-    // Lazy-init ffmpeg (idempotent).
     let _ = ffmpeg_next::init();
 
     let mut input =
@@ -224,7 +205,6 @@ pub fn load_audio(path: &Path) -> Result<Arc<Sample>, LoadError> {
         .audio()
         .map_err(|e| LoadError::Ffmpeg(e.to_string()))?;
 
-    // Target format: planar f32, stereo (we'll upmix mono if needed).
     let target_format = ffmpeg_next::format::Sample::F32(ffmpeg_next::format::sample::Type::Planar);
     let target_layout = ffmpeg_next::util::channel_layout::ChannelLayout::STEREO;
 
@@ -259,7 +239,6 @@ pub fn load_audio(path: &Path) -> Result<Arc<Sample>, LoadError> {
         }
     }
 
-    // Flush decoder.
     decoder
         .send_eof()
         .map_err(|e| LoadError::Ffmpeg(e.to_string()))?;
@@ -275,7 +254,6 @@ pub fn load_audio(path: &Path) -> Result<Arc<Sample>, LoadError> {
         return Err(LoadError::EmptySample);
     }
 
-    // Ensure both channels have the same length.
     data_r.resize(frames, 0.0);
 
     let (peak_l, rms_l) = compute_stats(&data_l);
@@ -308,10 +286,9 @@ fn push_planar_f32(frame: &ffmpeg_next::util::frame::Audio, l: &mut Vec<f32>, r:
             let slice: &[f32] =
                 unsafe { std::slice::from_raw_parts(plane.as_ptr() as *const f32, samples) };
             l.extend_from_slice(slice);
-            r.extend_from_slice(slice); // mono -> dual-mono
+            r.extend_from_slice(slice);
         }
     } else {
-        // Stereo or more — take first two channels.
         for (ch, buf) in [(0, l), (1, r)] {
             let plane = frame.data(ch);
             if plane.len() >= plane_size {
@@ -359,10 +336,10 @@ mod tests {
             peak: 1.0,
             rms: 0.0,
         };
-        // At 0.4, ZOH should round to 0
+
         let (l, _r) = s.read(0.4, InterpolationMode::Zoh);
         assert_eq!(l, 0.0);
-        // At 0.6, ZOH should round to 1
+
         let (l, _r) = s.read(0.6, InterpolationMode::Zoh);
         assert_eq!(l, 1.0);
     }

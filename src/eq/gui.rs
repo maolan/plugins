@@ -2,7 +2,7 @@ use crate::common::bus;
 use crate::eq::dsp::Biquad;
 use crate::eq::params::{PARAMS, ParamId, ParamIdExt};
 use crate::eq::plugin::{SPECTRUM_BINS, SharedState};
-// menu widgets removed with sidechain source dropdown
+
 use maolan_baseview::iced::{
     Alignment, Color, Element, Event, Length, Point, Rectangle, Renderer, Task, Theme,
     alignment::{Horizontal, Vertical},
@@ -160,11 +160,11 @@ struct State {
     shared: Arc<SharedState<ParamId>>,
     selected_band: Option<usize>,
     active_gestures: HashSet<ParamId>,
-    /// Discovered non-EQ peers on the inter-plugin bus.
+
     bus_peers: Vec<bus::PluginSharedData>,
-    /// Per-band collision score (0.0 = none, 1.0 = heavy overlap with peer FFT).
+
     collision_scores: [f32; 32],
-    /// Last seen registry version; re-discover only when this changes.
+
     last_registry_version: u64,
 }
 
@@ -238,7 +238,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .shared
                 .set_param_outbound_only(id, if value { 1.0 } else { 0.0 });
             if id == ParamId::SidechainEnable {
-                // Sidechain changed → may affect collision-relevant frequencies.
                 state.last_registry_version = 0;
             }
         }
@@ -264,12 +263,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.shared.set_param_outbound_only(fid, freq as f64);
                     state.shared.set_param_outbound_only(gid, gain as f64);
                     state.shared.set_param_outbound_only(qid, q as f64);
-                    state.shared.set_param_outbound_only(tid, 1.0); // Bell default
+                    state.shared.set_param_outbound_only(tid, 1.0);
                     state.selected_band = Some(i);
                     break;
                 }
             }
-            // Band count changed → may affect collision-relevant frequencies.
+
             state.last_registry_version = 0;
         }
         Message::SelectBand(index) => {
@@ -284,7 +283,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.shared.set_param_outbound_only(oid, 0.0);
                 state.selected_band = None;
             }
-            // Band count changed → may affect collision-relevant frequencies.
+
             state.last_registry_version = 0;
         }
         Message::SetChannels(mode) => {
@@ -295,14 +294,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::NoOp => {}
         Message::UiTick => {
-            // Re-discover peers only when the registry has changed.
             let version = bus::registry_version();
             if version != state.last_registry_version {
                 state.bus_peers = bus::discover(|p| p.plugin_type != bus::PluginType::Eq);
                 state.last_registry_version = version;
             }
 
-            // Read peer FFTs and compute collision scores for each EQ band.
             state.collision_scores.fill(0.0);
             let mut peer_fft = bus::FftData::default();
             for peer in &state.bus_peers {
@@ -318,16 +315,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         let freq = state.shared.params.get(ParamId::para_freq(band_idx)) as f32;
                         let gain = state.shared.params.get(ParamId::para_gain(band_idx)) as f32;
                         if gain <= -0.1 {
-                            // Cut bands don't cause audible collisions.
                             continue;
                         }
-                        // Find the FFT bin closest to this band frequency.
+
                         let bin_idx = ((freq / nyquist) * peer_fft.valid_bins as f32)
                             .clamp(0.0, (peer_fft.valid_bins - 1) as f32)
                             as usize;
                         let db = peer_fft.bins[bin_idx];
                         if db > -60.0 {
-                            // Normalize collision score: -60 dB -> 0.0, 0 dB -> 1.0.
                             let score = ((db + 60.0) / 60.0).clamp(0.0, 1.0);
                             state.collision_scores[band_idx] =
                                 state.collision_scores[band_idx].max(score);
@@ -410,7 +405,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 } else {
                     state.shared.set_listen_band(32);
                 }
-                Message::UiTick // dummy message to force refresh
+                Message::UiTick
             });
 
         if matches!(band_type, BandType::LowPass | BandType::HighPass) {
@@ -786,7 +781,6 @@ impl Program<Message> for EqResponseCanvas {
         });
         frame.fill(&spectrum_fill, Color::from_rgba(0.0, 0.85, 0.3, 0.15));
 
-        // Pre-build biquad chains for active bands
         let band_biquads: Vec<(usize, Vec<Biquad>)> = self
             .bands
             .iter()
@@ -890,7 +884,7 @@ impl Program<Message> for EqResponseCanvas {
                                 10.0_f32.powf(bq.magnitude_db(freq, self.sample_rate) * 0.05);
                         }
                     }
-                    // Add hover preview (single peaking biquad)
+
                     let mut hover_bq = Biquad::default();
                     hover_bq.set_peaking(self.sample_rate, hover_freq, hover_q, hover_gain);
                     total_lin *=
@@ -956,7 +950,7 @@ impl Program<Message> for EqResponseCanvas {
                     Color::from_rgb(0.95, 0.64, 0.18)
                 },
             );
-            // Collision indicator: red outline proportional to collision score.
+
             if collision > 0.05 {
                 frame.stroke(
                     &node,

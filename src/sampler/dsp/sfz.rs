@@ -1,7 +1,3 @@
-//! Simple SFZ format parser.
-//!
-//! Supports a subset of common opcodes sufficient for basic instrument loading.
-
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -12,7 +8,6 @@ use crate::sampler::dsp::patch::Patch;
 use crate::sampler::dsp::sample::{Sample, load_audio};
 use crate::sampler::dsp::zone::{LoopMode, SamplePlayMode, Zone};
 
-/// Parse an SFZ file and build a Patch.
 pub fn parse_sfz(path: &str) -> Result<Patch, String> {
     let text =
         std::fs::read_to_string(path).map_err(|e| format!("Failed to read SFZ file: {}", e))?;
@@ -28,51 +23,37 @@ fn parse_sfz_text(text: &str, base_dir: &Path) -> Result<Patch, String> {
     let mut part = Part::default();
     let mut current_group: Option<Group> = None;
 
-    // Global defaults.
     let mut global_opcodes: HashMap<String, String> = HashMap::new();
     let mut group_opcodes: HashMap<String, String> = HashMap::new();
 
-    // Tokenize into <headers> and opcode lines.
     let tokens = tokenize(text);
 
     for token in tokens {
         match token {
-            Token::Header(name) => {
-                match name.as_str() {
-                    "global" => {
-                        global_opcodes.clear();
-                        group_opcodes.clear();
-                        current_group = None;
-                    }
-                    "group" => {
-                        // Start a new group, inheriting from global.
-                        if let Some(g) = current_group.take() {
-                            part.groups.push(g);
-                        }
-                        group_opcodes = global_opcodes.clone();
-                        current_group = Some(Group::default());
-                    }
-                    "region" => {
-                        // Build a zone from accumulated opcodes.
-                        let _region_opcodes = group_opcodes.clone();
-                        // Region opcodes will be filled by the next opcode lines until next header.
-                        // Actually, in our tokenization, opcodes come as separate tokens.
-                        // We need a different approach: opcodes after <region> apply to that region.
-                        // For simplicity, we'll process opcode lines inline.
-                    }
-                    _ => {}
+            Token::Header(name) => match name.as_str() {
+                "global" => {
+                    global_opcodes.clear();
+                    group_opcodes.clear();
+                    current_group = None;
                 }
-            }
+                "group" => {
+                    if let Some(g) = current_group.take() {
+                        part.groups.push(g);
+                    }
+                    group_opcodes = global_opcodes.clone();
+                    current_group = Some(Group::default());
+                }
+                "region" => {
+                    let _region_opcodes = group_opcodes.clone();
+                }
+                _ => {}
+            },
             Token::Opcode(key, value) => {
-                // For now, accumulate into group_opcodes (simplification).
                 group_opcodes.insert(key, value);
             }
         }
     }
 
-    // Simplified: process line by line instead.
-    // The token-based approach above doesn't handle region boundaries well.
-    // Let's use a line-based parser instead.
     drop(patch);
     drop(part);
     drop(current_group);
@@ -90,7 +71,6 @@ fn tokenize(text: &str) -> Vec<Token> {
     let mut chars = text.chars().peekable();
     while let Some(&c) = chars.peek() {
         if c == '<' {
-            // Header
             chars.next();
             let mut name = String::new();
             while let Some(&ch) = chars.peek() {
@@ -103,11 +83,9 @@ fn tokenize(text: &str) -> Vec<Token> {
             }
             tokens.push(Token::Header(name));
         } else if c.is_whitespace() || c == '\n' || c == '\r' || c == '/' {
-            // Skip whitespace and comments
             if c == '/' {
                 chars.next();
                 if let Some(&'/') = chars.peek() {
-                    // Line comment, skip to end of line
                     while let Some(&ch) = chars.peek() {
                         chars.next();
                         if ch == '\n' {
@@ -119,7 +97,6 @@ fn tokenize(text: &str) -> Vec<Token> {
                 chars.next();
             }
         } else {
-            // Opcode
             let mut key = String::new();
             while let Some(&ch) = chars.peek() {
                 if ch == '=' {
@@ -136,7 +113,7 @@ fn tokenize(text: &str) -> Vec<Token> {
                 chars.next();
                 continue;
             }
-            // Read value — stop at next whitespace (space/tab) or newline.
+
             let mut value = String::new();
             while let Some(&ch) = chars.peek() {
                 if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
@@ -167,116 +144,112 @@ fn parse_sfz_lines(text: &str, base_dir: &Path) -> Result<Patch, String> {
 
     while i < tokens.len() {
         match &tokens[i] {
-            Token::Header(name) => {
-                match name.as_str() {
-                    "global" => {
-                        global_defaults.clear();
-                        group_defaults = global_defaults.clone();
-                        current_group = None;
+            Token::Header(name) => match name.as_str() {
+                "global" => {
+                    global_defaults.clear();
+                    group_defaults = global_defaults.clone();
+                    current_group = None;
+                    i += 1;
+
+                    while i < tokens.len() {
+                        if let Token::Header(_) = &tokens[i] {
+                            break;
+                        }
+                        if let Token::Opcode(k, v) = &tokens[i] {
+                            global_defaults.insert(k.clone(), v.clone());
+                        }
                         i += 1;
-                        // Consume opcodes until next header.
-                        while i < tokens.len() {
-                            if let Token::Header(_) = &tokens[i] {
-                                break;
-                            }
-                            if let Token::Opcode(k, v) = &tokens[i] {
-                                global_defaults.insert(k.clone(), v.clone());
-                            }
-                            i += 1;
-                        }
-                    }
-                    "group" => {
-                        if let Some(g) = current_group.take() {
-                            part.groups.push(g);
-                        }
-                        group_defaults = global_defaults.clone();
-                        let mut group = Group::default();
-                        i += 1;
-                        // Consume opcodes until next header.
-                        while i < tokens.len() {
-                            if let Token::Header(_) = &tokens[i] {
-                                break;
-                            }
-                            if let Token::Opcode(k, v) = &tokens[i] {
-                                group_defaults.insert(k.clone(), v.clone());
-                                // Apply group-level opcodes immediately.
-                                match k.as_str() {
-                                    "sw_last" => {
-                                        if let Ok(n) = v.parse::<u8>() {
-                                            group.trigger_type = TriggerType::KeyswitchLatch;
-                                            group.trigger_note = n;
-                                        }
-                                    }
-                                    "sw_down" => {
-                                        if let Ok(n) = v.parse::<u8>() {
-                                            group.trigger_type = TriggerType::KeyswitchMomentary;
-                                            group.trigger_note = n;
-                                        }
-                                    }
-                                    "sw_default" if (v == "1" || v == "on") => {
-                                        group.trigger_active = true;
-                                    }
-                                    "polyphony" => {
-                                        if let Ok(p) = v.parse::<usize>() {
-                                            group.poly_limit = p;
-                                        }
-                                    }
-                                    "group" => {
-                                        if let Ok(eg) = v.parse::<u8>() {
-                                            group.exclusive_group = eg;
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            i += 1;
-                        }
-                        current_group = Some(group);
-                    }
-                    "region" => {
-                        let mut region_opcodes = group_defaults.clone();
-                        i += 1;
-                        // Consume opcodes for this region.
-                        while i < tokens.len() {
-                            if let Token::Header(_) = &tokens[i] {
-                                break;
-                            }
-                            if let Token::Opcode(k, v) = &tokens[i] {
-                                region_opcodes.insert(k.clone(), v.clone());
-                            }
-                            i += 1;
-                        }
-                        // Build zone from opcodes.
-                        if let Some(zone) = build_zone(&region_opcodes, base_dir) {
-                            if current_group.is_none() {
-                                current_group = Some(Group::default());
-                            }
-                            current_group.as_mut().unwrap().zones.push(zone);
-                        }
-                    }
-                    "control" => {
-                        i += 1;
-                        while i < tokens.len() {
-                            if let Token::Header(_) = &tokens[i] {
-                                break;
-                            }
-                            i += 1;
-                        }
-                    }
-                    _ => {
-                        // Unknown header, skip opcodes.
-                        i += 1;
-                        while i < tokens.len() {
-                            if let Token::Header(_) = &tokens[i] {
-                                break;
-                            }
-                            i += 1;
-                        }
                     }
                 }
-            }
+                "group" => {
+                    if let Some(g) = current_group.take() {
+                        part.groups.push(g);
+                    }
+                    group_defaults = global_defaults.clone();
+                    let mut group = Group::default();
+                    i += 1;
+
+                    while i < tokens.len() {
+                        if let Token::Header(_) = &tokens[i] {
+                            break;
+                        }
+                        if let Token::Opcode(k, v) = &tokens[i] {
+                            group_defaults.insert(k.clone(), v.clone());
+
+                            match k.as_str() {
+                                "sw_last" => {
+                                    if let Ok(n) = v.parse::<u8>() {
+                                        group.trigger_type = TriggerType::KeyswitchLatch;
+                                        group.trigger_note = n;
+                                    }
+                                }
+                                "sw_down" => {
+                                    if let Ok(n) = v.parse::<u8>() {
+                                        group.trigger_type = TriggerType::KeyswitchMomentary;
+                                        group.trigger_note = n;
+                                    }
+                                }
+                                "sw_default" if (v == "1" || v == "on") => {
+                                    group.trigger_active = true;
+                                }
+                                "polyphony" => {
+                                    if let Ok(p) = v.parse::<usize>() {
+                                        group.poly_limit = p;
+                                    }
+                                }
+                                "group" => {
+                                    if let Ok(eg) = v.parse::<u8>() {
+                                        group.exclusive_group = eg;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        i += 1;
+                    }
+                    current_group = Some(group);
+                }
+                "region" => {
+                    let mut region_opcodes = group_defaults.clone();
+                    i += 1;
+
+                    while i < tokens.len() {
+                        if let Token::Header(_) = &tokens[i] {
+                            break;
+                        }
+                        if let Token::Opcode(k, v) = &tokens[i] {
+                            region_opcodes.insert(k.clone(), v.clone());
+                        }
+                        i += 1;
+                    }
+
+                    if let Some(zone) = build_zone(&region_opcodes, base_dir) {
+                        if current_group.is_none() {
+                            current_group = Some(Group::default());
+                        }
+                        current_group.as_mut().unwrap().zones.push(zone);
+                    }
+                }
+                "control" => {
+                    i += 1;
+                    while i < tokens.len() {
+                        if let Token::Header(_) = &tokens[i] {
+                            break;
+                        }
+                        i += 1;
+                    }
+                }
+                _ => {
+                    i += 1;
+                    while i < tokens.len() {
+                        if let Token::Header(_) = &tokens[i] {
+                            break;
+                        }
+                        i += 1;
+                    }
+                }
+            },
             Token::Opcode(_, _) => {
-                // Loose opcodes outside a header — skip.
                 i += 1;
             }
         }
@@ -305,7 +278,6 @@ fn build_zone(opcodes: &HashMap<String, String>, base_dir: &Path) -> Option<Zone
     zone.sample = sample.clone();
     zone.name = sample_path.clone();
 
-    // Key mapping.
     if let Some(v) = opcodes.get("key")
         && let Ok(key) = v.parse::<u8>()
     {
@@ -329,7 +301,6 @@ fn build_zone(opcodes: &HashMap<String, String>, base_dir: &Path) -> Option<Zone
         zone.root_key = key;
     }
 
-    // Velocity mapping.
     if let Some(v) = opcodes.get("lovel")
         && let Ok(vel) = v.parse::<u8>()
     {
@@ -341,7 +312,6 @@ fn build_zone(opcodes: &HashMap<String, String>, base_dir: &Path) -> Option<Zone
         zone.vel_high = vel;
     }
 
-    // Tuning / gain / pan.
     if let Some(v) = opcodes.get("tune")
         && let Ok(t) = v.parse::<f32>()
     {
@@ -358,21 +328,18 @@ fn build_zone(opcodes: &HashMap<String, String>, base_dir: &Path) -> Option<Zone
         zone.pan = p;
     }
 
-    // Start offset.
     if let Some(v) = opcodes.get("offset")
         && let Ok(off) = v.parse::<usize>()
     {
         zone.start_offset = off;
     }
 
-    // Reverse.
     if let Some(v) = opcodes.get("direction")
         && v == "reverse"
     {
         zone.reverse = true;
     }
 
-    // Loop.
     if let Some(v) = opcodes.get("loop_mode") {
         zone.loop_mode = match v.as_str() {
             "loop_continuous" => LoopMode::DuringVoice,
@@ -395,14 +362,12 @@ fn build_zone(opcodes: &HashMap<String, String>, base_dir: &Path) -> Option<Zone
         zone.loop_end = le;
     }
 
-    // Key/vel fade.
     if let Some(v) = opcodes.get("fadeout")
         && let Ok(f) = v.parse::<u8>()
     {
         zone.vel_fade_high = f;
     }
 
-    // Per-zone pitch bend range.
     if let Some(v) = opcodes.get("bend_up")
         && let Ok(b) = v.parse::<f32>()
     {
@@ -414,7 +379,6 @@ fn build_zone(opcodes: &HashMap<String, String>, base_dir: &Path) -> Option<Zone
         zone.pitch_bend_down = b;
     }
 
-    // Key tracking.
     if let Some(v) = opcodes.get("keytracking")
         && let Ok(kt) = v.parse::<f32>()
     {

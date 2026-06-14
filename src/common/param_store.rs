@@ -1,5 +1,3 @@
-//! Generic parameter value store for CLAP plugins.
-
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 

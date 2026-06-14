@@ -499,7 +499,7 @@ unsafe extern "C-unwind" fn plugin_deactivate(plugin: *const clap_plugin) {
         instance.retired_processors.lock().push(old);
     }
     instance.active.store(false, Ordering::Release);
-    // Update port configuration while deactivated (CLAP spec compliant).
+
     let channels_param = instance.shared.params.get(ParamId::Channels).round() as u32;
     let new_channels = channels_param.clamp(1, 2);
     instance.channels.store(new_channels, Ordering::Release);
@@ -1027,13 +1027,18 @@ unsafe extern "C-unwind" fn factory_create_plugin(
 }
 
 /// # Safety
-/// Caller must ensure valid host pointer.
+///
+/// The returned pointer is valid for the lifetime of the program and points to
+/// a static CLAP plugin descriptor.
 pub unsafe fn clap_descriptor_ptr() -> *const clap_plugin_descriptor {
     &raw const DESCRIPTOR.0
 }
 
 /// # Safety
-/// Caller must ensure valid host and plugin_id pointers.
+///
+/// `host` and `plugin_id` must be valid pointers suitable for the CLAP plugin
+/// factory `create_plugin` callback. The returned plugin pointer must be handled
+/// according to the CLAP lifetime rules.
 pub unsafe fn clap_create_plugin(
     host: *const clap_host,
     plugin_id: *const c_char,

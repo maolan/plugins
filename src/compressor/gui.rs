@@ -136,11 +136,11 @@ pub enum Message {
 struct State {
     shared: Arc<SharedState>,
     active_gestures: Vec<bool>,
-    /// Discovered EQ peers on the inter-plugin bus.
+
     eq_peers: Vec<bus::PluginSharedData>,
-    /// Cached active EQ band frequencies for display.
+
     eq_band_freqs: Vec<f32>,
-    /// Last seen registry version; re-discover only when this changes.
+
     last_registry_version: u64,
 }
 
@@ -232,7 +232,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.shared.request_audio_ports_rescan();
         }
         Message::UiTick => {
-            // Re-discover peers only when the registry has changed.
             let version = bus::registry_version();
             if version != state.last_registry_version {
                 state.eq_peers = bus::discover(|p| p.plugin_type == bus::PluginType::Eq);

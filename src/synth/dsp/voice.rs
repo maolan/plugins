@@ -1,9 +1,5 @@
 #![allow(dead_code)]
 
-//! Synthesizer voice with full modulation matrix.
-//!
-//! Inspired by Surge XT's scene/voice architecture.
-
 use rand::random;
 
 use super::{
@@ -17,10 +13,6 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 
 const NOTE_ON_DECLICK_SAMPLES: usize = 64;
-
-// ---------------------------------------------------------------------------
-// Settings structs
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OscPhaseMode {
@@ -185,14 +177,14 @@ impl Default for NoiseSettings {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterRouting {
-    Series = 0,   // S1: F1 → WS → F2
-    Parallel = 1, // D1: F1 || F2 → sum → WS
-    Wide = 2,     // S2 doubled: F2 → WS → F1 (stereo)
-    Split = 3,    // Stereo: L→F1, R→F2 → WS
-    Serial2 = 4,  // F2 → WS → F1
-    Serial3 = 5,  // F1→WS + F2 parallel mix
-    Dual2 = 6,    // F1(WS) || F2 → sum
-    Ring = 7,     // F1 × F2 → WS
+    Series = 0,
+    Parallel = 1,
+    Wide = 2,
+    Split = 3,
+    Serial2 = 4,
+    Serial3 = 5,
+    Dual2 = 6,
+    Ring = 7,
 }
 
 impl FilterRouting {
@@ -386,10 +378,6 @@ fn apply_combinator(a: f32, b: f32, mode: CombinatorMode) -> f32 {
         CombinatorMode::Cxor93_4 => cxor93_4(a, b),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Modulation Matrix
-// ---------------------------------------------------------------------------
 
 pub const MOD_MATRIX_SIZE: usize = 12;
 
@@ -735,10 +723,6 @@ impl Default for ModRouting {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Pre-computed modulation values per sample
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Default)]
 pub struct ModValues {
     osc_pitch: [f32; 3],
@@ -802,10 +786,6 @@ pub struct ModValues {
     osc_sync: [f32; 3],
     mod_depth: [f32; 12],
 }
-
-// ---------------------------------------------------------------------------
-// Voice Parameters
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct VoiceParams {
@@ -1008,10 +988,6 @@ impl Default for VoiceParams {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Voice
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone)]
 pub struct Voice {
     sample_rate: f32,
@@ -1040,7 +1016,6 @@ pub struct Voice {
     pub lfo5: Lfo,
     pub lfo6: Lfo,
 
-    // State
     pub note: u8,
     pub velocity: f32,
     pub pitch_bend: f32,
@@ -1049,16 +1024,13 @@ pub struct Voice {
     pub sample_counter: usize,
     pub tempo_bpm: f32,
 
-    // Portamento
     current_freq: f32,
     pub target_freq: f32,
     tuning: Tuning,
     last_scale_degree: i32,
 
-    // Parameters
     pub params: VoiceParams,
 
-    // Cached modulation outputs (updated per sample)
     lfo1_output: f32,
     lfo2_output: f32,
     lfo3_output: f32,
@@ -1078,12 +1050,10 @@ pub struct Voice {
     filter_eg_output: f32,
     pitch_eg_output: f32,
 
-    // Random / alternate state
     random_value: f32,
     alternate_sign: f32,
     note_counter: usize,
 
-    // Oscillator drift state
     drift_phase: [f32; 3],
     drift_target: [f32; 3],
     drift_smooth: [f32; 3],
@@ -1173,7 +1143,6 @@ impl Voice {
         let old_root = self.params.tuning_root;
         self.params = params.clone();
 
-        // Update tuning if changed
         if let Some(ref tuning) = params.tuning_override {
             self.tuning = tuning.clone();
         } else if params.tuning_scale != old_scale || params.tuning_root != old_root {
@@ -1181,7 +1150,6 @@ impl Voice {
             self.tuning.root_midi_note = params.tuning_root as i32;
         }
 
-        // Update envelopes
         self.amp_eg.set_params(
             params.amp_eg.attack,
             params.amp_eg.decay,
@@ -1244,7 +1212,6 @@ impl Voice {
         self.pitch_eg
             .set_correct_analog_mode(params.pitch_eg.correct_analog_mode);
 
-        // Update LFOs
         self.lfo1.set_rate_hz(params.lfo1.rate_hz);
         self.lfo1.set_shape(params.lfo1.shape);
         self.lfo1.set_amount(params.lfo1.amount);
@@ -1360,7 +1327,6 @@ impl Voice {
         self.lfo6.set_unipolar(params.lfo6.unipolar);
         self.lfo6.set_env_tempo_sync(params.lfo6.env_tempo_sync);
 
-        // Update step sequencer values
         for (i, step) in params.step_seq_values.iter().enumerate() {
             self.lfo1.stepseq.steps[i] = *step;
             self.lfo2.stepseq.steps[i] = *step;
@@ -1388,7 +1354,6 @@ impl Voice {
         self.lfo6.stepseq.loop_end = params.step_seq_loop_end;
         self.lfo6.stepseq.shuffle = params.step_seq_shuffle;
 
-        // Update MSEG data on all LFOs
         for i in 0..MSEG_MAX_NODES {
             self.lfo1.mseg.nodes[i] = params.mseg_nodes[i];
             self.lfo2.mseg.nodes[i] = params.mseg_nodes[i];
@@ -1424,7 +1389,6 @@ impl Voice {
         self.lfo6.mseg.loop_end = params.mseg_loop_end;
         self.lfo6.mseg.loop_mode = params.mseg_loop_mode;
 
-        // Update filters
         self.filter1_l
             .set_params(params.filter1.cutoff_hz, params.filter1.resonance);
         self.filter1_r
@@ -1459,7 +1423,6 @@ impl Voice {
         self.filter2_l.set_subtype(params.filter2.subtype);
         self.filter2_r.set_subtype(params.filter2.subtype);
 
-        // Update oscillators (reconstruct if type changed)
         for (idx, osc) in self.oscillators.iter_mut().enumerate() {
             let settings = &params.oscs[idx];
             if osc.osc_type() != settings.osc_type {
@@ -1546,7 +1509,6 @@ impl Voice {
             }
         }
 
-        // Update noise
         self.noise.noise_type = params.noise.noise_type;
         self.noise.level = params.noise.level;
         self.noise.color = params.noise.color;
@@ -1568,7 +1530,6 @@ impl Voice {
             );
         }
 
-        // Update flavor
         self.flavor.set_type(params.flavor);
         self.flavor.cutoff_hz = params.flavor_cutoff;
         self.flavor.resonance = params.flavor_resonance;
@@ -1576,7 +1537,6 @@ impl Voice {
         self.flavor2.cutoff_hz = params.flavor_cutoff;
         self.flavor2.resonance = params.flavor_resonance;
 
-        // Update waveshaper
         self.waveshaper.set_shape(params.waveshaper.shape);
         self.waveshaper.drive = params.waveshaper.drive;
         self.waveshaper.mix = params.waveshaper.mix;
@@ -1653,7 +1613,7 @@ impl Voice {
             match self.params.oscs[idx].phase_mode {
                 OscPhaseMode::Random => osc.reset(),
                 OscPhaseMode::Zero => osc.reset_to_zero(),
-                OscPhaseMode::Current => { /* keep current phase */ }
+                OscPhaseMode::Current => {}
             }
         }
         self.noise.reset();
@@ -1674,7 +1634,6 @@ impl Voice {
         self.lfo5.reset();
         self.lfo6.reset();
 
-        // New random/alternate values per note
         self.random_value = random::<f32>() * 2.0 - 1.0;
         self.alternate_sign = if self.note_counter.is_multiple_of(2) {
             1.0
@@ -1713,10 +1672,6 @@ impl Voice {
     fn osc_sync_amount(&self, idx: usize, mods: &ModValues) -> f32 {
         (self.params.oscs[idx].sync + mods.osc_sync[idx]).clamp(0.0, 60.0)
     }
-
-    // -----------------------------------------------------------------------
-    // Modulation
-    // -----------------------------------------------------------------------
 
     fn get_mod_source_value(&self, source: ModSource) -> f32 {
         match source {
@@ -1774,12 +1729,9 @@ impl Voice {
         }
     }
 
-    /// Compute all modulation target deltas for the current sample.
     fn compute_mod_values(&self) -> ModValues {
         let mut vals = ModValues::default();
 
-        // First pass: compute depth modulations using base depths.
-        // These routes modulate the depth of other routes.
         for routing in self.params.modulations.iter() {
             if !routing.active || routing.depth == 0.0 {
                 continue;
@@ -1805,7 +1757,6 @@ impl Voice {
             }
         }
 
-        // Second pass: compute all other modulations using adjusted depths.
         for (i, routing) in self.params.modulations.iter().enumerate() {
             if !routing.active {
                 continue;
@@ -1890,7 +1841,7 @@ impl Voice {
                 ModTarget::Osc1Sync => vals.osc_sync[0] += delta,
                 ModTarget::Osc2Sync => vals.osc_sync[1] += delta,
                 ModTarget::Osc3Sync => vals.osc_sync[2] += delta,
-                // Depth-modulation targets are handled in the first pass
+
                 ModTarget::ModRoute1Depth
                 | ModTarget::ModRoute2Depth
                 | ModTarget::ModRoute3Depth
@@ -1921,16 +1872,12 @@ impl Voice {
             return;
         }
 
-        // Compute effective portamento time (seconds)
         let portamento_time = if self.params.portamento_sync && self.tempo_bpm > 0.0 {
-            // portamento is in beats; convert to seconds
             self.params.portamento * 60.0 / self.tempo_bpm
         } else {
             self.params.portamento
         };
 
-        // Pre-compute filter coefficients for the block using current modulation state
-        // (approximation: filter coeffs are constant over the block)
         let f1_cutoff_base = if self.params.filter1.enabled {
             let base = self.params.filter1.cutoff_hz;
             let eg_mod = self.filter_eg_output * self.params.filter1.eg_amount * 10000.0;
@@ -1980,11 +1927,10 @@ impl Voice {
         for i in 0..frames {
             let audio_l = audio_in_l.map(|b| b[i]).unwrap_or(0.0);
             let audio_r = audio_in_r.map(|b| b[i]).unwrap_or(0.0);
-            // Portamento / Glissando
+
             let freq_diff = self.target_freq - self.current_freq;
             if portamento_time > 0.0 && freq_diff.abs() > 0.01 {
                 if self.params.glissando {
-                    // Semitone-quantized portamento
                     let current_note = freq_to_note(self.current_freq);
                     let target_note = freq_to_note(self.target_freq).round();
                     let note_diff = target_note - current_note;
@@ -2025,7 +1971,6 @@ impl Voice {
                 self.current_freq = self.target_freq;
             }
 
-            // Portamento retrigger at scale degrees
             if self.params.portamento_retrigger && portamento_time > 0.0 && freq_diff.abs() > 0.01 {
                 let current_degree = freq_to_scale_degree(self.current_freq, &self.tuning);
                 if current_degree != self.last_scale_degree {
@@ -2038,10 +1983,8 @@ impl Voice {
                 self.last_scale_degree = freq_to_scale_degree(self.current_freq, &self.tuning);
             }
 
-            // Compute modulation values using previous sample's LFO/EG outputs
             let mods = self.compute_mod_values();
 
-            // Apply modulated params to LFOs
             self.lfo1
                 .set_rate_hz((self.params.lfo1.rate_hz + mods.lfo1_rate).max(0.001));
             self.lfo1
@@ -2085,7 +2028,6 @@ impl Voice {
                 .set_deform((self.params.lfo6.deform + mods.lfo6_deform).clamp(-1.0, 1.0));
             self.lfo6.phase_offset = (self.params.lfo6.start_phase + mods.lfo6_phase).fract();
 
-            // Apply modulated params to envelopes
             self.amp_eg
                 .set_attack((self.params.amp_eg.attack + mods.amp_attack).max(0.0));
             self.amp_eg
@@ -2111,7 +2053,6 @@ impl Voice {
             self.pitch_eg
                 .set_release((self.params.pitch_eg.release + mods.pitch_release).max(0.0));
 
-            // Advance modulation sources with modulated params
             self.lfo1_output = self.lfo1.next();
             self.lfo2_output = self.lfo2.next();
             self.lfo3_output = self.lfo3.next();
@@ -2119,7 +2060,6 @@ impl Voice {
             self.lfo5_output = self.lfo5.next();
             self.lfo6_output = self.lfo6.next();
 
-            // Step sequencer trigmask: retrigger envelopes on step change
             let lfos = [
                 (&self.lfo1, self.params.lfo1.shape),
                 (&self.lfo2, self.params.lfo2.shape),
@@ -2159,15 +2099,12 @@ impl Voice {
             self.filter_eg_output = self.filter_eg.next();
             self.pitch_eg_output = self.pitch_eg.next();
 
-            // Update oscillator frequencies
             self.update_oscillator_freqs(&mods);
 
-            // Generate oscillator samples (with FM routing applied during generation)
             let mut osc_samples = [(0.0f32, 0.0f32); 3];
 
             match self.params.osc_fm_mode {
                 OscFmMode::Osc2To1 => {
-                    // Generate osc2 first, then osc1 with FM from osc2, then osc3
                     if self.params.oscs[1].enabled {
                         let sync = self.osc_sync_amount(1, &mods);
                         self.oscillators[1].set_sync_amount(sync);
@@ -2189,7 +2126,6 @@ impl Voice {
                     }
                 }
                 OscFmMode::Osc3To1 => {
-                    // Generate osc3 first, then osc1 with FM from osc3, then osc2
                     if self.params.oscs[2].enabled {
                         let sync = self.osc_sync_amount(2, &mods);
                         self.oscillators[2].set_sync_amount(sync);
@@ -2211,7 +2147,6 @@ impl Voice {
                     }
                 }
                 OscFmMode::Osc3To2 => {
-                    // Generate osc3 first, then osc2 with FM from osc3, then osc1
                     if self.params.oscs[2].enabled {
                         let sync = self.osc_sync_amount(2, &mods);
                         self.oscillators[2].set_sync_amount(sync);
@@ -2233,7 +2168,6 @@ impl Voice {
                     }
                 }
                 _ => {
-                    // Default order: osc1, osc2, osc3
                     if self.params.oscs[0].enabled {
                         let sync = self.osc_sync_amount(0, &mods);
                         self.oscillators[0].set_sync_amount(sync);
@@ -2276,7 +2210,6 @@ impl Voice {
                 }
             }
 
-            // Ring modulation / combinator applied after generation
             if self.params.osc_fm_mode == OscFmMode::Ring1x2 {
                 if self.params.oscs[0].enabled && self.params.oscs[1].enabled {
                     let mode = self.params.ring12_combinator;
@@ -2296,13 +2229,11 @@ impl Voice {
                 osc_samples[1].1 = ring_r;
             }
 
-            // Mix oscillators with modulation and per-source filter routing
             let mut f1_mix_l = 0.0f32;
             let mut f1_mix_r = 0.0f32;
             let mut f2_mix_l = 0.0f32;
             let mut f2_mix_r = 0.0f32;
 
-            // Solo logic: if any source is soloed, only soloed sources pass through
             let any_osc_soloed = self.params.oscs.iter().any(|o| o.solo);
             let noise_soloed = self.params.noise.solo;
             let any_soloed = any_osc_soloed || noise_soloed;
@@ -2336,7 +2267,6 @@ impl Voice {
                 }
             }
 
-            // Add noise
             let noise = &self.params.noise;
             if noise.enabled {
                 let passes = if any_soloed { noise.solo } else { !noise.mute };
@@ -2368,11 +2298,9 @@ impl Voice {
             let per_source_routing = self.params.oscs.iter().any(|o| o.route != OscRoute::Both)
                 || self.params.noise.route != OscRoute::Both;
 
-            // Total mix for backward-compatible path
             let sample_l = f1_mix_l + f2_mix_l;
             let sample_r = f1_mix_r + f2_mix_r;
 
-            // Flavor filter on each mix
             let flavor_cutoff =
                 (self.params.flavor_cutoff + mods.flavor_cutoff).clamp(20.0, 20000.0);
             self.flavor.cutoff_hz = flavor_cutoff;
@@ -2387,14 +2315,13 @@ impl Voice {
                     (c_l, c_r, c_l, c_r, c_l, c_r)
                 };
 
-            // Pre-filter gain
             let pfg = self.params.pre_filter_gain.clamp(0.0, 2.0);
             let (pre_filter_l, pre_filter_r, f2_pre_l, f2_pre_r) = if per_source_routing {
                 let f1_pre_l = f1_char_l * pfg;
                 let f1_pre_r = f1_char_r * pfg;
                 let mut f2_pre_l = f2_char_l * pfg;
                 let mut f2_pre_r = f2_char_r * pfg;
-                // Lowcut on both buses
+
                 let lowcut_hz = self.params.lowcut_hz.clamp(20.0, 20000.0);
                 let slope = self.params.lowcut_slope.clamp(1, 4) as usize;
                 let coeff = (std::f32::consts::PI * lowcut_hz / self.sample_rate).sin() * 2.0;
@@ -2438,13 +2365,11 @@ impl Voice {
                 (pre_filter_l, pre_filter_r, pre_filter_l, pre_filter_r)
             };
 
-            // Global filter block feedback
             let fb = self.params.filter_feedback.clamp(-1.0, 1.0);
             let fb_amount = fb.abs();
             let pre_filter_l = pre_filter_l + self.filter_feedback_prev_l * fb_amount;
             let pre_filter_r = pre_filter_r + self.filter_feedback_prev_r * fb_amount;
 
-            // Compute filter parameters
             let f1_enabled = self.params.filter1.enabled;
             let f2_enabled = self.params.filter2.enabled;
 
@@ -2522,9 +2447,7 @@ impl Voice {
                 0.0
             };
 
-            // Apply filter routing
             let (mut char_l, mut char_r, f1_out_l, f1_out_r) = if per_source_routing {
-                // Per-source routing: F1 bus → F1 filter, F2 bus → F2 filter, then sum → WS
                 let mut f1_l = pre_filter_l;
                 let mut f1_r = pre_filter_r;
                 let mut f2_l = f2_pre_l;
@@ -2552,8 +2475,6 @@ impl Voice {
                 };
                 (ws_l, ws_r, f1_l, f1_r)
             } else if !f1_enabled && !f2_enabled {
-                // Treat both filters off as a true filter-block bypass. Some
-                // routing modes, such as Ring, still transform two dry paths.
                 let (ws_l, ws_r) = if ws_active {
                     let mut ws = self.waveshaper.clone();
                     ws.drive = ws_drive;
@@ -2565,7 +2486,6 @@ impl Voice {
             } else {
                 match self.params.filter_routing {
                     FilterRouting::Series => {
-                        // S1: F1 → WS → F2
                         let mut s_l = pre_filter_l;
                         let mut s_r = pre_filter_r;
                         if f1_enabled {
@@ -2592,7 +2512,6 @@ impl Voice {
                         (out_l, out_r, ws_l, ws_r)
                     }
                     FilterRouting::Parallel => {
-                        // D1: F1 || F2 → sum → WS
                         let mut f1_l = pre_filter_l;
                         let mut f1_r = pre_filter_r;
                         let mut f2_l = pre_filter_l;
@@ -2621,7 +2540,6 @@ impl Voice {
                         (ws_l, ws_r, f1_l, f1_r)
                     }
                     FilterRouting::Wide => {
-                        // Wide: S2 doubled — F2 → WS → F1 on both channels
                         let mut s_l = pre_filter_l;
                         let mut s_r = pre_filter_r;
                         if f2_enabled {
@@ -2648,7 +2566,6 @@ impl Voice {
                         (out_l, out_r, ws_l, ws_r)
                     }
                     FilterRouting::Split => {
-                        // Stereo: L→F1, R→F2 → WS
                         let mut f1_l = pre_filter_l;
                         let f1_r = pre_filter_r;
                         let f2_l = pre_filter_l;
@@ -2677,7 +2594,6 @@ impl Voice {
                         (ws_l, ws_r, stereo_l, stereo_r)
                     }
                     FilterRouting::Serial2 => {
-                        // F2 → WS → F1
                         let mut s_l = pre_filter_l;
                         let mut s_r = pre_filter_r;
                         if f2_enabled {
@@ -2704,7 +2620,6 @@ impl Voice {
                         (out_l, out_r, ws_l, ws_r)
                     }
                     FilterRouting::Serial3 => {
-                        // S3 approximation: F1→WS in series with F2 in parallel
                         let mut s_l = pre_filter_l;
                         let mut s_r = pre_filter_r;
                         if f1_enabled {
@@ -2733,7 +2648,6 @@ impl Voice {
                         (out_l, out_r, ws_l, ws_r)
                     }
                     FilterRouting::Dual2 => {
-                        // F1(WS) || F2 → sum
                         let mut f1_l = pre_filter_l;
                         let mut f1_r = pre_filter_r;
                         let mut f2_l = pre_filter_l;
@@ -2762,7 +2676,6 @@ impl Voice {
                         (out_l, out_r, f1_ws_l, f1_ws_r)
                     }
                     FilterRouting::Ring => {
-                        // F1 × F2 → WS
                         let mut f1_l = pre_filter_l;
                         let mut f1_r = pre_filter_r;
                         let mut f2_l = pre_filter_l;
@@ -2793,18 +2706,15 @@ impl Voice {
                 }
             };
 
-            // Apply filter balance after routing
             let balance = (self.params.filter_balance + mods.filter_balance).clamp(-1.0, 1.0);
-            let f2_mix = (balance + 1.0) * 0.5; // -1 -> 0, 0 -> 0.5, 1 -> 1
+            let f2_mix = (balance + 1.0) * 0.5;
             let f1_mix = 1.0 - f2_mix;
             char_l = f1_out_l * f1_mix + char_l * f2_mix;
             char_r = f1_out_r * f1_mix + char_r * f2_mix;
 
-            // Update filter feedback state (before VCA)
             self.filter_feedback_prev_l = char_l;
             self.filter_feedback_prev_r = char_r;
 
-            // Apply amplitude envelope, velocity, and volume
             let vol = (self.params.volume + mods.output_volume).clamp(0.0, 2.0);
             let vca_level = self.params.vca_level.clamp(0.0, 2.0);
             let vel_sense = self.params.vca_velsense.clamp(0.0, 1.0);
@@ -2813,7 +2723,6 @@ impl Voice {
             char_l *= self.amp_eg_output * effective_vel * vol * vca_level * de_click;
             char_r *= self.amp_eg_output * effective_vel * vol * vca_level * de_click;
 
-            // Pan and width
             let pan = (self.params.pan + mods.output_pan).clamp(-1.0, 1.0);
             let width = (self.params.width + mods.output_width).clamp(-1.0, 1.0);
 
@@ -2841,15 +2750,14 @@ impl Voice {
     }
 
     pub fn update_oscillator_freqs(&mut self, mods: &ModValues) {
-        // Smooth pitch bend
         if self.params.pitch_bend_smooth > 0.0 {
-            let g = self.params.pitch_bend_smooth * 0.1; // smoothing coefficient
+            let g = self.params.pitch_bend_smooth * 0.1;
             self.pitch_bend_smooth_state += (self.pitch_bend - self.pitch_bend_smooth_state) * g;
         } else {
             self.pitch_bend_smooth_state = self.pitch_bend;
         }
 
-        let pitch_eg_mod = self.pitch_eg_output * 2.0; // ±2 octaves
+        let pitch_eg_mod = self.pitch_eg_output * 2.0;
         let pb_range = if self.pitch_bend_smooth_state >= 0.0 {
             if self.params.pitch_bend_up > 0.0 {
                 self.params.pitch_bend_up
@@ -2866,7 +2774,6 @@ impl Voice {
         let pb_mul = 2.0f32.powf(self.pitch_bend_smooth_state * pb_range / 12.0);
         let current_freq = self.current_freq;
 
-        // Update drift
         let drift_amount = self.params.drift_amount;
         for idx in 0..3 {
             if drift_amount > 0.0 {
@@ -2889,7 +2796,7 @@ impl Voice {
             let semitone_mul = 2.0f32.powf(settings.semitone as f32 / 12.0);
             let fine_mul = 2.0f32.powf(settings.fine / 1200.0);
             let pitch_mod_mul = 2.0f32.powf(mods.osc_pitch[idx] + pitch_eg_mod);
-            let drift_cents = self.drift_phase[idx] * drift_amount * 20.0; // up to 20 cents drift
+            let drift_cents = self.drift_phase[idx] * drift_amount * 20.0;
             let drift_mul = 2.0f32.powf(drift_cents / 1200.0);
 
             let freq = base_freq
@@ -2901,7 +2808,6 @@ impl Voice {
                 * drift_mul;
             self.oscillators[idx].set_freq_hz(freq);
 
-            // Apply shape/skew/formant modulation
             let shape = (settings.shape + mods.osc_shape[idx]).clamp(0.0, 1.0);
             let skew = (settings.skew + mods.osc_skew[idx]).clamp(-1.0, 1.0);
             let formant = (settings.formant + mods.osc_formant[idx]).clamp(0.25, 4.0);
@@ -2922,7 +2828,6 @@ fn note_to_freq(note: u8, tuning: &Tuning, mts_esp: &Option<Arc<Mutex<MtsEspClie
     tuning.note_to_freq(note)
 }
 
-/// Find the nearest scale degree index for a given frequency and tuning.
 #[inline]
 fn freq_to_scale_degree(freq: f32, tuning: &Tuning) -> i32 {
     let root_freq = 440.0 * 2.0f32.powf((tuning.root_midi_note as f32 - 69.0) / 12.0);

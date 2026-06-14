@@ -408,12 +408,10 @@ impl Biquad {
         let s = w.sin();
         let s2 = (2.0 * w).sin();
 
-        // Evaluate numerator |B(e^jw)|^2  =  (b0 + b1*c + b2*c2)^2 + (b1*s + b2*s2)^2
         let num_re = self.b0 + self.b1 * c + self.b2 * c2;
         let num_im = self.b1 * s + self.b2 * s2;
         let num = num_re * num_re + num_im * num_im;
 
-        // Evaluate denominator |A(e^jw)|^2  =  (1 + a1*c + a2*c2)^2 + (a1*s + a2*s2)^2
         let den_re = 1.0 + self.a1 * c + self.a2 * c2;
         let den_im = self.a1 * s + self.a2 * s2;
         let den = den_re * den_re + den_im * den_im;

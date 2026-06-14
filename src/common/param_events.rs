@@ -10,15 +10,12 @@ use clap_clap::{
 };
 use std::mem::size_of;
 
-/// Trait for parameter ID enums used across CLAP plugins.
 pub trait ClapParamId: Copy + Clone + PartialEq + Eq + Send + Sync + 'static {
     const COUNT: usize;
     fn as_index(self) -> usize;
     fn from_raw(id: u32) -> Option<Self>;
 }
 
-/// Minimal trait that a plugin's `SharedState` must implement to use
-/// the generic param-event helpers.
 pub trait SharedStateExt<P: ClapParamId> {
     fn params_get(&self, id: P) -> f64;
     fn set_gesture_active(&self, id: P, active: bool);

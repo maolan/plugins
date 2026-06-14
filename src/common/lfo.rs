@@ -1,9 +1,5 @@
 #![allow(dead_code)]
 
-//! Low-frequency oscillator with multiple shapes.
-//!
-//! Shapes: Sine, Triangle, Saw, Ramp, Square, Sample & Hold, Noise, Envelope, StepSeq, MSEG.
-
 use rand::random;
 use std::f32::consts::PI;
 
@@ -72,23 +68,23 @@ impl LfoSyncMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LfoSyncDivision {
-    One1 = 0,    // 1/1
-    One2 = 1,    // 1/2
-    One4 = 2,    // 1/4
-    One8 = 3,    // 1/8
-    One16 = 4,   // 1/16
-    One32 = 5,   // 1/32
-    One64 = 6,   // 1/64
-    One1d = 7,   // 1/1 dotted
-    One2d = 8,   // 1/2 dotted
-    One4d = 9,   // 1/4 dotted
-    One8d = 10,  // 1/8 dotted
-    One16d = 11, // 1/16 dotted
-    One1t = 12,  // 1/1 triplet
-    One2t = 13,  // 1/2 triplet
-    One4t = 14,  // 1/4 triplet
-    One8t = 15,  // 1/8 triplet
-    One16t = 16, // 1/16 triplet
+    One1 = 0,
+    One2 = 1,
+    One4 = 2,
+    One8 = 3,
+    One16 = 4,
+    One32 = 5,
+    One64 = 6,
+    One1d = 7,
+    One2d = 8,
+    One4d = 9,
+    One8d = 10,
+    One16d = 11,
+    One1t = 12,
+    One2t = 13,
+    One4t = 14,
+    One8t = 15,
+    One16t = 16,
 }
 
 impl LfoSyncDivision {
@@ -114,8 +110,6 @@ impl LfoSyncDivision {
         }
     }
 
-    /// Convert division to multiplier relative to a quarter note.
-    /// e.g. 1/4 = 1.0, 1/8 = 0.5, 1/2 = 2.0
     pub fn to_multiplier(self) -> f32 {
         match self {
             LfoSyncDivision::One1 => 4.0,
@@ -139,16 +133,10 @@ impl LfoSyncDivision {
     }
 
     pub fn to_rate_hz(self, tempo_bpm: f32) -> f32 {
-        // rate = tempo / 60 * beats_per_cycle
-        // For a quarter note at 120 BPM: 120/60 * 1 = 2 Hz
         let beats = self.to_multiplier();
         (tempo_bpm / 60.0) * beats
     }
 }
-
-// ---------------------------------------------------------------------------
-// Step Sequencer
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct StepSequencer {
@@ -197,11 +185,10 @@ impl StepSequencer {
         let steps_total = (self.loop_end - self.loop_start + 1) as f32;
         let step_pos = phase * steps_total;
 
-        // Apply shuffle (swing): delay odd-numbered steps
         let shuffled_step_pos = if self.shuffle > 0.0 {
             let pair_idx = (step_pos / 2.0).floor();
             let in_pair = step_pos - pair_idx * 2.0;
-            let swing = 0.5 + self.shuffle * 0.5; // 0.5..1.0 for first step of pair
+            let swing = 0.5 + self.shuffle * 0.5;
             let warped = if in_pair < 1.0 {
                 in_pair * swing
             } else {
@@ -224,13 +211,11 @@ impl StepSequencer {
             self.step_changed = false;
         }
 
-        // Interpolation between steps controlled by smoothness
-        // smoothness = 0.0: step/hold, 1.0: linear, >1.0: smooth cubic
         let interp_frac = if self.smoothness <= 0.0 {
             0.0
         } else if self.smoothness >= 1.0 {
             let s = self.smoothness.min(2.0) - 1.0;
-            // Blend linear toward smoothstep
+
             let smooth = frac * frac * (3.0 - 2.0 * frac);
             frac * (1.0 - s) + smooth * s
         } else {
@@ -239,10 +224,6 @@ impl StepSequencer {
         self.last_value * (1.0 - interp_frac) + self.next_value * interp_frac
     }
 }
-
-// ---------------------------------------------------------------------------
-// MSEG Curve Types
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MsegCurve {
@@ -286,7 +267,6 @@ impl MsegCurve {
         }
     }
 
-    /// Apply curve shaping to a normalized 0..1 fraction.
     pub fn apply(self, t: f32) -> f32 {
         let t = t.clamp(0.0, 1.0);
         match self {
@@ -296,24 +276,18 @@ impl MsegCurve {
             MsegCurve::Sqrt => t.sqrt(),
             MsegCurve::Cubic => t * t * t,
             MsegCurve::SmoothStep => t * t * (3.0 - 2.0 * t),
-            MsegCurve::SCurve => {
-                // Ken Perlin's smootherstep
-                t * t * t * (t * (6.0 * t - 15.0) + 10.0)
-            }
+            MsegCurve::SCurve => t * t * t * (t * (6.0 * t - 15.0) + 10.0),
             MsegCurve::StepHold => 0.0,
             MsegCurve::QuadraticBezier => {
-                // Quadratic Bezier with control point at (0.5, 0.5)
                 let mt = 1.0 - t;
                 mt * mt * 0.0 + 2.0 * mt * t * 0.5 + t * t * 1.0
             }
             MsegCurve::SineSegment => ((t - 0.5) * PI).sin() * 0.5 + 0.5,
             MsegCurve::Stairs => {
-                // Step function: 2–10 steps based on t
                 let steps = 4.0f32;
                 (t * steps).floor() / steps
             }
             MsegCurve::Brownian => {
-                // Approximate Brownian bridge with deterministic noise
                 let n1 = ((t * 7.3).sin() * (t * 13.7).cos()).abs();
                 let n2 = ((t * 11.1).sin() * (t * 17.3).cos()).abs();
                 t * (1.0 - n1) + n2 * 0.3
@@ -331,10 +305,6 @@ impl MsegCurve {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// MSEG Envelope
-// ---------------------------------------------------------------------------
 
 pub const MSEG_MAX_NODES: usize = 128;
 pub const MSEG_MAX_SEGMENTS: usize = MSEG_MAX_NODES - 1;
@@ -407,17 +377,12 @@ impl MsegEnvelope {
         let y0 = self.nodes[node_idx];
         let y1 = self.nodes[next_idx];
 
-        // Apply per-segment curve
         let seg_idx = node_idx.min(MSEG_MAX_SEGMENTS - 1);
         let curved_frac = self.curves[seg_idx].apply(frac);
 
         y0 * (1.0 - curved_frac) + y1 * curved_frac
     }
 }
-
-// ---------------------------------------------------------------------------
-// LFO
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct Lfo {
@@ -434,13 +399,11 @@ pub struct Lfo {
     deform_type: u8,
     unipolar: bool,
 
-    // State
     last_value: f32,
     noise_state: f32,
     noise_target: f32,
     noise_smooth: f32,
 
-    // Envelope state
     env_phase: f32,
     env_state: EnvState,
     env_delay: f32,
@@ -452,24 +415,18 @@ pub struct Lfo {
     env_release_start_level: f32,
     gate: bool,
 
-    // Step sequencer
     pub stepseq: StepSequencer,
     pub step_changed: bool,
 
-    // MSEG envelope
     pub mseg: MsegEnvelope,
 
-    // Phase offset for 0-rate scrubbing / phase modulation
     pub phase_offset: f32,
 
-    // Host sync
     song_pos_beats: f64,
 
-    // Tempo sync
     tempo_bpm: f32,
     env_tempo_sync: bool,
 
-    // MSEG independent phase for loop modes
     mseg_phase: f32,
     pub mseg_seg_changed: bool,
     pub mseg_prev_seg: usize,
@@ -628,7 +585,6 @@ impl Lfo {
         }
     }
 
-    /// Current LFO value without advancing.
     pub fn value(&self) -> f32 {
         self.last_value
     }
@@ -636,7 +592,7 @@ impl Lfo {
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> f32 {
         let phase_inc = self.rate_hz / self.sample_rate;
-        // Host-synced FreeRun: derive phase from transport when in FreeRun + Tempo
+
         if self.trigger_mode == LfoTriggerMode::FreeRun && self.sync_mode == LfoSyncMode::Tempo {
             let beats_per_cycle = self.sync_division.to_multiplier();
             self.phase = ((self.song_pos_beats as f32 * beats_per_cycle) + self.start_phase) % 1.0;
@@ -665,15 +621,12 @@ impl Lfo {
                     let d = self.deform;
                     match self.deform_type {
                         1 => {
-                            // Sinusoidal bend
                             v = v + d * (v * PI).sin() * 0.5;
                         }
                         2 => {
-                            // Offset sinusoidal
                             v *= 1.0 + d * (angle * 2.0).cos();
                         }
                         _ => {
-                            // Quadratic warping
                             let a = d * 0.5;
                             v = v - a * v * v + a;
                             v = v - a * v * v + a;
@@ -694,16 +647,9 @@ impl Lfo {
                 if self.deform != 0.0 {
                     let d = self.deform;
                     match self.deform_type {
-                        1 => {
-                            // Quadratic bend
-                            tri.signum() * tri.abs().powf(1.0 + d)
-                        }
-                        2 => {
-                            // Cubic bend
-                            tri.signum() * tri.abs().powf(1.0 + d * 2.0)
-                        }
+                        1 => tri.signum() * tri.abs().powf(1.0 + d),
+                        2 => tri.signum() * tri.abs().powf(1.0 + d * 2.0),
                         _ => {
-                            // Triangle→saw morph
                             let saw = 2.0 * p - 1.0;
                             tri + (saw - tri) * d
                         }
@@ -718,17 +664,12 @@ impl Lfo {
                 if self.deform != 0.0 {
                     let d = self.deform;
                     v = match self.deform_type {
-                        1 => {
-                            // Power curve (symmetric)
-                            v.signum() * v.abs().powf(1.0 - d * 0.5)
-                        }
+                        1 => v.signum() * v.abs().powf(1.0 - d * 0.5),
                         2 => {
-                            // Step approximation: quantize to N steps
                             let steps = (2.0 + d.abs() * 14.0).max(2.0);
                             (v * steps).round() / steps
                         }
                         _ => {
-                            // Exponential curve shaping
                             if d > 0.0 {
                                 let a = d;
                                 if v >= 0.0 {
@@ -768,17 +709,14 @@ impl Lfo {
                 let d = self.deform;
                 let step = match self.deform_type {
                     1 => {
-                        // Interpolated glide: slower, smoother transitions
                         let correlation = 1.0 * (1.0 + d.abs() * 3.0);
                         phase_inc * correlation
                     }
                     2 => {
-                        // Brownian walk: small random steps
                         let correlation = 8.0 * (1.0 + d.abs());
                         phase_inc * correlation
                     }
                     _ => {
-                        // Correlated noise
                         let correlation = 4.0 * (1.0 + d * 0.75);
                         phase_inc * correlation
                     }
@@ -797,17 +735,14 @@ impl Lfo {
                 if deform.abs() > 0.001 {
                     match self.deform_type {
                         1 => {
-                            // Exponential warp
                             let exp = (deform * 3.0).exp();
                             1.0 - (-env * exp).exp()
                         }
                         2 => {
-                            // Noise perturbation: add jitter to envelope
                             let jitter = (random::<f32>() - 0.5) * deform.abs() * 0.2;
                             (env + jitter).clamp(0.0, 1.0)
                         }
                         _ => {
-                            // Power function warp
                             let exp = 1.0 + deform * 2.0;
                             if exp > 0.0 { env.powf(exp) } else { env }
                         }
@@ -817,14 +752,12 @@ impl Lfo {
                 }
             }
             LfoShape::StepSeq => {
-                // Deform controls step sequencer smoothness: -1..1 → 0..2
                 self.stepseq.smoothness = 1.0 + self.deform;
                 let v = self.stepseq.next(effective_phase, phase_inc);
                 self.step_changed = self.stepseq.step_changed;
                 v
             }
             LfoShape::Mseg => {
-                // Advance MSEG phase independently with loop mode support
                 let phase_inc = self.rate_hz / self.sample_rate;
                 match self.mseg.loop_mode {
                     MsegLoopMode::Loop => {
@@ -846,7 +779,6 @@ impl Lfo {
                                 self.mseg_phase -= 1.0;
                             }
                         } else {
-                            // After release, play to end and hold
                             self.mseg_phase += phase_inc;
                             if self.mseg_phase > 1.0 {
                                 self.mseg_phase = 1.0;
@@ -861,7 +793,6 @@ impl Lfo {
             }
         };
 
-        // Apply envelope if not envelope shape
         let env_val = if self.shape != LfoShape::Envelope {
             self.update_env();
             self.get_env_value()
@@ -878,7 +809,7 @@ impl Lfo {
 
     fn update_env(&mut self) {
         let dt = 1.0 / self.sample_rate;
-        // Convert beat values to seconds if tempo sync is enabled
+
         let beat_to_sec = |beats: f32| -> f32 {
             if self.env_tempo_sync && self.tempo_bpm > 0.0 {
                 beats * 60.0 / self.tempo_bpm

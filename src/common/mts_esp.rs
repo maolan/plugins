@@ -1,28 +1,15 @@
 #![allow(dead_code)]
 
-//! MTS-ESP client integration.
-//!
-//! Dynamically loads `libMTS` at runtime (no compile-time dependency).
-//! Falls back silently to 12-TET if the library is not installed.
-
 use std::sync::Arc;
 
 use libloading::Library;
 use parking_lot::Mutex;
-
-// ---------------------------------------------------------------------------
-// libMTS function types
-// ---------------------------------------------------------------------------
 
 type MTSRegisterClient = unsafe extern "C" fn() -> *mut std::ffi::c_void;
 type MTSDeregisterClient = unsafe extern "C" fn(client: *mut std::ffi::c_void);
 type MTSHasMaster = unsafe extern "C" fn(client: *mut std::ffi::c_void) -> bool;
 type MTSNoteToFrequency =
     unsafe extern "C" fn(client: *mut std::ffi::c_void, note: i8, channel: i8) -> f64;
-
-// ---------------------------------------------------------------------------
-// Client wrapper
-// ---------------------------------------------------------------------------
 
 pub struct MtsEspClient {
     _lib: Arc<Library>,
@@ -41,7 +28,6 @@ impl std::fmt::Debug for MtsEspClient {
     }
 }
 
-// Safety: libMTS is thread-safe for read-only queries
 unsafe impl Send for MtsEspClient {}
 unsafe impl Sync for MtsEspClient {}
 

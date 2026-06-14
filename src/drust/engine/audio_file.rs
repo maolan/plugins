@@ -1,7 +1,6 @@
 use rayon::prelude::*;
 use std::{collections::HashMap, path::Path};
 
-/// Loaded and deinterleaved audio data from a WAV file.
 #[derive(Debug, Clone)]
 pub struct LoadedAudioFile {
     pub path: String,
@@ -10,8 +9,6 @@ pub struct LoadedAudioFile {
     pub channels: Vec<Vec<f32>>,
 }
 
-/// Load a WAV file and return deinterleaved channel data.
-/// `channels_to_extract` is a list of 0-indexed channel indices to extract.
 pub fn load_wav_channels(
     path: &Path,
     channels_to_extract: &[usize],
@@ -68,7 +65,6 @@ pub fn load_wav_channels(
     })
 }
 
-/// Lagrange 4-point interpolation for high-quality resampling.
 fn lagrange_interpolate(y0: f32, y1: f32, y2: f32, y3: f32, t: f32) -> f32 {
     let c0 = y1;
     let c1 = y2 - y0 * (1.0 / 3.0) - y1 * 0.5 - y3 * (1.0 / 6.0);
@@ -77,8 +73,6 @@ fn lagrange_interpolate(y0: f32, y1: f32, y2: f32, y3: f32, t: f32) -> f32 {
     ((c3 * t + c2) * t + c1) * t + c0
 }
 
-/// Resample a buffer using linear interpolation for small ratio differences
-/// and Lagrange 4-point for larger differences.
 pub fn resample_buffer(input: &[f32], src_rate: f64, dst_rate: f64) -> Vec<f32> {
     if (src_rate - dst_rate).abs() < 0.1 {
         return input.to_vec();
@@ -119,8 +113,6 @@ pub fn resample_buffer(input: &[f32], src_rate: f64, dst_rate: f64) -> Vec<f32> 
     output
 }
 
-/// Load all unique WAV files referenced by a drumkit, resampling to host rate.
-/// Returns a map from absolute file path to loaded audio data.
 pub fn load_kit_audio(
     _kit_dir: &Path,
     kit: &crate::drust::drumkit::DrumKit,

@@ -1,12 +1,5 @@
-//! Waveshaper for between-filter processing.
-//!
-//! 43 types matching Surge XT's voice-level waveshaper architecture.
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Waveshape {
-    // -----------------------------------------------------------------------
-    // Existing (indices 0–11 preserved for backward compatibility)
-    // -----------------------------------------------------------------------
     Off = 0,
     SoftClip = 1,
     HardClip = 2,
@@ -20,9 +13,6 @@ pub enum Waveshape {
     Cheby2 = 10,
     Cheby3 = 11,
 
-    // -----------------------------------------------------------------------
-    // New Surge XT types (indices 12–42)
-    // -----------------------------------------------------------------------
     Cheby4 = 12,
     Cheby5 = 13,
     HalfWavePositive = 14,
@@ -138,10 +128,6 @@ impl Waveshaper {
         self.shape = shape;
     }
 
-    // -----------------------------------------------------------------------
-    // Saturators
-    // -----------------------------------------------------------------------
-
     fn soft_clip(x: f32) -> f32 {
         if x > 1.0 {
             2.0 / 3.0
@@ -179,20 +165,17 @@ impl Waveshaper {
         x.clamp(-0.9, 1.0)
     }
 
-    /// Surge "Soft" — rational tanh approximation.
     fn surge_soft(x: f32) -> f32 {
         let xx = x * x;
         let y = x * (27.0 + xx) / (27.0 + 9.0 * xx);
         y.clamp(-1.0, 1.0)
     }
 
-    /// Medium (ZAMSAT) — 2x*(1-|x|) after hard clip.
     fn medium_shape(x: f32) -> f32 {
         let c = x.clamp(-1.0, 1.0);
         2.0 * c * (1.0 - c.abs())
     }
 
-    /// OJD — piecewise flat/quadratic/linear/quadratic/flat.
     fn ojd_shape(x: f32) -> f32 {
         if x <= -1.7 {
             -1.0
@@ -209,17 +192,9 @@ impl Waveshaper {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Effects
-    // -----------------------------------------------------------------------
-
     fn sine_fold(x: f32) -> f32 {
         (x * std::f32::consts::PI).sin()
     }
-
-    // -----------------------------------------------------------------------
-    // Harmonic — Chebyshev polynomials
-    // -----------------------------------------------------------------------
 
     fn cheby2_shape(x: f32) -> f32 {
         (2.0 * x * x - 1.0).clamp(-1.0, 1.0)
@@ -272,7 +247,6 @@ impl Waveshaper {
         (0.2 * (t1 + t2 + t3 + t4 + t5)).clamp(-1.0, 1.0)
     }
 
-    /// Saw approximation: {0, -fac, +fac*0.5, -fac*0.25}
     fn additive_saw3(x: f32) -> f32 {
         let fac = 0.8;
         let x2 = x * x;
@@ -281,7 +255,6 @@ impl Waveshaper {
             .clamp(-1.0, 1.0)
     }
 
-    /// Square approximation: {0, fac, 0, -fac*0.25, 0, fac/16}
     fn additive_square3(x: f32) -> f32 {
         let fac = 0.8;
         let x2 = x * x;
@@ -292,10 +265,6 @@ impl Waveshaper {
             + (fac / 16.0) * (16.0 * x4 * x - 20.0 * x3 + 5.0 * x))
             .clamp(-1.0, 1.0)
     }
-
-    // -----------------------------------------------------------------------
-    // Rectifiers
-    // -----------------------------------------------------------------------
 
     fn rectify_shape(x: f32) -> f32 {
         x.abs()
@@ -313,17 +282,12 @@ impl Waveshaper {
         (2.0 * x.abs() - 1.0).tanh()
     }
 
-    // -----------------------------------------------------------------------
-    // Wavefolders
-    // -----------------------------------------------------------------------
-
     fn foldback_shape(x: f32) -> f32 {
         let x = x + 1.0;
         let phase = x - 2.0 * (x * 0.5).floor();
         1.0 - 2.0 * (phase - 1.0).abs()
     }
 
-    /// Generic triangle fold around thresholds ±t.
     fn fold_triangular(x: f32, t: f32) -> f32 {
         if t <= 0.0 {
             return x;
@@ -343,7 +307,6 @@ impl Waveshaper {
         Self::fold_triangular(Self::fold_triangular(x, 0.7), 0.35)
     }
 
-    /// West Coast Fold — Buchla 259-inspired piecewise fold.
     fn west_coast_fold(x: f32) -> f32 {
         let t1 = 0.45;
         let t2 = 0.9;
@@ -365,17 +328,11 @@ impl Waveshaper {
         sign * y.clamp(-1.0, 1.0)
     }
 
-    /// Soft Single Fold — x / (0.4 + 0.7*x²)
     fn soft_single_fold(x: f32) -> f32 {
         x / (0.4 + 0.7 * x * x)
     }
 
-    // -----------------------------------------------------------------------
-    // Fuzz (deterministic approximations)
-    // -----------------------------------------------------------------------
-
     fn fuzz_noise(x: f32) -> f32 {
-        // Deterministic high-frequency perturbation approximating noise
         (x * 31.0).sin() * 0.3
     }
 
@@ -406,10 +363,6 @@ impl Waveshaper {
         (0.85 * x + 0.15 * x4 * n).clamp(-1.0, 1.0)
     }
 
-    // -----------------------------------------------------------------------
-    // Trigonometric
-    // -----------------------------------------------------------------------
-
     fn sin_plus_x(x: f32) -> f32 {
         (x - (x * std::f32::consts::PI).sin()).clamp(-1.0, 1.0)
     }
@@ -429,16 +382,11 @@ impl Waveshaper {
         bound * (N as f32 * std::f32::consts::PI * x).sin()
     }
 
-    // -----------------------------------------------------------------------
-    // Public API
-    // -----------------------------------------------------------------------
-
     pub fn process(&self, input: f32) -> f32 {
         if self.shape == Waveshape::Off {
             return input;
         }
 
-        // Exponential drive mapping: 0..1 → 1× to +60 dB (1000× linear)
         let drive_gain = 10.0f32.powf(self.drive * 3.0);
         let driven = input * drive_gain;
 
@@ -491,7 +439,6 @@ impl Waveshaper {
             Waveshape::SoftSingleFold => Self::soft_single_fold(driven),
         };
 
-        // Compensate gain and mix
         let compensated = shaped / drive_gain.max(1.0);
         input + (compensated - input) * self.mix
     }

@@ -1,5 +1,3 @@
-//! Distortion engine with 9 types.
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum DistortionType {
@@ -30,7 +28,6 @@ impl DistortionType {
     }
 }
 
-/// Distortion processor with drive, input limiter, and output limiter.
 use super::envelope::Envelope;
 
 #[derive(Debug, Clone)]
@@ -71,13 +68,11 @@ impl Distortion {
         }
     }
 
-    /// Process a single sample.
     #[inline]
     pub fn process(&self, x: f32) -> f32 {
         self.process_with_drive(x, self.drive)
     }
 
-    /// Process a single sample with an explicit drive value.
     #[inline]
     pub fn process_with_drive(&self, x: f32, drive: f32) -> f32 {
         if drive < 1.0e-6 {
@@ -133,7 +128,6 @@ impl Distortion {
         }
     }
 
-    /// Process block with optional per-sample drive and volume modulation.
     pub fn process_block_modulated(
         &self,
         buf: &mut [f32],

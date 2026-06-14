@@ -1,5 +1,3 @@
-//! CLAP plugin entry point for Maolan Sampler.
-
 use std::{
     ffi::{CStr, c_char, c_void},
     io::{Read, Write},
@@ -10,12 +8,12 @@ use std::{
     },
 };
 
-#[cfg(all(unix, not(target_os = "macos")))]
-use clap_clap::ffi::CLAP_WINDOW_API_X11;
 #[cfg(target_os = "macos")]
 use clap_clap::ffi::CLAP_WINDOW_API_COCOA;
 #[cfg(target_os = "windows")]
 use clap_clap::ffi::CLAP_WINDOW_API_WIN32;
+#[cfg(all(unix, not(target_os = "macos")))]
+use clap_clap::ffi::CLAP_WINDOW_API_X11;
 use clap_clap::{
     events::{InputEvents, OutputEvents},
     ffi::{
@@ -25,9 +23,9 @@ use clap_clap::{
         CLAP_NOTE_DIALECT_MIDI, CLAP_NOTE_EXPRESSION_BRIGHTNESS, CLAP_NOTE_EXPRESSION_PAN,
         CLAP_NOTE_EXPRESSION_PRESSURE, CLAP_NOTE_EXPRESSION_TUNING, CLAP_NOTE_EXPRESSION_VOLUME,
         CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_MONO, CLAP_PLUGIN_FEATURE_STEREO,
-        CLAP_PORT_STEREO, CLAP_PROCESS_CONTINUE, CLAP_VERSION,
-        clap_audio_port_info, clap_host, clap_host_gui, clap_host_params, clap_host_state, clap_id,
-        clap_istream, clap_note_port_info, clap_ostream, clap_plugin, clap_plugin_audio_ports,
+        CLAP_PORT_STEREO, CLAP_PROCESS_CONTINUE, CLAP_VERSION, clap_audio_port_info, clap_host,
+        clap_host_gui, clap_host_params, clap_host_state, clap_id, clap_istream,
+        clap_note_port_info, clap_ostream, clap_plugin, clap_plugin_audio_ports,
         clap_plugin_descriptor, clap_plugin_gui, clap_plugin_note_ports, clap_plugin_params,
         clap_plugin_state, clap_process, clap_process_status, clap_window,
     },
@@ -79,10 +77,6 @@ static DESCRIPTOR: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor {
     description: PLUGIN_DESCRIPTION.as_ptr().cast(),
     features: FEATURES.0.as_ptr(),
 });
-
-// ---------------------------------------------------------------------------
-// Shared state (main thread + audio thread)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 pub struct SharedState {
@@ -254,10 +248,6 @@ impl SharedStateExt<ParamId> for SharedState {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Audio processor (audio thread only)
-// ---------------------------------------------------------------------------
-
 struct AudioProcessor {
     engine: SamplerEngine,
     out_l: Vec<f32>,
@@ -283,14 +273,12 @@ impl AudioProcessor {
             self.out_r.resize(frames, 0.0);
         }
 
-        // Handle param events first.
         apply_param_events(shared, &process.in_events(), sanitize_param_value);
         {
             let mut out_events = process.out_events();
             emit_pending_param_events_to_host(shared, &mut out_events);
         }
 
-        // Apply parameters to engine.
         self.engine
             .set_master_gain(shared.params.get(ParamId::MasterGain) as f32);
         self.engine.set_aeg_params(
@@ -351,9 +339,8 @@ impl AudioProcessor {
             LfoShape::from_u8(shared.params.get(ParamId::Lfo2Shape) as u8),
             shared.params.get(ParamId::Lfo2Enabled) as f32 >= 0.5,
         );
-        self.engine.set_pitch_bend(0.0); // Normalized; updated by MIDI pitch bend events below
+        self.engine.set_pitch_bend(0.0);
 
-        // Handle note / MIDI / expression events.
         let events = process.in_events();
         for i in 0..events.size() {
             let header = unsafe { events.get_unchecked(i) };
@@ -385,11 +372,9 @@ impl AudioProcessor {
                         } else if expr_id == CLAP_NOTE_EXPRESSION_TUNING as u32 {
                             self.engine.set_note_tuning(key, value * 100.0);
                         } else if expr_id == CLAP_NOTE_EXPRESSION_BRIGHTNESS as u32 {
-                            // Timbre
                         } else if expr_id == CLAP_NOTE_EXPRESSION_VOLUME as u32 {
                             self.engine.set_note_volume(key, value);
                         } else if expr_id == CLAP_NOTE_EXPRESSION_PAN as u32 {
-                            // Pan
                         }
                     }
                 }
@@ -410,7 +395,6 @@ impl AudioProcessor {
                                 self.engine.note_off(data[1], channel);
                             }
                             0xB0 => {
-                                // Control Change
                                 let controller = data[1];
                                 let value = data[2];
                                 let normalized = value as f32 / 127.0;
@@ -425,9 +409,8 @@ impl AudioProcessor {
                                 }
                             }
                             0xE0 => {
-                                // Pitch bend: 14-bit value, 8192 = center
                                 let bend_value = ((data[2] as i16) << 7 | (data[1] as i16)) - 8192;
-                                let normalized = bend_value as f32 / 8192.0; // -1.0 to +1.0
+                                let normalized = bend_value as f32 / 8192.0;
                                 self.engine.set_pitch_bend(normalized);
                             }
                             _ => {}
@@ -438,11 +421,9 @@ impl AudioProcessor {
             }
         }
 
-        // Generate audio.
         self.engine
             .process_block(&mut self.out_l[..frames], &mut self.out_r[..frames]);
 
-        // Write to output.
         if process.audio_outputs_count() >= 1 {
             let mut out_port = process.audio_outputs(0);
             let ch_count = out_port.channel_count() as usize;
@@ -463,10 +444,6 @@ impl AudioProcessor {
         CLAP_PROCESS_CONTINUE
     }
 }
-
-// ---------------------------------------------------------------------------
-// Plugin instance
-// ---------------------------------------------------------------------------
 
 struct PluginInstance {
     shared: Arc<SharedState>,
@@ -514,10 +491,6 @@ impl Drop for PluginInstance {
 unsafe fn instance(plugin: *const clap_plugin) -> &'static PluginInstance {
     unsafe { &*(plugin.as_ref().unwrap().plugin_data as *const PluginInstance) }
 }
-
-// ---------------------------------------------------------------------------
-// CLAP plugin callbacks
-// ---------------------------------------------------------------------------
 
 unsafe extern "C-unwind" fn plugin_init(_plugin: *const clap_plugin) -> bool {
     true
@@ -575,10 +548,6 @@ unsafe extern "C-unwind" fn plugin_process(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Audio ports
-// ---------------------------------------------------------------------------
-
 unsafe extern "C-unwind" fn ext_audio_ports_count(
     _plugin: *const clap_plugin,
     is_input: bool,
@@ -612,10 +581,6 @@ static EXT_AUDIO_PORTS: clap_plugin_audio_ports = clap_plugin_audio_ports {
     get: Some(ext_audio_ports_get),
 };
 
-// ---------------------------------------------------------------------------
-// Note ports
-// ---------------------------------------------------------------------------
-
 unsafe extern "C-unwind" fn ext_note_ports_count(
     _plugin: *const clap_plugin,
     is_input: bool,
@@ -646,10 +611,6 @@ static EXT_NOTE_PORTS: clap_plugin_note_ports = clap_plugin_note_ports {
     count: Some(ext_note_ports_count),
     get: Some(ext_note_ports_get),
 };
-
-// ---------------------------------------------------------------------------
-// Params
-// ---------------------------------------------------------------------------
 
 unsafe extern "C-unwind" fn ext_params_count(_plugin: *const clap_plugin) -> u32 {
     ParamId::COUNT as u32
@@ -762,10 +723,6 @@ static EXT_PARAMS: clap_plugin_params = clap_plugin_params {
     flush: Some(ext_params_flush),
 };
 
-// ---------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------
-
 unsafe extern "C-unwind" fn ext_state_save(
     plugin: *const clap_plugin,
     stream: *const clap_ostream,
@@ -810,10 +767,6 @@ static EXT_STATE: clap_plugin_state = clap_plugin_state {
     save: Some(ext_state_save),
     load: Some(ext_state_load),
 };
-
-// ---------------------------------------------------------------------------
-// GUI
-// ---------------------------------------------------------------------------
 
 unsafe extern "C-unwind" fn ext_gui_is_api_supported(
     _plugin: *const clap_plugin,
@@ -1002,10 +955,6 @@ static GUI_EXT: clap_plugin_gui = clap_plugin_gui {
     hide: Some(ext_gui_hide),
 };
 
-// ---------------------------------------------------------------------------
-// Extension getter
-// ---------------------------------------------------------------------------
-
 unsafe extern "C-unwind" fn plugin_get_extension(
     _plugin: *const clap_plugin,
     id: *const c_char,
@@ -1026,18 +975,19 @@ unsafe extern "C-unwind" fn plugin_get_extension(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Factory entry point
-// ---------------------------------------------------------------------------
-
 /// # Safety
-/// Returns a static pointer to the plugin descriptor.
+///
+/// The returned pointer is valid for the lifetime of the program and points to
+/// a static CLAP plugin descriptor.
 pub unsafe fn clap_descriptor_ptr() -> *const clap_plugin_descriptor {
     &DESCRIPTOR.0
 }
 
 /// # Safety
-/// `host` and `plugin_id` must be valid, non-null pointers.
+///
+/// `host` and `plugin_id` must be valid pointers suitable for the CLAP plugin
+/// factory `create_plugin` callback. The returned plugin pointer must be handled
+/// according to the CLAP lifetime rules.
 pub unsafe fn clap_create_plugin(
     host: *const clap_host,
     plugin_id: *const c_char,

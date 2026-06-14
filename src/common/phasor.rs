@@ -1,23 +1,15 @@
-//! Phasor — transport-synced ramp generator for modulation.
-//!
-//! Produces a 0..1 ramp that can be synced to musical divisions,
-//! song position, or voice position.
-
-/// How the phasor is synchronized.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PhasorSync {
-    /// Free-running at a given Hz rate.
     #[default]
     Free,
-    /// Synced to a musical division of the transport tempo.
+
     Tempo,
-    /// Synced to song position (looping 0..1 every N bars).
+
     Song,
-    /// Synced to voice position (0 when note-on, advances while gated).
+
     Voice,
 }
 
-/// Musical divisions for tempo sync.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PhasorDivision {
     Whole = 4,
@@ -29,7 +21,6 @@ pub enum PhasorDivision {
     ThirtySecond = -2,
 }
 
-/// A phasor produces a 0..1 ramp for modulation.
 pub struct Phasor {
     sample_rate: f32,
     phase: f32,
@@ -37,7 +28,7 @@ pub struct Phasor {
     sync: PhasorSync,
     division: PhasorDivision,
     tempo_bpm: f32,
-    /// Whether the phasor is gated (for voice sync).
+
     gated: bool,
 }
 
@@ -83,8 +74,6 @@ impl Phasor {
                 self.increment = hz / self.sample_rate;
             }
             PhasorSync::Song | PhasorSync::Voice => {
-                // These require external transport/voice position input.
-                // For now, fall back to tempo sync.
                 let beats_per_sec = self.tempo_bpm / 60.0;
                 self.increment = beats_per_sec / self.sample_rate;
             }
@@ -99,12 +88,10 @@ impl Phasor {
         self.phase = 0.0;
     }
 
-    /// Advance the phasor by one sample and return the current 0..1 value.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> f32 {
         match self.sync {
             PhasorSync::Voice if !self.gated => {
-                // Hold phase when not gated in voice sync mode.
                 return self.phase;
             }
             _ => {}
@@ -117,13 +104,11 @@ impl Phasor {
         out
     }
 
-    /// Set phase directly from external transport (for Song sync).
     pub fn set_phase_from_song_position(&mut self, beats: f32) {
         let div_mult = 2.0f32.powi(self.division as i32);
         self.phase = (beats * div_mult).fract();
     }
 
-    /// Get current phase (0..1).
     pub fn phase(&self) -> f32 {
         self.phase
     }
@@ -136,8 +121,8 @@ mod tests {
     #[test]
     fn test_phasor_free() {
         let mut p = Phasor::new(48000.0);
-        p.set_rate_hz(1.0); // 1 Hz
-        // After 48000 samples, should have completed one cycle.
+        p.set_rate_hz(1.0);
+
         for _ in 0..48000 {
             p.next();
         }
@@ -150,12 +135,11 @@ mod tests {
         p.set_sync(PhasorSync::Tempo);
         p.set_tempo(120.0);
         p.set_division(PhasorDivision::Quarter);
-        // 120 BPM = 2 beats/sec = 2 Hz for quarter notes.
-        // After 48000 samples (1 sec), should have completed 2 cycles.
+
         for _ in 0..48000 {
             p.next();
         }
-        // Allow some floating point drift.
+
         assert!(p.phase() < 0.01 || p.phase() > 0.99);
     }
 
@@ -166,14 +150,12 @@ mod tests {
         p.set_rate_hz(1.0);
         p.set_gated(true);
 
-        // Advance 100 samples while gated.
         for _ in 0..100 {
             p.next();
         }
         let phase_gated = p.phase();
         assert!(phase_gated > 0.0);
 
-        // Stop gating — phase should freeze.
         p.set_gated(false);
         for _ in 0..100 {
             p.next();

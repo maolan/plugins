@@ -54,8 +54,6 @@ pub enum ParentWindowHandle {
     Win32(*mut std::ffi::c_void),
 }
 
-// ─── Iced app ───
-
 struct State {
     shared: Arc<SharedState>,
 }
@@ -151,8 +149,6 @@ fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {
         .theme(theme)
         .run()
 }
-
-// ─── GuiBridge ───
 
 #[derive(Default)]
 pub struct GuiBridge {

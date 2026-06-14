@@ -1,5 +1,3 @@
-//! State-variable filter (SVF) — low-pass, band-pass, high-pass.
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum FilterType {
@@ -18,9 +16,6 @@ impl FilterType {
     }
 }
 
-/// State-variable filter (Chamberlin / improved by Vadim Zavalishin).
-/// Processes one sample at a time.  cutoff_hz and q are updated per-sample
-/// if driven by envelopes.
 #[derive(Debug, Clone, Copy)]
 pub struct SvfFilter {
     ic1eq: f32,
@@ -101,7 +96,6 @@ impl SvfFilter {
         self.a3 = a3;
     }
 
-    /// Process one sample, returning the filtered output according to `filter_type`.
     #[inline]
     pub fn process(&mut self, x: f32) -> f32 {
         let v3 = x - self.ic2eq;
@@ -116,7 +110,6 @@ impl SvfFilter {
         }
     }
 
-    /// Process a block, updating coefficients per-sample from `cutoff_env` and `q_env`.
     pub fn process_block_modulated(&mut self, buf: &mut [f32], cutoff_env: &[f32], q_env: &[f32]) {
         let sr = self.sample_rate;
         for (i, s) in buf.iter_mut().enumerate() {

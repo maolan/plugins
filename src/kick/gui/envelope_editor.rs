@@ -1,5 +1,3 @@
-//! Interactive Bézier envelope editor canvas.
-
 use maolan_baseview::iced::{
     Color, Point, Rectangle, Theme,
     mouse::{self, Cursor},
@@ -10,13 +8,12 @@ use crate::kick::dsp::envelope::Envelope;
 
 #[derive(Debug, Clone)]
 pub enum EnvelopeEditorMsg {
-    /// Point index, new normalized t, new normalized v
     PointMoved(usize, f32, f32),
-    /// Point index, is_left_cp, new cp_t, new cp_v
+
     ControlPointMoved(usize, bool, f32, f32),
-    /// New point at normalized t, v
+
     PointAdded(f32, f32),
-    /// Remove point at index
+
     PointRemoved(usize),
 }
 
@@ -26,7 +23,7 @@ pub struct EnvelopeEditor {
 
 pub struct EnvelopeEditorState {
     pub dragging_point: Option<usize>,
-    pub dragging_cp: Option<(usize, bool)>, // (point_idx, is_left_cp)
+    pub dragging_cp: Option<(usize, bool)>,
     pub hover_point: Option<usize>,
     pub zoom_x: f32,
     pub offset_x: f32,
@@ -92,7 +89,6 @@ impl EnvelopeEditor {
 
                 let p_end = self.env_to_screen(state, curr.t, curr.v, width, height);
 
-                // Control points
                 let cp0_t = prev.t + prev.cp_t * dt;
                 let cp0_v = prev.v + prev.cp_v;
                 let cp1_t = curr.t - curr.cp_t * dt;
@@ -156,7 +152,6 @@ impl EnvelopeEditor {
             let p = &points[i];
             let parent = self.env_to_screen(state, p.t, p.v, width, height);
 
-            // Left control point (from previous segment)
             if i > 0 {
                 let prev = &points[i - 1];
                 let dt = p.t - prev.t;
@@ -183,7 +178,6 @@ impl EnvelopeEditor {
                 frame.fill(&circle, color);
             }
 
-            // Right control point (for next segment)
             if i + 1 < points.len() {
                 let next = &points[i + 1];
                 let dt = next.t - p.t;
@@ -248,7 +242,6 @@ impl EnvelopeEditor {
         for i in 0..points.len() {
             let p = &points[i];
 
-            // Left CP
             if i > 0 {
                 let prev = &points[i - 1];
                 let dt = p.t - prev.t;
@@ -262,7 +255,6 @@ impl EnvelopeEditor {
                 }
             }
 
-            // Right CP
             if i + 1 < points.len() {
                 let next = &points[i + 1];
                 let dt = next.t - p.t;
@@ -295,14 +287,12 @@ impl Program<EnvelopeEditorMsg> for EnvelopeEditor {
         let width = bounds.width;
         let height = bounds.height;
 
-        // Background
         frame.fill_rectangle(
             Point::new(0.0, 0.0),
             maolan_baseview::iced::Size::new(width, height),
             Color::from_rgb(0.08, 0.08, 0.10),
         );
 
-        // Grid
         for i in 1..5 {
             let y = height * i as f32 / 5.0;
             let line = Path::line(Point::new(0.0, y), Point::new(width, y));
@@ -328,7 +318,6 @@ impl Program<EnvelopeEditorMsg> for EnvelopeEditor {
         self.draw_control_points(_state, &mut frame, width, height);
         self.draw_points(_state, &mut frame, width, height);
 
-        // Label
         frame.fill_text(Text {
             content: "Envelope".to_string(),
             position: Point::new(8.0, 14.0),
@@ -353,7 +342,6 @@ impl Program<EnvelopeEditorMsg> for EnvelopeEditor {
                 mouse::Button::Left,
             )) => {
                 if let Some(position) = cursor.position_in(bounds) {
-                    // Check control points first (smaller, on top)
                     if let Some((idx, is_left)) = self.hit_test_control_point(
                         state,
                         position.x,
@@ -364,7 +352,7 @@ impl Program<EnvelopeEditorMsg> for EnvelopeEditor {
                         state.dragging_cp = Some((idx, is_left));
                         return Some(CanvasAction::request_redraw().and_capture());
                     }
-                    // Then check main points
+
                     if let Some(idx) = self.hit_test_point(
                         state,
                         position.x,
@@ -375,7 +363,7 @@ impl Program<EnvelopeEditorMsg> for EnvelopeEditor {
                         state.dragging_point = Some(idx);
                         return Some(CanvasAction::request_redraw().and_capture());
                     }
-                    // Add new point
+
                     let (t, v) = self.screen_to_env(
                         state,
                         position.x,
@@ -414,7 +402,6 @@ impl Program<EnvelopeEditorMsg> for EnvelopeEditor {
             }
             maolan_baseview::iced::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 if let Some(position) = cursor.position_in(bounds) {
-                    // Update hover
                     let hover = self.hit_test_point(
                         state,
                         position.x,
@@ -427,7 +414,6 @@ impl Program<EnvelopeEditorMsg> for EnvelopeEditor {
                         return Some(CanvasAction::request_redraw());
                     }
 
-                    // Handle dragging
                     if let Some(idx) = state.dragging_point {
                         let (t, v) = self.screen_to_env(
                             state,

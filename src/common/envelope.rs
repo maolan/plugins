@@ -1,9 +1,5 @@
 #![allow(dead_code)]
 
-//! ADSR envelope generator.
-//!
-//! Based on Surge XT's digital envelope model with exponential segments.
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EnvelopeMode {
     Digital,
@@ -77,7 +73,6 @@ pub struct AdsrEnvelope {
     gated_release: bool,
     correct_analog_mode: bool,
 
-    // State
     phase: f32,
     decay_phase: f32,
     release_phase: f32,
@@ -115,7 +110,6 @@ impl AdsrEnvelope {
         }
     }
 
-    /// Current envelope output without advancing.
     pub fn value(&self) -> f32 {
         self.output
     }
@@ -212,7 +206,7 @@ impl AdsrEnvelope {
                 self.phase = 0.0;
                 self.decay_phase = 0.0;
                 self.release_phase = 0.0;
-                // Scale phase so attack continues from current level
+
                 if self.output > 0.0 && self.attack > 0.0 {
                     self.phase = self.output.clamp(0.0, 1.0);
                 }
@@ -229,7 +223,6 @@ impl AdsrEnvelope {
         }
     }
 
-    /// Process one sample and return the envelope value.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> f32 {
         let beat_to_sec = |beats: f32| -> f32 {
@@ -244,13 +237,11 @@ impl AdsrEnvelope {
         let release = beat_to_sec(self.release);
 
         if self.gate || (self.gated_release && !self.released) {
-            // Attack phase
             if self.phase < 1.0 {
                 if attack <= 0.0 {
                     self.phase = 1.0;
                     self.output = 1.0;
                 } else if self.mode == EnvelopeMode::Analog {
-                    // Capacitor charging model: exponential approach to 1.0
                     let time_const = if self.correct_analog_mode { 7.0 } else { 5.0 };
                     let attack_coef = 1.0 - (-time_const / (attack * self.sample_rate)).exp();
                     self.output += (1.0 - self.output) * attack_coef;
@@ -269,7 +260,6 @@ impl AdsrEnvelope {
                     }
                 }
             } else {
-                // Decay phase
                 let decay_rate = if decay > 0.0 {
                     1.0 / (decay * self.sample_rate)
                 } else {
@@ -277,12 +267,10 @@ impl AdsrEnvelope {
                 };
                 let target = self.sustain;
                 if self.mode == EnvelopeMode::Analog {
-                    // Exponential decay toward sustain
                     let time_const = if self.correct_analog_mode { 7.0 } else { 5.0 };
                     let coef = (-decay_rate * time_const).exp();
                     self.output = target + (self.output - target) * coef;
                 } else {
-                    // Digital mode with curve shaping
                     self.decay_phase += decay_rate;
                     if self.decay_phase >= 1.0 {
                         self.decay_phase = 1.0;
@@ -294,7 +282,6 @@ impl AdsrEnvelope {
                 }
             }
         } else if self.released {
-            // Release phase
             if self.release <= 0.0 || self.output <= 0.0 {
                 self.output = 0.0;
                 self.released = false;
@@ -312,7 +299,6 @@ impl AdsrEnvelope {
                     };
                     self.output *= coef;
                 } else {
-                    // Digital mode with curve shaping
                     let effective_rate = if use_uber {
                         release_rate * uber_mul
                     } else {
@@ -334,7 +320,6 @@ impl AdsrEnvelope {
         self.output
     }
 
-    /// Process a block of samples into `out`.
     #[allow(dead_code)]
     pub fn process_block(&mut self, out: &mut [f32]) {
         for sample in out.iter_mut() {

@@ -1,10 +1,5 @@
 #![allow(dead_code)]
 
-//! Polyphonic voice engine.
-//!
-//! Manages voice allocation, stealing, and mixing.
-//! Supports polyphonic, monophonic, legato, and latch modes.
-
 use super::{Lfo, MtsEspClient, PlayMode, StealMode, Voice, VoiceParams, VoicePriority};
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -88,7 +83,7 @@ impl SynthEngine {
             voice.set_params(&self.params);
             voice.set_mts_esp(self.mts_esp.clone());
         }
-        // Configure scene LFOs from params
+
         let scene_lfos = [
             (&mut self.scene_lfo1, &self.params.scene_lfo1),
             (&mut self.scene_lfo2, &self.params.scene_lfo2),
@@ -134,11 +129,8 @@ impl SynthEngine {
             return;
         }
 
-        // Repeated key mode: if note is already playing, either retrigger (default)
-        // or stack a new voice (when PolyRepeatedKeyMode is enabled)
         if let Some(idx) = self.find_voice_playing_note(note) {
             if self.params.poly_repeated_key_mode {
-                // Stack: steal a voice instead of retriggering existing
                 if let Some(steal_idx) = self.find_voice_to_steal() {
                     self.voices[steal_idx].trigger(note, velocity);
                 }
@@ -154,7 +146,6 @@ impl SynthEngine {
     }
 
     fn trigger_mono(&mut self, note: u8, velocity: f32, legato: bool) {
-        // In mono modes, use voice 0 exclusively
         if self.voices.is_empty() {
             return;
         }
@@ -163,7 +154,6 @@ impl SynthEngine {
         let was_active = voice.is_active();
 
         if legato && was_active && voice.gate {
-            // Legato: don't retrigger envelopes, just change pitch
             voice.note = note;
             voice.velocity = velocity;
             voice.target_freq = note_to_freq(note, &self.mts_esp);
@@ -174,7 +164,6 @@ impl SynthEngine {
     }
 
     fn trigger_mono_single_trigger(&mut self, note: u8, velocity: f32) {
-        // Single Trigger: same as Mono but no retrigger if gate is still high
         if self.voices.is_empty() {
             return;
         }
@@ -190,7 +179,6 @@ impl SynthEngine {
     }
 
     fn trigger_mono_fingered_portamento(&mut self, note: u8, velocity: f32) {
-        // Fingered Portamento: portamento only between held notes, no new trigger on overlap
         if self.voices.is_empty() {
             return;
         }
@@ -208,7 +196,6 @@ impl SynthEngine {
     pub fn release(&mut self, note: u8, velocity: f32) {
         self.held_notes.retain(|&n| n != note);
 
-        // Sustain pedal: hold voices when sustain > 0.5
         let sustain_active = self.params.sustain > 0.5;
 
         match self.params.play_mode {
@@ -242,7 +229,6 @@ impl SynthEngine {
             PlayMode::Mono => self.release_mono(note, false, velocity, sustain_active),
             PlayMode::MonoLegato => self.release_mono(note, true, velocity, sustain_active),
             PlayMode::MonoLatch => {
-                // In latch mode, note off only releases if no notes held
                 if self.held_notes.is_empty() && !sustain_active {
                     self.release_mono(note, false, velocity, false);
                 } else if sustain_active && !self.sustained_notes.contains(&note) {
@@ -281,7 +267,6 @@ impl SynthEngine {
         }
 
         if legato && !self.held_notes.is_empty() {
-            // Retrigger to the next note based on priority
             let next_note = self.select_priority_note();
             let voice = &mut self.voices[0];
             if voice.gate {
@@ -297,7 +282,6 @@ impl SynthEngine {
     }
 
     fn trigger_poly_reuse_single(&mut self, note: u8, velocity: f32) {
-        // If note is already gated, retrigger that voice instead of stacking
         if let Some(idx) = self.find_voice_playing_note(note) {
             self.voices[idx].trigger(note, velocity);
             return;
@@ -312,7 +296,6 @@ impl SynthEngine {
     }
 
     fn trigger_poly_stack_multiple(&mut self, note: u8, velocity: f32) {
-        // Always allocate a new voice, never reuse — allows polyphonic unison
         if let Some(idx) = self.find_inactive_voice() {
             self.voices[idx].trigger(note, velocity);
             return;
@@ -323,7 +306,6 @@ impl SynthEngine {
     }
 
     fn release_poly_stack_multiple(&mut self, note: u8, velocity: f32) {
-        // Release only the most recently triggered voice for this note (LIFO)
         if let Some(idx) = self.voices.iter().rposition(|v| v.note == note && v.gate) {
             self.voices[idx].params.release_velocity = velocity;
             self.voices[idx].release();
@@ -446,7 +428,7 @@ impl SynthEngine {
         for voice in &mut self.voices {
             voice.params.sustain = self.params.sustain;
         }
-        // Sustain released: stop all sustained voices
+
         if old_sustain > 0.5 && self.params.sustain <= 0.5 {
             let sustained = std::mem::take(&mut self.sustained_notes);
             for note in sustained {
@@ -548,7 +530,6 @@ impl SynthEngine {
         let mut temp_l = vec![0.0f32; frames];
         let mut temp_r = vec![0.0f32; frames];
 
-        // Compute scene LFO outputs (once per block approximation)
         let scene_lfo_outputs = [
             self.scene_lfo1.next(),
             self.scene_lfo2.next(),
@@ -558,7 +539,6 @@ impl SynthEngine {
             self.scene_lfo6.next(),
         ];
 
-        // Compute key-based modulation sources from held/sustained notes
         let all_notes: Vec<u8> = self
             .held_notes
             .iter()
@@ -617,7 +597,6 @@ impl SynthEngine {
                 Some(oldest_idx)
             }
             StealMode::ReleasedFirst => {
-                // First, try to find a voice in release phase (not gated but still sounding)
                 let mut released_idx = None;
                 let mut released_counter = usize::MAX;
                 for (idx, voice) in self.voices.iter().enumerate() {
@@ -629,7 +608,7 @@ impl SynthEngine {
                 if released_idx.is_some() {
                     return released_idx;
                 }
-                // Fall back to oldest voice
+
                 let mut oldest_idx = 0;
                 let mut oldest_counter = usize::MAX;
                 for (idx, voice) in self.voices.iter().enumerate() {

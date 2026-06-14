@@ -125,10 +125,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
     Task::none()
 }
 
-// ---------------------------------------------------------------------------
-// Layout helpers
-// ---------------------------------------------------------------------------
-
 fn small_knob<'a>(
     id: ParamId,
     label: &'a str,
@@ -204,14 +200,7 @@ fn knob_row<'a>(items: Vec<Element<'a, Message>>) -> Element<'a, Message> {
     r.into()
 }
 
-// ---------------------------------------------------------------------------
-// Main view – organised like Shortcircuit XT
-// ---------------------------------------------------------------------------
-
 fn view(state: &State) -> Element<'_, Message> {
-    // -----------------------------------------------------------------------
-    // Top bar: Master + Pitch
-    // -----------------------------------------------------------------------
     let top_bar = row![
         panel(
             "Master",
@@ -231,9 +220,6 @@ fn view(state: &State) -> Element<'_, Message> {
     .spacing(10)
     .align_y(Alignment::Start);
 
-    // -----------------------------------------------------------------------
-    // Middle row: Amp EG + Filter + Filter EG
-    // -----------------------------------------------------------------------
     let amp_eg = panel(
         "Amp EG",
         knob_row(vec![
@@ -269,9 +255,6 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(10)
         .align_y(Alignment::Start);
 
-    // -----------------------------------------------------------------------
-    // EG row: EG2 EG3 EG4 EG5
-    // -----------------------------------------------------------------------
     let eg2 = panel(
         "EG 2",
         knob_row(vec![
@@ -316,9 +299,6 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(10)
         .align_y(Alignment::Start);
 
-    // -----------------------------------------------------------------------
-    // Bottom: LFOs
-    // -----------------------------------------------------------------------
     let lfo1 = panel(
         "LFO 1",
         knob_row(vec![
@@ -341,9 +321,6 @@ fn view(state: &State) -> Element<'_, Message> {
 
     let lfo_row = row![lfo1, lfo2].spacing(10).align_y(Alignment::Start);
 
-    // -----------------------------------------------------------------------
-    // Root
-    // -----------------------------------------------------------------------
     let content = column![top_bar, middle_row, eg_row, lfo_row]
         .spacing(12)
         .padding(16)

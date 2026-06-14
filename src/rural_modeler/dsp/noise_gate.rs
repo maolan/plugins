@@ -9,7 +9,6 @@ enum GateState {
     Holding,
 }
 
-/// Noise gate trigger parameters, matching the NAM C++ reference defaults.
 #[derive(Debug, Clone, Copy)]
 pub struct TriggerParams {
     pub time: f32,
@@ -31,13 +30,6 @@ impl Default for TriggerParams {
     }
 }
 
-/// Part 1 of the noise gate: listens to incoming audio and computes gain
-/// reduction per sample. The gain is applied later by [`NoiseGateGain`].
-/// This matches the C++ NAM reference design where the trigger runs on the
-/// clean input (before the amp model) and the gain stage runs after.
-///
-/// Supports multi-channel audio with per-channel state vectors, matching
-/// `dsp::noise_gate::Trigger` from the C++ reference.
 #[derive(Debug, Clone)]
 pub struct NoiseGateTrigger {
     sample_rate: f32,
@@ -109,11 +101,6 @@ impl NoiseGateTrigger {
         self.gain_reduction_db.resize(num_channels, Vec::new());
     }
 
-    /// Process a block of samples and store the per-sample gain reduction
-    /// (in dB) internally per channel. Access it with [`gain_reduction_db`].
-    ///
-    /// `inputs` is indexed as `[channel][frame]`, matching the C++
-    /// `DSP_SAMPLE**` convention.
     pub fn process_block(&mut self, inputs: &[&[f32]], threshold: f32) {
         let num_channels = inputs.len();
         let num_frames = inputs.first().map(|c| c.len()).unwrap_or(0);
@@ -187,22 +174,15 @@ impl NoiseGateTrigger {
         }
     }
 
-    /// Convenience overload for mono input.
     pub fn process_block_mono(&mut self, input: &[f32], threshold: f32) {
         self.process_block(&[input], threshold);
     }
 
-    /// Gain reduction computed during the last process call.
-    /// Returns `[channel][frame]`.
     pub fn gain_reduction_db(&self) -> &[Vec<f32>] {
         &self.gain_reduction_db
     }
 }
 
-/// Part 2 of the noise gate: applies gain reduction computed by a
-/// [`NoiseGateTrigger`] to an audio signal. In the NAM reference this runs
-/// **after** the amp model so that the gate detects on the clean input but
-/// attenuates the distorted output.
 #[derive(Debug, Clone, Default)]
 pub struct NoiseGateGain {
     gain_reduction_db: Vec<Vec<f32>>,
@@ -210,8 +190,6 @@ pub struct NoiseGateGain {
 }
 
 impl NoiseGateGain {
-    /// Set the gain reduction buffer from a trigger. This mirrors the C++
-    /// `noise_gate::Gain::SetGainReductionDB` listener pattern.
     pub fn set_gain_reduction_db(&mut self, gain_reduction_db: &[Vec<f32>]) {
         self.num_channels = gain_reduction_db.len();
         if self.gain_reduction_db.len() < self.num_channels {
@@ -225,8 +203,6 @@ impl NoiseGateGain {
         }
     }
 
-    /// Apply the stored gain reduction to a multi-channel block in-place.
-    /// `blocks` is indexed as `[channel][frame]`.
     pub fn apply_blocks(&self, blocks: &mut [&mut [f32]]) {
         for c in 0..blocks.len().min(self.num_channels) {
             let block = &mut blocks[c];
@@ -243,7 +219,6 @@ impl NoiseGateGain {
         }
     }
 
-    /// Convenience overload for a single mono block.
     pub fn apply_block(&self, block: &mut [f32]) {
         self.apply_blocks(&mut [block]);
     }

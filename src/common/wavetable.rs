@@ -1,12 +1,3 @@
-//! Wavetable loading and storage.
-//!
-//! Supports Surge XT's .wt file format:
-//! - Tag: 'vawt' (big-endian text)
-//! - wave_size: u32 LE (power of 2, 2-4096)
-//! - wave_count: u16 LE (1-512)
-//! - flags: u16 LE
-//! - data: float32 or int16
-
 use std::io::Read;
 
 pub const MAX_WTABLE_SIZE: usize = 4096;
@@ -26,9 +17,9 @@ pub struct Wavetable {
     pub is_full16: bool,
     pub has_metadata: bool,
     pub metadata: Option<String>,
-    /// [frame][sample] interleaved float data
+
     pub frames: Vec<Vec<f32>>,
-    /// Mipmaps: [level][frame][sample]
+
     pub mipmaps: Vec<Vec<Vec<f32>>>,
 }
 
@@ -53,7 +44,6 @@ impl Default for Wavetable {
 }
 
 impl Wavetable {
-    /// Load a .wt file from raw bytes.
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
         if bytes.len() < 12 {
             return None;
@@ -133,7 +123,7 @@ impl Wavetable {
             };
             if bytes.len() > data_end {
                 let meta_bytes = &bytes[data_end..];
-                // Find null terminator
+
                 let mut end = meta_bytes.len();
                 for (i, &b) in meta_bytes.iter().enumerate() {
                     if b == 0 {
@@ -172,7 +162,6 @@ impl Wavetable {
         Some(wt)
     }
 
-    /// Load from a file path.
     pub fn from_file(path: &str) -> Option<Self> {
         let mut file = std::fs::File::open(path).ok()?;
         let mut bytes = Vec::new();
@@ -202,8 +191,6 @@ impl Wavetable {
         self.mipmaps = levels;
     }
 
-    /// Get the appropriate mipmap level for a given playback rate.
-    /// `rate` is phase increment per sample (0..1).
     pub fn select_mipmap(&self, rate: f32) -> usize {
         let mut level = 0;
         let mut threshold = 0.5;
@@ -214,7 +201,6 @@ impl Wavetable {
         level
     }
 
-    /// Read a sample from a specific frame and mipmap with linear interpolation.
     pub fn read(&self, frame: usize, phase: f32, mipmap: usize) -> f32 {
         let mipmap = mipmap.min(self.mipmaps.len().saturating_sub(1));
         let frame = frame.min(self.n_tables.saturating_sub(1));
@@ -233,7 +219,6 @@ impl Wavetable {
         data[idx % size] * (1.0 - frac) + data[idx2] * frac
     }
 
-    /// Read with 4-point cubic interpolation for higher quality.
     pub fn read_cubic(&self, frame: usize, phase: f32, mipmap: usize) -> f32 {
         let mipmap = mipmap.min(self.mipmaps.len().saturating_sub(1));
         let frame = frame.min(self.n_tables.saturating_sub(1));
@@ -258,7 +243,6 @@ impl Wavetable {
         let y2 = data[i2];
         let y3 = data[i3];
 
-        // Catmull-Rom cubic interpolation
         let frac2 = frac * frac;
         let frac3 = frac2 * frac;
 
@@ -270,7 +254,6 @@ impl Wavetable {
         a0 * frac3 + a1 * frac2 + a2 * frac + a3
     }
 
-    /// Read with crossfade between two frames.
     pub fn read_morph(&self, frame: f32, phase: f32, mipmap: usize) -> f32 {
         let frame_a = frame as usize;
         let frame_b = (frame_a + 1).min(self.n_tables.saturating_sub(1));

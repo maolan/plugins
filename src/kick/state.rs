@@ -1,5 +1,3 @@
-//! Full kit state serialization.
-
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -187,7 +185,7 @@ pub struct OscillatorConfig {
     #[serde(default)]
     pub distortion_drive: f32,
     #[serde(default)]
-    pub sample_data: Option<String>, // base64 encoded sample, or file path
+    pub sample_data: Option<String>,
     #[serde(default)]
     pub sample_rate: f32,
     #[serde(default)]
@@ -438,7 +436,6 @@ impl KitState {
             if let Some(&value) = self.params.get(&key) {
                 params.set(id, sanitize_param_value(id, value));
             } else {
-                // Backward compatibility: try bare base_name (old format only had instrument 0)
                 let ty = id.param_type();
                 let def = param_type_def(ty);
                 let legacy_key = def.base_name.to_string();
@@ -474,7 +471,6 @@ impl KitState {
     }
 }
 
-// Helpers to convert between SerdeEnvelope and DSP Envelope
 impl From<&SerdeEnvelope> for Envelope {
     fn from(se: &SerdeEnvelope) -> Self {
         let points: Vec<EnvPoint> = se

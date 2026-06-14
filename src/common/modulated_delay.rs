@@ -1,6 +1,3 @@
-/// Modulated delay line for subtle chorus-style pitch shift.
-/// Uses a sine LFO to sweep delay time, creating ~3-cent pitch modulation
-/// at 0.5 Hz with 0.5 ms depth (default). Fully mono-compatible.
 #[derive(Debug, Clone)]
 pub struct ModulatedDelay {
     buffer: Vec<f64>,

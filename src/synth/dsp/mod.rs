@@ -1,14 +1,3 @@
-//! DSP core for Maolan Synth.
-//!
-//! Ports key Surge XT synthesis concepts to Rust:
-//! - Multi-oscillator voices with unison and FM routing
-//! - Multiple filter types (SVF, Comb, Ladder, K35, Allpass)
-//! - ADSR envelopes
-//! - LFO modulation with step sequencer and tempo sync
-//! - Polyphonic voice management with mono/legato/latch modes
-//! - Full modulation matrix with programmable routings
-//! - Noise generator, waveshaper, flavor filter
-
 mod engine;
 mod oscillator;
 mod twist;

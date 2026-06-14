@@ -1,9 +1,3 @@
-//! Maolan Kick — expanded kick drum synthesizer DSP core.
-//!
-//! Architecture: offline synthesis model (same as geonkick).
-//! Each instrument renders into its own double-buffered buffer.
-//! The audio thread mixes active instruments to stereo output.
-
 pub mod distortion;
 pub mod envelope;
 pub mod filter;
@@ -25,16 +19,11 @@ use filter::SvfFilter;
 use noise::NoiseGenerator;
 use oscillator::Oscillator;
 
-// ---------------------------------------------------------------------------
-// Layer
-// ---------------------------------------------------------------------------
-
 pub const OSCILLATORS_PER_LAYER: usize = 3;
 pub const LAYERS_PER_INSTRUMENT: usize = 3;
 pub const INSTRUMENTS_PER_KIT: usize = 16;
-const MAX_SAMPLES: usize = 192_000 * 4; // 4 seconds @ 48kHz
+const MAX_SAMPLES: usize = 192_000 * 4;
 
-/// A single synthesis layer with 3 oscillators + noise.
 #[derive(Clone)]
 pub struct Layer {
     pub oscillators: [Oscillator; OSCILLATORS_PER_LAYER],
@@ -46,7 +35,7 @@ pub struct Layer {
     pub filter_cutoff_hz: f32,
     pub filter_q: f32,
     pub distortion: Distortion,
-    pub fm_routing: [u8; OSCILLATORS_PER_LAYER], // osc i receives FM from osc fm_routing[i]
+    pub fm_routing: [u8; OSCILLATORS_PER_LAYER],
 }
 
 impl Layer {
@@ -83,7 +72,6 @@ impl Layer {
             return;
         }
 
-        // Render each oscillator
         let mut osc_bufs: [Vec<f32>; OSCILLATORS_PER_LAYER] = [
             vec![0.0; num_samples],
             vec![0.0; num_samples],
@@ -103,23 +91,19 @@ impl Layer {
             self.oscillators[i].render(buf, num_samples, fm_input);
         }
 
-        // Mix oscillators
         out[..num_samples].fill(0.0);
         for buf in &osc_bufs {
             simd::add_inplace(out, buf);
         }
 
-        // Render noise
         let mut noise_buf = vec![0.0f32; num_samples];
         self.noise.render(&mut noise_buf, num_samples);
         simd::add_inplace(out, &noise_buf);
 
-        // Apply layer filter
         self.filter.filter_type = self.filter_type;
         self.filter.set_params(self.filter_cutoff_hz, self.filter_q);
         self.filter.process_block(out);
 
-        // Apply layer distortion (with volume envelope modulation)
         let mut dist_vol_buf = vec![0.0f32; num_samples];
         self.distortion
             .volume_env
@@ -127,16 +111,11 @@ impl Layer {
         self.distortion
             .process_block_modulated(out, None, Some(&dist_vol_buf));
 
-        // Apply layer amplitude
         if (self.amplitude - 1.0).abs() > 1.0e-6 {
             crate::kick::simd_kick::mul_gain_inplace(out, self.amplitude);
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Instrument
-// ---------------------------------------------------------------------------
 
 #[derive(Clone)]
 pub struct Instrument {
@@ -226,13 +205,11 @@ impl Instrument {
             simd::add_inplace(&mut mix, &layer_buf);
         }
 
-        // Apply master filter
         self.master_filter.filter_type = self.master_filter_type;
         self.master_filter
             .set_params(self.master_filter_cutoff_hz, self.master_filter_q);
         self.master_filter.process_block(&mut mix);
 
-        // Apply master distortion (with volume envelope modulation)
         let mut dist_vol_buf = vec![0.0f32; num_samples];
         self.master_distortion
             .volume_env
@@ -240,30 +217,22 @@ impl Instrument {
         self.master_distortion
             .process_block_modulated(&mut mix, None, Some(&dist_vol_buf));
 
-        // Apply global amp envelope
         let dt = 1.0 / num_samples.max(1) as f32;
         let mut env_buf = vec![0.0f32; num_samples];
         self.global_amp_env.fill_buffer(&mut env_buf, dt);
         simd::mul_per_sample_inplace(&mut mix, &env_buf);
 
-        // Apply output gain
         let gain_lin = db_to_linear(self.output_gain_db);
         if (gain_lin - 1.0).abs() > 1.0e-6 {
             crate::kick::simd_kick::mul_gain_inplace(&mut mix, gain_lin);
         }
 
-        // Apply master limiter (last in chain)
         self.master_limiter.process_block(&mut mix);
 
-        // Copy to stereo (mono center)
         buf_l[..num_samples].copy_from_slice(&mix);
         buf_r[..num_samples].copy_from_slice(&mix);
     }
 }
-
-// ---------------------------------------------------------------------------
-// Kit
-// ---------------------------------------------------------------------------
 
 #[derive(Clone)]
 pub struct Kit {
@@ -303,10 +272,6 @@ impl Kit {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Playback state per instrument
-// ---------------------------------------------------------------------------
-
 #[derive(Clone)]
 struct InstrumentPlayback {
     active_buffer: usize,
@@ -334,16 +299,11 @@ impl Default for InstrumentPlayback {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Synthesizer
-// ---------------------------------------------------------------------------
-
-/// Double-buffered kit synthesizer with stereo output.
 #[derive(Clone)]
 pub struct KickSynthesizer {
     pub kit: Kit,
     pub sample_rate: f32,
-    // Per-instrument double buffers: [instrument][buffer][channel][samples]
+
     buffers_l: [[Vec<f32>; 2]; INSTRUMENTS_PER_KIT],
     buffers_r: [[Vec<f32>; 2]; INSTRUMENTS_PER_KIT],
     playback: [InstrumentPlayback; INSTRUMENTS_PER_KIT],
@@ -362,8 +322,6 @@ impl KickSynthesizer {
         }
     }
 
-    /// Trigger an instrument.  Call from any thread; synthesis happens immediately
-    /// and the buffer is atomically swapped for playback.
     pub fn trigger(&mut self, instrument_idx: usize, note: u8, velocity: f32) {
         if instrument_idx >= INSTRUMENTS_PER_KIT {
             return;
@@ -385,7 +343,6 @@ impl KickSynthesizer {
 
         inst.reset();
 
-        // Humanize velocity
         let vel = if self.kit.humanizer_velocity > 0.0 {
             let var = rand::random::<f32>() * 2.0 * self.kit.humanizer_velocity
                 - self.kit.humanizer_velocity;
@@ -394,16 +351,13 @@ impl KickSynthesizer {
             velocity.clamp(0.0, 1.0)
         };
 
-        // Apply velocity scaling during render
         inst.render(buf_l, buf_r, num_samples, note);
 
-        // Apply velocity
         if vel < 1.0 {
             crate::kick::simd_kick::mul_gain_inplace(buf_l, vel);
             crate::kick::simd_kick::mul_gain_inplace(buf_r, vel);
         }
 
-        // Hard limit
         crate::kick::simd_kick::clip_inplace(buf_l, 1.0);
         crate::kick::simd_kick::clip_inplace(buf_r, 1.0);
 
@@ -415,7 +369,6 @@ impl KickSynthesizer {
         pb.velocity = vel;
     }
 
-    /// Release (note-off) an instrument.
     pub fn release(&mut self, instrument_idx: usize) {
         if instrument_idx >= INSTRUMENTS_PER_KIT {
             return;
@@ -434,7 +387,6 @@ impl KickSynthesizer {
         pb.release_start_gain = 1.0;
     }
 
-    /// Read `frames` samples of stereo master mix into `out_l` and `out_r`.
     #[allow(dead_code)]
     pub fn read(&mut self, out_l: &mut [f32], out_r: &mut [f32]) {
         let frames = out_l.len().min(out_r.len());
@@ -502,8 +454,6 @@ impl KickSynthesizer {
         }
     }
 
-    /// Read a single instrument's output into `out_l`/`out_r`, advancing its playback state.
-    /// Returns true if the instrument was playing.
     pub fn read_instrument(
         &mut self,
         inst_idx: usize,
@@ -578,7 +528,6 @@ impl KickSynthesizer {
         true
     }
 
-    /// Copy the first active instrument buffer into `dst` for display.
     pub fn copy_active_buffer(&self, dst_l: &mut [f32], dst_r: &mut [f32]) -> usize {
         for inst_idx in 0..INSTRUMENTS_PER_KIT {
             let pb = &self.playback[inst_idx];
@@ -635,7 +584,7 @@ mod tests {
         let mut synth2 = KickSynthesizer::new(48000.0);
         synth1.kit.instruments[0].length_ms = 10.0;
         synth2.kit.instruments[0].length_ms = 10.0;
-        // Disable noise and extra oscillators so only one oscillator contributes
+
         for inst in [
             &mut synth1.kit.instruments[0],
             &mut synth2.kit.instruments[0],
@@ -730,7 +679,6 @@ mod tests {
         let mut out_r = vec![0.0f32; 48000];
         synth.read(&mut out_l, &mut out_r);
 
-        // After release, the signal should decay to zero within the decay time
         let decay_samples = (10.0 * 0.001 * 48000.0) as usize + 100;
         let tail = &out_l[decay_samples..];
         let max_tail = tail.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
@@ -764,7 +712,7 @@ mod tests {
     fn limiter_reduces_peak() {
         let mut synth = KickSynthesizer::new(48000.0);
         synth.kit.instruments[0].length_ms = 10.0;
-        synth.kit.instruments[0].output_gain_db = 12.0; // boost to clip
+        synth.kit.instruments[0].output_gain_db = 12.0;
         synth.kit.instruments[0].master_limiter.threshold_db = -6.0;
         synth.trigger(0, 60, 1.0);
 
@@ -793,8 +741,6 @@ mod tests {
         let mut out_r = vec![0.0f32; 480];
         synth.read(&mut out_l, &mut out_r);
 
-        // With linear mode, freq multiplier goes 1.0 -> 2.0, so pitch rises
-        // Just verify we get non-zero output
         let sum: f32 = out_l.iter().map(|s| s.abs()).sum();
         assert!(sum > 0.0, "freq env linear should produce output");
     }
@@ -808,10 +754,7 @@ mod tests {
         osc.waveform = Waveform::Sine;
         osc.base_freq_hz = 100.0;
         osc.amplitude = 1.0;
-        osc.freq_env = Envelope::new(vec![
-            EnvPoint::new(0.0, 0.0),
-            EnvPoint::new(1.0, 2.0), // 2 octaves up
-        ]);
+        osc.freq_env = Envelope::new(vec![EnvPoint::new(0.0, 0.0), EnvPoint::new(1.0, 2.0)]);
         osc.freq_env_mode = FreqEnvMode::Logarithmic;
         synth.trigger(0, 60, 1.0);
 

@@ -85,10 +85,6 @@ unsafe impl HasRawWindowHandle for ParentWindowHandle {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Waveform Canvas
-// ---------------------------------------------------------------------------
-
 struct WaveformState {
     shared: Arc<SharedState>,
 }
@@ -184,10 +180,6 @@ impl Program<Message> for WaveformState {
         vec![frame.into_geometry()]
     }
 }
-
-// ---------------------------------------------------------------------------
-// Messages
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -920,7 +912,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 let layer_idx = state.sample_target_layer.min(2) as usize;
                 let osc_idx = state.sample_target_osc.min(2) as usize;
                 let osc = &mut kit.instruments[active_inst].layers[layer_idx].oscillators[osc_idx];
-                // Use mono mix if stereo
+
                 let samples: Vec<f32> = left
                     .iter()
                     .zip(right.iter())
@@ -964,10 +956,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
     }
     Task::none()
 }
-
-// ---------------------------------------------------------------------------
-// View
-// ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct InstOption {
@@ -1013,7 +1001,6 @@ fn view(state: &State) -> Element<'_, Message> {
     let p = |id: ParamId| state.shared.params.get(id) as f32;
     let (peak_db_l, peak_db_r) = state.shared.output_peak_db();
 
-    // Active instrument for per-instrument param editing
     let active_inst = state
         .shared
         .params
@@ -1053,7 +1040,6 @@ fn view(state: &State) -> Element<'_, Message> {
 
     let top_row = row![waveform, meter].spacing(8).align_y(Alignment::Center);
 
-    // Instrument selector dropdown
     let inst_options: Vec<InstOption> = {
         let kit = state.shared.kit.lock();
         kit.instruments
@@ -1085,7 +1071,6 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(8)
         .align_y(Alignment::Center);
 
-    // Kit section
     let kit_section = column![
         section_header("KIT"),
         row![
@@ -1163,7 +1148,6 @@ fn view(state: &State) -> Element<'_, Message> {
     ]
     .spacing(6);
 
-    // Master section
     let master_section = column![
         section_header("MASTER"),
         row![
@@ -1259,7 +1243,6 @@ fn view(state: &State) -> Element<'_, Message> {
     ]
     .spacing(6);
 
-    // Layer 0 section
     let layer0_section = column![
         section_header("LAYER 0"),
         row![
@@ -1382,7 +1365,6 @@ fn view(state: &State) -> Element<'_, Message> {
     ]
     .spacing(6);
 
-    // Oscillator section (3 oscs)
     let osc_section = |label: &'static str,
                        waveform_ty: ParamType,
                        freq_ty: ParamType,
@@ -1469,7 +1451,6 @@ fn view(state: &State) -> Element<'_, Message> {
         ParamType::Osc2DistortionDrive,
     );
 
-    // Noise section
     let noise_section = column![
         section_header("NOISE"),
         row![
@@ -1523,7 +1504,6 @@ fn view(state: &State) -> Element<'_, Message> {
     ]
     .spacing(6);
 
-    // Envelope section
     let _env_section = column![
         section_header("ENVELOPES"),
         row![
@@ -2266,7 +2246,6 @@ fn view(state: &State) -> Element<'_, Message> {
     ]
     .spacing(6);
 
-    // Preset browser section
     let preset_dropdown = pick_list(
         state.preset_files.clone(),
         None::<String>,
@@ -2289,7 +2268,6 @@ fn view(state: &State) -> Element<'_, Message> {
     ]
     .spacing(6);
 
-    // Sample browser section
     let sample_section = column![
         section_header("SAMPLE"),
         row![
@@ -2401,7 +2379,6 @@ fn view(state: &State) -> Element<'_, Message> {
     ]
     .spacing(6);
 
-    // Main tab bar
     let main_tab_bar = row![
         tab_button("Synth", state.main_tab == 0, Message::MainTabChanged(0)),
         tab_button("Setup", state.main_tab == 1, Message::MainTabChanged(1)),
@@ -2410,7 +2387,6 @@ fn view(state: &State) -> Element<'_, Message> {
     .align_y(Alignment::Center);
 
     let controls: Element<'_, Message> = if state.main_tab == 0 {
-        // Layer tabs
         let layer_tabs = row![
             tab_button(
                 "L1",
@@ -2431,7 +2407,6 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(4)
         .align_y(Alignment::Center);
 
-        // Osc tabs
         let osc_tabs = row![
             tab_button("Osc1", state.active_osc_tab == 0, Message::OscTabChanged(0)),
             tab_button("Osc2", state.active_osc_tab == 1, Message::OscTabChanged(1)),
@@ -2440,7 +2415,6 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(4)
         .align_y(Alignment::Center);
 
-        // Active layer
         let active_layer = match state.active_layer_tab {
             0 => layer0_section,
             1 => layer1_section,
@@ -2448,7 +2422,6 @@ fn view(state: &State) -> Element<'_, Message> {
             _ => layer0_section,
         };
 
-        // Active osc
         let active_osc = match state.active_osc_tab {
             0 => osc0,
             1 => osc1,
@@ -2456,7 +2429,6 @@ fn view(state: &State) -> Element<'_, Message> {
             _ => osc0,
         };
 
-        // Envelope ADSR for selected target
         let env_adsr: Element<'_, Message> = if let Some((a_ty, d_ty, s_ty, r_ty)) =
             envelope_param_types(
                 EnvelopeKind::from_u8(state.envelope_kind),
@@ -2499,7 +2471,6 @@ fn view(state: &State) -> Element<'_, Message> {
             .align_y(Alignment::Start)
             .into()
     } else {
-        // Setup tab
         let setup_left = column![kit_section, sample_section]
             .spacing(8)
             .align_x(Alignment::Start);

@@ -1,9 +1,3 @@
-//! GigaSampler (GIG) format parser.
-//!
-//! Parses a basic RIFF-based GIG structure into the Patch/Part/Group/Zone
-//! hierarchy. This is a minimal implementation supporting `cnfg` instrument
-//! config chunks and `wave` sample lists.
-
 use std::sync::Arc;
 
 use crate::common::byte_reader::{ByteReader, fourcc_str};
@@ -13,19 +7,16 @@ use crate::sampler::dsp::patch::Patch;
 use crate::sampler::dsp::sample::Sample;
 use crate::sampler::dsp::zone::Zone;
 
-/// Parse a GIG file and build a Patch.
 pub fn parse_gig(path: &str) -> Result<Patch, String> {
     let data = std::fs::read(path).map_err(|e| format!("Failed to read GIG file: {}", e))?;
     parse_gig_data(&data)
 }
 
-/// Size of a single zone config record inside a `cnfg` chunk.
 const GIG_ZONE_RECORD_SIZE: usize = 16;
 
 fn parse_gig_data(data: &[u8]) -> Result<Patch, String> {
     let mut reader = ByteReader::new(data);
 
-    // RIFF header.
     let riff = reader.read_fourcc()?;
     if riff != *b"RIFF" {
         return Err(format!("Expected RIFF, got {}", fourcc_str(riff)));
@@ -35,7 +26,6 @@ fn parse_gig_data(data: &[u8]) -> Result<Patch, String> {
 
     let end_pos = 8 + file_size;
 
-    // Collect samples and zone configs.
     let mut zone_configs: Vec<GigZoneConfig> = Vec::new();
     let mut samples: Vec<Arc<Sample>> = Vec::new();
 
@@ -199,14 +189,6 @@ fn build_patch(zone_configs: &[GigZoneConfig], samples: &[Arc<Sample>]) -> Resul
     Ok(patch)
 }
 
-// ---------------------------------------------------------------------------
-// Byte reader helpers
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,53 +196,49 @@ mod tests {
     fn make_test_gig() -> Vec<u8> {
         let mut data = Vec::new();
 
-        // RIFF header
         data.extend_from_slice(b"RIFF");
         let file_size_pos = data.len();
-        data.extend_from_slice(&0u32.to_le_bytes()); // placeholder
+        data.extend_from_slice(&0u32.to_le_bytes());
         data.extend_from_slice(b"GIG ");
 
-        // cnfg chunk with 1 zone record
         let cnfg_data = {
             let mut c = vec![
-                48,                  // key_low
-                72,                  // key_high
-                1,                   // vel_low
-                127,                 // vel_high
-                60,                  // root_key
-                5u8.wrapping_neg(),  // fine_tune = -5
-                10u8.wrapping_neg(), // volume = -10
-                32,                  // pan = +0.5 scaled
+                48,
+                72,
+                1,
+                127,
+                60,
+                5u8.wrapping_neg(),
+                10u8.wrapping_neg(),
+                32,
             ];
-            c.extend_from_slice(&0u32.to_le_bytes()); // sample_index
-            c.extend_from_slice(&0u16.to_le_bytes()); // flags
-            c.extend_from_slice(&0u16.to_le_bytes()); // reserved
+            c.extend_from_slice(&0u32.to_le_bytes());
+            c.extend_from_slice(&0u16.to_le_bytes());
+            c.extend_from_slice(&0u16.to_le_bytes());
             c
         };
         data.extend_from_slice(b"cnfg");
         data.extend_from_slice(&(cnfg_data.len() as u32).to_le_bytes());
         data.extend_from_slice(&cnfg_data);
 
-        // wave list (LIST wave) with fmt chunk
         let wave_list_data = {
             let mut w = Vec::new();
-            w.extend_from_slice(b"wave"); // list type
-            // fmt chunk (16 bytes of data)
+            w.extend_from_slice(b"wave");
+
             w.extend_from_slice(b"fmt ");
             w.extend_from_slice(&16u32.to_le_bytes());
-            w.extend_from_slice(&1u16.to_le_bytes()); // PCM
-            w.extend_from_slice(&1u16.to_le_bytes()); // mono
-            w.extend_from_slice(&44100u32.to_le_bytes()); // sample rate
-            w.extend_from_slice(&44100u32.to_le_bytes()); // byte rate
-            w.extend_from_slice(&1u16.to_le_bytes()); // block align
-            w.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+            w.extend_from_slice(&1u16.to_le_bytes());
+            w.extend_from_slice(&1u16.to_le_bytes());
+            w.extend_from_slice(&44100u32.to_le_bytes());
+            w.extend_from_slice(&44100u32.to_le_bytes());
+            w.extend_from_slice(&1u16.to_le_bytes());
+            w.extend_from_slice(&16u16.to_le_bytes());
             w
         };
         data.extend_from_slice(b"LIST");
         data.extend_from_slice(&(wave_list_data.len() as u32).to_le_bytes());
         data.extend_from_slice(&wave_list_data);
 
-        // Update file size
         let file_size = (data.len() - 8) as u32;
         data[file_size_pos..file_size_pos + 4].copy_from_slice(&file_size.to_le_bytes());
 
@@ -315,7 +293,6 @@ mod tests {
         data.extend_from_slice(&0u32.to_le_bytes());
         data.extend_from_slice(b"GIG ");
 
-        // cnfg with sample_index = 99 (no matching wave)
         let cnfg_data = {
             let mut c = vec![60, 60, 0, 127, 60, 0, 0, 0];
             c.extend_from_slice(&99u32.to_le_bytes());

@@ -1,5 +1,3 @@
-//! Sampler engine with polyphonic voice allocation and hierarchical zone lookup.
-
 use std::sync::Arc;
 
 use crate::common::filter::FilterType;
@@ -32,71 +30,70 @@ struct VoiceParams {
     prev_increment: Option<f64>,
 }
 
-/// Sampler engine: owns the voice pool, patch, and handles allocation.
 pub struct SamplerEngine {
     sample_rate: f32,
     voices: Vec<SampleVoice>,
     steal_mode: StealMode,
     patch: Patch,
-    held_notes: Vec<(u8, u8)>, // (note, channel)
+    held_notes: Vec<(u8, u8)>,
     last_note: u8,
     play_mode: PlayMode,
     voice_priority: VoicePriority,
-    /// Global normalized pitch bend (-1.0 .. 1.0).
+
     pitch_bend: f32,
-    /// Global polyphony limit (0 = unlimited).
+
     global_poly_limit: usize,
-    /// Master gain (linear).
+
     master_gain: f32,
-    /// AEG attack (seconds).
+
     aeg_attack: f32,
-    /// AEG decay (seconds).
+
     aeg_decay: f32,
-    /// AEG sustain (0-1).
+
     aeg_sustain: f32,
-    /// AEG release (seconds).
+
     aeg_release: f32,
-    /// Filter type.
+
     filter_type: FilterType,
-    /// Filter base cutoff (Hz).
+
     filter_cutoff: f32,
-    /// Filter resonance.
+
     filter_resonance: f32,
-    /// Filter EG amount.
+
     filter_eg_amount: f32,
-    /// Filter enabled.
+
     filter_enabled: bool,
-    /// FEG attack (seconds).
+
     feg_attack: f32,
-    /// FEG decay (seconds).
+
     feg_decay: f32,
-    /// FEG sustain (0-1).
+
     feg_sustain: f32,
-    /// FEG release (seconds).
+
     feg_release: f32,
-    /// EG2-EG5 params: (attack, decay, sustain, release) for each.
+
     eg_params: [(f32, f32, f32, f32); 4],
-    /// LFO1 params: (rate, amount, shape, enabled).
+
     lfo1_params: (f32, f32, LfoShape, bool),
-    /// LFO2 params: (rate, amount, shape, enabled).
+
     lfo2_params: (f32, f32, LfoShape, bool),
-    /// Per-note pitch bend in semitones (MPE).
+
     note_tuning: [f32; 128],
-    /// Per-note pressure (MPE).
+
     note_pressure: [f32; 128],
-    /// Per-note volume (MPE).
+
     note_volume: [f32; 128],
-    /// Sustain pedal active.
+
     sustain_pedal: bool,
-    /// Notes held by sustain pedal (released while sustain was on).
+
     sustained_notes: Vec<u8>,
-    /// Mod wheel (CC1) value 0-1.
+
     mod_wheel: f32,
-    /// Channel volume (CC7) value 0-1.
+
     channel_volume: f32,
-    /// Expression (CC11) value 0-1.
+
     expression: f32,
-    /// All MIDI CC values (0-127).
+
     cc_values: [u8; 128],
 }
 
@@ -194,7 +191,6 @@ impl SamplerEngine {
         let was_active = self.sustain_pedal;
         self.sustain_pedal = active;
         if was_active && !active {
-            // Sustain released: release all sustained notes.
             for note in self.sustained_notes.drain(..) {
                 for voice in &mut self.voices {
                     if voice.is_active() && voice.note == note {
@@ -222,7 +218,6 @@ impl SamplerEngine {
         self.expression = value.clamp(0.0, 1.0);
     }
 
-    /// CC120 All Sound Off — immediately silence all voices.
     pub fn all_sound_off(&mut self) {
         for voice in &mut self.voices {
             voice.force_stop();
@@ -231,7 +226,6 @@ impl SamplerEngine {
         self.sustained_notes.clear();
     }
 
-    /// CC123 All Notes Off — release all voices.
     pub fn all_notes_off(&mut self) {
         for voice in &mut self.voices {
             if voice.is_active() {
@@ -324,7 +318,6 @@ impl SamplerEngine {
         }
     }
 
-    /// Check if a note is a keyswitch for any group in the given part.
     fn is_keyswitch_note(part: &crate::sampler::dsp::part::Part, note: u8) -> bool {
         part.groups.iter().any(|g| {
             (g.trigger_type == crate::sampler::dsp::group::TriggerType::KeyswitchLatch
@@ -333,7 +326,6 @@ impl SamplerEngine {
         })
     }
 
-    /// Handle note-on event.
     pub fn note_on(&mut self, note: u8, velocity: u8, channel: u8) {
         self.held_notes.push((note, channel));
         self.last_note = note;
@@ -342,7 +334,6 @@ impl SamplerEngine {
             return;
         };
 
-        // Check if this note is a keyswitch — if so, handle it and don't trigger a sample.
         if Self::is_keyswitch_note(part, note) {
             if let Some((_pi, part)) = self.patch.find_part_mut(channel) {
                 part.handle_keyswitch_on(note);
@@ -358,7 +349,6 @@ impl SamplerEngine {
         let group_index = gi;
         let part_index = _pi;
 
-        // Apply part transpose.
         let transposed_note = note as i16 + part.transpose as i16;
         let play_note = transposed_note.clamp(0, 127) as u8;
 
@@ -370,14 +360,12 @@ impl SamplerEngine {
         let part_pan = part.pan;
         let portamento = _group.portamento;
 
-        // Capture increment from any active voice for portamento.
         let prev_increment = self
             .voices
             .iter()
             .find(|v| v.is_active())
             .map(|v| v.increment());
 
-        // Handle unison mode: trigger one voice per variant.
         if zone.variant_mode == crate::sampler::dsp::zone::VariantMode::Unison {
             let samples: Vec<_> = if zone.variants.is_empty() {
                 vec![zone.sample.clone()]
@@ -454,7 +442,6 @@ impl SamplerEngine {
                 );
             }
             PlayMode::MonoST | PlayMode::MonoLegato | PlayMode::MonoFP => {
-                // Legato: retarget existing voice if active, otherwise trigger new.
                 let had_active = self.voices.iter().any(|v| v.is_active());
                 if had_active {
                     if let Some(voice) = self.voices.iter_mut().find(|v| v.is_active()) {
@@ -510,11 +497,9 @@ impl SamplerEngine {
         }
     }
 
-    /// Handle note-off event.
     pub fn note_off(&mut self, note: u8, channel: u8) {
         self.held_notes.retain(|&(n, _)| n != note);
 
-        // Deactivate momentary keyswitch groups.
         if let Some((_pi, part)) = self.patch.find_part_mut(channel) {
             part.handle_keyswitch_off(note);
         }
@@ -542,9 +527,8 @@ impl SamplerEngine {
                         }
                     }
                 } else {
-                    // Retarget to next held note.
                     let next_note = self.select_note_priority();
-                    // Look up zone for next note (use default velocity 100).
+
                     let cc_values = self.cc_values;
                     let retargeted = if let Some((_, part)) = self.patch.find_part(channel) {
                         if let Some((_gi, group, zone)) = part.find_zone(next_note, 100, &cc_values)
@@ -582,13 +566,10 @@ impl SamplerEngine {
         }
     }
 
-    /// Process a block of audio.
-    /// Routes voices through per-part busses, aux sends, and main bus.
     pub fn process_block(&mut self, out_l: &mut [f32], out_r: &mut [f32]) {
         let block_size = out_l.len();
         assert_eq!(out_r.len(), block_size);
 
-        // Clear outputs.
         for s in out_l.iter_mut() {
             *s = 0.0;
         }
@@ -596,25 +577,20 @@ impl SamplerEngine {
             *s = 0.0;
         }
 
-        // Silence optimization: if no voices are active, skip all processing.
         let any_active = self.voices.iter().any(|v| v.is_active());
         if !any_active {
-            // Outputs are already zeroed. Apply master gain (which is also 0 * gain = 0).
             return;
         }
 
-        // Per-part scratch buffers for mixing voices.
         let num_parts = self.patch.parts.len();
         let mut part_bufs: Vec<(Vec<f32>, Vec<f32>)> = (0..num_parts)
             .map(|_| (vec![0.0f32; block_size], vec![0.0f32; block_size]))
             .collect();
 
-        // Aux bus scratch buffers.
         let mut aux_bufs: Vec<(Vec<f32>, Vec<f32>)> = (0..4)
             .map(|_| (vec![0.0f32; block_size], vec![0.0f32; block_size]))
             .collect();
 
-        // Process each voice into its part's buffer.
         for voice in &mut self.voices {
             if !voice.is_active() {
                 continue;
@@ -624,13 +600,8 @@ impl SamplerEngine {
             voice.process_block(p_l, p_r);
         }
 
-        // Process each part through its bus and route to main + aux.
         for (pi, part_buf) in part_bufs.iter_mut().enumerate().take(num_parts) {
             let part_bus_gain = 10.0f32.powf(self.patch.parts[pi].bus.gain_db / 20.0);
-
-            // Apply part bus effects.
-            // Note: effects are currently no-ops ( ProcessorChain::process is empty).
-            // When implemented, this will need mutable access to the part's effect state.
 
             let (p_l, p_r) = part_buf;
             for s in p_l.iter_mut() {
@@ -640,7 +611,6 @@ impl SamplerEngine {
                 *s *= part_bus_gain;
             }
 
-            // Mix to main output.
             for (o, s) in out_l.iter_mut().zip(p_l.iter()) {
                 *o += s;
             }
@@ -648,7 +618,6 @@ impl SamplerEngine {
                 *o += s;
             }
 
-            // Route aux sends.
             for send in &self.patch.parts[pi].aux_sends {
                 if send.amount <= 0.0 || send.bus_index >= 4 {
                     continue;
@@ -684,7 +653,6 @@ impl SamplerEngine {
             }
         }
 
-        // Process aux busses and mix to main.
         for (bi, aux_buf) in aux_bufs.iter_mut().enumerate() {
             if bi >= self.patch.aux_busses.len() {
                 continue;
@@ -705,7 +673,6 @@ impl SamplerEngine {
             }
         }
 
-        // Apply main bus gain.
         let main_gain = 10.0f32.powf(self.patch.main_bus.gain_db / 20.0);
         for s in out_l.iter_mut() {
             *s *= main_gain;
@@ -714,7 +681,6 @@ impl SamplerEngine {
             *s *= main_gain;
         }
 
-        // Apply master gain with channel volume and expression.
         let effective_gain = self.master_gain * self.channel_volume * self.expression;
         for s in out_l.iter_mut() {
             *s *= effective_gain;
@@ -723,10 +689,6 @@ impl SamplerEngine {
             *s *= effective_gain;
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Internal helpers
-    // -----------------------------------------------------------------------
 
     fn trigger_voice_with_hierarchy(&mut self, args: &TriggerArgs, params: VoiceParams) {
         self.trigger_voice_with_sample(
@@ -739,7 +701,6 @@ impl SamplerEngine {
     }
 
     fn trigger_voice_with_sample(&mut self, args: &TriggerArgs, params: VoiceParams) {
-        // Choke other voices in the same exclusive group.
         if args.exclusive_group != 0 {
             for voice in &mut self.voices {
                 if voice.is_active() && voice.exclusive_group == args.exclusive_group {
@@ -748,10 +709,7 @@ impl SamplerEngine {
             }
         }
 
-        // Enforce polyphony limits: group → part → global.
-        // If a limit is exceeded, steal the oldest voice in the constrained scope.
         let stolen_index = {
-            // Group poly limit.
             let group_poly = self
                 .patch
                 .parts
@@ -782,7 +740,6 @@ impl SamplerEngine {
         };
 
         let stolen_index = stolen_index.or_else(|| {
-            // Part poly limit.
             let part_poly = self
                 .patch
                 .parts
@@ -808,7 +765,6 @@ impl SamplerEngine {
         });
 
         let stolen_index = stolen_index.or_else(|| {
-            // Global poly limit.
             if self.global_poly_limit > 0 {
                 let active: Vec<usize> = self
                     .voices
@@ -996,19 +952,16 @@ mod tests {
         let mut engine = SamplerEngine::new(48000.0, 4);
         engine.set_patch(make_test_patch());
 
-        // Note on, then note off while sustain is held.
         engine.note_on(60, 100, 0);
         assert!(engine.voices.iter().any(|v| v.is_active()));
 
         engine.set_sustain_pedal(true);
         engine.note_off(60, 0);
-        // Voice should still be active because sustain is on.
+
         assert!(engine.voices.iter().any(|v| v.is_active()));
 
-        // Release sustain — voice should now enter release.
         engine.set_sustain_pedal(false);
-        // After process_block the voice may still be in release phase.
-        // Just check sustain state is cleared.
+
         assert!(engine.sustained_notes.is_empty());
     }
 
@@ -1017,21 +970,18 @@ mod tests {
         let mut engine = SamplerEngine::new(48000.0, 4);
         engine.set_patch(make_test_patch_with_exclusive(1));
 
-        // Trigger first note.
         engine.note_on(60, 100, 0);
         assert!(engine.voices.iter().any(|v| v.is_active() && v.note == 60));
 
-        // Trigger same note again — exclusive group should choke the first voice.
         engine.note_on(60, 100, 0);
-        // The old voice should have been released (entering release phase).
-        // There should still be at least one active voice.
+
         assert!(engine.voices.iter().any(|v| v.is_active()));
     }
 
     #[test]
     fn test_pitch_bend() {
         let mut patch = make_test_patch();
-        // Set zone pitch bend range to ±12 so normalized 1.0 = +12 semitones.
+
         patch.parts[0].groups[0].zones[0].pitch_bend_up = 12.0;
         patch.parts[0].groups[0].zones[0].pitch_bend_down = 12.0;
 
@@ -1042,13 +992,11 @@ mod tests {
         let voice_before = engine.voices.iter().find(|v| v.is_active()).unwrap();
         let inc_before = voice_before.increment();
 
-        // Apply full positive pitch bend (normalized 1.0 = +12 semitones with this zone).
         engine.set_pitch_bend(1.0);
 
         let voice_after = engine.voices.iter().find(|v| v.is_active()).unwrap();
         let inc_after = voice_after.increment();
 
-        // Increment should have doubled (one octave up = 2× speed).
         assert!(inc_after > inc_before * 1.9);
     }
 
@@ -1074,7 +1022,7 @@ mod tests {
         engine.set_patch(patch);
 
         engine.note_on(60, 100, 0);
-        // Should have triggered 2 voices (one per variant).
+
         let active_count = engine.voices.iter().filter(|v| v.is_active()).count();
         assert_eq!(active_count, 2);
     }
@@ -1083,7 +1031,7 @@ mod tests {
     fn test_lfo_tremolo() {
         let mut patch = Patch::default();
         let mut zone = Zone::default();
-        // Create a simple sample with DC value 1.0.
+
         let mut sample = Sample::silent(48000.0);
         sample.frames = 1000;
         sample.data_l = vec![1.0f32; 1000];
@@ -1105,7 +1053,7 @@ mod tests {
         let mut out_l = vec![0.0f32; 64];
         let mut out_r = vec![0.0f32; 64];
         engine.process_block(&mut out_l, &mut out_r);
-        // Output should be non-zero (LFO modulates amplitude of DC sample).
+
         assert!(out_l.iter().any(|&s| s != 0.0));
     }
 
@@ -1122,7 +1070,7 @@ mod tests {
         zone.key_high = 72;
         let mut group = Group::default();
         group.zones.push(zone);
-        group.portamento = 0.1; // 100ms portamento
+        group.portamento = 0.1;
         let mut part = Part::default();
         part.groups.push(group);
         patch.parts = vec![part];
@@ -1131,7 +1079,6 @@ mod tests {
         engine.set_patch(patch);
         engine.set_play_mode(PlayMode::Mono);
 
-        // Trigger note 60.
         engine.note_on(60, 100, 0);
         let inc_60 = engine
             .voices
@@ -1140,17 +1087,14 @@ mod tests {
             .unwrap()
             .increment();
 
-        // Process a bit.
         let mut out_l = vec![0.0f32; 64];
         let mut out_r = vec![0.0f32; 64];
         engine.process_block(&mut out_l, &mut out_r);
 
-        // Trigger note 72 — portamento should slide from 60's increment.
         engine.note_on(72, 100, 0);
         let voice = engine.voices.iter().find(|v| v.is_active()).unwrap();
         let inc_after_trigger = voice.increment();
 
-        // Increment should start near the old note 60 increment, not immediately at 72.
         assert!((inc_after_trigger - inc_60).abs() < 0.1);
     }
 
@@ -1190,7 +1134,7 @@ mod tests {
         let mut out_l = vec![0.0f32; 64];
         let mut out_r = vec![0.0f32; 64];
         engine.process_block(&mut out_l, &mut out_r);
-        // Output should be non-zero (filter passes DC with mod wheel opening cutoff).
+
         assert!(out_l.iter().any(|&s| s != 0.0));
     }
 
@@ -1200,7 +1144,6 @@ mod tests {
 
         let mut patch = Patch::default();
 
-        // Group A: triggered by note 24 (latch), zone on note 60.
         let mut zone_a = Zone::default();
         let mut sample_a = Sample::silent(48000.0);
         sample_a.frames = 1000;
@@ -1214,7 +1157,6 @@ mod tests {
         group_a.trigger_type = TriggerType::KeyswitchLatch;
         group_a.trigger_note = 24;
 
-        // Group B: triggered by note 25 (latch), zone on note 60.
         let mut zone_b = Zone::default();
         let mut sample_b = Sample::silent(48000.0);
         sample_b.frames = 1000;
@@ -1236,24 +1178,21 @@ mod tests {
         let mut engine = SamplerEngine::new(48000.0, 4);
         engine.set_patch(patch);
 
-        // Group A inactive by default — note 60 should not trigger.
         engine.note_on(60, 100, 0);
         assert!(!engine.voices.iter().any(|v| v.is_active()));
 
-        // Keyswitch note 24 activates group A.
         engine.note_on(24, 100, 0);
         engine.note_on(60, 100, 0);
         assert!(engine.voices.iter().any(|v| v.is_active()));
         engine.all_sound_off();
 
-        // Keyswitch note 25 activates group B and deactivates group A.
         engine.note_on(25, 100, 0);
         engine.note_on(60, 100, 0);
-        // Should have triggered group B's sample (0.5 amplitude).
+
         let mut out_l = vec![0.0f32; 64];
         let mut out_r = vec![0.0f32; 64];
         engine.process_block(&mut out_l, &mut out_r);
-        // Group B's sample is 0.5, output should be non-zero (AEG may reduce it slightly).
+
         assert!(out_l.iter().any(|&s| s > 0.0));
     }
 
@@ -1282,17 +1221,14 @@ mod tests {
         let mut engine = SamplerEngine::new(48000.0, 4);
         engine.set_patch(patch);
 
-        // Group inactive by default.
         engine.note_on(60, 100, 0);
         assert!(!engine.voices.iter().any(|v| v.is_active()));
 
-        // Hold keyswitch note 24, then play note 60 — should trigger.
         engine.note_on(24, 100, 0);
         engine.note_on(60, 100, 0);
         assert!(engine.voices.iter().any(|v| v.is_active()));
         engine.all_sound_off();
 
-        // Release keyswitch, play note 60 — should NOT trigger.
         engine.note_on(24, 100, 0);
         engine.note_off(24, 0);
         engine.note_on(60, 100, 0);
@@ -1316,7 +1252,6 @@ mod tests {
         engine.set_patch(patch);
         engine.set_global_poly_limit(2);
 
-        // Trigger 3 notes with global limit of 2.
         engine.note_on(60, 100, 0);
         engine.note_on(62, 100, 0);
         engine.note_on(64, 100, 0);
@@ -1329,7 +1264,6 @@ mod tests {
     fn test_group_poly_limit() {
         let mut patch = Patch::default();
 
-        // Group A: poly limit 1, zone on note 60.
         let mut zone_a = Zone::default();
         zone_a.sample = Arc::new(Sample::silent(48000.0));
         zone_a.key_low = 60;
@@ -1338,7 +1272,6 @@ mod tests {
         group_a.zones.push(zone_a);
         group_a.poly_limit = 1;
 
-        // Group B: no poly limit, zone on note 62.
         let mut zone_b = Zone::default();
         zone_b.sample = Arc::new(Sample::silent(48000.0));
         zone_b.key_low = 62;
@@ -1354,10 +1287,9 @@ mod tests {
         let mut engine = SamplerEngine::new(48000.0, 4);
         engine.set_patch(patch);
 
-        // Trigger group A twice — only 1 voice should be active for group A.
         engine.note_on(60, 100, 0);
         engine.note_on(60, 100, 0);
-        // Trigger group B — should work fine.
+
         engine.note_on(62, 100, 0);
 
         let active = engine.voices.iter().filter(|v| v.is_active()).count();
@@ -1381,7 +1313,6 @@ mod tests {
         let mut engine = SamplerEngine::new(48000.0, 4);
         engine.set_patch(patch);
 
-        // Trigger 3 notes with part limit of 2.
         engine.note_on(60, 100, 0);
         engine.note_on(62, 100, 0);
         engine.note_on(64, 100, 0);
@@ -1395,18 +1326,15 @@ mod tests {
         let mut engine = SamplerEngine::new(48000.0, 4);
         engine.set_patch(make_test_patch());
 
-        // Trigger a note, then release it to let the AEG decay.
         engine.note_on(60, 100, 0);
         engine.note_off(60, 0);
 
-        // Process many blocks to let the AEG release fully.
         let mut out_l = vec![0.0f32; 64];
         let mut out_r = vec![0.0f32; 64];
         for _ in 0..500 {
             engine.process_block(&mut out_l, &mut out_r);
         }
 
-        // Processing a block with no active voices should produce silence.
         let mut out_l = vec![1.0f32; 64];
         let mut out_r = vec![1.0f32; 64];
         engine.process_block(&mut out_l, &mut out_r);
@@ -1420,10 +1348,10 @@ mod tests {
 
         let mut patch = Patch::default();
         let mut zone = Zone::default();
-        // Create a sample at 440Hz (A4) so root_key=69 plays at 440Hz.
+
         let mut sample = Sample::silent(48000.0);
-        sample.frames = 48000; // 1 second
-        // Fill with a sine wave at 440Hz.
+        sample.frames = 48000;
+
         sample.data_l = (0..48000)
             .map(|i| {
                 let phase = i as f32 * 440.0 * 2.0 * std::f32::consts::PI / 48000.0;
@@ -1441,7 +1369,6 @@ mod tests {
         let mut part = Part::default();
         part.groups.push(group);
 
-        // Test with 12-TET (standard tuning).
         patch.parts = vec![part.clone()];
         let mut engine = SamplerEngine::new(48000.0, 4);
         engine.set_patch(patch.clone());
@@ -1450,11 +1377,10 @@ mod tests {
         let mut out_l = vec![0.0f32; 64];
         let mut out_r = vec![0.0f32; 64];
         engine.process_block(&mut out_l, &mut out_r);
-        // Should have non-zero output.
+
         assert!(out_l.iter().any(|&s| s != 0.0));
         engine.all_sound_off();
 
-        // Test with 19-TET (microtuning).
         part.microtuning = Some(Tuning::equal_temperament(19));
         patch.parts = vec![part];
         engine.set_patch(patch);
@@ -1463,7 +1389,7 @@ mod tests {
         let mut out_l = vec![0.0f32; 64];
         let mut out_r = vec![0.0f32; 64];
         engine.process_block(&mut out_l, &mut out_r);
-        // Should still have non-zero output with microtuning.
+
         assert!(out_l.iter().any(|&s| s != 0.0));
     }
 
@@ -1490,20 +1416,18 @@ mod tests {
         let inc_60 = voice_after_on.increment();
         assert!(inc_60 > 0.0);
 
-        // Play second note while holding first — should retarget, not retrigger.
         engine.note_on(64, 100, 0);
         let voice_after_64 = engine.voices.iter().find(|v| v.is_active()).unwrap();
         let inc_64 = voice_after_64.increment();
-        // Higher note = faster increment.
+
         assert!(inc_64 > inc_60);
-        // Same voice should still be active (only one voice in legato).
+
         assert_eq!(engine.voices.iter().filter(|v| v.is_active()).count(), 1);
 
-        // Release second note — should retarget to first note.
         engine.note_off(64, 0);
         let voice_after_off = engine.voices.iter().find(|v| v.is_active()).unwrap();
         let inc_after_off = voice_after_off.increment();
-        // Should have retargeted back to note 60.
+
         assert!((inc_after_off - inc_60).abs() < 0.001);
     }
 }

@@ -70,10 +70,6 @@ static DESCRIPTOR: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor {
     features: FEATURES.0.as_ptr(),
 });
 
-// ---------------------------------------------------------------------------
-// SharedState
-// ---------------------------------------------------------------------------
-
 pub struct SharedState {
     pub params: ParamStore,
     pub kit: Mutex<crate::kick::dsp::Kit>,
@@ -323,10 +319,6 @@ impl SharedState {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Param events
-// ---------------------------------------------------------------------------
-
 fn apply_param_events(shared: &SharedState, events: &InputEvents<'_>) {
     for index in 0..events.size() {
         let header = events.get(index);
@@ -446,10 +438,6 @@ impl clap_clap::events::Event for ParamGesture {
     }
 }
 
-// ---------------------------------------------------------------------------
-// apply_params_to_synth
-// ---------------------------------------------------------------------------
-
 fn adsr_env(attack_ms: f32, decay_ms: f32, sustain: f32, release_ms: f32) -> Envelope {
     let total = attack_ms + decay_ms + release_ms;
     if total <= 0.0 {
@@ -459,7 +447,6 @@ fn adsr_env(attack_ms: f32, decay_ms: f32, sustain: f32, release_ms: f32) -> Env
 }
 
 fn apply_params_to_synth(synth: &mut KickSynthesizer, params: &ParamStore) {
-    // Kit-level params
     synth.kit.humanizer_velocity = params.get(ParamId::new(0, ParamType::HumanizerVelocity)) as f32;
     synth.kit.humanizer_timing_ms = params.get(ParamId::new(0, ParamType::HumanizerTiming)) as f32;
     synth.kit.update_solo_state();
@@ -468,7 +455,6 @@ fn apply_params_to_synth(synth: &mut KickSynthesizer, params: &ParamStore) {
         let inst_id = |ty: ParamType| ParamId::new(inst_idx as u8, ty);
         let inst = &mut synth.kit.instruments[inst_idx];
 
-        // Master
         inst.length_ms = params.get(inst_id(ParamType::MasterLength)) as f32;
         inst.output_gain_db = params.get(inst_id(ParamType::MasterOutputGain)) as f32;
         inst.note_off_decay_ms = params.get(inst_id(ParamType::MasterNoteOffDecay)) as f32;
@@ -507,13 +493,11 @@ fn apply_params_to_synth(synth: &mut KickSynthesizer, params: &ParamStore) {
             params.get(inst_id(ParamType::MasterGlobalAmpEnvRelease)) as f32,
         );
 
-        // Layers 1, 2
         inst.layers[1].enabled = params.get_bool(inst_id(ParamType::Layer1Enabled));
         inst.layers[1].amplitude = params.get(inst_id(ParamType::Layer1Amp)) as f32;
         inst.layers[2].enabled = params.get_bool(inst_id(ParamType::Layer2Enabled));
         inst.layers[2].amplitude = params.get(inst_id(ParamType::Layer2Amp)) as f32;
 
-        // Layer 0
         {
             let l0 = &mut inst.layers[0];
             l0.enabled = params.get_bool(inst_id(ParamType::Layer0Enabled));
@@ -535,7 +519,6 @@ fn apply_params_to_synth(synth: &mut KickSynthesizer, params: &ParamStore) {
             l0.fm_routing[1] = params.get(inst_id(ParamType::Layer0FmRouting1)) as u8;
             l0.fm_routing[2] = params.get(inst_id(ParamType::Layer0FmRouting2)) as u8;
 
-            // Oscillator helper
             let mut set_osc = |idx: usize,
                                waveform_id: ParamId,
                                freq_id: ParamId,
@@ -761,7 +744,6 @@ fn apply_params_to_synth(synth: &mut KickSynthesizer, params: &ParamStore) {
                 inst_id(ParamType::Osc2AmpEnvRelease),
             );
 
-            // Noise
             let noise = &mut l0.noise;
             noise.noise_type = NoiseType::from_u8(params.get(inst_id(ParamType::NoiseType)) as u8);
             noise.amplitude = params.get(inst_id(ParamType::NoiseAmp)) as f32;
@@ -785,10 +767,6 @@ fn apply_params_to_synth(synth: &mut KickSynthesizer, params: &ParamStore) {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// AudioProcessor
-// ---------------------------------------------------------------------------
 
 struct AudioProcessor {
     synth: KickSynthesizer,
@@ -832,7 +810,6 @@ impl AudioProcessor {
             self.temp_buf_r.resize(frames, 0.0);
         }
 
-        // Sync kit config from shared state if changed
         let kit_ver = shared.kit_version.load(Ordering::Acquire);
         if kit_ver != self.last_kit_version {
             let kit = shared.kit.lock();
@@ -840,10 +817,8 @@ impl AudioProcessor {
             self.last_kit_version = kit_ver;
         }
 
-        // Apply automatable params to instrument 0
         apply_params_to_synth(&mut self.synth, &shared.params);
 
-        // Handle MIDI note events
         let events = process.in_events();
         for i in 0..events.size() {
             let header = unsafe { events.get_unchecked(i) };
@@ -858,7 +833,6 @@ impl AudioProcessor {
                         let key = note.key() as u8;
                         let channel = note.channel() as u8;
                         if velocity > 0.0 {
-                            // Find matching instrument
                             for inst_idx in 0..self.synth.kit.instruments.len() {
                                 let inst = &self.synth.kit.instruments[inst_idx];
                                 if inst.matches_midi(channel, key) {
@@ -884,14 +858,12 @@ impl AudioProcessor {
             }
         }
 
-        // Apply parameter automation
         apply_param_events(shared, &process.in_events());
         {
             let mut out_events = process.out_events();
             emit_pending_param_events_to_host(shared, &mut out_events);
         }
 
-        // Multi-output: read each instrument to its own port, accumulate master mix
         let outputs_count = process.audio_outputs_count() as usize;
         self.master_temp_l[..frames].fill(0.0);
         self.master_temp_r[..frames].fill(0.0);
@@ -905,7 +877,6 @@ impl AudioProcessor {
                 &mut self.temp_buf_r[..frames],
             );
             if playing {
-                // Add to master mix
                 crate::simd::add_inplace(
                     &mut self.master_temp_l[..frames],
                     &self.temp_buf_l[..frames],
@@ -914,7 +885,7 @@ impl AudioProcessor {
                     &mut self.master_temp_r[..frames],
                     &self.temp_buf_r[..frames],
                 );
-                // Write to instrument port
+
                 let port_idx = inst_idx;
                 if port_idx < outputs_count {
                     let mut out_port = process.audio_outputs(port_idx as u32);
@@ -935,7 +906,6 @@ impl AudioProcessor {
             }
         }
 
-        // Compute output peaks from master
         let peak_l = crate::simd::peak_abs(&self.master_temp_l[..frames]);
         let peak_r = crate::simd::peak_abs(&self.master_temp_r[..frames]);
         let peak_db_l = if peak_l > 1.0e-12 {
@@ -950,7 +920,6 @@ impl AudioProcessor {
         };
         shared.set_output_peak_db(peak_db_l, peak_db_r);
 
-        // Copy waveform to shared state for GUI
         let mut display = shared.waveform_display.lock();
         let num = self.synth.num_samples(0);
         if num > 0 {
@@ -986,10 +955,6 @@ impl AudioProcessor {
         CLAP_PROCESS_CONTINUE
     }
 }
-
-// ---------------------------------------------------------------------------
-// PluginInstance
-// ---------------------------------------------------------------------------
 
 struct PluginInstance {
     shared: Arc<SharedState>,
@@ -1134,15 +1099,11 @@ unsafe extern "C-unwind" fn plugin_process(
 
 unsafe extern "C-unwind" fn plugin_on_main_thread(_plugin: *const clap_plugin) {}
 
-// ---------------------------------------------------------------------------
-// Extensions
-// ---------------------------------------------------------------------------
-
 unsafe extern "C-unwind" fn ext_audio_ports_count(
     _plugin: *const clap_plugin,
     is_input: bool,
 ) -> u32 {
-    if is_input { 0 } else { 16 } // 16 per-instrument outputs
+    if is_input { 0 } else { 16 }
 }
 
 unsafe extern "C-unwind" fn ext_audio_ports_get(
@@ -1351,10 +1312,6 @@ static TAIL_EXT: clap_plugin_tail = clap_plugin_tail {
     get: Some(ext_tail_get),
 };
 
-// ---------------------------------------------------------------------------
-// Kit config conversion helpers
-// ---------------------------------------------------------------------------
-
 pub fn kit_to_config(kit: &crate::kick::dsp::Kit) -> KitConfig {
     use crate::kick::state::*;
     KitConfig {
@@ -1363,105 +1320,91 @@ pub fn kit_to_config(kit: &crate::kick::dsp::Kit) -> KitConfig {
         instruments: kit
             .instruments
             .iter()
-            .map(|inst| {
-                InstrumentConfig {
-                    name: inst.name.clone(),
-                    layers: inst
-                        .layers
-                        .iter()
-                        .map(|layer| {
-                            LayerConfig {
-                                oscillators: layer
-                                    .oscillators
-                                    .iter()
-                                    .map(|osc| {
-                                        OscillatorConfig {
-                                            waveform: osc.waveform as u8,
-                                            base_freq_hz: osc.base_freq_hz,
-                                            amplitude: osc.amplitude,
-                                            initial_phase: osc.initial_phase,
-                                            fm_amount: osc.fm_amount,
-                                            pitch_to_note: osc.pitch_to_note,
-                                            filter_type: osc.filter_type as u8,
-                                            filter_cutoff_hz: osc.filter_cutoff_hz,
-                                            filter_q: osc.filter_q,
-                                            distortion_type: osc.distortion.ty as u8,
-                                            distortion_drive: osc.distortion.drive,
-                                            sample_data: osc.sample_buffer.as_ref().map(|s| {
-                                                // Store as base64
-                                                use base64::{
-                                                    Engine as _, engine::general_purpose,
-                                                };
-                                                let bytes: Vec<u8> = s
-                                                    .data
-                                                    .iter()
-                                                    .flat_map(|&f| f.to_le_bytes())
-                                                    .collect();
-                                                general_purpose::STANDARD.encode(&bytes)
-                                            }),
-                                            sample_rate: osc
-                                                .sample_buffer
-                                                .as_ref()
-                                                .map(|s| s.sample_rate)
-                                                .unwrap_or(48000.0),
-                                            pitch_env: (&osc.pitch_env).into(),
-                                            amp_env: (&osc.amp_env).into(),
-                                            filter_cutoff_env: (&osc.filter_cutoff_env).into(),
-                                            filter_q_env: (&osc.filter_q_env).into(),
-                                            distortion_drive_env: (&osc.distortion_drive_env)
-                                                .into(),
-                                            distortion_volume_env: (&osc.distortion.volume_env)
-                                                .into(),
-                                            pitch_shift_env: (&osc.pitch_shift_env).into(),
-                                            freq_env: (&osc.freq_env).into(),
-                                            freq_env_mode: osc.freq_env_mode as u8,
-                                        }
-                                    })
-                                    .collect(),
-                                noise: NoiseConfig {
-                                    noise_type: layer.noise.noise_type as u8,
-                                    amplitude: layer.noise.amplitude,
-                                    density: layer.noise.density,
-                                    filter_type: layer.noise.filter_type as u8,
-                                    filter_cutoff_hz: layer.noise.filter_cutoff_hz,
-                                    filter_q: layer.noise.filter_q,
-                                    amp_env: (&layer.noise.amp_env).into(),
-                                    density_env: (&layer.noise.density_env).into(),
-                                },
-                                enabled: layer.enabled,
-                                amplitude: layer.amplitude,
-                                filter_type: layer.filter_type as u8,
-                                filter_cutoff_hz: layer.filter_cutoff_hz,
-                                filter_q: layer.filter_q,
-                                distortion_type: layer.distortion.ty as u8,
-                                distortion_drive: layer.distortion.drive,
-                                distortion_volume_env: (&layer.distortion.volume_env).into(),
-                                fm_routing: layer.fm_routing.to_vec(),
-                            }
-                        })
-                        .collect(),
-                    master_filter_type: inst.master_filter_type as u8,
-                    master_filter_cutoff_hz: inst.master_filter_cutoff_hz,
-                    master_filter_q: inst.master_filter_q,
-                    master_distortion_type: inst.master_distortion.ty as u8,
-                    master_distortion_drive: inst.master_distortion.drive,
-                    master_distortion_input_limit: inst.master_distortion.input_limit,
-                    master_distortion_output_limit: inst.master_distortion.output_limit,
-                    master_distortion_volume_env: (&inst.master_distortion.volume_env).into(),
-                    master_limiter_threshold_db: inst.master_limiter.threshold_db,
-                    master_limiter_release_ms: inst.master_limiter.release_ms,
-                    length_ms: inst.length_ms,
-                    output_gain_db: inst.output_gain_db,
-                    note_off_decay_ms: inst.note_off_decay_ms,
-                    note_off_enabled: inst.note_off_enabled,
-                    pitch_to_note: inst.pitch_to_note,
-                    key_min: inst.key_min,
-                    key_max: inst.key_max,
-                    midi_channel: inst.midi_channel,
-                    muted: inst.muted,
-                    soloed: inst.soloed,
-                    global_amp_env: (&inst.global_amp_env).into(),
-                }
+            .map(|inst| InstrumentConfig {
+                name: inst.name.clone(),
+                layers: inst
+                    .layers
+                    .iter()
+                    .map(|layer| LayerConfig {
+                        oscillators: layer
+                            .oscillators
+                            .iter()
+                            .map(|osc| OscillatorConfig {
+                                waveform: osc.waveform as u8,
+                                base_freq_hz: osc.base_freq_hz,
+                                amplitude: osc.amplitude,
+                                initial_phase: osc.initial_phase,
+                                fm_amount: osc.fm_amount,
+                                pitch_to_note: osc.pitch_to_note,
+                                filter_type: osc.filter_type as u8,
+                                filter_cutoff_hz: osc.filter_cutoff_hz,
+                                filter_q: osc.filter_q,
+                                distortion_type: osc.distortion.ty as u8,
+                                distortion_drive: osc.distortion.drive,
+                                sample_data: osc.sample_buffer.as_ref().map(|s| {
+                                    use base64::{Engine as _, engine::general_purpose};
+                                    let bytes: Vec<u8> =
+                                        s.data.iter().flat_map(|&f| f.to_le_bytes()).collect();
+                                    general_purpose::STANDARD.encode(&bytes)
+                                }),
+                                sample_rate: osc
+                                    .sample_buffer
+                                    .as_ref()
+                                    .map(|s| s.sample_rate)
+                                    .unwrap_or(48000.0),
+                                pitch_env: (&osc.pitch_env).into(),
+                                amp_env: (&osc.amp_env).into(),
+                                filter_cutoff_env: (&osc.filter_cutoff_env).into(),
+                                filter_q_env: (&osc.filter_q_env).into(),
+                                distortion_drive_env: (&osc.distortion_drive_env).into(),
+                                distortion_volume_env: (&osc.distortion.volume_env).into(),
+                                pitch_shift_env: (&osc.pitch_shift_env).into(),
+                                freq_env: (&osc.freq_env).into(),
+                                freq_env_mode: osc.freq_env_mode as u8,
+                            })
+                            .collect(),
+                        noise: NoiseConfig {
+                            noise_type: layer.noise.noise_type as u8,
+                            amplitude: layer.noise.amplitude,
+                            density: layer.noise.density,
+                            filter_type: layer.noise.filter_type as u8,
+                            filter_cutoff_hz: layer.noise.filter_cutoff_hz,
+                            filter_q: layer.noise.filter_q,
+                            amp_env: (&layer.noise.amp_env).into(),
+                            density_env: (&layer.noise.density_env).into(),
+                        },
+                        enabled: layer.enabled,
+                        amplitude: layer.amplitude,
+                        filter_type: layer.filter_type as u8,
+                        filter_cutoff_hz: layer.filter_cutoff_hz,
+                        filter_q: layer.filter_q,
+                        distortion_type: layer.distortion.ty as u8,
+                        distortion_drive: layer.distortion.drive,
+                        distortion_volume_env: (&layer.distortion.volume_env).into(),
+                        fm_routing: layer.fm_routing.to_vec(),
+                    })
+                    .collect(),
+                master_filter_type: inst.master_filter_type as u8,
+                master_filter_cutoff_hz: inst.master_filter_cutoff_hz,
+                master_filter_q: inst.master_filter_q,
+                master_distortion_type: inst.master_distortion.ty as u8,
+                master_distortion_drive: inst.master_distortion.drive,
+                master_distortion_input_limit: inst.master_distortion.input_limit,
+                master_distortion_output_limit: inst.master_distortion.output_limit,
+                master_distortion_volume_env: (&inst.master_distortion.volume_env).into(),
+                master_limiter_threshold_db: inst.master_limiter.threshold_db,
+                master_limiter_release_ms: inst.master_limiter.release_ms,
+                length_ms: inst.length_ms,
+                output_gain_db: inst.output_gain_db,
+                note_off_decay_ms: inst.note_off_decay_ms,
+                note_off_enabled: inst.note_off_enabled,
+                pitch_to_note: inst.pitch_to_note,
+                key_min: inst.key_min,
+                key_max: inst.key_max,
+                midi_channel: inst.midi_channel,
+                muted: inst.muted,
+                soloed: inst.soloed,
+                global_amp_env: (&inst.global_amp_env).into(),
             })
             .collect(),
     }
@@ -1591,10 +1534,6 @@ pub fn config_to_kit(config: &KitConfig, sample_rate: f32) -> crate::kick::dsp::
     kit.update_solo_state();
     kit
 }
-
-// ---------------------------------------------------------------------------
-// GUI Extension
-// ---------------------------------------------------------------------------
 
 unsafe extern "C-unwind" fn ext_gui_is_api_supported(
     _plugin: *const clap_plugin,
@@ -1817,10 +1756,6 @@ static GUI_EXT: clap_plugin_gui = clap_plugin_gui {
     hide: Some(ext_gui_hide),
 };
 
-// ---------------------------------------------------------------------------
-// Plugin entry points
-// ---------------------------------------------------------------------------
-
 unsafe extern "C-unwind" fn plugin_get_extension(
     _plugin: *const clap_plugin,
     id: *const c_char,
@@ -1851,7 +1786,10 @@ unsafe extern "C-unwind" fn plugin_get_extension(
 }
 
 /// # Safety
-/// Must be called from the CLAP plugin entry point with a valid host pointer.
+///
+/// `host` and `plugin_id` must be valid pointers suitable for the CLAP plugin
+/// factory `create_plugin` callback. The returned plugin pointer must be handled
+/// according to the CLAP lifetime rules.
 pub unsafe fn create_plugin(
     host: *const clap_host,
     _plugin_id: *const c_char,
@@ -1875,7 +1813,9 @@ pub unsafe fn create_plugin(
 }
 
 /// # Safety
-/// Returns a pointer to static data; safe to call anytime.
+///
+/// The returned pointer is valid for the lifetime of the program and points to
+/// a static CLAP plugin descriptor.
 pub const unsafe fn descriptor_ptr() -> *const clap_plugin_descriptor {
     &DESCRIPTOR.0
 }

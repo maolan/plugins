@@ -1,14 +1,5 @@
 #![allow(dead_code)]
 
-//! Filter implementations inspired by Surge XT.
-//!
-//! Includes:
-//! - State-variable filter (SVF) with multiple modes
-//! - Comb filters (positive and negative feedback)
-//! - Allpass
-//! - Simple Ladder (Moog-style)
-//! - K35 (Korg-style)
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterType {
     Off = 0,
@@ -34,7 +25,7 @@ pub enum FilterType {
     Bell = 20,
     Notch12dB = 21,
     VintageLadder = 22,
-    // Cytomic SVF variants
+
     CytomicLp = 23,
     CytomicHp = 24,
     CytomicBp = 25,
@@ -46,17 +37,17 @@ pub enum FilterType {
     CytomicHs = 31,
     TriPole = 32,
     SampleHold = 33,
-    // CutoffWarp variants
+
     CutoffWarpHp = 34,
     CutoffWarpBp = 35,
     CutoffWarpNotch = 36,
     CutoffWarpAp = 37,
-    // ResonanceWarp variants
+
     ResonanceWarpLp = 38,
     ResonanceWarpHp = 39,
     ResonanceWarpNotch = 40,
     ResonanceWarpAp = 41,
-    // OB-Xd filters
+
     Obxd2PoleLp = 42,
     Obxd2PoleHp = 43,
     Obxd2PoleBp = 44,
@@ -183,10 +174,6 @@ impl std::fmt::Display for FilterType {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SVF Filter
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterSubtype {
     Clean = 0,
@@ -196,7 +183,7 @@ pub enum FilterSubtype {
     SoftClip = 4,
     SineSat = 5,
     Ojd = 6,
-    // OB-Xd Xpander modes
+
     XpanderLp1 = 7,
     XpanderLp2 = 8,
     XpanderLp3 = 9,
@@ -253,16 +240,16 @@ pub struct SvfFilter {
     pub gain_db: f32,
     pub subtype: FilterSubtype,
     pub drive: f32,
-    // TPT SVF states for stage 1
+
     s1_1: f32,
     s2_1: f32,
-    // TPT SVF states for stage 2
+
     s1_2: f32,
     s2_2: f32,
-    // Target coefficients
+
     g: f32,
     k: f32,
-    // Per-sample deltas
+
     dg: f32,
     dk: f32,
 }
@@ -329,10 +316,8 @@ impl SvfFilter {
         self.k += self.dk;
         let gain = 10.0f32.powf(self.gain_db / 20.0);
 
-        // Apply drive/saturation based on subtype
         let driven = apply_subtype(input, self.subtype, self.drive);
 
-        // Stage 1 (TPT SVF)
         let denom1 = 1.0 / (1.0 + self.g * (self.g + self.k));
         let u1_1 = (self.s1_1 + self.g * (driven - self.s2_1)) * denom1;
         let u2_1 = self.s2_1 + self.g * u1_1;
@@ -342,13 +327,10 @@ impl SvfFilter {
         let bp1 = u1_1;
         let hp1 = driven - self.k * u1_1 - u2_1;
 
-        // Stage 2 (TPT SVF) — 4-pole cascade: feed same-mode output of stage 1 into stage 2.
-        // LP→LP gives -24 dB/oct LP; HP→HP gives +24 dB/oct HP; LP→HP gives -12/+12 BP.
-        // Notch and Peak are computed from stage 1 only (standard 2-pole Cytomic formulas).
         let input2 = match self.filter_type {
             FilterType::Lowpass => lp1,
             FilterType::Highpass => hp1,
-            _ => lp1, // Bandpass: LP→HP cascade; Notch/Peak: state kept live but output from stage 1
+            _ => lp1,
         };
         let denom2 = 1.0 / (1.0 + self.g * (self.g + self.k));
         let u1_2 = (self.s1_2 + self.g * (input2 - self.s2_2)) * denom2;
@@ -360,10 +342,10 @@ impl SvfFilter {
 
         let out = match self.filter_type {
             FilterType::Lowpass => lp2,
-            FilterType::Bandpass => hp2, // HP of LP1 = bandpass shape
+            FilterType::Bandpass => hp2,
             FilterType::Highpass => hp2,
-            FilterType::Notch => driven - self.k * bp1, // 2-pole notch (Cytomic)
-            FilterType::Peak => driven - self.k * bp1 - 2.0 * lp1, // 2-pole peak (Cytomic)
+            FilterType::Notch => driven - self.k * bp1,
+            FilterType::Peak => driven - self.k * bp1 - 2.0 * lp1,
             _ => driven,
         };
 
@@ -385,14 +367,10 @@ fn calc_q(quality: f32) -> f32 {
     1.0 / quality.max(0.1)
 }
 
-// ---------------------------------------------------------------------------
-// Comb Filter
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone)]
 pub struct CombFilter {
     sample_rate: f32,
-    pub filter_type: FilterType, // CombPos or CombNeg
+    pub filter_type: FilterType,
     pub cutoff_hz: f32,
     pub resonance: f32,
     pub gain_db: f32,
@@ -491,10 +469,6 @@ impl CombFilter {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Allpass Filter
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone)]
 pub struct AllpassFilter {
     sample_rate: f32,
@@ -565,7 +539,6 @@ impl AllpassFilter {
         let drive = 1.0 + self.drive * 4.0;
         let in_driven = apply_subtype(input, self.subtype, self.drive);
 
-        // Allpass: y[n] = a2*x[n] + a1*x[n-1] + x[n-2] - a1*y[n-1] - a2*y[n-2]
         let output = self.a2 * in_driven + self.a1 * self.x1 + self.x2
             - self.a1 * self.y1
             - self.a2 * self.y2;
@@ -578,10 +551,6 @@ impl AllpassFilter {
         output / drive.max(1.0)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Biquad Filter (12dB/octave LP/HP/BP + Shelves)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct BiquadFilter {
@@ -719,7 +688,6 @@ impl BiquadFilter {
             _ => (1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
         };
 
-        // Normalize
         let b0 = b0 / a0;
         let b1 = b1 / a0;
         let b2 = b2 / a0;
@@ -746,10 +714,6 @@ impl BiquadFilter {
         output / drive.max(1.0)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Ladder Filter (simplified Moog-style)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct LadderFilter {
@@ -811,20 +775,15 @@ impl LadderFilter {
             x = self.stages[i];
         }
 
-        // Slope selection based on subtype
         match self.subtype {
-            FilterSubtype::Clean => self.stages[3],      // 24dB
-            FilterSubtype::MildDrive => self.stages[2],  // 18dB
-            FilterSubtype::HeavyDrive => self.stages[1], // 12dB
-            FilterSubtype::Asymmetric => self.stages[0], // 6dB
+            FilterSubtype::Clean => self.stages[3],
+            FilterSubtype::MildDrive => self.stages[2],
+            FilterSubtype::HeavyDrive => self.stages[1],
+            FilterSubtype::Asymmetric => self.stages[0],
             _ => self.stages[3],
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Cytomic SVF Filter (Trapezoidal State Variable)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct CytomicSvfFilter {
@@ -921,10 +880,6 @@ impl CytomicSvfFilter {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tri-Pole Filter (3-pole cascade: 1-pole + 2-pole)
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone)]
 pub struct TriPoleFilter {
     sample_rate: f32,
@@ -980,10 +935,9 @@ impl TriPoleFilter {
     pub fn process(&mut self, input: f32) -> f32 {
         let drive = 1.0 + self.drive * 4.0;
 
-        // 1-pole stage
         let in_driven = apply_subtype(input, self.subtype, self.drive);
         self.s1 += self.g * (in_driven - self.s1);
-        // 2-pole stage (cascade)
+
         let fb = self.k * self.s3;
         self.s2 += self.g * (self.s1 - self.s2 + fb);
         self.s3 += self.g * (self.s2 - self.s3);
@@ -991,10 +945,6 @@ impl TriPoleFilter {
         self.s3 / drive.max(1.0)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Sample & Hold Filter
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct SampleHoldFilter {
@@ -1046,10 +996,6 @@ impl SampleHoldFilter {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Vintage Ladder Filter (Huovilainen-style Moog)
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone)]
 pub struct VintageLadderFilter {
     sample_rate: f32,
@@ -1059,7 +1005,7 @@ pub struct VintageLadderFilter {
     pub subtype: FilterSubtype,
     pub feedback_drive: f32,
     stages: [f32; 4],
-    // Oversampling state
+
     prev_input: f32,
     g: f32,
     g2: f32,
@@ -1113,7 +1059,7 @@ impl VintageLadderFilter {
         let drive = 1.0 + self.drive * 3.0;
 
         let in_driven = apply_subtype(input, self.subtype, self.drive);
-        // 2x oversampling with linear interpolation
+
         let in0 = (self.prev_input + in_driven) * 0.5 * drive;
         let in1 = in_driven * drive;
         self.prev_input = in_driven;
@@ -1125,19 +1071,15 @@ impl VintageLadderFilter {
             let mut x = in_sample - self.k * fb;
             x = fast_tanh(x);
 
-            // Stage 1
             self.stages[0] = self.g * (x + self.stages[0]) - self.g2 * (x - self.stages[0]);
             x = fast_tanh(self.stages[0]);
 
-            // Stage 2
             self.stages[1] = self.g * (x + self.stages[1]) - self.g2 * (x - self.stages[1]);
             x = fast_tanh(self.stages[1]);
 
-            // Stage 3
             self.stages[2] = self.g * (x + self.stages[2]) - self.g2 * (x - self.stages[2]);
             x = fast_tanh(self.stages[2]);
 
-            // Stage 4
             self.stages[3] = self.gg * self.stages[3] + self.g2 * (x + self.stages[3]);
             x = self.stages[3];
 
@@ -1148,14 +1090,10 @@ impl VintageLadderFilter {
     }
 }
 
-// ---------------------------------------------------------------------------
-// K35 Filter (simplified Korg-style)
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone)]
 pub struct K35Filter {
     sample_rate: f32,
-    pub filter_type: FilterType, // K35Lp or K35Hp
+    pub filter_type: FilterType,
     pub cutoff_hz: f32,
     pub resonance: f32,
     pub saturation: f32,
@@ -1250,7 +1188,6 @@ impl K35Filter {
         let in_driven = apply_subtype(input, self.subtype, self.drive);
 
         if self.filter_type == FilterType::K35Lp {
-            // Lowpass
             let lb = (self.k - self.k * self.g_val) / self.gp1;
             let hb = -1.0 / self.gp1;
 
@@ -1264,13 +1201,11 @@ impl K35Filter {
             let y = self.k * (self.g_val * u_driven + (1.0 - self.g_val) * self.lpf2_state);
             self.lpf2_state = self.g_val * u_driven + (1.0 - self.g_val) * self.lpf2_state;
 
-            // Update HPF state (discard output, just advance state)
             let hpf_out = self.g_val * y + (1.0 - self.g_val) * self.hpf1_state;
             self.hpf1_state = hpf_out;
 
             y / self.k.max(0.01)
         } else {
-            // Highpass
             let lb = 1.0 / self.gp1;
             let hb = -self.g_val / self.gp1;
 
@@ -1291,10 +1226,6 @@ impl K35Filter {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Diode Ladder Filter (simplified EMS/TB-303 style)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct DiodeLadderFilter {
@@ -1361,19 +1292,15 @@ impl DiodeLadderFilter {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Warp Filter (Cutoff Warp and Resonance Warp)
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone)]
 pub struct WarpFilter {
     sample_rate: f32,
-    pub filter_type: FilterType, // CutoffWarp or ResonanceWarp
+    pub filter_type: FilterType,
     pub cutoff_hz: f32,
     pub resonance: f32,
     pub drive: f32,
     pub subtype: FilterSubtype,
-    // Up to 4 SVF stages
+
     l: [f32; 4],
     b: [f32; 4],
     f: f32,
@@ -1419,10 +1346,9 @@ impl WarpFilter {
     fn apply_warp_sat(&self, x: f32) -> f32 {
         let sat_idx = (self.subtype as u8) % 3;
         match sat_idx {
-            0 => x,                        // Clean
-            1 => fast_tanh(x * 2.0) / 2.0, // MildDrive = tanh
+            0 => x,
+            1 => fast_tanh(x * 2.0) / 2.0,
             2 => {
-                // HeavyDrive = cubic soft-clip (OJD approximation)
                 let t = x.abs();
                 if t < 1.0 {
                     x * (1.5 - 0.5 * t * t)
@@ -1439,7 +1365,6 @@ impl WarpFilter {
         let drive = 1.0 + self.drive * 2.0;
         let in_driven = apply_subtype(input, self.subtype, self.drive);
 
-        // Process stages
         let mut h = 0.0f32;
         for i in 0..stage_count {
             let input_to_stage = if i == 0 { in_driven } else { self.b[i - 1] };
@@ -1448,7 +1373,7 @@ impl WarpFilter {
                 .q
                 .mul_add(-self.b[i], input_to_stage * self.q - self.l[i]);
             self.b[i] = self.f.mul_add(h, self.b[i]);
-            // Apply per-stage saturation
+
             self.b[i] = self.apply_warp_sat(self.b[i]);
         }
 
@@ -1456,15 +1381,13 @@ impl WarpFilter {
         let l_last = self.l[last];
         let b_last = self.b[last];
 
-        // Warp the output
         let out = match self.filter_type {
-            // CutoffWarp family: 1.5× saturation scale
             FilterType::CutoffWarp => fast_tanh(l_last * 1.5) / 1.5,
             FilterType::CutoffWarpHp => fast_tanh(h * 1.5) / 1.5,
             FilterType::CutoffWarpBp => fast_tanh(b_last * 1.5) / 1.5,
             FilterType::CutoffWarpNotch => fast_tanh((in_driven - b_last) * 1.5) / 1.5,
             FilterType::CutoffWarpAp => fast_tanh((in_driven - 2.0 * b_last) * 1.5) / 1.5,
-            // ResonanceWarp family: 2.0× saturation scale
+
             FilterType::ResonanceWarp => fast_tanh(b_last * 2.0) / 2.0,
             FilterType::ResonanceWarpLp => fast_tanh(l_last * 2.0) / 2.0,
             FilterType::ResonanceWarpHp => fast_tanh(h * 2.0) / 2.0,
@@ -1476,11 +1399,6 @@ impl WarpFilter {
         out / drive.max(1.0)
     }
 }
-
-// ---------------------------------------------------------------------------
-// OB-Xd 2-Pole Filter (12dB multimode: LP/HP/BP/Notch)
-// Adapted from sst-filters / OB-Xd by discoDSP
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct Obxd2PoleFilter {
@@ -1528,8 +1446,6 @@ impl Obxd2PoleFilter {
 
     #[inline]
     fn diode_pair_resistance_approx(x: f32) -> f32 {
-        // Taylor approximation of a slightly mismatched diode pair
-        // ((((0.0103592 * x) + 0.00920833) * x + 0.185) * x + 0.05) * x + 1.0
         let a = 0.0103592f32.mul_add(x, 0.00920833);
         let b = a.mul_add(x, 0.185);
         let c = b.mul_add(x, 0.05);
@@ -1551,20 +1467,16 @@ impl Obxd2PoleFilter {
         let tcfb = Self::diode_pair_resistance_approx(self.s1 * 0.0876)
             - if self_osc { 1.035 } else { 1.0 };
 
-        // Newton-Raphson solve for v (input to first integrator)
         let denom = 1.0 + self.cutoff * (2.0 * (self.r + tcfb) + self.cutoff);
         let v = (in_driven - 2.0 * self.s1 * (self.r + tcfb) - self.cutoff * self.s1 - self.s2)
             / denom.max(1e-6);
 
-        // First integrator
         let y1 = self.cutoff.mul_add(v, self.s1);
         self.s1 = self.cutoff.mul_add(v, y1);
 
-        // Second integrator
         let y2 = self.cutoff.mul_add(y1, self.s2);
         self.s2 = self.cutoff.mul_add(y1, y2);
 
-        // Multimode output mixing
         let mc = match self.filter_type {
             FilterType::Obxd2PoleLp => y2,
             FilterType::Obxd2PoleHp => v,
@@ -1573,14 +1485,9 @@ impl Obxd2PoleFilter {
             _ => y2,
         };
 
-        mc * 0.74 // gainAdjustment2Pole
+        mc * 0.74
     }
 }
-
-// ---------------------------------------------------------------------------
-// OB-Xd 4-Pole Filter (24dB LP with selectable slope)
-// Adapted from sst-filters / OB-Xd by discoDSP
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct Obxd4PoleFilter {
@@ -1660,45 +1567,35 @@ impl Obxd4PoleFilter {
     pub fn process(&mut self, input: f32) -> f32 {
         let in_driven = apply_subtype(input, self.subtype, self.drive);
 
-        // Compute S and G for zero-delay feedback
         let s = (self.lpc * (self.lpc * (self.lpc * self.s1 + self.s2) + self.s3) + self.s4)
             / (1.0 + self.g);
         let gg = self.lpc * self.lpc * self.lpc * self.lpc;
 
-        // Solve feedback
         let y0 = (in_driven - self.r * s) / (1.0 + self.r * gg).max(1e-6);
 
-        // First stage with damping
         let v = (y0 - self.s1) * self.lpc;
         let res = v + self.s1;
         self.s1 = res + v;
         self.s1 = (self.s1 * self.rcor).atan() * self.rcorinv;
         let y1 = res;
 
-        // Stages 2-4
         let y2 = Self::tptpc(&mut self.s2, y1, self.g);
         let y3 = Self::tptpc(&mut self.s3, y2, self.g);
         let y4 = Self::tptpc(&mut self.s4, y3, self.g);
 
-        // Select slope based on subtype (default 24dB)
         let mc = match self.subtype {
-            FilterSubtype::Clean => y4,         // 24dB
-            FilterSubtype::MildDrive => y3,     // 18dB
-            FilterSubtype::HeavyDrive => y2,    // 12dB
-            FilterSubtype::Asymmetric => y1,    // 6dB
-            FilterSubtype::SoftClip => y3 + y4, // broken24dB
+            FilterSubtype::Clean => y4,
+            FilterSubtype::MildDrive => y3,
+            FilterSubtype::HeavyDrive => y2,
+            FilterSubtype::Asymmetric => y1,
+            FilterSubtype::SoftClip => y3 + y4,
             _ => y4,
         };
 
         let out = mc * (1.0 + self.r * 0.45);
-        out * 0.6 // gainAdjustment4Pole
+        out * 0.6
     }
 }
-
-// ---------------------------------------------------------------------------
-// OB-Xd Xpander Filter (15-mode multi-filter)
-// Adapted from sst-filters / OB-Xd by discoDSP
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct ObxdXpanderFilter {
@@ -1778,27 +1675,22 @@ impl ObxdXpanderFilter {
     pub fn process(&mut self, input: f32) -> f32 {
         let in_driven = apply_subtype(input, self.subtype, self.drive);
 
-        // Compute S and G for zero-delay feedback
         let s = (self.lpc * (self.lpc * (self.lpc * self.s1 + self.s2) + self.s3) + self.s4)
             / (1.0 + self.g);
         let gg = self.lpc * self.lpc * self.lpc * self.lpc;
 
-        // Solve feedback
         let y0 = (in_driven - self.r * s) / (1.0 + self.r * gg).max(1e-6);
 
-        // First stage with damping
         let v = (y0 - self.s1) * self.lpc;
         let res = v + self.s1;
         self.s1 = res + v;
         self.s1 = (self.s1 * self.rcor).atan() * self.rcorinv;
         let y1 = res;
 
-        // Stages 2-4
         let y2 = Self::tptpc(&mut self.s2, y1, self.g);
         let y3 = Self::tptpc(&mut self.s3, y2, self.g);
         let y4 = Self::tptpc(&mut self.s4, y3, self.g);
 
-        // 15-mode output mixing
         let mc = match self.subtype {
             FilterSubtype::XpanderLp1 => y1,
             FilterSubtype::XpanderLp2 => y2,
@@ -1850,15 +1742,9 @@ impl ObxdXpanderFilter {
         };
 
         let out = mc * (1.0 + self.r * 0.45);
-        out * 0.6 // gainAdjustment4Pole
+        out * 0.6
     }
 }
-
-// ---------------------------------------------------------------------------
-// Unified Filter
-// ---------------------------------------------------------------------------
-// Notch 24dB (cascaded biquad)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct Notch24Filter {
@@ -1867,7 +1753,7 @@ pub struct Notch24Filter {
     pub resonance: f32,
     pub drive: f32,
     pub subtype: FilterSubtype,
-    // Two biquad sections
+
     b0_1: f32,
     b1_1: f32,
     b2_1: f32,
@@ -1929,7 +1815,6 @@ impl Notch24Filter {
         let q = self.resonance.max(0.01);
         let alpha = sinw0 / (2.0 * q);
 
-        // Two identical notch biquad sections for 24dB/octave
         let b0 = 1.0;
         let b1 = -2.0 * cosw0;
         let b2 = 1.0;
@@ -1958,7 +1843,6 @@ impl Notch24Filter {
     pub fn process(&mut self, input: f32) -> f32 {
         let in_driven = apply_subtype(input, self.subtype, self.drive);
 
-        // Section 1
         let out1 = self.b0_1 * in_driven + self.b1_1 * self.x1_1 + self.b2_1 * self.x2_1
             - self.a1_1 * self.y1_1
             - self.a2_1 * self.y2_1;
@@ -1967,7 +1851,6 @@ impl Notch24Filter {
         self.y2_1 = self.y1_1;
         self.y1_1 = out1;
 
-        // Section 2
         let out2 = self.b0_2 * out1 + self.b1_2 * self.x1_2 + self.b2_2 * self.x2_2
             - self.a1_2 * self.y1_2
             - self.a2_2 * self.y2_2;
@@ -1990,8 +1873,6 @@ impl Notch24Filter {
         self.y2_2 = 0.0;
     }
 }
-
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub enum Filter {
@@ -2225,7 +2106,6 @@ impl Filter {
 
 #[inline]
 fn fast_tanh(x: f32) -> f32 {
-    // Approximation: x / (1 + |x|) for cheap tanh
     x / (1.0 + x.abs())
 }
 
@@ -2276,7 +2156,7 @@ fn apply_subtype(input: f32, subtype: FilterSubtype, drive: f32) -> f32 {
             };
             y / d.max(1.0)
         }
-        // OB-Xd Xpander modes do not apply input saturation
+
         FilterSubtype::XpanderLp1
         | FilterSubtype::XpanderLp2
         | FilterSubtype::XpanderLp3

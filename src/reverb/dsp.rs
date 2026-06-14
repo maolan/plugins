@@ -1,8 +1,3 @@
-/// Reverb reverb — ported from Airwindows Reverb.
-///
-/// Stereo reverb built from three allpass-like delay blocks,
-/// cross-feedback between channels, vibrato predelay, and
-/// input/output lowpass filters.
 pub struct Reverb {
     buf_il: Vec<f64>,
     buf_ir: Vec<f64>,

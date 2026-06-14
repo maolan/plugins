@@ -1,26 +1,21 @@
-//! Random evaluator with 7 distributions for modulation.
-
 use rand::RngExt;
 
-/// Random distribution types for modulation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RandomDistribution {
-    /// Uniform unipolar (0..1).
     Unipolar,
-    /// Uniform bipolar (-1..1).
+
     #[default]
     Bipolar,
-    /// Normal/Gaussian distribution, mean=0, stddev=1, clamped to ±3.
+
     Normal,
-    /// Half-normal (0..3, skewed toward 0).
+
     HalfNormal,
-    /// Boolean: either 0 or 1.
+
     Boolean,
-    /// Ternary: -1, 0, or 1.
+
     Ternary,
 }
 
-/// Random evaluator state.
 pub struct RandomEvaluator {
     dist: RandomDistribution,
 }
@@ -40,18 +35,16 @@ impl RandomEvaluator {
         self.dist = dist;
     }
 
-    /// Generate next random value.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> f32 {
         match self.dist {
             RandomDistribution::Unipolar => rand::rng().random_range(0.0f32..1.0f32),
             RandomDistribution::Bipolar => rand::rng().random_range(0.0f32..1.0f32) * 2.0 - 1.0,
             RandomDistribution::Normal => {
-                // Box-Muller transform for normal distribution.
                 let u1: f32 = rand::rng().random_range(0.0f32..1.0f32);
                 let u2: f32 = rand::rng().random_range(0.0f32..1.0f32);
                 let z0 = (-2.0f32 * u1.ln()).sqrt() * (2.0f32 * std::f32::consts::PI * u2).cos();
-                z0.clamp(-3.0, 3.0) / 3.0 // normalize to ~-1..1
+                z0.clamp(-3.0, 3.0) / 3.0
             }
             RandomDistribution::HalfNormal => {
                 let u1: f32 = rand::rng().random_range(0.0f32..1.0f32);

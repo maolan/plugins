@@ -1,8 +1,3 @@
-//! Parameter definitions for Maolan Kick.
-//!
-//! Exposes 2,864 automatable parameters (179 types × 16 instruments).
-//! ParamId is a computed u32: bits 0-7 = param type, bits 8-11 = instrument index.
-
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use clap_clap::ffi::{
@@ -13,10 +8,6 @@ use clap_clap::ffi::{
 pub const PARAM_TYPES_PER_INSTRUMENT: usize = 179;
 pub const INSTRUMENT_COUNT: usize = 16;
 pub const TOTAL_PARAM_COUNT: usize = PARAM_TYPES_PER_INSTRUMENT * INSTRUMENT_COUNT;
-
-// ---------------------------------------------------------------------------
-// ParamType — the 179 parameter types (one set per instrument)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -218,10 +209,6 @@ impl ParamType {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ParamId — computed u32: (instrument << 8) | param_type
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ParamId(pub u32);
 
@@ -241,7 +228,7 @@ impl ParamId {
     #[inline]
     pub const fn param_type(self) -> ParamType {
         let idx = (self.0 % (ParamType::COUNT as u32)) as u8;
-        // Safe because idx is always < ParamType::COUNT
+
         unsafe { std::mem::transmute(idx) }
     }
 
@@ -268,15 +255,10 @@ impl ParamId {
         }
     }
 
-    /// Iterate all parameter IDs.
     pub fn all() -> impl Iterator<Item = Self> {
         (0..Self::COUNT as u32).map(Self)
     }
 }
-
-// ---------------------------------------------------------------------------
-// ParamTypeDef — base definition for each of the 179 param types
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy)]
 pub struct ParamTypeDef {
@@ -1910,16 +1892,11 @@ pub const PARAM_TYPE_DEFS: [ParamTypeDef; ParamType::COUNT] = [
     },
 ];
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 #[inline]
 pub fn param_type_def(param_type: ParamType) -> &'static ParamTypeDef {
     &PARAM_TYPE_DEFS[param_type.as_index()]
 }
 
-/// Generate the display name for a parameter, including instrument prefix.
 pub fn param_name(id: ParamId) -> String {
     let inst = id.instrument();
     let ty = id.param_type();
@@ -1927,7 +1904,6 @@ pub fn param_name(id: ParamId) -> String {
     format!("Inst {inst} {}", def.base_name)
 }
 
-/// State key for serialization. Instrument 0 uses bare base_name for backward compatibility.
 pub fn state_key(id: ParamId) -> String {
     let inst = id.instrument();
     let ty = id.param_type();
@@ -1950,10 +1926,6 @@ pub fn sanitize_param_value(id: ParamId, value: f64) -> f64 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ParamStore
-// ---------------------------------------------------------------------------
-
 #[derive(Debug)]
 pub struct ParamStore {
     values: Vec<AtomicU64>,
@@ -1966,7 +1938,7 @@ impl Default for ParamStore {
             let inst = (i / PARAM_TYPES_PER_INSTRUMENT) as u8;
             let ty_idx = i % PARAM_TYPES_PER_INSTRUMENT;
             let def = &PARAM_TYPE_DEFS[ty_idx];
-            // For instruments 1-15, copy defaults from instrument 0
+
             let _ = inst;
             values.push(AtomicU64::new(def.default.to_bits()));
         }

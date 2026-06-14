@@ -1,3 +1,1 @@
-//! State serialization for Maolan Synth.
-
 pub use crate::common::state::PluginState;

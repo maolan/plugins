@@ -2,11 +2,6 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use super::slot::SeqLockSlot;
 
-// ---------------------------------------------------------------------------
-// Data types — repr(C) for predictable shared-memory layout.
-// ---------------------------------------------------------------------------
-
-/// FFT / spectrum data produced by a plugin.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct FftData {
@@ -23,7 +18,6 @@ impl Default for FftData {
     }
 }
 
-/// A single EQ band description.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct EqBand {
@@ -48,7 +42,6 @@ impl Default for EqBand {
     }
 }
 
-/// Variable-length band list using a fixed-capacity array.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct EqBands {
@@ -65,7 +58,6 @@ impl Default for EqBands {
     }
 }
 
-/// Per-band gain-reduction data produced by a dynamics plugin.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct CompressorGrData {
@@ -81,10 +73,6 @@ impl Default for CompressorGrData {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Plugin type
-// ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PluginType {
@@ -103,15 +91,10 @@ pub enum PluginType {
     Synth,
 }
 
-// ---------------------------------------------------------------------------
-// Shared-memory billboard layout
-// ---------------------------------------------------------------------------
-
-pub const BILLBOARD_MAGIC: u32 = 0x4D414F4C; // "MAOL"
+pub const BILLBOARD_MAGIC: u32 = 0x4D414F4C;
 pub const BILLBOARD_VERSION: u32 = 1;
 pub const MAX_SLOTS: usize = 64;
 
-/// Header at the start of the shared-memory segment.
 #[repr(C, align(256))]
 pub struct BillboardHeader {
     pub magic: u32,
@@ -124,7 +107,6 @@ pub struct BillboardHeader {
     pub _reserved: [u8; 256 - 32],
 }
 
-/// Fixed-size slot for one plugin instance in shared memory.
 #[repr(C)]
 pub struct BillboardSlot {
     pub active: AtomicU32,
@@ -141,19 +123,13 @@ pub struct BillboardSlot {
     pub gr_slot: SeqLockSlot<CompressorGrData>,
 }
 
-/// Total size of the billboard segment.
 pub const BILLBOARD_SIZE: usize =
     std::mem::size_of::<BillboardHeader>() + MAX_SLOTS * std::mem::size_of::<BillboardSlot>();
 
-// Static assertions to catch layout drift.
 const _: () = assert!(std::mem::size_of::<BillboardHeader>() == 256);
 const _: () = assert!(std::mem::align_of::<BillboardHeader>() == 256);
 const _: () = assert!(std::mem::size_of::<BillboardSlot>() == 5240);
 const _: () = assert!(std::mem::align_of::<BillboardSlot>() == 8);
-
-// ---------------------------------------------------------------------------
-// Billboard handle
-// ---------------------------------------------------------------------------
 
 use std::sync::OnceLock;
 
@@ -173,9 +149,6 @@ unsafe fn slot_ptr(ptr: *mut u8, index: usize) -> *mut BillboardSlot {
     unsafe { base.add(index * std::mem::size_of::<BillboardSlot>()) as *mut BillboardSlot }
 }
 
-/// Initialise the billboard.  Called once from `entry_init`.
-///
-/// `name` is the POSIX shared-memory segment name (e.g. `/maolan-plugins-billboard-1234`).
 pub fn init_billboard(name: &str) -> Result<(), String> {
     BILLBOARD_NAME
         .set(name.to_string())
@@ -184,7 +157,6 @@ pub fn init_billboard(name: &str) -> Result<(), String> {
     let (mapping, created) = super::shm::open_or_create(name, BILLBOARD_SIZE)?;
 
     if created {
-        // Zero everything and write the header.
         unsafe {
             std::ptr::write_bytes(mapping.as_ptr(), 0, BILLBOARD_SIZE);
             let h = header_mut(mapping.as_ptr());
@@ -203,7 +175,6 @@ pub fn init_billboard(name: &str) -> Result<(), String> {
             );
         }
     } else {
-        // Verify header.
         let h = unsafe { header_mut(mapping.as_ptr()) };
         if h.magic != BILLBOARD_MAGIC {
             return Err(format!(
@@ -226,20 +197,14 @@ pub fn init_billboard(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Opaque handle for a plugin instance on the bus.
 pub type InstanceId = u64;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-/// Allocate a fresh instance ID.
 pub fn next_instance_id() -> InstanceId {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-/// Register a plugin instance so peers can discover it.
-///
-/// Returns a `PluginSharedData` handle with the correct `slot_index` set.
-/// Callers should store this returned handle for later writes.
 pub fn register(id: InstanceId, mut data: PluginSharedData) -> PluginSharedData {
     with_billboard(|ptr| unsafe {
         let h = header_mut(ptr);
@@ -272,7 +237,6 @@ pub fn register(id: InstanceId, mut data: PluginSharedData) -> PluginSharedData 
     .unwrap_or(data)
 }
 
-/// Unregister a plugin instance.
 pub fn unregister(id: InstanceId) {
     with_billboard(|ptr| unsafe {
         let h = header_mut(ptr);
@@ -287,13 +251,11 @@ pub fn unregister(id: InstanceId) {
     });
 }
 
-/// Current registry version.
 pub fn registry_version() -> u64 {
     with_billboard(|ptr| unsafe { header_mut(ptr).registry_version.load(Ordering::Relaxed) })
         .unwrap_or(0)
 }
 
-/// Discover peers matching `filter`.
 pub fn discover(filter: impl Fn(&PluginSharedData) -> bool) -> Vec<PluginSharedData> {
     with_billboard(|ptr| unsafe {
         let mut out = Vec::new();
@@ -319,7 +281,6 @@ pub fn discover(filter: impl Fn(&PluginSharedData) -> bool) -> Vec<PluginSharedD
     .unwrap_or_default()
 }
 
-/// Look up a single peer by ID.
 pub fn get(id: InstanceId) -> Option<PluginSharedData> {
     with_billboard(|ptr| unsafe {
         for i in 0..MAX_SLOTS {
@@ -359,16 +320,10 @@ fn plugin_type_from_u32(v: u32) -> PluginType {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Plugin shared state
-// ---------------------------------------------------------------------------
-
 pub const HAS_FFT: u32 = 1;
 pub const HAS_BANDS: u32 = 2;
 pub const HAS_GR: u32 = 4;
 
-/// Lightweight handle to a plugin instance in the shared-memory billboard.
-/// `Copy` / `Clone` are cheap (just copies the slot index).
 #[derive(Clone, Copy)]
 pub struct PluginSharedData {
     pub plugin_type: PluginType,
@@ -446,29 +401,22 @@ impl PluginSharedData {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Global needs mask
-// ---------------------------------------------------------------------------
-
 pub const NEED_FFT: u32 = 1;
 pub const NEED_BANDS: u32 = 2;
 pub const NEED_GR: u32 = 4;
 
-/// Declare that this process needs data described by `mask`.
 pub fn add_needs(mask: u32) {
     with_billboard(|ptr| unsafe {
         header_mut(ptr).needs.fetch_or(mask, Ordering::Relaxed);
     });
 }
 
-/// Revoke a previous `add_needs`.
 pub fn remove_needs(mask: u32) {
     with_billboard(|ptr| unsafe {
         header_mut(ptr).needs.fetch_and(!mask, Ordering::Relaxed);
     });
 }
 
-/// True if any consumer has declared a need in `mask`.
 pub fn needs(mask: u32) -> bool {
     with_billboard(|ptr| unsafe { header_mut(ptr).needs.load(Ordering::Relaxed) & mask != 0 })
         .unwrap_or(false)
@@ -486,14 +434,13 @@ mod tests {
         let guard = TEST_MUTEX.lock().unwrap();
         TEST_INIT.call_once(|| {
             let name = format!("/maolan-test-billboard-{}", std::process::id());
-            // Clean up any stale segment from a previous test run.
+
             let _ = crate::common::shm::ShmMapping::unlink(&name);
             let _ = init_billboard(&name);
         });
         guard
     }
 
-    /// Clear every slot and reset the header atomics.  Test-only.
     fn reset_billboard() {
         with_billboard(|ptr| unsafe {
             let h = header_mut(ptr);
@@ -538,12 +485,10 @@ mod tests {
         let peers = discover(|_| true);
         assert_eq!(peers.len(), 2);
 
-        // Verify plugin types are preserved.
         let types: Vec<_> = peers.iter().map(|p| p.plugin_type).collect();
         assert!(types.contains(&PluginType::Eq));
         assert!(types.contains(&PluginType::Compressor));
 
-        // Verify handles have correct slot indices.
         assert_ne!(handle1.slot_index, handle2.slot_index);
 
         unregister(id1);
@@ -616,7 +561,6 @@ mod tests {
         let data = PluginSharedData::new(PluginType::Eq).with_fft(fft);
         let handle = register(id, data);
 
-        // Read back through the handle returned by register.
         let mut read_fft = FftData::default();
         if let Some(slot) = handle.fft_slot() {
             assert!(slot.read(&mut read_fft));
@@ -627,7 +571,6 @@ mod tests {
             panic!("fft_slot should be present");
         }
 
-        // Read back via discover.
         let peers = discover(|_| true);
         let peer = &peers[0];
         let mut read_fft2 = FftData::default();
@@ -769,7 +712,6 @@ mod tests {
         let data = PluginSharedData::new(PluginType::Stereo).with_fft(FftData::default());
         let handle = register(id, data);
 
-        // One writer + multiple readers concurrently.
         std::thread::scope(|s| {
             s.spawn(|| {
                 for i in 0..1000 {
@@ -801,24 +743,21 @@ mod tests {
     fn billboard_cross_process_simulation() {
         let _guard = setup();
         reset_billboard();
-        // Use the already-initialised billboard for this test.
+
         let name = BILLBOARD_NAME.get().unwrap().clone();
 
         let id = next_instance_id();
         let data = PluginSharedData::new(PluginType::Widener).with_fft(FftData::default());
         let _handle = register(id, data);
 
-        // Open a second mapping to the same segment (simulating another process).
         let mapping2 = crate::common::shm::ShmMapping::open_existing(&name, BILLBOARD_SIZE)
             .expect("should open existing billboard");
 
-        // Read through the second mapping.
         unsafe {
             let ptr = mapping2.as_ptr();
             let h = header_mut(ptr);
             assert_eq!(h.magic, BILLBOARD_MAGIC);
 
-            // Count active slots from the second mapping.
             let mut count = 0;
             for i in 0..MAX_SLOTS {
                 let slot = &*slot_ptr(ptr, i);

@@ -24,9 +24,7 @@ pub use voice::{ChannelSide, EventType, Voice, VoiceEvent};
 
 pub const MAX_CHANNELS: usize = 16;
 pub const MAX_VOICES: usize = 128;
-/// Dedicated thread pool for parallel audio loading.
-/// We use our own pool instead of rayon's global pool so that the GUI's
-/// iced_futures thread pool never competes with us for CPU.
+
 pub(crate) fn load_pool() -> &'static rayon::ThreadPool {
     use std::sync::OnceLock;
     static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
@@ -44,9 +42,6 @@ pub(crate) fn load_pool() -> &'static rayon::ThreadPool {
 
 pub const MIDI_NOTE_COUNT: usize = 128;
 
-/// Lock-free per-file entry for incremental loading.
-/// Audio thread checks `ready` (Acquire), then reads `file` (Acquire).
-/// Loader thread writes `file` (Release), then `ready` (Release).
 pub struct LockFreeAudioEntry {
     pub ready: AtomicBool,
     pub file: AtomicPtr<LoadedAudioFile>,
@@ -63,22 +58,18 @@ impl Drop for LockFreeAudioEntry {
     }
 }
 
-/// Lock-free container for loaded audio data and its index.
 pub struct AudioData {
     pub loaded: Vec<LoadedAudioFile>,
     pub index: HashMap<String, usize>,
     pub lock_free_entries: Vec<LockFreeAudioEntry>,
 }
 
-/// Reference to a loaded audio file and channel within it.
 #[derive(Debug, Clone)]
 pub struct AudioRef {
     pub file_index: usize,
     pub filechannel: usize,
 }
 
-/// Per-channel playback state within a voice.
-/// Pre-caches buffer pointer and length for lock-free rendering.
 #[derive(Debug, Clone)]
 pub struct ChannelPlayback {
     pub audio_ref: AudioRef,
@@ -89,7 +80,7 @@ pub struct ChannelPlayback {
     pub delay_remaining: usize,
     pub out_index: usize,
     pub side: crate::drust::engine::voice::ChannelSide,
-    /// Pre-cached pointer to audio buffer (valid because old audio is retired, not dropped).
+
     pub cached_buffer: *const f32,
     pub cached_buffer_len: usize,
 }
@@ -116,7 +107,6 @@ impl Default for ChannelPlayback {
 
 unsafe impl Send for ChannelPlayback {}
 
-/// Mutable state owned exclusively by the audio thread.
 #[derive(Debug)]
 pub struct AudioState {
     pub voices: Vec<Voice>,
@@ -160,7 +150,6 @@ impl AudioState {
     }
 }
 
-/// Retired data waiting for cleanup on the main thread.
 #[derive(Debug)]
 pub struct RetiredData {
     pub kit: *mut Arc<DrumKit>,
@@ -195,7 +184,7 @@ pub struct DrumGizmoEngine {
     pub load_generation: AtomicU64,
     pub should_cancel_loading: AtomicBool,
     pub last_load_error: Mutex<Option<String>>,
-    /// Lock-free cache: MIDI note → instrument index. Null = not built yet.
+
     pub note_cache: AtomicPtr<[Option<usize>; MIDI_NOTE_COUNT]>,
 }
 
@@ -232,7 +221,6 @@ impl Default for DrumGizmoEngine {
     }
 }
 
-/// Select a sample for the given velocity using DrumCraker-style round-robin mix.
 fn select_sample_with_diversity(
     instr: &crate::drust::drumkit::Instrument,
     velocity: f32,
@@ -374,7 +362,6 @@ impl DrumGizmoEngine {
         }
     }
 
-    /// Lock-free lookup of instrument index for a MIDI note.
     pub fn instrument_index_for_note(&self, note: u8) -> Option<usize> {
         let cache_ptr = self.note_cache.load(Ordering::Acquire);
         if cache_ptr.is_null() {
@@ -384,7 +371,6 @@ impl DrumGizmoEngine {
         cache[note as usize]
     }
 
-    /// Synchronous kit load (used by tests and offline rendering).
     pub fn load_kit(&self, path: &str) -> Result<(), loader::LoadError> {
         self.kit_ready.store(false, Ordering::Release);
         self.is_loading.store(false, Ordering::Release);
@@ -460,9 +446,6 @@ impl DrumGizmoEngine {
         Ok(())
     }
 
-    /// Asynchronous kit load. Parses XML on calling thread, then loads WAVs in parallel
-    /// via a dedicated rayon thread pool so the GUI thread pool is never starved.
-    /// Individual files become playable as they finish loading (lock-free per-file ready cache).
     pub fn load_kit_async(self: Arc<Self>, path: String) {
         self.kit_ready.store(false, Ordering::Release);
         self.is_loading.store(true, Ordering::Release);
@@ -992,9 +975,6 @@ impl DrumGizmoEngine {
         }
     }
 
-    /// Render directly to per-output mono output slices.
-    /// Separates render and advance passes like DrumCracker for
-    /// sample-accurate overlaps and consistent sub-sample interpolation.
     pub fn render_outputs(&self, frames: usize, outputs: &mut [Option<&mut [f32]>]) {
         if !self.kit_ready.load(Ordering::Acquire) {
             return;
@@ -1156,7 +1136,6 @@ impl DrumGizmoEngine {
         state.voices.retain(|v| v.active);
     }
 
-    /// Legacy flat-buffer render (kept for tests).
     pub fn render(&self, frames: usize, outputs: &mut [Vec<f32>]) {
         if !self.kit_ready.load(Ordering::Acquire) {
             return;

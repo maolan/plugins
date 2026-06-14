@@ -5,16 +5,9 @@ use serde_json::Value;
 
 use crate::rural_modeler::dsp::error::NamError;
 
-/// Re-implementation of NAM C++ `nam::activations::Activation`.
-///
-/// Each activation type implements this trait.  The global registry stores
-/// `Arc<dyn Activation>` so that `enable_fast_tanh()` can replace the
-/// singleton "Tanh" entry with "Fasttanh" exactly like the reference.
 pub trait Activation: Send + Sync + std::fmt::Debug {
-    /// Apply the activation in-place to a flat array of floats.
     fn apply(&self, data: &mut [f32]);
 
-    /// Convenience helper for a single sample.
     fn apply_sample(&self, x: f32) -> f32 {
         let mut buf = [x];
         self.apply(&mut buf);
@@ -38,7 +31,6 @@ pub fn leaky_hardtanh(x: f32, min_val: f32, max_val: f32, min_slope: f32, max_sl
     }
 }
 
-/// Fast tanh approximation using the same coefficients as NAM C++.
 #[inline]
 pub fn fast_tanh(x: f32) -> f32 {
     let ax = x.abs();
@@ -230,14 +222,11 @@ static REGISTRY: LazyLock<Mutex<HashMap<String, Arc<dyn Activation>>>> = LazyLoc
 static TANH_BACKUP: LazyLock<Mutex<Option<Arc<dyn Activation>>>> =
     LazyLock::new(|| Mutex::new(None));
 
-/// Look up a singleton activation by name from the global registry.
 pub fn get_activation(name: &str) -> Option<Arc<dyn Activation>> {
     let reg = REGISTRY.lock().unwrap();
     reg.get(name).cloned()
 }
 
-/// Enable fast tanh globally by replacing the "Tanh" registry entry with
-/// "Fasttanh", matching NAM C++ behavior.
 pub fn enable_fast_tanh() {
     let mut reg = REGISTRY.lock().unwrap();
     let fast = reg
@@ -252,7 +241,6 @@ pub fn enable_fast_tanh() {
     reg.insert("Tanh".into(), fast);
 }
 
-/// Disable fast tanh, restoring the original "Tanh" entry.
 pub fn disable_fast_tanh() {
     let mut reg = REGISTRY.lock().unwrap();
     let mut backup = TANH_BACKUP.lock().unwrap();
@@ -261,7 +249,6 @@ pub fn disable_fast_tanh() {
     }
 }
 
-/// Check whether the "Tanh" entry currently points to FastTanh.
 pub fn is_fast_tanh_enabled() -> bool {
     let reg = REGISTRY.lock().unwrap();
     if let Some(tanh) = reg.get("Tanh")
@@ -272,9 +259,6 @@ pub fn is_fast_tanh_enabled() -> bool {
     false
 }
 
-/// Parse an activation from JSON, either a simple string or an object with
-/// parameters.  Returns a fresh `Arc<dyn Activation>` (parameterized instances
-/// are allocated; singletons are cloned from the registry).
 pub fn parse_activation(config: &Value) -> Result<Arc<dyn Activation>, NamError> {
     let name = if let Some(s) = config.as_str() {
         s.to_string()

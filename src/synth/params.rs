@@ -1,5 +1,3 @@
-//! Parameter definitions for Maolan Synth.
-
 use clap_clap::ffi::{
     CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_IS_ENUM, CLAP_PARAM_IS_STEPPED,
     CLAP_PARAM_REQUIRES_PROCESS,
@@ -8,7 +6,6 @@ use clap_clap::ffi::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum ParamId {
-    // Oscillator 1
     Osc1Type = 0,
     Osc1Octave = 1,
     Osc1Semitone = 2,
@@ -20,7 +17,6 @@ pub enum ParamId {
     Osc1Unison = 8,
     Osc1UnisonDetune = 9,
 
-    // Oscillator 2
     Osc2Type = 10,
     Osc2Octave = 11,
     Osc2Semitone = 12,
@@ -32,7 +28,6 @@ pub enum ParamId {
     Osc2Unison = 18,
     Osc2UnisonDetune = 19,
 
-    // Oscillator 3
     Osc3Type = 20,
     Osc3Octave = 21,
     Osc3Semitone = 22,
@@ -45,7 +40,6 @@ pub enum ParamId {
     Osc3Unison = 29,
     Osc3UnisonDetune = 30,
 
-    // Filter 1
     F1Type = 31,
     F1Cutoff = 32,
     F1Resonance = 33,
@@ -54,7 +48,6 @@ pub enum ParamId {
     F1Drive = 36,
     F1Enabled = 37,
 
-    // Filter 2
     F2Type = 38,
     F2Cutoff = 39,
     F2Resonance = 40,
@@ -63,45 +56,38 @@ pub enum ParamId {
     F2Drive = 43,
     F2Enabled = 44,
 
-    // Filter routing
     FilterRouting = 45,
 
-    // Amp EG
     AmpAttack = 46,
     AmpDecay = 47,
     AmpSustain = 48,
     AmpRelease = 49,
     AmpEgMode = 50,
 
-    // Filter EG
     FilterAttack = 51,
     FilterDecay = 52,
     FilterSustain = 53,
     FilterRelease = 54,
     FilterEgMode = 55,
 
-    // Pitch EG
     PitchAttack = 56,
     PitchDecay = 57,
     PitchSustain = 58,
     PitchRelease = 59,
     PitchEgMode = 60,
 
-    // LFO 1
     Lfo1Rate = 61,
     Lfo1Shape = 62,
     Lfo1Amount = 63,
     Lfo1Deform = 64,
     Lfo1Trigger = 65,
 
-    // LFO 2
     Lfo2Rate = 66,
     Lfo2Shape = 67,
     Lfo2Amount = 68,
     Lfo2Deform = 69,
     Lfo2Trigger = 70,
 
-    // Legacy modulation depths (kept for state compatibility)
     ModVelToF1 = 71,
     ModKeyToF1 = 72,
     ModLfo1ToF1 = 73,
@@ -109,7 +95,6 @@ pub enum ParamId {
     ModWheelToF1 = 75,
     ModAtToF1 = 76,
 
-    // Output
     Volume = 77,
     Pan = 78,
     Width = 79,
@@ -117,7 +102,6 @@ pub enum ParamId {
     Portamento = 81,
     PitchBendRange = 82,
 
-    // Modulation matrix (12 routings × 3 params)
     ModRoute1Source = 83,
     ModRoute1Target = 84,
     ModRoute1Depth = 85,
@@ -155,7 +139,6 @@ pub enum ParamId {
     ModRoute12Target = 117,
     ModRoute12Depth = 118,
 
-    // Noise generator
     NoiseType = 119,
     NoiseLevel = 120,
     NoiseFilterType = 121,
@@ -164,41 +147,32 @@ pub enum ParamId {
     NoiseFilterEnabled = 124,
     NoiseEnabled = 125,
 
-    // Waveshaper
     WaveshaperShape = 126,
     WaveshaperDrive = 127,
     WaveshaperMix = 128,
     WaveshaperEnabled = 129,
 
-    // Flavor filter
     FlavorType = 130,
     FlavorCutoff = 131,
     FlavorResonance = 132,
 
-    // FM routing
     OscFmMode = 133,
 
-    // Macros
     Macro1 = 134,
     Macro2 = 135,
     Macro3 = 136,
     Macro4 = 137,
 
-    // Filter subtypes
     F1Subtype = 138,
     F2Subtype = 139,
 
-    // Filter balance
     FilterBalance = 140,
 
-    // Oscillator drift
     OscDrift = 141,
 
-    // Play mode / voice priority
     PlayMode = 142,
     VoicePriority = 143,
 
-    // LFO1 sync and envelope
     Lfo1SyncMode = 144,
     Lfo1SyncDiv = 145,
     Lfo1EnvDelay = 146,
@@ -208,7 +182,6 @@ pub enum ParamId {
     Lfo1EnvSustain = 150,
     Lfo1EnvRelease = 151,
 
-    // LFO2 sync and envelope
     Lfo2SyncMode = 152,
     Lfo2SyncDiv = 153,
     Lfo2EnvDelay = 154,
@@ -218,7 +191,6 @@ pub enum ParamId {
     Lfo2EnvSustain = 158,
     Lfo2EnvRelease = 159,
 
-    // Step sequencer steps 1-16
     StepSeq1 = 160,
     StepSeq2 = 161,
     StepSeq3 = 162,
@@ -236,35 +208,27 @@ pub enum ParamId {
     StepSeq15 = 174,
     StepSeq16 = 175,
 
-    // Step sequencer loop
     StepSeqLoopStart = 176,
     StepSeqLoopEnd = 177,
 
-    // Oscillator phase modes
     Osc1PhaseMode = 178,
     Osc2PhaseMode = 179,
     Osc3PhaseMode = 180,
 
-    // Portamento curve
     PortamentoCurve = 181,
 
-    // LFO start phase
     Lfo1Phase = 182,
     Lfo2Phase = 183,
 
-    // Oscillator hard sync
     Osc1Sync = 184,
     Osc2Sync = 185,
     Osc3Sync = 186,
 
-    // FM depth
     OscFmDepth = 187,
 
-    // LFO unipolar toggle
     Lfo1Unipolar = 188,
     Lfo2Unipolar = 189,
 
-    // Oscillator waveform selection for Classic
     Osc1Waveform = 190,
     Osc2Waveform = 191,
     Osc3Waveform = 192,
@@ -272,7 +236,7 @@ pub enum ParamId {
     EgAttackCurve = 194,
     EgDecayCurve = 195,
     EgReleaseCurve = 196,
-    // LFO3 params
+
     Lfo3Rate = 197,
     Lfo3Shape = 198,
     Lfo3Amount = 199,
@@ -288,7 +252,7 @@ pub enum ParamId {
     Lfo3EnvRelease = 209,
     Lfo3Phase = 210,
     Lfo3Unipolar = 211,
-    // LFO4 params
+
     Lfo4Rate = 212,
     Lfo4Shape = 213,
     Lfo4Amount = 214,
@@ -304,7 +268,7 @@ pub enum ParamId {
     Lfo4EnvRelease = 224,
     Lfo4Phase = 225,
     Lfo4Unipolar = 226,
-    // LFO5 params
+
     Lfo5Rate = 227,
     Lfo5Shape = 228,
     Lfo5Amount = 229,
@@ -320,7 +284,7 @@ pub enum ParamId {
     Lfo5EnvRelease = 239,
     Lfo5Phase = 240,
     Lfo5Unipolar = 241,
-    // LFO6 params
+
     Lfo6Rate = 242,
     Lfo6Shape = 243,
     Lfo6Amount = 244,
@@ -336,7 +300,7 @@ pub enum ParamId {
     Lfo6EnvRelease = 254,
     Lfo6Phase = 255,
     Lfo6Unipolar = 256,
-    // Macros 5-8
+
     Macro5 = 257,
     Macro6 = 258,
     Macro7 = 259,
@@ -410,7 +374,6 @@ pub enum ParamId {
     TuningRoot = 327,
     TuningSclIndex = 393,
 
-    // MSEG nodes 1-32
     MsegNode1 = 328,
     MsegNode2 = 329,
     MsegNode3 = 330,
@@ -540,7 +503,6 @@ pub enum ParamId {
     MsegNode127 = 488,
     MsegNode128 = 489,
 
-    // MSEG segment curves 1-31
     MsegCurve1 = 360,
     MsegCurve2 = 361,
     MsegCurve3 = 362,
@@ -669,13 +631,11 @@ pub enum ParamId {
     MsegCurve126 = 584,
     MsegCurve127 = 585,
 
-    // MSEG loop points
     MsegLoopStart = 391,
     MsegLoopEnd = 392,
 
     MsegLoopMode = 586,
 
-    // Filter / Output utility params
     PreFilterGain = 587,
     VcaLevel = 588,
     VcaVelSense = 589,
@@ -891,7 +851,6 @@ impl ParamId {
             ParamId::Polyphony,
             ParamId::Portamento,
             ParamId::PitchBendRange,
-            // Mod matrix
             ParamId::ModRoute1Source,
             ParamId::ModRoute1Target,
             ParamId::ModRoute1Depth,
@@ -928,7 +887,6 @@ impl ParamId {
             ParamId::ModRoute12Source,
             ParamId::ModRoute12Target,
             ParamId::ModRoute12Depth,
-            // Noise
             ParamId::NoiseType,
             ParamId::NoiseLevel,
             ParamId::NoiseFilterType,
@@ -936,33 +894,24 @@ impl ParamId {
             ParamId::NoiseFilterResonance,
             ParamId::NoiseFilterEnabled,
             ParamId::NoiseEnabled,
-            // Waveshaper
             ParamId::WaveshaperShape,
             ParamId::WaveshaperDrive,
             ParamId::WaveshaperMix,
             ParamId::WaveshaperEnabled,
-            // Flavor
             ParamId::FlavorType,
             ParamId::FlavorCutoff,
             ParamId::FlavorResonance,
-            // FM
             ParamId::OscFmMode,
-            // Macros
             ParamId::Macro1,
             ParamId::Macro2,
             ParamId::Macro3,
             ParamId::Macro4,
-            // Filter subtypes
             ParamId::F1Subtype,
             ParamId::F2Subtype,
-            // Filter balance
             ParamId::FilterBalance,
-            // Osc drift
             ParamId::OscDrift,
-            // Play mode / voice priority
             ParamId::PlayMode,
             ParamId::VoicePriority,
-            // LFO1 sync + env
             ParamId::Lfo1SyncMode,
             ParamId::Lfo1SyncDiv,
             ParamId::Lfo1EnvDelay,
@@ -971,7 +920,6 @@ impl ParamId {
             ParamId::Lfo1EnvDecay,
             ParamId::Lfo1EnvSustain,
             ParamId::Lfo1EnvRelease,
-            // LFO2 sync + env
             ParamId::Lfo2SyncMode,
             ParamId::Lfo2SyncDiv,
             ParamId::Lfo2EnvDelay,
@@ -980,7 +928,6 @@ impl ParamId {
             ParamId::Lfo2EnvDecay,
             ParamId::Lfo2EnvSustain,
             ParamId::Lfo2EnvRelease,
-            // Step sequencer
             ParamId::StepSeq1,
             ParamId::StepSeq2,
             ParamId::StepSeq3,
@@ -997,28 +944,20 @@ impl ParamId {
             ParamId::StepSeq14,
             ParamId::StepSeq15,
             ParamId::StepSeq16,
-            // Step seq loop
             ParamId::StepSeqLoopStart,
             ParamId::StepSeqLoopEnd,
-            // Osc phase modes
             ParamId::Osc1PhaseMode,
             ParamId::Osc2PhaseMode,
             ParamId::Osc3PhaseMode,
-            // Portamento curve
             ParamId::PortamentoCurve,
-            // LFO phase
             ParamId::Lfo1Phase,
             ParamId::Lfo2Phase,
-            // Oscillator hard sync
             ParamId::Osc1Sync,
             ParamId::Osc2Sync,
             ParamId::Osc3Sync,
-            // FM depth
             ParamId::OscFmDepth,
-            // LFO unipolar
             ParamId::Lfo1Unipolar,
             ParamId::Lfo2Unipolar,
-            // Oscillator waveforms
             ParamId::Osc1Waveform,
             ParamId::Osc2Waveform,
             ParamId::Osc3Waveform,
@@ -1026,7 +965,6 @@ impl ParamId {
             ParamId::EgAttackCurve,
             ParamId::EgDecayCurve,
             ParamId::EgReleaseCurve,
-            // LFO3
             ParamId::Lfo3Rate,
             ParamId::Lfo3Shape,
             ParamId::Lfo3Amount,
@@ -1042,7 +980,6 @@ impl ParamId {
             ParamId::Lfo3EnvRelease,
             ParamId::Lfo3Phase,
             ParamId::Lfo3Unipolar,
-            // LFO4
             ParamId::Lfo4Rate,
             ParamId::Lfo4Shape,
             ParamId::Lfo4Amount,
@@ -1058,7 +995,6 @@ impl ParamId {
             ParamId::Lfo4EnvRelease,
             ParamId::Lfo4Phase,
             ParamId::Lfo4Unipolar,
-            // LFO5
             ParamId::Lfo5Rate,
             ParamId::Lfo5Shape,
             ParamId::Lfo5Amount,
@@ -1074,7 +1010,6 @@ impl ParamId {
             ParamId::Lfo5EnvRelease,
             ParamId::Lfo5Phase,
             ParamId::Lfo5Unipolar,
-            // LFO6
             ParamId::Lfo6Rate,
             ParamId::Lfo6Shape,
             ParamId::Lfo6Amount,
@@ -1090,7 +1025,6 @@ impl ParamId {
             ParamId::Lfo6EnvRelease,
             ParamId::Lfo6Phase,
             ParamId::Lfo6Unipolar,
-            // Macros 5-8
             ParamId::Macro5,
             ParamId::Macro6,
             ParamId::Macro7,
@@ -1163,7 +1097,6 @@ impl ParamId {
             ParamId::TuningScale,
             ParamId::TuningRoot,
             ParamId::TuningSclIndex,
-            // MSEG nodes
             ParamId::MsegNode1,
             ParamId::MsegNode2,
             ParamId::MsegNode3,
@@ -1292,7 +1225,6 @@ impl ParamId {
             ParamId::MsegNode126,
             ParamId::MsegNode127,
             ParamId::MsegNode128,
-            // MSEG curves
             ParamId::MsegCurve1,
             ParamId::MsegCurve2,
             ParamId::MsegCurve3,
@@ -1420,11 +1352,9 @@ impl ParamId {
             ParamId::MsegCurve125,
             ParamId::MsegCurve126,
             ParamId::MsegCurve127,
-            // MSEG loop
             ParamId::MsegLoopStart,
             ParamId::MsegLoopEnd,
             ParamId::MsegLoopMode,
-            // Utility params
             ParamId::PreFilterGain,
             ParamId::VcaLevel,
             ParamId::VcaVelSense,
@@ -1635,7 +1565,6 @@ macro_rules! def_toggle {
 }
 
 pub static PARAMS: [ParamDef; ParamId::COUNT] = [
-    // Oscillator 1
     def_enum!(ParamId::Osc1Type, "Type", "Osc1", 10.0, 0.0),
     def_enum!(ParamId::Osc1Octave, "Octave", "Osc1", 6.0, 3.0),
     def_enum!(ParamId::Osc1Semitone, "Semitone", "Osc1", 24.0, 12.0),
@@ -1655,7 +1584,6 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.01
     ),
     def_automatable!(ParamId::Osc1Sync, "Sync", "Osc1", 0.0, 60.0, 0.0, 0.0),
-    // Oscillator 2
     def_enum!(ParamId::Osc2Type, "Type", "Osc2", 10.0, 1.0),
     def_enum!(ParamId::Osc2Octave, "Octave", "Osc2", 6.0, 3.0),
     def_enum!(ParamId::Osc2Semitone, "Semitone", "Osc2", 24.0, 12.0),
@@ -1675,7 +1603,6 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.01
     ),
     def_automatable!(ParamId::Osc2Sync, "Sync", "Osc2", 0.0, 60.0, 0.0, 0.0),
-    // Oscillator 3
     def_enum!(ParamId::Osc3Type, "Type", "Osc3", 10.0, 2.0),
     def_enum!(ParamId::Osc3Octave, "Octave", "Osc3", 6.0, 2.0),
     def_enum!(ParamId::Osc3Semitone, "Semitone", "Osc3", 24.0, 12.0),
@@ -1704,7 +1631,6 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.01
     ),
     def_automatable!(ParamId::Osc3Sync, "Sync", "Osc3", 0.0, 60.0, 0.0, 0.0),
-    // Filter 1
     def_enum!(ParamId::F1Type, "Type", "Filter1", 48.0, 1.0),
     def_automatable!(
         ParamId::F1Cutoff,
@@ -1744,7 +1670,6 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
     ),
     def_automatable!(ParamId::F1Drive, "Drive", "Filter1", 0.0, 1.0, 0.0, 0.01),
     def_toggle!(ParamId::F1Enabled, "Enabled", "Filter1", 1.0),
-    // Filter 2
     def_enum!(ParamId::F2Type, "Type", "Filter2", 48.0, 0.0),
     def_automatable!(
         ParamId::F2Cutoff,
@@ -1784,9 +1709,7 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
     ),
     def_automatable!(ParamId::F2Drive, "Drive", "Filter2", 0.0, 1.0, 0.0, 0.01),
     def_toggle!(ParamId::F2Enabled, "Enabled", "Filter2", 0.0),
-    // Filter routing
     def_enum!(ParamId::FilterRouting, "Routing", "Filter", 7.0, 0.0),
-    // Amp EG
     def_automatable!(ParamId::AmpAttack, "Attack", "AmpEG", 0.0, 10.0, 0.01, 0.01),
     def_automatable!(ParamId::AmpDecay, "Decay", "AmpEG", 0.0, 10.0, 0.2, 0.01),
     def_automatable!(ParamId::AmpSustain, "Sustain", "AmpEG", 0.0, 1.0, 0.7, 0.01),
@@ -1800,7 +1723,6 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.01
     ),
     def_enum!(ParamId::AmpEgMode, "Mode", "AmpEG", 1.0, 0.0),
-    // Filter EG
     def_automatable!(
         ParamId::FilterAttack,
         "Attack",
@@ -1838,7 +1760,6 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.01
     ),
     def_enum!(ParamId::FilterEgMode, "Mode", "FilterEG", 1.0, 0.0),
-    // Pitch EG
     def_automatable!(
         ParamId::PitchAttack,
         "Attack",
@@ -1876,19 +1797,16 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.01
     ),
     def_enum!(ParamId::PitchEgMode, "Mode", "PitchEG", 1.0, 0.0),
-    // LFO 1
     def_automatable!(ParamId::Lfo1Rate, "Rate", "LFO1", 0.01, 100.0, 1.0, 0.01),
     def_enum!(ParamId::Lfo1Shape, "Shape", "LFO1", 9.0, 0.0),
     def_automatable!(ParamId::Lfo1Amount, "Amount", "LFO1", 0.0, 1.0, 0.0, 0.01),
     def_automatable!(ParamId::Lfo1Deform, "Deform", "LFO1", -1.0, 1.0, 0.0, 0.01),
     def_enum!(ParamId::Lfo1Trigger, "Trigger", "LFO1", 2.0, 1.0),
-    // LFO 2
     def_automatable!(ParamId::Lfo2Rate, "Rate", "LFO2", 0.01, 100.0, 0.5, 0.01),
     def_enum!(ParamId::Lfo2Shape, "Shape", "LFO2", 9.0, 1.0),
     def_automatable!(ParamId::Lfo2Amount, "Amount", "LFO2", 0.0, 1.0, 0.0, 0.01),
     def_automatable!(ParamId::Lfo2Deform, "Deform", "LFO2", -1.0, 1.0, 0.0, 0.01),
     def_enum!(ParamId::Lfo2Trigger, "Trigger", "LFO2", 2.0, 1.0),
-    // Legacy modulation depths (state compat)
     def_automatable!(ParamId::ModVelToF1, "Vel→F1", "Mod", 0.0, 1.0, 0.0, 0.01),
     def_automatable!(ParamId::ModKeyToF1, "Key→F1", "Mod", 0.0, 1.0, 0.0, 0.01),
     def_automatable!(ParamId::ModLfo1ToF1, "LFO1→F1", "Mod", 0.0, 1.0, 0.0, 0.01),
@@ -1911,7 +1829,6 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.01
     ),
     def_automatable!(ParamId::ModAtToF1, "AT→F1", "Mod", 0.0, 1.0, 0.0, 0.01),
-    // Global
     def_automatable!(ParamId::Volume, "Volume", "Global", 0.0, 1.0, 0.8, 0.01),
     def_automatable!(ParamId::Pan, "Pan", "Global", -1.0, 1.0, 0.0, 0.01),
     def_automatable!(ParamId::Width, "Width", "Global", -1.0, 1.0, 0.0, 0.01),
@@ -1926,7 +1843,6 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.01
     ),
     def_enum!(ParamId::PitchBendRange, "PB Range", "Global", 24.0, 2.0),
-    // Modulation matrix routings (12 × 3)
     def_enum!(ParamId::ModRoute1Source, "Source", "Mod1", 35.0, 0.0),
     def_enum!(ParamId::ModRoute1Target, "Target", "Mod1", 82.0, 15.0),
     def_automatable!(
@@ -2177,7 +2093,6 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         1.0
     ),
     def_enum!(ParamId::TuningSclIndex, "SCL File", "Tuning", 63.0, 0.0),
-    // Noise
     def_enum!(ParamId::NoiseType, "Type", "Noise", 2.0, 0.0),
     def_automatable!(ParamId::NoiseLevel, "Level", "Noise", 0.0, 1.0, 0.0, 0.01),
     def_enum!(ParamId::NoiseFilterType, "Filter Type", "Noise", 14.0, 0.0),
@@ -2201,7 +2116,6 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
     ),
     def_toggle!(ParamId::NoiseFilterEnabled, "Filter On", "Noise", 0.0),
     def_toggle!(ParamId::NoiseEnabled, "Enabled", "Noise", 0.0),
-    // Waveshaper
     def_enum!(ParamId::WaveshaperShape, "Shape", "Waveshaper", 45.0, 0.0),
     def_automatable!(
         ParamId::WaveshaperDrive,
@@ -2222,7 +2136,6 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.01
     ),
     def_toggle!(ParamId::WaveshaperEnabled, "Enabled", "Waveshaper", 0.0),
-    // Flavor
     def_enum!(ParamId::FlavorType, "Type", "Flavor", 4.0, 0.0),
     def_automatable!(
         ParamId::FlavorCutoff,
@@ -2242,18 +2155,14 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.5,
         0.01
     ),
-    // FM
     def_enum!(ParamId::OscFmMode, "FM Mode", "Osc", 9.0, 0.0),
     def_automatable!(ParamId::OscFmDepth, "FM Depth", "Osc", 0.0, 1.0, 0.5, 0.01),
-    // Macros
     def_automatable!(ParamId::Macro1, "Macro 1", "Macro", 0.0, 1.0, 0.0, 0.01),
     def_automatable!(ParamId::Macro2, "Macro 2", "Macro", 0.0, 1.0, 0.0, 0.01),
     def_automatable!(ParamId::Macro3, "Macro 3", "Macro", 0.0, 1.0, 0.0, 0.01),
     def_automatable!(ParamId::Macro4, "Macro 4", "Macro", 0.0, 1.0, 0.0, 0.01),
-    // Filter subtypes
     def_enum!(ParamId::F1Subtype, "Subtype", "Filter1", 21.0, 0.0),
     def_enum!(ParamId::F2Subtype, "Subtype", "Filter2", 21.0, 0.0),
-    // Filter balance
     def_automatable!(
         ParamId::FilterBalance,
         "Balance",
@@ -2263,12 +2172,9 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.0,
         0.01
     ),
-    // Oscillator drift
     def_automatable!(ParamId::OscDrift, "Drift", "Global", 0.0, 1.0, 0.0, 0.01),
-    // Play mode / voice priority
     def_enum!(ParamId::PlayMode, "Play Mode", "Global", 15.0, 0.0),
     def_enum!(ParamId::VoicePriority, "Priority", "Global", 6.0, 0.0),
-    // LFO1 sync + envelope
     def_toggle!(ParamId::Lfo1SyncMode, "Sync Mode", "LFO1", 1.0),
     def_enum!(ParamId::Lfo1SyncDiv, "Sync Div", "LFO1", 16.0, 2.0),
     def_automatable!(
@@ -2325,7 +2231,6 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.3,
         0.001
     ),
-    // LFO2 sync + envelope
     def_toggle!(ParamId::Lfo2SyncMode, "Sync Mode", "LFO2", 1.0),
     def_enum!(ParamId::Lfo2SyncDiv, "Sync Div", "LFO2", 16.0, 2.0),
     def_automatable!(
@@ -2382,7 +2287,6 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.3,
         0.001
     ),
-    // Step sequencer steps
     def_automatable!(ParamId::StepSeq1, "Step 1", "StepSeq", -1.0, 1.0, 0.0, 0.01),
     def_automatable!(ParamId::StepSeq2, "Step 2", "StepSeq", -1.0, 1.0, 0.0, 0.01),
     def_automatable!(ParamId::StepSeq3, "Step 3", "StepSeq", -1.0, 1.0, 0.0, 0.01),
@@ -2455,7 +2359,6 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.0,
         0.01
     ),
-    // Step sequencer loop
     def_enum!(
         ParamId::StepSeqLoopStart,
         "Loop Start",
@@ -2464,13 +2367,10 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.0
     ),
     def_enum!(ParamId::StepSeqLoopEnd, "Loop End", "StepSeq", 15.0, 15.0),
-    // Oscillator phase modes
     def_enum!(ParamId::Osc1PhaseMode, "Phase Mode", "Osc1", 2.0, 0.0),
     def_enum!(ParamId::Osc2PhaseMode, "Phase Mode", "Osc2", 2.0, 0.0),
     def_enum!(ParamId::Osc3PhaseMode, "Phase Mode", "Osc3", 2.0, 0.0),
-    // Portamento curve
     def_enum!(ParamId::PortamentoCurve, "Curve", "Global", 2.0, 0.0),
-    // LFO start phase
     def_automatable!(
         ParamId::Lfo1Phase,
         "Start Phase",
@@ -2506,7 +2406,6 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
     def_enum!(ParamId::EgAttackCurve, "Attack Curve", "EG", 2.0, 0.0),
     def_enum!(ParamId::EgDecayCurve, "Decay Curve", "EG", 2.0, 0.0),
     def_enum!(ParamId::EgReleaseCurve, "Release Curve", "EG", 2.0, 0.0),
-    // LFO 3
     def_automatable!(ParamId::Lfo3Rate, "Rate", "LFO3", 0.01, 100.0, 0.5, 0.01),
     def_enum!(ParamId::Lfo3Shape, "Shape", "LFO3", 9.0, 1.0),
     def_automatable!(ParamId::Lfo3Amount, "Amount", "LFO3", 0.0, 1.0, 0.0, 0.01),
@@ -2578,7 +2477,6 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.01
     ),
     def_toggle!(ParamId::Lfo3Unipolar, "Unipolar", "LFO3", 0.0),
-    // LFO 4
     def_automatable!(ParamId::Lfo4Rate, "Rate", "LFO4", 0.01, 100.0, 0.5, 0.01),
     def_enum!(ParamId::Lfo4Shape, "Shape", "LFO4", 9.0, 1.0),
     def_automatable!(ParamId::Lfo4Amount, "Amount", "LFO4", 0.0, 1.0, 0.0, 0.01),
@@ -2650,7 +2548,6 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.01
     ),
     def_toggle!(ParamId::Lfo4Unipolar, "Unipolar", "LFO4", 0.0),
-    // LFO 5
     def_automatable!(ParamId::Lfo5Rate, "Rate", "LFO5", 0.01, 100.0, 0.5, 0.01),
     def_enum!(ParamId::Lfo5Shape, "Shape", "LFO5", 9.0, 1.0),
     def_automatable!(ParamId::Lfo5Amount, "Amount", "LFO5", 0.0, 1.0, 0.0, 0.01),
@@ -2722,7 +2619,6 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.01
     ),
     def_toggle!(ParamId::Lfo5Unipolar, "Unipolar", "LFO5", 0.0),
-    // LFO 6
     def_automatable!(ParamId::Lfo6Rate, "Rate", "LFO6", 0.01, 100.0, 0.5, 0.01),
     def_enum!(ParamId::Lfo6Shape, "Shape", "LFO6", 9.0, 1.0),
     def_automatable!(ParamId::Lfo6Amount, "Amount", "LFO6", 0.0, 1.0, 0.0, 0.01),
@@ -2794,7 +2690,6 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.01
     ),
     def_toggle!(ParamId::Lfo6Unipolar, "Unipolar", "LFO6", 0.0),
-    // Macros 5-8
     def_automatable!(ParamId::Macro5, "Macro 5", "Macro", 0.0, 1.0, 0.0, 0.01),
     def_automatable!(ParamId::Macro6, "Macro 6", "Macro", 0.0, 1.0, 0.0, 0.01),
     def_automatable!(ParamId::Macro7, "Macro 7", "Macro", 0.0, 1.0, 0.0, 0.01),
@@ -2954,7 +2849,6 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         1.0,
         0.01
     ),
-    // MSEG nodes
     def_automatable!(ParamId::MsegNode1, "Node 1", "MSEG", -1.0, 1.0, 0.0, 0.01),
     def_automatable!(ParamId::MsegNode2, "Node 2", "MSEG", -1.0, 1.0, 0.0, 0.01),
     def_automatable!(ParamId::MsegNode3, "Node 3", "MSEG", -1.0, 1.0, 0.0, 0.01),
@@ -3315,7 +3209,6 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         0.0,
         0.01
     ),
-    // MSEG curves
     def_enum!(ParamId::MsegCurve1, "Curve 1", "MSEG", 15.0, 0.0),
     def_enum!(ParamId::MsegCurve2, "Curve 2", "MSEG", 15.0, 0.0),
     def_enum!(ParamId::MsegCurve3, "Curve 3", "MSEG", 15.0, 0.0),
@@ -3443,11 +3336,9 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
     def_enum!(ParamId::MsegCurve125, "Curve 125", "MSEG", 15.0, 0.0),
     def_enum!(ParamId::MsegCurve126, "Curve 126", "MSEG", 15.0, 0.0),
     def_enum!(ParamId::MsegCurve127, "Curve 127", "MSEG", 15.0, 0.0),
-    // MSEG loop
     def_enum!(ParamId::MsegLoopStart, "Loop Start", "MSEG", 127.0, 0.0),
     def_enum!(ParamId::MsegLoopEnd, "Loop End", "MSEG", 127.0, 127.0),
     def_enum!(ParamId::MsegLoopMode, "Loop Mode", "MSEG", 2.0, 0.0),
-    // Utility params
     def_automatable!(
         ParamId::PreFilterGain,
         "Pre-Filter Gain",

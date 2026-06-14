@@ -21,9 +21,6 @@ impl Instrument {
         Self::default()
     }
 
-    /// Select a sample based on velocity (0.0–1.0).
-    /// Uses power-level matching: finds the sample whose power is closest
-    /// to the target power derived from velocity.
     pub fn sample_for_velocity(&self, velocity: f32) -> Option<&Sample> {
         if self.samples.is_empty() {
             return None;
@@ -56,7 +53,6 @@ impl Instrument {
         self.samples.get(best_idx)
     }
 
-    /// Get the output channel name for a given instrument channel name.
     pub fn output_channel_for(&self, in_channel: &str) -> Option<&str> {
         self.channelmaps
             .iter()

@@ -79,10 +79,6 @@ static DESCRIPTOR: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor {
     features: FEATURES.0.as_ptr(),
 });
 
-// ---------------------------------------------------------------------------
-// SharedState
-// ---------------------------------------------------------------------------
-
 #[derive(Debug)]
 pub struct SharedState {
     pub params: ParamStore,
@@ -319,10 +315,6 @@ fn emit_pending_param_events_to_host_synth(
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Parameter → VoiceParams conversion
-// ---------------------------------------------------------------------------
 
 fn build_voice_params(params: &ParamStore) -> VoiceParams {
     use crate::synth::dsp::{
@@ -714,7 +706,6 @@ fn build_voice_params(params: &ParamStore) -> VoiceParams {
         mseg_curves[i] = MsegCurve::from_u8(params.get(*pid) as u8);
     }
 
-    // Per-envelope curve shapes: 0=use global, 1-3=actual shape (mapped to 0-2)
     let eg_attack = |per: ParamId| {
         let v = params.get(per) as u8;
         if v == 0 {
@@ -1384,10 +1375,6 @@ fn build_voice_params(params: &ParamStore) -> VoiceParams {
     }
 }
 
-// ---------------------------------------------------------------------------
-// AudioProcessor
-// ---------------------------------------------------------------------------
-
 struct AudioProcessor {
     engine: SynthEngine,
     temp_l: Vec<f32>,
@@ -1460,22 +1447,17 @@ impl AudioProcessor {
         self.scl_cache[idx].clone()
     }
 
-    fn reset(&mut self) {
-        // Engine voices reset on their own
-    }
+    fn reset(&mut self) {}
 
     fn process(&mut self, shared: &SharedState, process: &mut Process) -> clap_process_status {
-        // Apply parameter changes from host
         apply_param_events_synth(shared, &process.in_events(), sanitize_param_value);
         {
             let mut out_events = process.out_events();
             emit_pending_param_events_to_host_synth(shared, &mut out_events);
         }
 
-        // Update engine params
         let mut params = build_voice_params(&shared.params);
 
-        // Handle SCL file tuning override
         let scl_index = shared.params.get(ParamId::TuningSclIndex) as u8;
         if scl_index != self.last_scl_index {
             self.last_scl_index = scl_index;
@@ -1486,7 +1468,7 @@ impl AudioProcessor {
             params.tuning_override = Some(tuning);
         }
 
-        let _polyphony = params.oscs.len(); // Actually polyphony count from param
+        let _polyphony = params.oscs.len();
         let polyphony = shared.params.get(ParamId::Polyphony) as usize;
         if polyphony != self.last_polyphony {
             self.engine.set_max_voices(polyphony.clamp(1, 32));
@@ -1500,7 +1482,6 @@ impl AudioProcessor {
         self.engine.params = params;
         self.engine.update_params();
 
-        // Pass tempo and transport position to engine for LFO sync
         if let Some(transport) = process.transport() {
             let tempo = transport.tempo() as f32;
             if tempo > 0.0 {
@@ -1510,7 +1491,6 @@ impl AudioProcessor {
                 .set_song_pos_beats(transport.song_pos_beats().0 as f64 / (1i64 << 31) as f64);
         }
 
-        // Handle note events
         let events = process.in_events();
         for i in 0..events.size() {
             let header = unsafe { events.get_unchecked(i) };
@@ -1560,10 +1540,9 @@ impl AudioProcessor {
                         let data = midi.data();
                         let status = data[0] & 0xF0;
                         let channel = data[0] & 0x0F;
-                        let _ = channel; // ignore channel for now
+                        let _ = channel;
                         match status {
                             0xB0 => {
-                                // Control Change
                                 let cc = data[1];
                                 let value = data[2] as f32 / 127.0;
                                 match cc {
@@ -1575,7 +1554,6 @@ impl AudioProcessor {
                                 }
                             }
                             0xD0 => {
-                                // Channel Aftertouch
                                 let value = data[1] as f32 / 127.0;
                                 self.engine.set_aftertouch(value);
                             }
@@ -1587,7 +1565,6 @@ impl AudioProcessor {
             }
         }
 
-        // Render audio
         let frames = process.frames_count() as usize;
         if self.temp_l.len() < frames {
             self.temp_l.resize(frames, 0.0);
@@ -1597,7 +1574,6 @@ impl AudioProcessor {
         self.temp_l[..frames].fill(0.0);
         self.temp_r[..frames].fill(0.0);
 
-        // Read input audio for Audio Input oscillator
         let (audio_in_l, audio_in_r) = if process.audio_inputs_count() >= 1 {
             let in_port = process.audio_inputs(0);
             let ch_count = in_port.channel_count() as usize;
@@ -1623,7 +1599,6 @@ impl AudioProcessor {
             audio_in_r,
         );
 
-        // Write to output
         let outputs_count = process.audio_outputs_count();
         if outputs_count >= 1 {
             let mut out_port = process.audio_outputs(0);
@@ -1642,7 +1617,6 @@ impl AudioProcessor {
             }
         }
 
-        // FFT analysis for bus
         if let Some(ref bus) = self.bus_data
             && bus::needs(bus::NEED_FFT)
         {
@@ -1664,10 +1638,6 @@ impl AudioProcessor {
         CLAP_PROCESS_CONTINUE
     }
 }
-
-// ---------------------------------------------------------------------------
-// PluginInstance
-// ---------------------------------------------------------------------------
 
 struct PluginInstance {
     shared: Arc<SharedState>,
@@ -1735,10 +1705,6 @@ impl Drop for PluginInstance {
 unsafe fn instance(plugin: *const clap_plugin) -> &'static PluginInstance {
     unsafe { &*(plugin.as_ref().unwrap().plugin_data as *const PluginInstance) }
 }
-
-// ---------------------------------------------------------------------------
-// Plugin vtable
-// ---------------------------------------------------------------------------
 
 unsafe extern "C-unwind" fn plugin_init(_plugin: *const clap_plugin) -> bool {
     true
@@ -1832,10 +1798,6 @@ unsafe extern "C-unwind" fn plugin_process(
 }
 
 unsafe extern "C-unwind" fn plugin_on_main_thread(_plugin: *const clap_plugin) {}
-
-// ---------------------------------------------------------------------------
-// Extensions
-// ---------------------------------------------------------------------------
 
 unsafe extern "C-unwind" fn ext_audio_ports_count(
     _plugin: *const clap_plugin,
@@ -2063,17 +2025,12 @@ static STATE_EXT: clap_plugin_state = clap_plugin_state {
 };
 
 unsafe extern "C-unwind" fn ext_tail_get(_plugin: *const clap_plugin) -> u32 {
-    // Tail depends on longest release time
     32768
 }
 
 static TAIL_EXT: clap_plugin_tail = clap_plugin_tail {
     get: Some(ext_tail_get),
 };
-
-// ---------------------------------------------------------------------------
-// GUI extension
-// ---------------------------------------------------------------------------
 
 unsafe extern "C-unwind" fn ext_gui_is_api_supported(
     _plugin: *const clap_plugin,
@@ -2323,13 +2280,18 @@ unsafe extern "C-unwind" fn factory_create_plugin(
 }
 
 /// # Safety
-/// Caller must ensure valid host pointer.
+///
+/// The returned pointer is valid for the lifetime of the program and points to
+/// a static CLAP plugin descriptor.
 pub unsafe fn clap_descriptor_ptr() -> *const clap_plugin_descriptor {
     &raw const DESCRIPTOR.0
 }
 
 /// # Safety
-/// Caller must ensure valid host and plugin_id pointers.
+///
+/// `host` and `plugin_id` must be valid pointers suitable for the CLAP plugin
+/// factory `create_plugin` callback. The returned plugin pointer must be handled
+/// according to the CLAP lifetime rules.
 pub unsafe fn clap_create_plugin(
     host: *const clap_host,
     plugin_id: *const c_char,

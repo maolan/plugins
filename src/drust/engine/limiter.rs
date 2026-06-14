@@ -1,4 +1,3 @@
-/// Simple brickwall limiter with attack/release envelope.
 #[derive(Debug, Clone)]
 pub struct Limiter {
     threshold: f32,

@@ -465,12 +465,10 @@ impl Widener {
             let high_l = self.hp_x2_l.process(mh_l);
             let high_r = self.hp_x2_r.process(mh_r);
 
-            // Widener path: M/S scaling
             let (low_w_l, low_w_r) = ms_width(low_l, low_r, low_w);
             let (mid_w_l, mid_w_r) = ms_width(mid_l, mid_r, mid_w);
             let (high_w_l, high_w_r) = ms_width(high_l, high_r, high_w);
 
-            // Bandwidth path: delay-based mid injection
             let (low_delay_l, low_delay_r) = bandwidth_shuffler(
                 low_l,
                 low_r,
@@ -493,7 +491,6 @@ impl Widener {
                 high_delay / 100.0,
             );
 
-            // Blend dry + widener delta + bandwidth delta
             let low_gain_a = low_gain / 100.0;
             let mid_gain_a = mid_gain / 100.0;
             let high_gain_a = high_gain / 100.0;

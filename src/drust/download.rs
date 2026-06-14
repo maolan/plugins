@@ -114,8 +114,6 @@ pub fn kit_display_name_from_path(xml_path: &str) -> Option<String> {
     }
 }
 
-/// Try to infer the kit variation from the XML file path.
-/// E.g. `/cache/CrocellKit/CrocellKit_full.xml` -> `"full"`.
 pub fn kit_variation_from_path(xml_path: &str) -> Option<String> {
     let path = std::path::Path::new(xml_path);
     let folder = path.parent()?.file_name()?.to_str()?;

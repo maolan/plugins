@@ -1,5 +1,3 @@
-//! Voice allocation and play-mode types shared across instruments.
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlayMode {
     Poly = 0,

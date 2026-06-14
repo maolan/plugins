@@ -1,5 +1,3 @@
-//! Oscillator with waveforms, FM, sample playback, and per-parameter envelopes.
-
 use std::sync::Arc;
 
 use super::distortion::{Distortion, DistortionType};
@@ -44,7 +42,6 @@ impl Waveform {
     }
 }
 
-/// Sample buffer with optional pitch shift envelope.
 #[derive(Debug, Clone)]
 pub struct SampleBuffer {
     pub data: Arc<Vec<f32>>,
@@ -60,7 +57,6 @@ impl SampleBuffer {
     }
 }
 
-/// Phase-accumulator oscillator with full modulation.
 #[derive(Clone)]
 pub struct Oscillator {
     pub waveform: Waveform,
@@ -142,18 +138,14 @@ impl Oscillator {
         self.filter.reset();
     }
 
-    /// Effective base frequency considering pitch-to-note.
     fn effective_freq(&self) -> f32 {
         if self.pitch_to_note {
-            // MIDI note to frequency: A4 = 69 = 440Hz
             440.0 * 2.0f32.powf((self.midi_note as f32 - 69.0) / 12.0)
         } else {
             self.base_freq_hz
         }
     }
 
-    /// Render the oscillator into `out` for `num_samples`.
-    /// `fm_input` is optional FM modulation buffer.
     pub fn render(&mut self, out: &mut [f32], num_samples: usize, fm_input: Option<&[f32]>) {
         let dt = 1.0 / num_samples.max(1) as f32;
         let mut pitch_buf = vec![0.0f32; num_samples];
@@ -192,7 +184,6 @@ impl Oscillator {
                 let freq = base * pitch_mul * freq_mul;
                 let phase_inc = freq * two_pi / sr;
 
-                // Apply FM if provided
                 let mod_inc = if let Some(fm) = fm_input {
                     fm.get(i).copied().unwrap_or(0.0) * self.fm_amount * two_pi / sr
                 } else {
@@ -235,12 +226,10 @@ impl Oscillator {
             }
         }
 
-        // Apply per-oscillator filter with modulation
         self.filter.filter_type = self.filter_type;
         self.filter
             .process_block_modulated(out, &cutoff_buf, &q_buf);
 
-        // Apply per-oscillator distortion with drive and volume modulation
         self.distortion
             .process_block_modulated(out, Some(&drive_buf), Some(&vol_buf));
     }

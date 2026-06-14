@@ -61,8 +61,6 @@ impl Delay {
         self.temp_wet_r.fill(0.0);
     }
 
-    /// Convert the raw `time_note` parameter (0–1) into a note name and
-    /// multiplier (relative to a quarter note).
     pub fn note_from_param(time_note: f64) -> (&'static str, f64) {
         let idx = ((time_note.clamp(0.0, 1.0) * (NOTE_DIVISIONS.len() - 1) as f64).round()
             as usize)
@@ -70,7 +68,6 @@ impl Delay {
         NOTE_DIVISIONS[idx]
     }
 
-    /// Compute target delay in **samples** from current parameters.
     fn target_delay_samples(
         &self,
         time_mode: f64,
@@ -90,7 +87,6 @@ impl Delay {
         }
     }
 
-    /// Read a sample from the circular buffer with linear interpolation.
     #[inline]
     fn read_interp(buf: &[f32], write_pos: usize, delay_samples: f64) -> f32 {
         let max_len = buf.len();

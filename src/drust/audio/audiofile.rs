@@ -49,7 +49,7 @@ impl AudioFile {
         })
     }
 
-    /// Read a single frame (interleaved) at the given position.
+
     pub fn frame(&self, pos: usize) -> &[f32] {
         let start = pos * self.channels as usize;
         let end = start + self.channels as usize;

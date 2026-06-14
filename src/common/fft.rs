@@ -1,6 +1,5 @@
 use rustfft::{FftPlanner, num_complex::Complex};
 
-/// Reusable FFT-based spectrum analyzer.  Pre-allocates all working memory.
 pub struct SpectrumAnalyzer {
     planner: FftPlanner<f32>,
     complex_buf: Vec<Complex<f32>>,
@@ -16,12 +15,6 @@ impl SpectrumAnalyzer {
         }
     }
 
-    /// Compute magnitude spectrum of real mono audio.
-    ///
-    /// `input` is the time-domain audio buffer.
-    /// `output` receives the magnitude per bin.
-    ///
-    /// This is real-time safe: no heap allocations after construction.
     pub fn process(&mut self, input: &[f32], output: &mut [f32]) {
         let n = input.len();
         if n == 0 {
@@ -31,7 +24,6 @@ impl SpectrumAnalyzer {
 
         let fft = self.planner.plan_fft_forward(n);
 
-        // Copy input into complex buffer (reuses allocation, no realloc).
         for (i, &s) in input.iter().enumerate() {
             self.complex_buf[i].re = s;
             self.complex_buf[i].im = 0.0;
@@ -58,7 +50,6 @@ impl SpectrumAnalyzer {
     }
 }
 
-/// Convert linear FFT magnitudes to dBFS, clamped to a floor.
 pub fn magnitude_to_db(mag: &[f32], db_out: &mut [f32], floor_db: f32) {
     for (m, d) in mag.iter().zip(db_out.iter_mut()) {
         *d = if *m > 1.0e-8 {

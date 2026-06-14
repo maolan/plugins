@@ -1,19 +1,13 @@
-//! Memory-mapped file access for sample loading.
-//!
-//! Provides a cross-platform abstraction over mmap for WAV/AIFF samples.
-
 #[cfg(unix)]
 use std::fs::File;
 use std::path::Path;
 
-/// A memory-mapped file view.
 #[cfg(unix)]
 pub struct MmapView {
     ptr: *mut u8,
     len: usize,
 }
 
-/// A memory-mapped file view (non-Unix fallback: read the file into memory).
 #[cfg(not(unix))]
 pub struct MmapView {
     data: Vec<u8>,
@@ -21,7 +15,6 @@ pub struct MmapView {
 
 #[cfg(unix)]
 impl MmapView {
-    /// Map a file into memory read-only.
     pub fn map_file(path: &Path) -> Result<Self, String> {
         use std::os::unix::io::AsRawFd;
 
@@ -56,12 +49,10 @@ impl MmapView {
         })
     }
 
-    /// Get the mapped memory as a byte slice.
     pub fn as_bytes(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }
 
-    /// Get the length of the mapped region.
     pub fn len(&self) -> usize {
         self.len
     }

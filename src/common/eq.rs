@@ -1,12 +1,5 @@
-//! 3-band parametric EQ using biquad filters.
-//!
-//! Bands: low-shelf, peaking (mid), high-shelf. Each band has independent
-//! frequency, Q, and gain. The implementation is based on the standard
-//! Audio EQ Cookbook biquad coefficients.
-
 use std::f32::consts::PI;
 
-/// Biquad filter coefficients (normalized, a0 = 1).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BiquadCoefficients {
     pub b0: f32,
@@ -16,7 +9,6 @@ pub struct BiquadCoefficients {
     pub a2: f32,
 }
 
-/// Per-channel biquad state.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BiquadState {
     pub x1: f32,
@@ -25,7 +17,6 @@ pub struct BiquadState {
     pub y2: f32,
 }
 
-/// Single biquad section.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Biquad {
     coeffs: BiquadCoefficients,
@@ -112,8 +103,6 @@ fn high_shelf_coeffs(sample_rate: f32, frequency: f32, q: f32, gain_db: f32) -> 
     )
 }
 
-/// 3-band parametric EQ: low-shelf, peaking (mid), high-shelf.
-/// Processes stereo signals with independent biquads per channel.
 #[derive(Debug, Clone)]
 pub struct Eq3Band {
     sample_rate: f32,
@@ -237,7 +226,7 @@ mod tests {
         let mut l = vec![1.0f32; 64];
         let mut r = vec![1.0f32; 64];
         eq.process_block(&mut l, &mut r);
-        // With 0 dB gain on all bands, DC should pass through ~1.0.
+
         assert!((l[63] - 1.0).abs() < 0.01, "expected ~1.0, got {}", l[63]);
         assert!((r[63] - 1.0).abs() < 0.01, "expected ~1.0, got {}", r[63]);
     }
@@ -246,13 +235,13 @@ mod tests {
     fn test_eq3band_low_boost() {
         let mut eq = Eq3Band::new(48000.0);
         eq.set_params(250.0, 6.0, 1000.0, 0.0, 4000.0, 0.0);
-        // DC-ish low-frequency signal: low shelf should boost it.
+
         let mut l = vec![0.5f32; 256];
         let mut r = vec![0.5f32; 256];
         let before = l[10];
         eq.process_block(&mut l, &mut r);
         let after = l[10];
-        // +6 dB shelf should increase a low-frequency / DC signal.
+
         assert!(
             after.abs() > before.abs() * 1.1,
             "expected boost, before={} after={}",

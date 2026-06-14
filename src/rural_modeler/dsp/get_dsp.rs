@@ -7,9 +7,6 @@ use crate::rural_modeler::dsp::error::NamError;
 use crate::rural_modeler::dsp::nam::{NamModel, ResamplingNamModel};
 use crate::rural_modeler::dsp::version::verify_config_version;
 
-/// Re-implementation of NAM C++ `nam::dspData`.
-///
-/// Holds all information needed to instantiate and configure a DSP model.
 #[derive(Debug, Clone)]
 pub struct DspData {
     pub version: String,
@@ -20,9 +17,6 @@ pub struct DspData {
     pub expected_sample_rate: f64,
 }
 
-/// Load a `.nam` model from a file path and return a [`DspData`] struct.
-///
-/// This mirrors `nam::get_dsp(const std::filesystem::path, dspData&)`.
 pub fn get_dsp_data(path: impl AsRef<Path>) -> Result<DspData, NamError> {
     let text = std::fs::read_to_string(path)?;
     let config: Value = serde_json::from_str(&text)?;
@@ -60,9 +54,6 @@ pub fn get_dsp_data(path: impl AsRef<Path>) -> Result<DspData, NamError> {
     })
 }
 
-/// Get the sample rate from a NAM JSON object.
-///
-/// Matches C++ `nam::get_sample_rate_from_nam_file`.
 pub fn get_sample_rate_from_nam_file(j: &Value) -> f64 {
     if let Some(rate) = j.get("sample_rate")
         && let Some(f) = rate.as_f64()
@@ -78,24 +69,16 @@ pub fn get_sample_rate_from_nam_file(j: &Value) -> f64 {
     -1.0
 }
 
-/// Load a `.nam` model from a file path and return it as a boxed [`Dsp`].
-///
-/// This is the primary entry point matching `nam::get_dsp(path)`.
 pub fn get_dsp(path: impl AsRef<Path>) -> Result<Box<dyn Dsp>, NamError> {
     let model = NamModel::load(path)?;
     Ok(Box::new(model))
 }
 
-/// Load a `.nam` model from a JSON string and return it as a boxed [`Dsp`].
-///
-/// Matches `nam::get_dsp(const nlohmann::json&)`.
 pub fn get_dsp_from_json(text: &str) -> Result<Box<dyn Dsp>, NamError> {
     let model = NamModel::load_from_str(text)?;
     Ok(Box::new(model))
 }
 
-/// Wrap a [`NamModel`] in a [`ResamplingNamModel`] for transparent sample-rate
-/// conversion.  Returns a boxed [`Dsp`].
 pub fn get_resampling_dsp(
     path: impl AsRef<Path>,
     host_rate: f32,

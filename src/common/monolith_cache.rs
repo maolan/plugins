@@ -1,11 +1,5 @@
-//! Cached monolith file loader for SF2/GIG formats.
-//!
-//! Keeps raw file data in memory so that multiple zone lookups
-//! or patch reloads don't re-read from disk.
-
 use std::collections::HashMap;
 
-/// Cache for monolith file contents (SF2, GIG, etc.).
 #[derive(Debug, Clone, Default)]
 pub struct MonolithCache {
     files: HashMap<String, Vec<u8>>,
@@ -18,7 +12,6 @@ impl MonolithCache {
         }
     }
 
-    /// Load file data, using cache if available.
     pub fn load(&mut self, path: &str) -> Result<&[u8], String> {
         if !self.files.contains_key(path) {
             let data =
@@ -28,23 +21,19 @@ impl MonolithCache {
         Ok(self.files.get(path).unwrap().as_slice())
     }
 
-    /// Check if a path is already cached.
     pub fn has(&self, path: &str) -> bool {
         self.files.contains_key(path)
     }
 
-    /// Pre-load a file into the cache.
     pub fn preload(&mut self, path: &str) -> Result<(), String> {
         let _ = self.load(path)?;
         Ok(())
     }
 
-    /// Clear the cache.
     pub fn clear(&mut self) {
         self.files.clear();
     }
 
-    /// Remove a specific entry.
     pub fn remove(&mut self, path: &str) {
         self.files.remove(path);
     }
@@ -57,7 +46,7 @@ mod tests {
     #[test]
     fn test_monolith_cache_load() {
         let mut cache = MonolithCache::new();
-        // Use a file we know exists (the test binary itself).
+
         let path = std::env::current_exe().unwrap();
         let path_str = path.to_str().unwrap();
         let len1 = cache.load(path_str).unwrap().len();

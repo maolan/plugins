@@ -136,7 +136,7 @@ impl AudioProcessor {
                 },
             );
         }
-        // Publish band data to the inter-plugin bus.
+
         if let Some(ref bus) = self.bus_data
             && let Some(slot) = bus.bands_slot()
         {
@@ -193,8 +193,6 @@ impl AudioProcessor {
         let sidechain_enabled = shared.params.get(ParamId::SidechainEnable) >= 0.5;
         let has_sidechain = sidechain_enabled && inputs_count > outputs_count;
 
-        // Compute per-sample sidechain envelope and derive reduction for this block.
-        // Sidechain ports follow the main inputs, one per channel.
         let mut reduction_db = 0.0_f32;
         if has_sidechain {
             let sample_rate = self.equalizer.sample_rate();
@@ -246,8 +244,6 @@ impl AudioProcessor {
             self.sc_envelope = 0.0;
         }
 
-        // Apply per-band dynamic gain modulation before processing.
-        // Sidechain is only available for bell-type bands.
         if reduction_db > 0.0 {
             for i in 0..32 {
                 let band_type = shared.params.get(ParamId::para_type(i));
@@ -340,7 +336,7 @@ impl AudioProcessor {
                         self.equalizer.sample_rate(),
                     );
                     shared.set_output_spectrum_db(&spectrum);
-                    // Publish to inter-plugin bus.
+
                     if let Some(ref bus) = self.bus_data
                         && bus::needs(bus::NEED_FFT)
                         && let Some(slot) = bus.fft_slot()
@@ -399,7 +395,7 @@ impl AudioProcessor {
                         self.equalizer.sample_rate(),
                     );
                     shared.set_output_spectrum_db(&spectrum);
-                    // Publish to inter-plugin bus.
+
                     if let Some(ref bus) = self.bus_data
                         && bus::needs(bus::NEED_FFT)
                         && let Some(slot) = bus.fft_slot()
@@ -853,7 +849,7 @@ unsafe extern "C-unwind" fn plugin_deactivate(plugin: *const clap_plugin) {
         instance.retired_processors.lock().push(old);
     }
     instance.active.store(false, Ordering::Release);
-    // Update port configuration while deactivated (CLAP spec compliant).
+
     let channels_param = instance.shared.params.get(ParamId::Channels).round() as u32;
     let new_channels = channels_param.clamp(1, 2);
     instance.channels.store(new_channels, Ordering::Release);
@@ -901,7 +897,7 @@ unsafe extern "C-unwind" fn ext_audio_ports_count(
     let sidechain_enabled = instance.shared.params.get(ParamId::SidechainEnable) >= 0.5;
     if is_input {
         if sidechain_enabled {
-            channels + channels // main inputs + sidechain (one per main channel)
+            channels + channels
         } else {
             channels
         }
@@ -938,7 +934,7 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
     info.in_place_pair = CLAP_INVALID_ID;
     let is_sidechain = is_input && sidechain_enabled && index >= channels;
     if is_sidechain {
-        info.flags = 0; // not main
+        info.flags = 0;
         let sc_name = if channels == 2 {
             match index {
                 2 => "sc_l",
@@ -1110,7 +1106,7 @@ unsafe extern "C-unwind" fn ext_state_load(
         return false;
     };
     state.apply(&instance.shared.params, &PARAMS);
-    // Request port reconfiguration in case sidechain state changed.
+
     instance.shared.request_audio_ports_rescan();
     true
 }
@@ -1365,12 +1361,18 @@ static FACTORY: clap_plugin_factory = clap_plugin_factory {
 };
 
 /// # Safety
-/// Caller must ensure valid host pointer.
+///
+/// The returned pointer is valid for the lifetime of the program and points to
+/// a static CLAP plugin descriptor.
 pub unsafe fn descriptor_ptr() -> *const clap_plugin_descriptor {
     &raw const DESCRIPTOR.0
 }
+
 /// # Safety
-/// Caller must ensure valid host and plugin_id pointers.
+///
+/// `host` and `plugin_id` must be valid pointers suitable for the CLAP plugin
+/// factory `create_plugin` callback. The returned plugin pointer must be handled
+/// according to the CLAP lifetime rules.
 pub unsafe fn create_plugin(
     host: *const clap_host,
     plugin_id: *const c_char,

@@ -1,5 +1,3 @@
-//! Noise generator with white, pink, and brownian noise.
-
 use super::envelope::Envelope;
 use super::filter::{FilterType, SvfFilter};
 
@@ -21,7 +19,6 @@ impl NoiseType {
     }
 }
 
-/// xoshiro128+ PRNG.
 #[derive(Clone)]
 pub struct Rng {
     s: [u32; 4],
@@ -59,7 +56,6 @@ impl Rng {
     }
 }
 
-/// Paul Kellet's economy pinking filter.
 #[derive(Clone)]
 pub struct PinkNoise {
     b0: f32,
@@ -101,7 +97,6 @@ impl PinkNoise {
     }
 }
 
-/// Brownian noise (integrated white noise with leakage).
 #[derive(Clone)]
 pub struct BrownNoise {
     y: f32,
@@ -121,7 +116,6 @@ impl BrownNoise {
     }
 }
 
-/// Noise generator with selectable type, amplitude envelope, density envelope, and filter.
 #[derive(Clone)]
 pub struct NoiseGenerator {
     pub amplitude: f32,
@@ -185,7 +179,6 @@ impl NoiseGenerator {
             out[i] = sample * self.amplitude * env_buf[i] * density_buf[i];
         }
 
-        // Apply filter to noise
         self.filter.filter_type = self.filter_type;
         self.filter.set_params(self.filter_cutoff_hz, self.filter_q);
         self.filter.process_block(out);

@@ -61,16 +61,12 @@ impl PluginState {
         (self.model_path, self.ir_path)
     }
 
-    /// Serialize to bytes with a version header, mimicking NAM's binary
-    /// version header pattern.
     pub fn to_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
         let mut text = format!("{STATE_HEADER_PREFIX}{}\n", self.version);
         text.push_str(&serde_json::to_string(self)?);
         Ok(text.into_bytes())
     }
 
-    /// Deserialize from bytes, handling both the new version-header format
-    /// and the legacy raw-JSON format.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
         let text =
             std::str::from_utf8(bytes).map_err(|e| format!("state is not valid UTF-8: {e}"))?;

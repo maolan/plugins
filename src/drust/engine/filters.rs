@@ -1,6 +1,5 @@
 use crate::drust::utils::random::LockFreeRandom;
 
-/// Velocity humanization using Box-Muller Gaussian distribution.
 #[derive(Debug)]
 pub struct VelocityFilter {
     amount: f32,
@@ -26,7 +25,6 @@ impl VelocityFilter {
         self.amount = amount.clamp(0.0, 1.0);
     }
 
-    /// Box-Muller transform for perfect Gaussian distribution.
     pub fn process(&mut self, velocity: f32) -> f32 {
         if self.amount <= 0.001 {
             return velocity;
@@ -49,7 +47,6 @@ impl VelocityFilter {
     }
 }
 
-/// Powermap filter: applies a curve mapping to velocity.
 #[derive(Debug)]
 pub struct PowermapFilter {
     points: [(f32, f32); 3],
@@ -92,7 +89,6 @@ impl PowermapFilter {
     }
 }
 
-/// Stamina filter: reduces velocity for rapid successive hits.
 #[derive(Debug)]
 pub struct StaminaFilter {
     falloff: f32,
@@ -124,8 +120,6 @@ impl StaminaFilter {
     }
 }
 
-/// Timing humanization with velocity-adaptive bias.
-/// Loud notes rush slightly, soft notes drag, creating natural groove.
 #[derive(Debug)]
 pub struct LatencyFilter {
     pub amount_ms: f32,
@@ -153,9 +147,6 @@ impl LatencyFilter {
         self.amount_ms = amount_ms.max(0.0);
     }
 
-    /// Returns timing offset in milliseconds.
-    /// Uses Box-Muller for Gaussian distribution with velocity-adaptive bias:
-    /// loud notes (velocity > 0.5) rush, soft notes drag.
     pub fn process(&mut self, velocity: f32) -> f32 {
         if self.amount_ms <= 0.001 {
             return 0.0;

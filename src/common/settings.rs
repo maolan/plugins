@@ -1,5 +1,3 @@
-//! Settings structs for DSP components shared across instruments.
-
 use crate::common::{
     envelope::{AttackShape, DecayReleaseShape, EnvelopeMode, EnvelopeRetriggerMode},
     filter::{FilterSubtype, FilterType},

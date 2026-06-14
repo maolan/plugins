@@ -1,12 +1,11 @@
-//! Microtuning support: Scala .scl parsing and built-in tuning systems.
 #![allow(dead_code)]
 
 #[derive(Debug, Clone)]
 pub struct Tuning {
     pub name: String,
-    /// Scale degrees in cents, starting from 0. The last entry is the octave interval.
+
     pub degrees: Vec<f32>,
-    /// Root MIDI note where scale degree 0 is anchored (default 60).
+
     pub root_midi_note: i32,
 }
 
@@ -37,7 +36,6 @@ impl Tuning {
         self.degrees.len().saturating_sub(1)
     }
 
-    /// Convert MIDI note number to frequency using this tuning.
     pub fn note_to_freq(&self, note: u8) -> f32 {
         if self.degrees.len() < 2 {
             return 440.0 * 2.0f32.powf((note as f32 - 69.0) / 12.0);
@@ -51,7 +49,6 @@ impl Tuning {
         root_freq * 2.0f32.powf(cents_from_root / 1200.0)
     }
 
-    /// Parse a Scala .scl file.
     pub fn from_scl(content: &str) -> Result<Self, String> {
         let lines = content.lines();
         let mut name = String::new();
@@ -77,7 +74,6 @@ impl Tuning {
                 continue;
             }
             let cents = if line.contains('/') {
-                // Ratio like "3/2"
                 let parts: Vec<&str> = line.split('/').collect();
                 if parts.len() != 2 {
                     return Err(format!("bad ratio: {}", line));
@@ -92,7 +88,6 @@ impl Tuning {
             } else if line.contains('.') {
                 line.parse().map_err(|e| format!("bad cents: {}", e))?
             } else {
-                // Integer cents
                 line.parse().map_err(|e| format!("bad cents: {}", e))?
             };
             degrees.push(cents);
@@ -113,7 +108,6 @@ impl Tuning {
     }
 }
 
-/// Built-in tuning presets.
 pub fn built_in_tuning(index: u8) -> Tuning {
     match index {
         0 => Tuning::equal_temperament(12),

@@ -1,20 +1,16 @@
-//! Shared-memory helpers for the plugin billboard.
-
 #[cfg(unix)]
 mod imp {
-    /// An owned POSIX shared-memory mapping.
+
     pub struct ShmMapping {
         ptr: *mut u8,
         size: usize,
         name: String,
     }
 
-    // SAFETY: the mapped memory is process-shared.
     unsafe impl Send for ShmMapping {}
     unsafe impl Sync for ShmMapping {}
 
     impl ShmMapping {
-        /// Create a new shared-memory segment and map it read/write.
         pub fn create(name: &str, size: usize) -> Result<Self, String> {
             let c_name = std::ffi::CString::new(name).map_err(|e| e.to_string())?;
             let fd = unsafe {
@@ -66,7 +62,6 @@ mod imp {
             })
         }
 
-        /// Open an existing shared-memory segment read/write.
         pub fn open_existing(name: &str, size: usize) -> Result<Self, String> {
             let c_name = std::ffi::CString::new(name).map_err(|e| e.to_string())?;
             let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDWR, 0o666) };
@@ -114,7 +109,6 @@ mod imp {
             &self.name
         }
 
-        /// Unlink the shared-memory segment (does not unmap this process).
         pub fn unlink(name: &str) -> Result<(), String> {
             let c_name = std::ffi::CString::new(name).map_err(|e| e.to_string())?;
             let rc = unsafe { libc::shm_unlink(c_name.as_ptr()) };
@@ -174,7 +168,6 @@ mod imp {
         fn CloseHandle(hObject: HANDLE) -> i32;
     }
 
-    /// An owned Windows named file-mapping (shared memory).
     pub struct ShmMapping {
         handle: HANDLE,
         ptr: *mut u8,
@@ -182,12 +175,10 @@ mod imp {
         name: String,
     }
 
-    // SAFETY: the mapped memory is process-shared.
     unsafe impl Send for ShmMapping {}
     unsafe impl Sync for ShmMapping {}
 
     fn format_name(name: &str) -> CString {
-        // POSIX names often start with '/'; Windows object names cannot contain it.
         let stripped = name.strip_prefix('/').unwrap_or(name);
         CString::new(stripped).expect("invalid shared-memory name")
     }
@@ -268,8 +259,6 @@ mod imp {
             &self.name
         }
 
-        /// Windows file mappings disappear when the last handle is closed;
-        /// there is no separate unlink step.
         pub fn unlink(_name: &str) -> Result<(), String> {
             Ok(())
         }
@@ -291,8 +280,6 @@ mod imp {
 
 pub use imp::ShmMapping;
 
-/// Try to open an existing segment; if it does not exist, create it.
-/// Returns `(mapping, created)`.
 pub fn open_or_create(name: &str, size: usize) -> Result<(ShmMapping, bool), String> {
     match ShmMapping::open_existing(name, size) {
         Ok(m) => Ok((m, false)),

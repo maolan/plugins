@@ -1,4 +1,4 @@
-/// Simple channel mixer that accumulates samples into output buffers.
+
 #[derive(Debug, Default)]
 pub struct ChannelMixer {
     pub buffers: Vec<Vec<f32>>,

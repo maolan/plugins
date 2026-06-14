@@ -12,7 +12,7 @@ pub struct VoiceEvent {
     pub velocity: f32,
 }
 
-/// An actively playing voice.
+
 #[derive(Debug)]
 pub struct ActiveVoice {
     pub instrument_index: usize,

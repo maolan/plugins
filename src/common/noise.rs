@@ -1,7 +1,5 @@
 #![allow(dead_code)]
 
-//! Noise generator with filter.
-
 use rand::random;
 
 use super::filter::{Filter, FilterType};
@@ -39,12 +37,12 @@ pub struct NoiseGenerator {
     pub filter_enabled: bool,
     pub stereo: bool,
     pub color_mode: NoiseColorMode,
-    // Pink noise state
+
     pink_b: [f32; 7],
     pink_state: f32,
-    // Brown noise state
+
     brown_state: f32,
-    // Color filter state (1-pole lowpass for spectral tilt)
+
     color_state: f32,
 }
 
@@ -79,7 +77,6 @@ impl NoiseGenerator {
         let raw = match self.noise_type {
             NoiseType::White => random::<f32>() * 2.0 - 1.0,
             NoiseType::Pink => {
-                // Paul Kellet's refined pink noise generator
                 let white = random::<f32>() * 2.0 - 1.0;
                 self.pink_b[0] = 0.99886 * self.pink_b[0] + white * 0.0555179;
                 self.pink_b[1] = 0.99332 * self.pink_b[1] + white * 0.0750759;
@@ -105,11 +102,8 @@ impl NoiseGenerator {
             }
         };
 
-        // Apply color filter
         let colored = match self.color_mode {
             NoiseColorMode::Tilt => {
-                // 1-pole lowpass for spectral tilt
-                // color = 0.0: dark (cutoff ~50Hz), color = 1.0: bright (no filtering)
                 if self.color < 1.0 {
                     let cutoff = 50.0 * 10.0f32.powf(self.color * 2.6);
                     let g = (std::f32::consts::PI * cutoff / self.sample_rate).tan();
@@ -121,13 +115,12 @@ impl NoiseGenerator {
                 }
             }
             NoiseColorMode::Legacy => {
-                // Legacy: correlated noise using 1-pole LP with different curve
                 if self.color < 1.0 {
                     let cutoff = 100.0 * 20.0f32.powf(self.color * 2.0);
                     let g = (std::f32::consts::PI * cutoff / self.sample_rate).tan();
                     let g = g / (1.0 + g);
                     self.color_state += g * (raw - self.color_state);
-                    self.color_state * 1.5 // legacy has more gain
+                    self.color_state * 1.5
                 } else {
                     raw
                 }

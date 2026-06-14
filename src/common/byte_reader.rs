@@ -1,6 +1,3 @@
-//! Shared little-endian binary data reader.
-
-/// Simple byte-slice reader for parsing RIFF / binary formats.
 #[derive(Debug)]
 pub struct ByteReader<'a> {
     data: &'a [u8],
@@ -89,7 +86,6 @@ impl<'a> ByteReader<'a> {
     }
 }
 
-/// Convert a FourCC byte array to a lossy UTF-8 string.
 pub fn fourcc_str(fcc: [u8; 4]) -> String {
     String::from_utf8_lossy(&fcc).to_string()
 }

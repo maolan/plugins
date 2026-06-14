@@ -155,13 +155,6 @@ impl AudioProcessor {
                 .in_r_rms
                 .store((irms_r as f64).to_bits(), Ordering::Relaxed);
 
-            if log_this_cycle {
-                eprintln!(
-                    "[vumeter] cycle={} input L rms={:.3} | R rms={:.3}",
-                    self.log_cycle, irms, irms_r
-                );
-            }
-
             {
                 let mut output_l = process.audio_outputs(0);
                 output_l.data32(0)[..frames].copy_from_slice(&self.temp_left[..frames]);
@@ -180,12 +173,7 @@ impl AudioProcessor {
                 .out_r_rms
                 .store((orms_r as f64).to_bits(), Ordering::Relaxed);
 
-            if log_this_cycle {
-                eprintln!(
-                    "[vumeter] cycle={} output L rms={:.3} | R rms={:.3}",
-                    self.log_cycle, orms, orms_r
-                );
-            }
+            if log_this_cycle {}
         } else if inputs_count >= 1 && outputs_count >= 1 {
             let input_port = process.audio_inputs(0);
             let chans = input_port.channel_count() as usize;
@@ -205,13 +193,6 @@ impl AudioProcessor {
                 .in_r_rms
                 .store((irms_r as f64).to_bits(), Ordering::Relaxed);
 
-            if log_this_cycle {
-                eprintln!(
-                    "[vumeter] cycle={} input L rms={:.3} | R rms={:.3}",
-                    self.log_cycle, irms, irms_r
-                );
-            }
-
             let mut output_port = process.audio_outputs(0);
             output_port.data32(0)[..frames].copy_from_slice(&self.temp_left[..frames]);
             if output_port.channel_count() >= 2 {
@@ -227,12 +208,7 @@ impl AudioProcessor {
                 .out_r_rms
                 .store((orms_r as f64).to_bits(), Ordering::Relaxed);
 
-            if log_this_cycle {
-                eprintln!(
-                    "[vumeter] cycle={} output L rms={:.3} | R rms={:.3}",
-                    self.log_cycle, orms, orms_r
-                );
-            }
+            if log_this_cycle {}
         }
 
         if let Some(ref notifier) = *shared.poll_notifier.lock() {
@@ -670,13 +646,18 @@ static FACTORY: clap_plugin_factory = clap_plugin_factory {
 };
 
 /// # Safety
-/// Caller must ensure valid host and plugin_id pointers.
+///
+/// The returned pointer is valid for the lifetime of the program and points to
+/// a static CLAP plugin descriptor.
 pub unsafe fn descriptor_ptr() -> *const clap_plugin_descriptor {
     &raw const DESCRIPTOR.0
 }
 
 /// # Safety
-/// Caller must ensure valid host and plugin_id pointers.
+///
+/// `host` and `plugin_id` must be valid pointers suitable for the CLAP plugin
+/// factory `create_plugin` callback. The returned plugin pointer must be handled
+/// according to the CLAP lifetime rules.
 pub unsafe fn create_plugin(
     host: *const clap_host,
     plugin_id: *const c_char,

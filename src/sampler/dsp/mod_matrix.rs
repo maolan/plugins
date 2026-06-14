@@ -1,8 +1,3 @@
-//! Basic modulation matrix for zone-level modulation.
-//!
-//! A fixed-size matrix of source → target connections with depth and curve.
-
-/// Modulation sources available in the sampler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ModSource {
     #[default]
@@ -15,29 +10,28 @@ pub enum ModSource {
     Lfo2,
     Lfo3,
     Lfo4,
-    Eg1, // AEG
+    Eg1,
     Eg2,
     Eg3,
     Eg4,
     Eg5,
     Random,
-    /// Current variant index as fraction (0..1).
+
     VariantFraction,
-    /// Sample playback position as fraction (0..1).
+
     PlaybackPosition,
-    /// Current loop iteration as fraction (0..1).
+
     LoopFraction,
-    /// 1.0 if voice is gated, 0.0 otherwise.
+
     IsGated,
-    /// 1.0 if voice is in release, 0.0 otherwise.
+
     IsReleased,
-    /// 1.0 if any voice in the group is gated.
+
     GroupAnyGated,
-    /// Number of active voices in the group, normalized by 16.
+
     GroupVoiceCount,
 }
 
-/// Modulation targets in the sampler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ModTarget {
     #[default]
@@ -49,14 +43,13 @@ pub enum ModTarget {
     Pan,
 }
 
-/// A single modulation routing: source → target with depth.
 #[derive(Debug, Clone, Copy)]
 pub struct ModRoute {
     pub source: ModSource,
     pub target: ModTarget,
-    /// Modulation depth (-1.0 .. 1.0).
+
     pub depth: f32,
-    /// Whether this route is active.
+
     pub active: bool,
 }
 
@@ -71,15 +64,12 @@ impl Default for ModRoute {
     }
 }
 
-/// A fixed-size modulation matrix.
-/// Up to 16 routes per zone/group.
 #[derive(Debug, Clone, Default)]
 pub struct ModMatrix {
     pub routes: [ModRoute; 16],
 }
 
 impl ModMatrix {
-    /// Add or update a route.
     pub fn set_route(&mut self, index: usize, source: ModSource, target: ModTarget, depth: f32) {
         if index < self.routes.len() {
             self.routes[index] = ModRoute {
@@ -91,7 +81,6 @@ impl ModMatrix {
         }
     }
 
-    /// Compute the total modulation value for a target given source values.
     pub fn compute(&self, target: ModTarget, source_values: &SourceValues) -> f32 {
         let mut total = 0.0f32;
         for route in &self.routes {
@@ -105,7 +94,6 @@ impl ModMatrix {
     }
 }
 
-/// Current values of all modulation sources.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SourceValues {
     pub velocity: f32,

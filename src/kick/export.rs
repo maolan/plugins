@@ -1,12 +1,6 @@
-//! Audio export using ffmpeg CLI (same pattern as daw/engine).
-
 use std::path::Path;
 use std::process::Command;
 
-/// Export interleaved f32 buffer to an audio file.
-/// `format` can be "wav", "flac", "ogg", "mp3".
-/// `channels` can be 1 (mono) or 2 (stereo).
-/// Uses hound for WAV and ffmpeg CLI for everything else.
 pub fn export_audio(
     path: &Path,
     left: &[f32],
@@ -24,7 +18,6 @@ pub fn export_audio(
         return export_wav(path, left, right, sample_rate, channels);
     }
 
-    // Write temp WAV, then convert with ffmpeg
     let temp_path = path.with_extension("tmp.wav");
     export_wav(&temp_path, left, right, sample_rate, channels)?;
 
@@ -82,7 +75,6 @@ fn export_wav(
     Ok(())
 }
 
-/// Export an SFZ descriptor referencing an audio file.
 pub fn export_sfz(
     sfz_path: &Path,
     sample_path: &str,
@@ -93,10 +85,8 @@ pub fn export_sfz(
     Ok(())
 }
 
-/// Audio decode result: (left_channel, right_channel, sample_rate).
 pub type AudioDecodeResult = Result<(Vec<f32>, Vec<f32>, u32), Box<dyn std::error::Error>>;
 
-/// Decode any audio file to interleaved stereo f32 using ffmpeg CLI.
 pub fn decode_audio_to_f32(path: &Path) -> AudioDecodeResult {
     let temp_path = path.with_extension("tmp_decoded.wav");
 

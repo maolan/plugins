@@ -75,7 +75,6 @@ impl BandCompressor {
         self.smooth_env_db + gain_to_db(self.makeup_lin)
     }
 
-    /// Current gain reduction in dB (negative value = reduction).
     fn current_gr_db(&self) -> f32 {
         -self.smooth_env_db
     }
@@ -470,7 +469,6 @@ impl Compressor {
         self.gr_db_count = 0;
     }
 
-    /// Return average GR per band over the last block and reset accumulators.
     pub fn take_gr_db(&mut self) -> [f32; 4] {
         let mut out = [0.0f32; 4];
         if self.gr_db_count > 0 {
