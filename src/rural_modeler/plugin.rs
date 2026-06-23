@@ -11,17 +11,17 @@ use std::{
 use clap_clap::{
     events::{InputEvents, OutputEvents},
     ffi::{
-        CLAP_AUDIO_PORT_IS_MAIN, CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI, CLAP_EXT_LATENCY,
-        CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL, CLAP_INVALID_ID,
+        CLAP_AUDIO_PORT_IS_MAIN, CLAP_EXT_AUDIO_PORTS, CLAP_EXT_FILE_REFERENCE, CLAP_EXT_GUI,
+        CLAP_EXT_LATENCY, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL, CLAP_INVALID_ID,
         CLAP_PARAM_REQUIRES_PROCESS, CLAP_PLUGIN_FEATURE_AUDIO_EFFECT,
         CLAP_PLUGIN_FEATURE_DISTORTION, CLAP_PLUGIN_FEATURE_GATE, CLAP_PLUGIN_FEATURE_MONO,
         CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_COCOA,
         CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info, clap_gui_resize_hints,
         clap_host, clap_host_gui, clap_host_latency, clap_host_params, clap_host_state, clap_id,
         clap_istream, clap_ostream, clap_param_info, clap_plugin, clap_plugin_audio_ports,
-        clap_plugin_descriptor, clap_plugin_factory, clap_plugin_gui, clap_plugin_latency,
-        clap_plugin_params, clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status,
-        clap_window,
+        clap_plugin_descriptor, clap_plugin_factory, clap_plugin_file_reference, clap_plugin_gui,
+        clap_plugin_latency, clap_plugin_params, clap_plugin_state, clap_plugin_tail, clap_process,
+        clap_process_status, clap_window,
     },
     process::Process,
     stream::{IStream, OStream},
@@ -229,7 +229,8 @@ impl SharedState {
         self.set_param_internal(id, value, false);
     }
 
-    pub fn load_model(&self, path: String) {
+    pub fn load_model(&self, path: String, notify_dirty: bool) {
+        tracing::info!(%path, notify_dirty, "RuralModeler load_model");
         match NamModel::load(&path) {
             Ok(model) => {
                 let mut wrapper = ResamplingNamModel::new(model, self.sample_rate());
@@ -238,10 +239,13 @@ impl SharedState {
                 let metadata = wrapper.metadata().clone();
                 self.replace_pending_model(Some(wrapper));
                 self.clear_model_pending.store(false, Ordering::Release);
-                *self.model_path.write() = path;
+                *self.model_path.write() = path.clone();
                 *self.model_metadata.write() = Some(metadata);
                 *self.last_error.write() = None;
-                self.mark_dirty();
+                tracing::info!(%path, "RuralModeler load_model success");
+                if notify_dirty {
+                    self.mark_dirty();
+                }
                 self.latency_changed();
             }
             Err(err) => {
@@ -252,17 +256,21 @@ impl SharedState {
 
     pub fn restore_model_path_and_load(&self, path: String) {
         *self.model_path.write() = path.clone();
-        self.load_model(path);
+        self.load_model(path, false);
     }
 
-    pub fn load_ir(&self, path: String) {
+    pub fn load_ir(&self, path: String, notify_dirty: bool) {
+        tracing::info!(%path, notify_dirty, "RuralModeler load_ir");
         match ImpulseResponse::from_wav(&path, self.sample_rate()) {
             Ok(ir) => {
                 self.replace_pending_ir(Some(ir));
                 self.clear_ir_pending.store(false, Ordering::Release);
-                *self.ir_path.write() = path;
+                *self.ir_path.write() = path.clone();
                 *self.last_error.write() = None;
-                self.mark_dirty();
+                tracing::info!(%path, "RuralModeler load_ir success");
+                if notify_dirty {
+                    self.mark_dirty();
+                }
             }
             Err(err) => {
                 *self.last_error.write() = Some(format!("Failed to load IR '{}': {err}", path));
@@ -272,7 +280,7 @@ impl SharedState {
 
     pub fn restore_ir_path_and_load(&self, path: String) {
         *self.ir_path.write() = path.clone();
-        self.load_ir(path);
+        self.load_ir(path, false);
     }
 
     pub fn clear_model(&self) {
@@ -302,7 +310,7 @@ impl SharedState {
             let Some(get_extension) = (*host).get_extension else {
                 return;
             };
-            let ext = get_extension(host, c"clap.host.gui".as_ptr());
+            let ext = get_extension(host, CLAP_EXT_GUI.as_ptr());
             if ext.is_null() {
                 return;
             }
@@ -322,7 +330,7 @@ impl SharedState {
             let Some(get_extension) = (*host).get_extension else {
                 return;
             };
-            let ext = get_extension(host, c"clap.host.params".as_ptr());
+            let ext = get_extension(host, CLAP_EXT_PARAMS.as_ptr());
             if ext.is_null() {
                 return;
             }
@@ -336,19 +344,25 @@ impl SharedState {
     fn mark_dirty(&self) {
         let host = self.host.load(Ordering::Acquire);
         if host.is_null() {
+            tracing::warn!("RuralModeler mark_dirty: host is null");
             return;
         }
         unsafe {
             let Some(get_extension) = (*host).get_extension else {
+                tracing::warn!("RuralModeler mark_dirty: host get_extension is null");
                 return;
             };
-            let ext = get_extension(host, c"clap.host.state".as_ptr());
+            let ext = get_extension(host, CLAP_EXT_STATE.as_ptr());
             if ext.is_null() {
+                tracing::warn!("RuralModeler mark_dirty: clap.state extension not found");
                 return;
             }
             let state = &*(ext as *const clap_host_state);
             if let Some(mark_dirty) = state.mark_dirty {
+                tracing::info!("RuralModeler mark_dirty: calling host mark_dirty");
                 mark_dirty(host);
+            } else {
+                tracing::warn!("RuralModeler mark_dirty: host mark_dirty callback is null");
             }
         }
     }
@@ -362,7 +376,7 @@ impl SharedState {
             let Some(get_extension) = (*host).get_extension else {
                 return;
             };
-            let ext = get_extension(host, c"clap.host.latency".as_ptr());
+            let ext = get_extension(host, CLAP_EXT_LATENCY.as_ptr());
             if ext.is_null() {
                 return;
             }
@@ -814,11 +828,11 @@ unsafe extern "C-unwind" fn plugin_activate(
 
     let model_path = instance.shared.model_path.read().clone();
     if !model_path.is_empty() {
-        instance.shared.load_model(model_path);
+        instance.shared.load_model(model_path, false);
     }
     let ir_path = instance.shared.ir_path.read().clone();
     if !ir_path.is_empty() {
-        instance.shared.load_ir(ir_path);
+        instance.shared.load_ir(ir_path, false);
     }
 
     instance.shared.latency_changed();
@@ -1030,11 +1044,10 @@ unsafe extern "C-unwind" fn ext_state_save(
         return false;
     }
     let instance = unsafe { instance(plugin) };
-    let state = PluginState::from_runtime(
-        &instance.shared.params,
-        instance.shared.model_path.read().clone(),
-        instance.shared.ir_path.read().clone(),
-    );
+    let model_path = instance.shared.model_path.read().clone();
+    let ir_path = instance.shared.ir_path.read().clone();
+    tracing::info!(%model_path, %ir_path, "RuralModeler ext_state_save");
+    let state = PluginState::from_runtime(&instance.shared.params, model_path, ir_path);
     let Ok(bytes) = state.to_bytes() else {
         return false;
     };
@@ -1047,18 +1060,28 @@ unsafe extern "C-unwind" fn ext_state_load(
     stream: *const clap_istream,
 ) -> bool {
     if plugin.is_null() || stream.is_null() {
+        eprintln!("RuralModeler ext_state_load: null plugin or stream");
         return false;
     }
     let instance = unsafe { instance(plugin) };
     let mut stream = unsafe { IStream::new_unchecked(stream) };
     let mut bytes = Vec::new();
-    if stream.read_to_end(&mut bytes).is_err() {
+    if let Err(e) = stream.read_to_end(&mut bytes) {
+        eprintln!("RuralModeler ext_state_load: read_to_end failed: {e}");
         return false;
     }
-    let Ok(state) = PluginState::from_bytes(&bytes) else {
-        return false;
+    eprintln!("RuralModeler ext_state_load: read {} bytes", bytes.len());
+    eprintln!("RuralModeler ext_state_load: first bytes hex: {}", bytes.iter().take(64).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" "));
+    eprintln!("RuralModeler ext_state_load: first bytes text: {:?}", String::from_utf8_lossy(&bytes[..bytes.len().min(128)]));
+    let state = match PluginState::from_bytes(&bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("RuralModeler ext_state_load: parse failed: {e}");
+            return false;
+        }
     };
     let (model_path, ir_path) = state.apply(&instance.shared.params);
+    eprintln!("RuralModeler ext_state_load: model_path={model_path} ir_path={ir_path}");
     if model_path.is_empty() {
         instance.shared.clear_model();
     } else {
@@ -1069,6 +1092,7 @@ unsafe extern "C-unwind" fn ext_state_load(
     } else {
         instance.shared.restore_ir_path_and_load(ir_path);
     }
+    eprintln!("RuralModeler ext_state_load: done");
     true
 }
 
@@ -1089,6 +1113,72 @@ static PARAMS_EXT: clap_plugin_params = clap_plugin_params {
 static STATE_EXT: clap_plugin_state = clap_plugin_state {
     save: Some(ext_state_save),
     load: Some(ext_state_load),
+};
+
+unsafe extern "C-unwind" fn ext_file_reference_count(_plugin: *const clap_plugin) -> u32 {
+    // RuralModeler has two fixed file-reference slots: index 0 for the NAM
+    // model and index 1 for the impulse response. Keeping the indices stable
+    // lets the host update paths reliably even when one of the slots is empty.
+    2
+}
+
+unsafe extern "C-unwind" fn ext_file_reference_get(
+    plugin: *const clap_plugin,
+    index: u32,
+    path: *mut c_char,
+    path_size: u32,
+) -> bool {
+    if plugin.is_null() || path.is_null() || path_size == 0 {
+        return false;
+    }
+    let instance = unsafe { instance(plugin) };
+    let target = match index {
+        0 => instance.shared.model_path.read().clone(),
+        1 => instance.shared.ir_path.read().clone(),
+        _ => return false,
+    };
+
+    let cstring = match std::ffi::CString::new(target) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let bytes = cstring.as_bytes_with_nul();
+    if bytes.len() > path_size as usize {
+        return false;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr() as *const c_char, path, bytes.len());
+    }
+    true
+}
+
+unsafe extern "C-unwind" fn ext_file_reference_update_path(
+    plugin: *const clap_plugin,
+    index: u32,
+    path: *const c_char,
+) -> bool {
+    if plugin.is_null() || path.is_null() {
+        return false;
+    }
+    let path = unsafe { CStr::from_ptr(path) };
+    let path = match path.to_str() {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let instance = unsafe { instance(plugin) };
+    match index {
+        0 => instance.shared.restore_model_path_and_load(path.to_string()),
+        1 => instance.shared.restore_ir_path_and_load(path.to_string()),
+        _ => return false,
+    }
+    true
+}
+
+static FILE_REFERENCE_EXT: clap_plugin_file_reference = clap_plugin_file_reference {
+    count: Some(ext_file_reference_count),
+    get: Some(ext_file_reference_get),
+    get_hash: None,
+    update_path: Some(ext_file_reference_update_path),
 };
 
 unsafe extern "C-unwind" fn ext_latency_get(_plugin: *const clap_plugin) -> u32 {
@@ -1353,6 +1443,8 @@ unsafe extern "C-unwind" fn plugin_get_extension(
         &raw const PARAMS_EXT as *const _ as *const c_void
     } else if id == CLAP_EXT_STATE {
         &raw const STATE_EXT as *const _ as *const c_void
+    } else if id == CLAP_EXT_FILE_REFERENCE {
+        &raw const FILE_REFERENCE_EXT as *const _ as *const c_void
     } else if id == CLAP_EXT_LATENCY {
         &raw const LATENCY_EXT as *const _ as *const c_void
     } else if id == CLAP_EXT_TAIL {
@@ -1442,7 +1534,7 @@ pub unsafe fn create_plugin(
 #[cfg(test)]
 mod tests {
     use super::{ModelMetadata, SharedState, initial_resource_paths};
-    use clap_clap::ffi::CLAP_VERSION;
+    use clap_clap::ffi::{CLAP_EXT_GUI, CLAP_VERSION};
     use clap_clap::ffi::{clap_host, clap_host_gui};
     use std::{
         ffi::{CStr, c_char, c_void},
@@ -1476,7 +1568,7 @@ mod tests {
             return null();
         }
         let id = unsafe { CStr::from_ptr(extension_id) };
-        if id == c"clap.host.gui" {
+        if id == CLAP_EXT_GUI {
             &raw const TEST_HOST_GUI_EXT as *const _ as *const c_void
         } else {
             null()

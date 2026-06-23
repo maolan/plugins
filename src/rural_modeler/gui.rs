@@ -19,6 +19,7 @@ use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
     widget::{button, checkbox, column, container, radio, row, scrollable, text, text_input},
+    window,
 };
 use maolan_widgets::arch_slider::arch_slider;
 use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -119,6 +120,7 @@ pub enum Message {
     ToneOAuthBrowserLogin,
     ToneOAuthCompleted,
     ToneOAuthClear,
+    WindowClosed,
 }
 
 struct State {
@@ -304,7 +306,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .add_filter("NAM model", &["nam"])
                 .pick_file()
             {
-                state.shared.load_model(path.display().to_string());
+                state.shared.load_model(path.display().to_string(), true);
                 sync_error_from_shared(state);
             }
             Task::none()
@@ -314,7 +316,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .add_filter("Impulse response", &["wav"])
                 .pick_file()
             {
-                state.shared.load_ir(path.display().to_string());
+                state.shared.load_ir(path.display().to_string(), true);
                 sync_error_from_shared(state);
             }
             Task::none()
@@ -469,7 +471,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 async move {
                     std::thread::spawn(move || {
                         match tone3000::download_to_temp(AssetKind::Nam, &reference) {
-                            Ok(path) => shared.load_model(path.display().to_string()),
+                            Ok(path) => shared.load_model(path.display().to_string(), true),
                             Err(err) => {
                                 *shared.last_error.write() = Some(err);
                             }
@@ -542,7 +544,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 async move {
                     std::thread::spawn(move || {
                         match tone3000::download_to_temp(AssetKind::Ir, &reference) {
-                            Ok(path) => shared.load_ir(path.display().to_string()),
+                            Ok(path) => shared.load_ir(path.display().to_string(), true),
                             Err(err) => {
                                 *shared.last_error.write() = Some(err);
                             }
@@ -557,6 +559,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ToneIrDownloaded => {
             state.loading = None;
             sync_error_from_shared(state);
+            Task::none()
+        }
+        Message::WindowClosed => {
+            state.shared.request_gui_closed();
             Task::none()
         }
     }
@@ -961,22 +967,35 @@ fn variation_options(variations: &[SearchVariation]) -> Vec<VariationOption> {
 fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {
     maolan_baseview::iced::application(move || init(shared.clone()), update, view)
         .font(iced_fonts::LUCIDE_FONT_BYTES)
+        .subscription(|_| window::close_events().map(|_| Message::WindowClosed))
         .theme(theme)
         .run()
 }
 
-struct AnyWindowHandle {
-    _inner: Box<dyn std::any::Any>,
+trait PluginWindowHandle {
+    fn close_window(&mut self);
 }
 
-unsafe impl Send for AnyWindowHandle {}
+impl<Message: 'static + Send> PluginWindowHandle
+    for maolan_baseview::iced::shell::window::WindowHandle<Message>
+{
+    fn close_window(&mut self) {
+        maolan_baseview::iced::shell::window::WindowHandle::close_window(self);
+    }
+}
+
+struct StoredWindowHandle {
+    inner: Box<dyn PluginWindowHandle>,
+}
+
+unsafe impl Send for StoredWindowHandle {}
 
 pub struct GuiBridge {
     created: bool,
     floating: bool,
     shared: Option<Arc<SharedState>>,
     floating_open: Arc<AtomicBool>,
-    window_handle: Option<AnyWindowHandle>,
+    window_handle: Option<StoredWindowHandle>,
 }
 
 impl Default for GuiBridge {
@@ -1038,8 +1057,8 @@ impl GuiBridge {
             move || build_app(shared),
         );
 
-        self.window_handle = Some(AnyWindowHandle {
-            _inner: Box::new(handle),
+        self.window_handle = Some(StoredWindowHandle {
+            inner: Box::new(handle),
         });
         true
     }
@@ -1085,6 +1104,9 @@ impl GuiBridge {
     }
 
     pub fn hide(&mut self) -> bool {
+        if let Some(mut handle) = self.window_handle.take() {
+            handle.inner.close_window();
+        }
         true
     }
 }

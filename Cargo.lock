@@ -636,8 +636,7 @@ dependencies = [
 [[package]]
 name = "clap-clap"
 version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d52e7620517ad1878bf38a0f291187953fe52ac55736f7911e902a5b194cd8ea"
+source = "git+https://github.com/mekanix/clap-clap?branch=feature%2Ffile-reference#6306dd1d8040757ae8618646a5d53dfcccfb2422"
 
 [[package]]
 name = "clipboard-win"
@@ -2580,6 +2579,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
+ "tracing",
  "ureq",
  "urlencoding",
  "wide",
