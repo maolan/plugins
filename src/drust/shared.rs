@@ -66,7 +66,7 @@ impl SharedState {
         }
         unsafe {
             if let Some(get_ext) = (*host).get_extension {
-                let ext = get_ext(host, c"clap.host.params".as_ptr());
+                let ext = get_ext(host, c"clap.params".as_ptr());
                 if !ext.is_null() {
                     let params = &*(ext as *const clap_host_params);
                     if let Some(f) = params.request_flush {
@@ -84,7 +84,7 @@ impl SharedState {
         }
         unsafe {
             if let Some(get_ext) = (*host).get_extension {
-                let ext = get_ext(host, c"clap.host.state".as_ptr());
+                let ext = get_ext(host, c"clap.state".as_ptr());
                 if !ext.is_null() {
                     let state = &*(ext as *const clap_host_state);
                     if let Some(f) = state.mark_dirty {
@@ -102,7 +102,7 @@ impl SharedState {
         }
         unsafe {
             if let Some(get_ext) = (*host).get_extension {
-                let ext = get_ext(host, c"clap.host.latency".as_ptr());
+                let ext = get_ext(host, c"clap.latency".as_ptr());
                 if !ext.is_null() {
                     let lat = &*(ext as *const clap_host_latency);
                     if let Some(f) = lat.changed {
@@ -120,7 +120,7 @@ impl SharedState {
         }
         unsafe {
             if let Some(get_ext) = (*host).get_extension {
-                let ext = get_ext(host, c"clap.host.note-name".as_ptr());
+                let ext = get_ext(host, c"clap.note-name".as_ptr());
                 if !ext.is_null() {
                     let nn = &*(ext as *const clap_host_note_name);
                     if let Some(f) = nn.changed {

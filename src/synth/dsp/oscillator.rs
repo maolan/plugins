@@ -254,9 +254,7 @@ impl ClassicOsc {
         for voice in &mut self.voices {
             voice.phase = 0.0;
         }
-        for sp in &mut self.sync_phases {
-            *sp = 0.0;
-        }
+        self.sync_phases.fill(0.0);
     }
 
     fn generate_waveform(wf: ClassicWaveform, pulse_width: f32, t: f32, vdt: f32) -> f32 {
@@ -557,18 +555,14 @@ impl SineOsc {
         for voice in &mut self.voices {
             voice.phase = rand::random();
         }
-        for fb in &mut self.voice_feedback {
-            *fb = 0.0;
-        }
+        self.voice_feedback.fill(0.0);
     }
 
     pub fn reset_to_zero(&mut self) {
         for voice in &mut self.voices {
             voice.phase = 0.0;
         }
-        for fb in &mut self.voice_feedback {
-            *fb = 0.0;
-        }
+        self.voice_feedback.fill(0.0);
     }
 
     pub fn next(&mut self, fm_input: f32) -> (f32, f32) {
@@ -941,12 +935,8 @@ impl Fm2Osc {
             vp.0 = rand::random();
             vp.1 = rand::random();
         }
-        for fb in &mut self.voice_feedback {
-            *fb = 0.0;
-        }
-        for fb in &mut self.voice_feedback_prev {
-            *fb = 0.0;
-        }
+        self.voice_feedback.fill(0.0);
+        self.voice_feedback_prev.fill(0.0);
     }
 
     pub fn reset_to_zero(&mut self) {
@@ -956,12 +946,8 @@ impl Fm2Osc {
             vp.0 = 0.0;
             vp.1 = 0.0;
         }
-        for fb in &mut self.voice_feedback {
-            *fb = 0.0;
-        }
-        for fb in &mut self.voice_feedback_prev {
-            *fb = 0.0;
-        }
+        self.voice_feedback.fill(0.0);
+        self.voice_feedback_prev.fill(0.0);
     }
 
     pub fn next(&mut self) -> (f32, f32) {
@@ -1125,25 +1111,15 @@ impl Fm3Osc {
                 *p = rand::random();
             }
         }
-        for fb in &mut self.voice_feedback {
-            *fb = 0.0;
-        }
-        for fb in &mut self.voice_feedback_prev {
-            *fb = 0.0;
-        }
+        self.voice_feedback.fill(0.0);
+        self.voice_feedback_prev.fill(0.0);
     }
 
     pub fn reset_to_zero(&mut self) {
         self.phases = [0.0; 3];
-        for vp in &mut self.voice_phases {
-            *vp = [0.0; 3];
-        }
-        for fb in &mut self.voice_feedback {
-            *fb = 0.0;
-        }
-        for fb in &mut self.voice_feedback_prev {
-            *fb = 0.0;
-        }
+        self.voice_phases.fill([0.0; 3]);
+        self.voice_feedback.fill(0.0);
+        self.voice_feedback_prev.fill(0.0);
     }
 
     pub fn next(&mut self) -> (f32, f32) {
@@ -1317,9 +1293,7 @@ impl WavetableOsc {
 
     pub fn reset_to_zero(&mut self) {
         self.phase = 0.0;
-        for vp in &mut self.voice_phases {
-            *vp = 0.0;
-        }
+        self.voice_phases.fill(0.0);
     }
 
     pub fn next(&mut self, fm_input: f32) -> (f32, f32) {
@@ -1585,9 +1559,7 @@ impl WindowOsc {
 
     pub fn reset_to_zero(&mut self) {
         self.phase = 0.0;
-        for vp in &mut self.voice_phases {
-            *vp = 0.0;
-        }
+        self.voice_phases.fill(0.0);
     }
 
     pub fn next(&mut self, fm_input: f32) -> (f32, f32) {
@@ -1745,9 +1717,7 @@ impl ModernOsc {
     }
 
     pub fn reset_to_zero(&mut self) {
-        for p in &mut self.phases {
-            *p = 0.0;
-        }
+        self.phases.fill(0.0);
     }
 
     pub fn next(&mut self) -> (f32, f32) {
@@ -2663,9 +2633,7 @@ impl AliasOsc {
         self.hold_counter = 0;
         self.ring_pos = 0;
         self.ring_buffer = [0.0f32; 256];
-        for vp in &mut self.voice_phases {
-            *vp = 0.0;
-        }
+        self.voice_phases.fill(0.0);
     }
 
     fn lcg_noise(&mut self) -> f32 {

@@ -1,3 +1,4 @@
+#[derive(Debug, Clone)]
 pub struct EnvelopeFollower {
     sample_rate: f32,
     attack_coeff: f32,

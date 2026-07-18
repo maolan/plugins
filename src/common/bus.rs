@@ -352,6 +352,10 @@ impl PluginSharedData {
         self.plugin_type
     }
 
+    pub fn slot_index(&self) -> u32 {
+        self.slot_index
+    }
+
     pub fn with_fft(mut self, data: FftData) -> Self {
         self.data_mask |= HAS_FFT;
         self.fft_data = Some(data);

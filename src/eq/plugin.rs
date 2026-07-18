@@ -14,14 +14,15 @@ use clap_clap::{
     ffi::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_GESTURE_BEGIN,
         CLAP_EVENT_PARAM_GESTURE_END, CLAP_EVENT_PARAM_VALUE, CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI,
-        CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL, CLAP_INVALID_ID,
+        CLAP_EXT_LATENCY, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL, CLAP_INVALID_ID,
         CLAP_PLUGIN_FEATURE_AUDIO_EFFECT, CLAP_PLUGIN_FEATURE_EQUALIZER, CLAP_PLUGIN_FEATURE_MONO,
         CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION,
         CLAP_WINDOW_API_COCOA, CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info,
-        clap_event_header, clap_event_param_gesture, clap_host, clap_id, clap_istream,
-        clap_ostream, clap_param_info, clap_plugin, clap_plugin_audio_ports,
-        clap_plugin_descriptor, clap_plugin_factory, clap_plugin_gui, clap_plugin_params,
-        clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status, clap_window,
+        clap_event_header, clap_event_param_gesture, clap_host, clap_host_latency, clap_id,
+        clap_istream, clap_ostream, clap_param_info, clap_plugin, clap_plugin_audio_ports,
+        clap_plugin_descriptor, clap_plugin_factory, clap_plugin_gui, clap_plugin_latency,
+        clap_plugin_params, clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status,
+        clap_window,
     },
     id::ClapId,
     process::Process,
@@ -31,13 +32,21 @@ use parking_lot::Mutex;
 use std::mem::size_of;
 
 use crate::common::bus;
-use crate::eq::dsp::ParametricEqualizer;
+use crate::eq::dsp::{MAX_BANDS, ParametricEqualizer};
 use crate::eq::gui::{
     EDITOR_HEIGHT, EDITOR_WIDTH, GuiBridge, ParentWindowHandle, is_api_supported, preferred_api,
 };
+use crate::eq::halfband::{HALFBAND_LATENCY, HalfbandDownsampler, HalfbandUpsampler};
+use crate::eq::linear_phase::{BandDesign, LP_LATENCY, LinearPhaseEq};
 use crate::eq::params::{
     PARAMS, ParamDef, ParamId, ParamIdExt, ParamStore, copy_str_to_array, sanitize_param_value,
 };
+use crate::eq::spectral::{SPECTRAL_LATENCY, SpectralBandConfig, SpectralDynamics};
+
+pub const MODE_ZERO_LATENCY: u32 = 0;
+pub const MODE_NATURAL_PHASE: u32 = 1;
+pub const MODE_LINEAR_PHASE: u32 = 2;
+use crate::eq::spectrum::LogSpectrumAnalyzer;
 
 const PLUGIN_ID: &[u8] = b"rs.maolan.equalizer\0";
 const PLUGIN_NAME: &[u8] = b"Maolan EQ\0";
@@ -80,12 +89,26 @@ static DESCRIPTOR: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor {
 
 struct AudioProcessor {
     equalizer: ParametricEqualizer,
+    equalizer_2x: ParametricEqualizer,
+    up: [HalfbandUpsampler; 2],
+    down: [HalfbandDownsampler; 2],
+    sc_up: [HalfbandUpsampler; 2],
+    up_left: Vec<f32>,
+    up_right: Vec<f32>,
+    up_sc_left: Vec<f32>,
+    up_sc_right: Vec<f32>,
+    linear: LinearPhaseEq,
+    linear_designs: Vec<BandDesign>,
+    spectral: SpectralDynamics,
+    spectral_configs: [SpectralBandConfig; MAX_BANDS],
+    spectral_active: bool,
     temp_left: Vec<f32>,
     temp_right: Vec<f32>,
     delta_left: Vec<f32>,
     delta_right: Vec<f32>,
     spectrum_samples_since_update: usize,
-    sc_envelope: f32,
+    pre_spectrum: LogSpectrumAnalyzer,
+    post_spectrum: LogSpectrumAnalyzer,
     bus_data: Option<bus::PluginSharedData>,
 }
 
@@ -93,30 +116,69 @@ impl AudioProcessor {
     fn new(sample_rate: f64, max_frames: u32, bus_data: Option<bus::PluginSharedData>) -> Self {
         let sr = sample_rate as f32;
         let equalizer = ParametricEqualizer::new(sr);
+        let equalizer_2x = ParametricEqualizer::new(sr * 2.0);
         Self {
             equalizer,
+            equalizer_2x,
+            up: [HalfbandUpsampler::new(), HalfbandUpsampler::new()],
+            down: [HalfbandDownsampler::new(), HalfbandDownsampler::new()],
+            sc_up: [HalfbandUpsampler::new(), HalfbandUpsampler::new()],
+            up_left: vec![0.0; 2 * max_frames as usize],
+            up_right: vec![0.0; 2 * max_frames as usize],
+            up_sc_left: vec![0.0; 2 * max_frames as usize],
+            up_sc_right: vec![0.0; 2 * max_frames as usize],
+            linear: LinearPhaseEq::new(),
+            linear_designs: Vec::new(),
+            spectral: SpectralDynamics::new(),
+            spectral_configs: [SpectralBandConfig::default(); MAX_BANDS],
+            spectral_active: false,
             temp_left: vec![0.0; max_frames as usize],
             temp_right: vec![0.0; max_frames as usize],
             delta_left: vec![0.0; max_frames as usize],
             delta_right: vec![0.0; max_frames as usize],
             spectrum_samples_since_update: 0,
-            sc_envelope: 0.0,
+            pre_spectrum: LogSpectrumAnalyzer::new(SPECTRUM_BINS),
+            post_spectrum: LogSpectrumAnalyzer::new(SPECTRUM_BINS),
             bus_data,
         }
     }
 
     fn reset(&mut self) {
         self.equalizer.reset();
+        self.equalizer_2x.reset();
+        for u in &mut self.up {
+            u.reset();
+        }
+        for d in &mut self.down {
+            d.reset();
+        }
+        for u in &mut self.sc_up {
+            u.reset();
+        }
+        self.linear.reset();
+        self.spectral.reset();
         self.spectrum_samples_since_update = 0;
+        self.pre_spectrum.reset();
+        self.post_spectrum.reset();
     }
 
     fn apply_params(&mut self, shared: &SharedState<ParamId>) {
-        self.equalizer
-            .set_input_gain_db(shared.params.get(ParamId::InputGain) as f32);
-        self.equalizer
-            .set_output_gain_db(shared.params.get(ParamId::OutputGain) as f32);
-        self.equalizer
-            .set_bypass(shared.params.get_bool(ParamId::Bypass));
+        let in_gain = shared.params.get(ParamId::InputGain) as f32;
+        let out_gain = shared.params.get(ParamId::OutputGain) as f32;
+        let bypass = shared.params.get_bool(ParamId::Bypass);
+        let gain_scale = shared.params.get(ParamId::GainScale) as f32;
+        let phase_invert = shared.params.get_bool(ParamId::PhaseInvert);
+        let auto_gain = shared.params.get_bool(ParamId::AutoGain);
+        let character = shared.params.get(ParamId::Character) as u8;
+        for eq in [&mut self.equalizer, &mut self.equalizer_2x] {
+            eq.set_input_gain_db(in_gain);
+            eq.set_output_gain_db(out_gain);
+            eq.set_bypass(bypass);
+            eq.set_gain_scale(gain_scale);
+            eq.set_phase_invert(phase_invert);
+            eq.set_auto_gain(auto_gain);
+            eq.set_character(character);
+        }
         let listen = shared.get_listen_band();
         self.equalizer.set_listen_band(if listen < 32 {
             Some(listen as usize)
@@ -124,18 +186,74 @@ impl AudioProcessor {
             None
         });
         for i in 0..32 {
-            self.equalizer.set_para_band(
-                i,
-                crate::eq::dsp::BandParams {
-                    freq: shared.params.get(ParamId::para_freq(i)) as f32,
-                    gain: shared.params.get(ParamId::para_gain(i)) as f32,
-                    q: shared.params.get(ParamId::para_q(i)) as f32,
-                    on: shared.params.get_bool(ParamId::para_on(i)),
-                    typ: shared.params.get(ParamId::para_type(i)) as u8,
-                    slope: shared.params.get(ParamId::para_slope(i)) as u8,
-                },
-            );
+            let band = crate::eq::dsp::BandParams {
+                freq: shared.params.get(ParamId::para_freq(i)) as f32,
+                gain: shared.params.get(ParamId::para_gain(i)) as f32,
+                q: shared.params.get(ParamId::para_q(i)) as f32,
+                on: shared.params.get_bool(ParamId::para_on(i)),
+                typ: shared.params.get(ParamId::para_type(i)) as u8,
+                slope: shared.params.get(ParamId::para_slope(i)) as u8,
+                placement: shared.params.get(ParamId::para_placement(i)) as u8,
+                dyn_on: shared.params.get_bool(ParamId::para_dyn(i)),
+                dyn_threshold: shared.params.get(ParamId::para_dyn_threshold(i)) as f32,
+                dyn_ratio: shared.params.get(ParamId::para_dyn_ratio(i)) as f32,
+                dyn_knee: shared.params.get(ParamId::para_dyn_knee(i)) as f32,
+                dyn_range: shared.params.get(ParamId::para_dyn_range(i)) as f32,
+                dyn_attack_ms: shared.params.get(ParamId::para_dyn_attack(i)) as f32,
+                dyn_release_ms: shared.params.get(ParamId::para_dyn_release(i)) as f32,
+                dyn_external: shared.params.get(ParamId::para_dyn_source(i)) >= 0.5,
+                dyn_spectral: shared.params.get(ParamId::para_dyn_mode(i)) >= 0.5,
+            };
+            self.equalizer.set_para_band(i, band);
+            self.equalizer_2x.set_para_band(i, band);
         }
+
+        self.linear_designs.clear();
+        for i in 0..32 {
+            let (shape, slope, freq, q, gain) = self
+                .equalizer
+                .band_design(i)
+                .unwrap_or((0, 0, 0.0, 0.0, 0.0));
+            self.linear_designs.push(BandDesign {
+                on: self.equalizer.band_design(i).is_some(),
+                shape,
+                slope,
+                freq,
+                q,
+                gain_db: gain,
+            });
+        }
+        let mode = shared.params.get(ParamId::ProcessingMode).round() as u32;
+        if mode == MODE_LINEAR_PHASE {
+            self.linear
+                .set_bands(&self.linear_designs, self.equalizer.sample_rate());
+        }
+
+        let mut any_spectral = false;
+        for (i, config) in self.spectral_configs.iter_mut().enumerate() {
+            let shape = shared.params.get(ParamId::para_type(i)) as u8;
+            let on = shared.params.get_bool(ParamId::para_on(i))
+                && shared.params.get_bool(ParamId::para_dyn(i))
+                && shared.params.get(ParamId::para_dyn_mode(i)) >= 0.5
+                && crate::eq::dsp::dyn_capable(shape);
+            *config = SpectralBandConfig {
+                on,
+                external: shared.params.get(ParamId::para_dyn_source(i)) >= 0.5,
+                freq: shared.params.get(ParamId::para_freq(i)) as f32,
+                q: shared.params.get(ParamId::para_q(i)) as f32,
+                shape,
+                threshold_db: shared.params.get(ParamId::para_dyn_threshold(i)) as f32,
+                ratio: shared.params.get(ParamId::para_dyn_ratio(i)) as f32,
+                knee_db: shared.params.get(ParamId::para_dyn_knee(i)) as f32,
+                range_db: shared.params.get(ParamId::para_dyn_range(i)) as f32,
+                attack_ms: shared.params.get(ParamId::para_dyn_attack(i)) as f32,
+                release_ms: shared.params.get(ParamId::para_dyn_release(i)) as f32,
+            };
+            any_spectral |= on;
+        }
+        self.spectral_active = any_spectral;
+        self.spectral
+            .configure(self.equalizer.sample_rate(), &self.spectral_configs);
 
         if let Some(ref bus) = self.bus_data
             && let Some(slot) = bus.bands_slot()
@@ -190,74 +308,8 @@ impl AudioProcessor {
         let inputs_count = process.audio_inputs_count();
         let outputs_count = process.audio_outputs_count();
         let channels = shared.channels.load(Ordering::Acquire);
-        let sidechain_enabled = shared.params.get(ParamId::SidechainEnable) >= 0.5;
-        let has_sidechain = sidechain_enabled && inputs_count > outputs_count;
-
-        let mut reduction_db = 0.0_f32;
-        if has_sidechain {
-            let sample_rate = self.equalizer.sample_rate();
-            let attack_ms = shared.params.get(ParamId::SidechainAttackMs) as f32;
-            let release_ms = shared.params.get(ParamId::SidechainReleaseMs) as f32;
-            let attack_s = attack_ms / 1000.0;
-            let release_s = release_ms / 1000.0;
-            let attack_coef = if attack_s > 0.0 {
-                (-1.0 / (sample_rate * attack_s)).exp()
-            } else {
-                0.0
-            };
-            let release_coef = if release_s > 0.0 {
-                (-1.0 / (sample_rate * release_s)).exp()
-            } else {
-                0.0
-            };
-            let threshold_db = shared.params.get(ParamId::SidechainThreshold) as f32;
-            let ratio = shared.params.get(ParamId::SidechainRatio) as f32;
-
-            for sc_port_idx in channels..inputs_count {
-                let sc_port = process.audio_inputs(sc_port_idx);
-                let sc_data = sc_port.data32(0);
-                if sc_data.is_empty() {
-                    continue;
-                }
-                for &sample in &sc_data[..frames] {
-                    let input_abs = sample.abs();
-                    if input_abs > self.sc_envelope {
-                        self.sc_envelope =
-                            attack_coef * self.sc_envelope + (1.0 - attack_coef) * input_abs;
-                    } else {
-                        self.sc_envelope =
-                            release_coef * self.sc_envelope + (1.0 - release_coef) * input_abs;
-                    }
-                }
-            }
-            let sc_db = if self.sc_envelope > 0.0 {
-                20.0 * self.sc_envelope.log10()
-            } else {
-                -90.0
-            };
-            reduction_db = if sc_db > threshold_db {
-                (sc_db - threshold_db) * (1.0 - 1.0 / ratio.max(1.0))
-            } else {
-                0.0
-            };
-        } else {
-            self.sc_envelope = 0.0;
-        }
-
-        if reduction_db > 0.0 {
-            for i in 0..32 {
-                let band_type = shared.params.get(ParamId::para_type(i));
-                if band_type != 1.0 {
-                    continue;
-                }
-                let dyn_amount = shared.params.get(ParamId::para_dyn(i)) as f32;
-                if dyn_amount > 0.0 {
-                    let base_gain = shared.params.get(ParamId::para_gain(i)) as f32;
-                    let modulated_gain = base_gain - reduction_db * dyn_amount;
-                    self.equalizer.update_para_band_gain(i, modulated_gain);
-                }
-            }
-        }
+        let has_sidechain =
+            needs_external_sidechain(&shared.params) && inputs_count > outputs_count;
 
         if channels >= 2 && outputs_count >= 2 {
             let input_l = process.audio_inputs(0);
@@ -265,7 +317,28 @@ impl AudioProcessor {
             self.temp_left[..frames].copy_from_slice(input_l.data32(0));
             self.temp_right[..frames].copy_from_slice(input_r.data32(0));
 
+            let sc_guard_l = if has_sidechain {
+                Some(process.audio_inputs(channels))
+            } else {
+                None
+            };
+            let sc_guard_r = if has_sidechain {
+                Some(process.audio_inputs(channels + 1))
+            } else {
+                None
+            };
+            let sidechain = match (&sc_guard_l, &sc_guard_r) {
+                (Some(sc_l), Some(sc_r))
+                    if sc_l.data32(0).len() >= frames && sc_r.data32(0).len() >= frames =>
+                {
+                    Some((&sc_l.data32(0)[..frames], &sc_r.data32(0)[..frames]))
+                }
+                _ => None,
+            };
+
             if ui_visible {
+                self.pre_spectrum
+                    .push_block(&self.temp_left[..frames], Some(&self.temp_right[..frames]));
                 let in_peak_l = crate::simd::peak_abs(&self.temp_left[..frames]);
                 let in_peak_r = crate::simd::peak_abs(&self.temp_right[..frames]);
                 let in_db_l = if in_peak_l > 0.0 {
@@ -283,26 +356,132 @@ impl AudioProcessor {
             }
 
             if let Some(listen) = self.equalizer.listen_band {
-                self.delta_left[..frames].copy_from_slice(input_l.data32(0));
-                self.delta_right[..frames].copy_from_slice(input_r.data32(0));
-                self.equalizer.process_stereo(
-                    &mut self.temp_left[..frames],
-                    &mut self.temp_right[..frames],
-                );
-                self.equalizer.process_stereo_without_band(
-                    &mut self.delta_left[..frames],
-                    &mut self.delta_right[..frames],
-                    listen,
-                );
-                for i in 0..frames {
-                    self.temp_left[i] -= self.delta_left[i];
-                    self.temp_right[i] -= self.delta_right[i];
+                let sc_audition = sidechain.is_some()
+                    && shared.params.get_bool(ParamId::para_dyn(listen))
+                    && shared.params.get(ParamId::para_dyn_source(listen)) >= 0.5;
+                if sc_audition {
+                    let (sc_l, sc_r) = sidechain.expect("checked above");
+                    self.temp_left[..frames].copy_from_slice(sc_l);
+                    self.temp_right[..frames].copy_from_slice(sc_r);
+                    self.equalizer.audition_band(
+                        &mut self.temp_left[..frames],
+                        &mut self.temp_right[..frames],
+                        listen,
+                    );
+                } else {
+                    self.delta_left[..frames].copy_from_slice(input_l.data32(0));
+                    self.delta_right[..frames].copy_from_slice(input_r.data32(0));
+                    self.equalizer.process_stereo(
+                        &mut self.temp_left[..frames],
+                        &mut self.temp_right[..frames],
+                        sidechain,
+                    );
+                    self.equalizer.process_stereo_without_band(
+                        &mut self.delta_left[..frames],
+                        &mut self.delta_right[..frames],
+                        sidechain,
+                        listen,
+                    );
+                    for i in 0..frames {
+                        self.temp_left[i] -= self.delta_left[i];
+                        self.temp_right[i] -= self.delta_right[i];
+                    }
                 }
             } else {
-                self.equalizer.process_stereo(
-                    &mut self.temp_left[..frames],
-                    &mut self.temp_right[..frames],
-                );
+                let mode = shared.params.get(ParamId::ProcessingMode).round() as u32;
+                match mode {
+                    MODE_NATURAL_PHASE => {
+                        if self.up_left.len() < 2 * frames {
+                            self.up_left.resize(2 * frames, 0.0);
+                            self.up_right.resize(2 * frames, 0.0);
+                            self.up_sc_left.resize(2 * frames, 0.0);
+                            self.up_sc_right.resize(2 * frames, 0.0);
+                        }
+                        for i in 0..frames {
+                            let (a, b) = self.up[0].process(self.temp_left[i]);
+                            self.up_left[2 * i] = a;
+                            self.up_left[2 * i + 1] = b;
+                            let (c, d) = self.up[1].process(self.temp_right[i]);
+                            self.up_right[2 * i] = c;
+                            self.up_right[2 * i + 1] = d;
+                        }
+                        let sc_2x = if let Some((sc_l, sc_r)) = sidechain {
+                            for i in 0..frames {
+                                let (a, b) = self.sc_up[0].process(sc_l[i]);
+                                self.up_sc_left[2 * i] = a;
+                                self.up_sc_left[2 * i + 1] = b;
+                                let (c, d) = self.sc_up[1].process(sc_r[i]);
+                                self.up_sc_right[2 * i] = c;
+                                self.up_sc_right[2 * i + 1] = d;
+                            }
+                            Some((
+                                &self.up_sc_left[..2 * frames] as &[f32],
+                                &self.up_sc_right[..2 * frames] as &[f32],
+                            ))
+                        } else {
+                            None
+                        };
+                        self.equalizer_2x.process_stereo(
+                            &mut self.up_left[..2 * frames],
+                            &mut self.up_right[..2 * frames],
+                            sc_2x,
+                        );
+                        for i in 0..frames {
+                            self.temp_left[i] =
+                                self.down[0].process(self.up_left[2 * i], self.up_left[2 * i + 1]);
+                            self.temp_right[i] = self.down[1]
+                                .process(self.up_right[2 * i], self.up_right[2 * i + 1]);
+                        }
+                    }
+                    MODE_LINEAR_PHASE => {
+                        if !shared.params.get_bool(ParamId::Bypass) {
+                            self.equalizer.process_dynamics_only(
+                                &mut self.temp_left[..frames],
+                                &mut self.temp_right[..frames],
+                                sidechain,
+                            );
+                            self.linear.process_stereo(
+                                &mut self.temp_left[..frames],
+                                &mut self.temp_right[..frames],
+                            );
+                            let polarity = if shared.params.get_bool(ParamId::PhaseInvert) {
+                                -1.0
+                            } else {
+                                1.0
+                            };
+                            let out_gain = crate::eq::dsp::db_to_gain(
+                                shared.params.get(ParamId::OutputGain) as f32,
+                            ) * polarity;
+                            crate::simd::mul_inplace(&mut self.temp_left[..frames], out_gain);
+                            crate::simd::mul_inplace(&mut self.temp_right[..frames], out_gain);
+                            let character = shared.params.get(ParamId::Character) as u8;
+                            crate::eq::dsp::apply_character(
+                                &mut self.temp_left[..frames],
+                                character,
+                            );
+                            crate::eq::dsp::apply_character(
+                                &mut self.temp_right[..frames],
+                                character,
+                            );
+                        }
+                    }
+                    _ => {
+                        self.equalizer.process_stereo(
+                            &mut self.temp_left[..frames],
+                            &mut self.temp_right[..frames],
+                            sidechain,
+                        );
+                    }
+                }
+                // Note: while Listen is active the spectral stage is bypassed
+                // so the delta-audition stays a pure static-EQ comparison.
+                if self.spectral_active {
+                    self.spectral.process_stereo(
+                        &mut self.temp_left[..frames],
+                        &mut self.temp_right[..frames],
+                        sidechain,
+                    );
+                }
             }
 
             {
@@ -315,6 +494,8 @@ impl AudioProcessor {
             }
 
             if ui_visible {
+                self.post_spectrum
+                    .push_block(&self.temp_left[..frames], Some(&self.temp_right[..frames]));
                 let out_peak_l = crate::simd::peak_abs(&self.temp_left[..frames]);
                 let out_peak_r = crate::simd::peak_abs(&self.temp_right[..frames]);
                 let out_db_l = if out_peak_l > 0.0 {
@@ -329,21 +510,25 @@ impl AudioProcessor {
                 };
                 shared.set_output_level_left_db(out_db_l.clamp(-90.0, 20.0));
                 shared.set_output_level_right_db(out_db_r.clamp(-90.0, 20.0));
+                for band in 0..crate::eq::dsp::MAX_BANDS {
+                    shared.set_band_dyn_gain_db(band, self.equalizer.band_dyn_gain_db(band));
+                }
                 if self.spectrum_samples_since_update >= spectrum_update_interval_samples {
-                    let spectrum = analyze_output_spectrum_stereo(
-                        &self.temp_left[..frames],
-                        &self.temp_right[..frames],
-                        self.equalizer.sample_rate(),
-                    );
-                    shared.set_output_spectrum_db(&spectrum);
+                    let mut pre = [FADER_MIN_DB; SPECTRUM_BINS];
+                    let mut post = [FADER_MIN_DB; SPECTRUM_BINS];
+                    let sample_rate = self.equalizer.sample_rate();
+                    self.pre_spectrum.compute(sample_rate, &mut pre);
+                    self.post_spectrum.compute(sample_rate, &mut post);
+                    shared.set_input_spectrum_db(&pre);
+                    shared.set_output_spectrum_db(&post);
 
                     if let Some(ref bus) = self.bus_data
                         && bus::needs(bus::NEED_FFT)
                         && let Some(slot) = bus.fft_slot()
                     {
                         slot.write(|fft| {
-                            let n = spectrum.len().min(fft.bins.len());
-                            fft.bins[..n].copy_from_slice(&spectrum[..n]);
+                            let n = post.len().min(fft.bins.len());
+                            fft.bins[..n].copy_from_slice(&post[..n]);
                             fft.valid_bins = n;
                         });
                     }
@@ -354,7 +539,21 @@ impl AudioProcessor {
             let input_port = process.audio_inputs(0);
             self.temp_left[..frames].copy_from_slice(input_port.data32(0));
 
+            let sc_guard = if has_sidechain {
+                Some(process.audio_inputs(channels))
+            } else {
+                None
+            };
+            let sidechain = match &sc_guard {
+                Some(sc_port) if sc_port.data32(0).len() >= frames => {
+                    Some(&sc_port.data32(0)[..frames])
+                }
+                _ => None,
+            };
+
             if ui_visible {
+                self.pre_spectrum
+                    .push_block(&self.temp_left[..frames], None);
                 let in_peak_l = crate::simd::peak_abs(&self.temp_left[..frames]);
                 let in_db_l = if in_peak_l > 0.0 {
                     20.0 * in_peak_l.log10()
@@ -366,21 +565,99 @@ impl AudioProcessor {
             }
 
             if let Some(listen) = self.equalizer.listen_band {
-                self.delta_left[..frames].copy_from_slice(input_port.data32(0));
-                self.equalizer.process_mono(&mut self.temp_left[..frames]);
-                self.equalizer
-                    .process_mono_without_band(&mut self.delta_left[..frames], listen);
-                for i in 0..frames {
-                    self.temp_left[i] -= self.delta_left[i];
+                let sc_audition = sidechain.is_some()
+                    && shared.params.get_bool(ParamId::para_dyn(listen))
+                    && shared.params.get(ParamId::para_dyn_source(listen)) >= 0.5;
+                if sc_audition {
+                    let sc = sidechain.expect("checked above");
+                    self.temp_left[..frames].copy_from_slice(sc);
+                    self.equalizer
+                        .audition_band_mono(&mut self.temp_left[..frames], listen);
+                } else {
+                    self.delta_left[..frames].copy_from_slice(input_port.data32(0));
+                    self.equalizer
+                        .process_mono(&mut self.temp_left[..frames], sidechain);
+                    self.equalizer.process_mono_without_band(
+                        &mut self.delta_left[..frames],
+                        sidechain,
+                        listen,
+                    );
+                    for i in 0..frames {
+                        self.temp_left[i] -= self.delta_left[i];
+                    }
                 }
             } else {
-                self.equalizer.process_mono(&mut self.temp_left[..frames]);
+                let mode = shared.params.get(ParamId::ProcessingMode).round() as u32;
+                match mode {
+                    MODE_NATURAL_PHASE => {
+                        if self.up_left.len() < 2 * frames {
+                            self.up_left.resize(2 * frames, 0.0);
+                            self.up_right.resize(2 * frames, 0.0);
+                            self.up_sc_left.resize(2 * frames, 0.0);
+                            self.up_sc_right.resize(2 * frames, 0.0);
+                        }
+                        for i in 0..frames {
+                            let (a, b) = self.up[0].process(self.temp_left[i]);
+                            self.up_left[2 * i] = a;
+                            self.up_left[2 * i + 1] = b;
+                        }
+                        let sc_2x = if let Some(sc) = sidechain {
+                            for (i, &s) in sc.iter().take(frames).enumerate() {
+                                let (a, b) = self.sc_up[0].process(s);
+                                self.up_sc_left[2 * i] = a;
+                                self.up_sc_left[2 * i + 1] = b;
+                            }
+                            Some(&self.up_sc_left[..2 * frames] as &[f32])
+                        } else {
+                            None
+                        };
+                        self.equalizer_2x
+                            .process_mono(&mut self.up_left[..2 * frames], sc_2x);
+                        for i in 0..frames {
+                            self.temp_left[i] =
+                                self.down[0].process(self.up_left[2 * i], self.up_left[2 * i + 1]);
+                        }
+                    }
+                    MODE_LINEAR_PHASE => {
+                        if !shared.params.get_bool(ParamId::Bypass) {
+                            self.equalizer.process_dynamics_only_mono(
+                                &mut self.temp_left[..frames],
+                                sidechain,
+                            );
+                            self.linear.process_mono(&mut self.temp_left[..frames]);
+                            let polarity = if shared.params.get_bool(ParamId::PhaseInvert) {
+                                -1.0
+                            } else {
+                                1.0
+                            };
+                            let out_gain = crate::eq::dsp::db_to_gain(
+                                shared.params.get(ParamId::OutputGain) as f32,
+                            ) * polarity;
+                            crate::simd::mul_inplace(&mut self.temp_left[..frames], out_gain);
+                            let character = shared.params.get(ParamId::Character) as u8;
+                            crate::eq::dsp::apply_character(
+                                &mut self.temp_left[..frames],
+                                character,
+                            );
+                        }
+                    }
+                    _ => {
+                        self.equalizer
+                            .process_mono(&mut self.temp_left[..frames], sidechain);
+                    }
+                }
+                if self.spectral_active {
+                    self.spectral
+                        .process_mono(&mut self.temp_left[..frames], sidechain);
+                }
             }
 
             let mut output_port = process.audio_outputs(0);
             output_port.data32(0)[..frames].copy_from_slice(&self.temp_left[..frames]);
 
             if ui_visible {
+                self.post_spectrum
+                    .push_block(&self.temp_left[..frames], None);
                 let out_peak_l = crate::simd::peak_abs(&self.temp_left[..frames]);
                 let out_db_l = if out_peak_l > 0.0 {
                     20.0 * out_peak_l.log10()
@@ -389,20 +666,25 @@ impl AudioProcessor {
                 };
                 shared.set_output_level_left_db(out_db_l.clamp(-90.0, 20.0));
                 shared.set_output_level_right_db(out_db_l.clamp(-90.0, 20.0));
+                for band in 0..crate::eq::dsp::MAX_BANDS {
+                    shared.set_band_dyn_gain_db(band, self.equalizer.band_dyn_gain_db(band));
+                }
                 if self.spectrum_samples_since_update >= spectrum_update_interval_samples {
-                    let spectrum = analyze_output_spectrum_mono(
-                        &self.temp_left[..frames],
-                        self.equalizer.sample_rate(),
-                    );
-                    shared.set_output_spectrum_db(&spectrum);
+                    let mut pre = [FADER_MIN_DB; SPECTRUM_BINS];
+                    let mut post = [FADER_MIN_DB; SPECTRUM_BINS];
+                    let sample_rate = self.equalizer.sample_rate();
+                    self.pre_spectrum.compute(sample_rate, &mut pre);
+                    self.post_spectrum.compute(sample_rate, &mut post);
+                    shared.set_input_spectrum_db(&pre);
+                    shared.set_output_spectrum_db(&post);
 
                     if let Some(ref bus) = self.bus_data
                         && bus::needs(bus::NEED_FFT)
                         && let Some(slot) = bus.fft_slot()
                     {
                         slot.write(|fft| {
-                            let n = spectrum.len().min(fft.bins.len());
-                            fft.bins[..n].copy_from_slice(&spectrum[..n]);
+                            let n = post.len().min(fft.bins.len());
+                            fft.bins[..n].copy_from_slice(&post[..n]);
                             fft.valid_bins = n;
                         });
                     }
@@ -415,207 +697,40 @@ impl AudioProcessor {
     }
 }
 
-fn analyze_output_spectrum_mono(samples: &[f32], sample_rate: f32) -> [f32; SPECTRUM_BINS] {
-    analyze_output_spectrum_impl(samples, None, sample_rate)
+fn needs_external_sidechain(params: &ParamStore<ParamId>) -> bool {
+    (0..32).any(|i| {
+        params.get_bool(ParamId::para_on(i))
+            && params.get_bool(ParamId::para_dyn(i))
+            && params.get(ParamId::para_dyn_source(i)) >= 0.5
+    })
 }
 
-fn analyze_output_spectrum_stereo(
-    left: &[f32],
-    right: &[f32],
-    sample_rate: f32,
-) -> [f32; SPECTRUM_BINS] {
-    analyze_output_spectrum_impl(left, Some(right), sample_rate)
+/// True when any band is dynamic, in Spectral mode, and of a dyn-capable
+/// shape — i.e. the STFT stage is active and the plugin has
+/// `SPECTRAL_LATENCY` samples of latency.
+pub fn spectral_active_params(params: &ParamStore<ParamId>) -> bool {
+    (0..32).any(|i| {
+        params.get_bool(ParamId::para_on(i))
+            && params.get_bool(ParamId::para_dyn(i))
+            && params.get(ParamId::para_dyn_mode(i)) >= 0.5
+            && crate::eq::dsp::dyn_capable(params.get(ParamId::para_type(i)) as u8)
+    })
 }
 
-fn analyze_output_spectrum_impl(
-    left: &[f32],
-    right: Option<&[f32]>,
-    sample_rate: f32,
-) -> [f32; SPECTRUM_BINS] {
-    let mut out = [-90.0_f32; SPECTRUM_BINS];
-    let n = left.len().min(1024);
-    if n < 32 || sample_rate <= 0.0 {
-        return out;
-    }
-
-    let nf = n as f32;
-    let mut hann = [0.0f32; 1024];
-    for (i, h) in hann[..n].iter_mut().enumerate() {
-        *h = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (nf - 1.0)).cos();
-    }
-
-    let mut windowed = [0.0f32; 1024];
-    if let Some(r) = right {
-        windowed[..n].copy_from_slice(&left[..n]);
-        crate::simd::add_scaled_inplace(&mut windowed[..n], &r[..n], 1.0);
-        crate::simd::mul_inplace(&mut windowed[..n], 0.5);
-        crate::simd::mul_per_sample_inplace(&mut windowed[..n], &hann[..n]);
+/// Total plugin latency in samples for the current parameters: spectral
+/// dynamics, Natural Phase (2× half-band) and Linear Phase (FIR) each
+/// contribute their own delay.
+pub fn latency_samples(params: &ParamStore<ParamId>) -> u32 {
+    let spectral = if spectral_active_params(params) {
+        SPECTRAL_LATENCY
     } else {
-        windowed[..n].copy_from_slice(&left[..n]);
-        crate::simd::mul_per_sample_inplace(&mut windowed[..n], &hann[..n]);
+        0
+    };
+    match params.get(ParamId::ProcessingMode).round() as u32 {
+        MODE_NATURAL_PHASE => HALFBAND_LATENCY + spectral,
+        MODE_LINEAR_PHASE => LP_LATENCY + spectral,
+        _ => spectral,
     }
-
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    {
-        if is_x86_feature_detected!("avx") {
-            const LANES: usize = 8;
-            let bins = SPECTRUM_BINS;
-            let mut cos_deltas = [0.0f32; SPECTRUM_BINS];
-            let mut sin_deltas = [0.0f32; SPECTRUM_BINS];
-            for bin in 0..bins {
-                let t = bin as f32 / (bins.saturating_sub(1).max(1) as f32);
-                let freq = 20.0_f32 * (20_000.0_f32 / 20.0_f32).powf(t);
-                let omega = (2.0 * std::f32::consts::PI * freq / sample_rate)
-                    .clamp(0.0, std::f32::consts::PI);
-                cos_deltas[bin] = omega.cos();
-                sin_deltas[bin] = omega.sin();
-            }
-
-            #[cfg(target_arch = "x86")]
-            use std::arch::x86::*;
-            #[cfg(target_arch = "x86_64")]
-            use std::arch::x86_64::*;
-
-            unsafe {
-                let nf = n as f32;
-                let eps = 1.0e-8f32;
-                for group in 0..bins / LANES {
-                    let base = group * LANES;
-                    let cos_delta = _mm256_loadu_ps(cos_deltas.as_ptr().add(base));
-                    let sin_delta = _mm256_loadu_ps(sin_deltas.as_ptr().add(base));
-                    let mut re = _mm256_setzero_ps();
-                    let mut im = _mm256_setzero_ps();
-                    let mut cos_phase = _mm256_set1_ps(1.0);
-                    let mut sin_phase = _mm256_setzero_ps();
-
-                    for s in windowed[..n].iter() {
-                        let s8 = _mm256_set1_ps(*s);
-                        re = _mm256_add_ps(re, _mm256_mul_ps(s8, cos_phase));
-                        im = _mm256_sub_ps(im, _mm256_mul_ps(s8, sin_phase));
-                        let new_cos = _mm256_sub_ps(
-                            _mm256_mul_ps(cos_phase, cos_delta),
-                            _mm256_mul_ps(sin_phase, sin_delta),
-                        );
-                        let new_sin = _mm256_add_ps(
-                            _mm256_mul_ps(sin_phase, cos_delta),
-                            _mm256_mul_ps(cos_phase, sin_delta),
-                        );
-                        cos_phase = new_cos;
-                        sin_phase = new_sin;
-                    }
-
-                    let mag = _mm256_div_ps(
-                        _mm256_sqrt_ps(_mm256_add_ps(_mm256_mul_ps(re, re), _mm256_mul_ps(im, im))),
-                        _mm256_set1_ps(nf),
-                    );
-                    let mut mag_arr = [0.0f32; LANES];
-                    _mm256_storeu_ps(mag_arr.as_mut_ptr(), mag);
-                    for lane in 0..LANES {
-                        let m = mag_arr[lane];
-                        out[base + lane] = if m > eps {
-                            (20.0 * m.log10()).clamp(-90.0, 20.0)
-                        } else {
-                            -90.0
-                        };
-                    }
-                }
-            }
-            return out;
-        }
-        if is_x86_feature_detected!("sse2") {
-            const LANES: usize = 4;
-            let bins = SPECTRUM_BINS;
-            let mut cos_deltas = [0.0f32; SPECTRUM_BINS];
-            let mut sin_deltas = [0.0f32; SPECTRUM_BINS];
-            for bin in 0..bins {
-                let t = bin as f32 / (bins.saturating_sub(1).max(1) as f32);
-                let freq = 20.0_f32 * (20_000.0_f32 / 20.0_f32).powf(t);
-                let omega = (2.0 * std::f32::consts::PI * freq / sample_rate)
-                    .clamp(0.0, std::f32::consts::PI);
-                cos_deltas[bin] = omega.cos();
-                sin_deltas[bin] = omega.sin();
-            }
-
-            #[cfg(target_arch = "x86")]
-            use std::arch::x86::*;
-            #[cfg(target_arch = "x86_64")]
-            use std::arch::x86_64::*;
-            unsafe {
-                let nf = _mm_set1_ps(n as f32);
-                let eps = 1.0e-8f32;
-                for group in 0..bins / LANES {
-                    let base = group * LANES;
-                    let cos_delta = _mm_loadu_ps(cos_deltas.as_ptr().add(base));
-                    let sin_delta = _mm_loadu_ps(sin_deltas.as_ptr().add(base));
-                    let mut re = _mm_setzero_ps();
-                    let mut im = _mm_setzero_ps();
-                    let mut cos_phase = _mm_set1_ps(1.0);
-                    let mut sin_phase = _mm_setzero_ps();
-                    for s in windowed[..n].iter() {
-                        let s4 = _mm_set1_ps(*s);
-                        re = _mm_add_ps(re, _mm_mul_ps(s4, cos_phase));
-                        im = _mm_sub_ps(im, _mm_mul_ps(s4, sin_phase));
-                        let new_cos = _mm_sub_ps(
-                            _mm_mul_ps(cos_phase, cos_delta),
-                            _mm_mul_ps(sin_phase, sin_delta),
-                        );
-                        let new_sin = _mm_add_ps(
-                            _mm_mul_ps(sin_phase, cos_delta),
-                            _mm_mul_ps(cos_phase, sin_delta),
-                        );
-                        cos_phase = new_cos;
-                        sin_phase = new_sin;
-                    }
-                    let mag = _mm_div_ps(
-                        _mm_sqrt_ps(_mm_add_ps(_mm_mul_ps(re, re), _mm_mul_ps(im, im))),
-                        nf,
-                    );
-                    let mut mag_arr = [0.0f32; LANES];
-                    _mm_storeu_ps(mag_arr.as_mut_ptr(), mag);
-                    for lane in 0..LANES {
-                        let m = mag_arr[lane];
-                        out[base + lane] = if m > eps {
-                            (20.0 * m.log10()).clamp(-90.0, 20.0)
-                        } else {
-                            -90.0
-                        };
-                    }
-                }
-            }
-            return out;
-        }
-    }
-
-    for (bin, out_db) in out.iter_mut().enumerate() {
-        let t = bin as f32 / (SPECTRUM_BINS.saturating_sub(1).max(1) as f32);
-        let freq = 20.0_f32 * (20_000.0_f32 / 20.0_f32).powf(t);
-        let omega =
-            (2.0 * std::f32::consts::PI * freq / sample_rate).clamp(0.0, std::f32::consts::PI);
-        let cos_delta = omega.cos();
-        let sin_delta = omega.sin();
-        let mut re = 0.0_f32;
-        let mut im = 0.0_f32;
-        let mut cos_phase = 1.0_f32;
-        let mut sin_phase = 0.0_f32;
-
-        for s in windowed[..n].iter() {
-            re += *s * cos_phase;
-            im -= *s * sin_phase;
-            let new_cos = cos_phase * cos_delta - sin_phase * sin_delta;
-            let new_sin = sin_phase * cos_delta + cos_phase * sin_delta;
-            cos_phase = new_cos;
-            sin_phase = new_sin;
-        }
-
-        let mag = (re * re + im * im).sqrt() / (n as f32);
-        *out_db = if mag > 1.0e-8 {
-            (20.0 * mag.log10()).clamp(-90.0, 20.0)
-        } else {
-            -90.0
-        };
-    }
-
-    out
 }
 
 struct PluginInstance {
@@ -638,6 +753,7 @@ impl PluginInstance {
             .with_fft(bus::FftData::default())
             .with_bands(bus::EqBands::default());
         bus_data = bus::register(bus_id, bus_data);
+        shared.set_own_slot(bus_data.slot_index());
         Self {
             shared,
             active: AtomicBool::new(false),
@@ -704,8 +820,19 @@ fn apply_param_events(shared: &SharedState<ParamId>, events: &InputEvents<'_>) {
                         }
                         let incoming = sanitize_param_value(id, param.value(), &PARAMS);
                         shared.params.set(id, incoming);
-                        if id == ParamId::SidechainEnable {
+                        let dyn_toggle =
+                            (ParamId::Para1Dyn as u32..=ParamId::Para32Dyn as u32).contains(&raw);
+                        let dyn_source = (ParamId::Para1DynSource as u32
+                            ..=ParamId::Para32DynSource as u32)
+                            .contains(&raw);
+                        if dyn_toggle || dyn_source {
                             shared.request_audio_ports_rescan();
+                        }
+                        let dyn_mode = (ParamId::Para1DynMode as u32
+                            ..=ParamId::Para32DynMode as u32)
+                            .contains(&raw);
+                        if dyn_mode || dyn_toggle || id == ParamId::ProcessingMode {
+                            shared.request_latency_changed();
                         }
                     }
                 }
@@ -894,7 +1021,7 @@ unsafe extern "C-unwind" fn ext_audio_ports_count(
 ) -> u32 {
     let instance = unsafe { instance(plugin) };
     let channels = instance.channels.load(Ordering::Acquire);
-    let sidechain_enabled = instance.shared.params.get(ParamId::SidechainEnable) >= 0.5;
+    let sidechain_enabled = needs_external_sidechain(&instance.shared.params);
     if is_input {
         if sidechain_enabled {
             channels + channels
@@ -914,7 +1041,7 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
 ) -> bool {
     let instance = unsafe { instance(plugin) };
     let channels = instance.channels.load(Ordering::Acquire);
-    let sidechain_enabled = instance.shared.params.get(ParamId::SidechainEnable) >= 0.5;
+    let sidechain_enabled = needs_external_sidechain(&instance.shared.params);
     let count = if is_input {
         if sidechain_enabled {
             channels + channels
@@ -1108,6 +1235,7 @@ unsafe extern "C-unwind" fn ext_state_load(
     state.apply(&instance.shared.params, &PARAMS);
 
     instance.shared.request_audio_ports_rescan();
+    instance.shared.request_latency_changed();
     true
 }
 
@@ -1116,6 +1244,15 @@ unsafe extern "C-unwind" fn ext_tail_get(plugin: *const clap_plugin) -> u32 {
     let sample_rate = instance.shared.sample_rate();
     (0.02 * sample_rate) as u32
 }
+
+unsafe extern "C-unwind" fn ext_latency_get(plugin: *const clap_plugin) -> u32 {
+    let instance = unsafe { instance(plugin) };
+    latency_samples(&instance.shared.params)
+}
+
+static LATENCY_EXT: clap_plugin_latency = clap_plugin_latency {
+    get: Some(ext_latency_get),
+};
 
 static AUDIO_PORTS_EXT: clap_plugin_audio_ports = clap_plugin_audio_ports {
     count: Some(ext_audio_ports_count),
@@ -1302,6 +1439,8 @@ unsafe extern "C-unwind" fn plugin_get_extension(
         &raw const STATE_EXT as *const _ as *const c_void
     } else if id == CLAP_EXT_TAIL {
         &raw const TAIL_EXT as *const _ as *const c_void
+    } else if id == CLAP_EXT_LATENCY {
+        &raw const LATENCY_EXT as *const _ as *const c_void
     } else if id == CLAP_EXT_GUI {
         if clap_gui_extension_enabled() {
             &raw const GUI_EXT as *const _ as *const c_void
@@ -1380,7 +1519,7 @@ pub unsafe fn create_plugin(
     unsafe { factory_create_plugin(&raw const FACTORY, host, plugin_id) }
 }
 const FADER_MIN_DB: f32 = -90.0;
-pub const SPECTRUM_BINS: usize = 96;
+pub const SPECTRUM_BINS: usize = 192;
 
 pub struct SharedState<T: ParamIdExt> {
     pub params: ParamStore<T>,
@@ -1398,9 +1537,12 @@ pub struct SharedState<T: ParamIdExt> {
     pub output_level_left_db_bits: AtomicU32,
     pub output_level_right_db_bits: AtomicU32,
     pub output_spectrum_db_bits: [AtomicU32; SPECTRUM_BINS],
+    pub input_spectrum_db_bits: [AtomicU32; SPECTRUM_BINS],
+    pub band_dyn_gain_db_bits: [AtomicU32; 32],
     pub ui_visible: AtomicU32,
     pub channels: AtomicU32,
     pub listen_band: AtomicU32,
+    pub own_slot: AtomicU32,
 }
 
 impl<T: ParamIdExt> SharedState<T> {
@@ -1456,10 +1598,21 @@ impl<T: ParamIdExt> SharedState<T> {
             output_spectrum_db_bits: std::array::from_fn(|_| {
                 AtomicU32::new(FADER_MIN_DB.to_bits())
             }),
+            input_spectrum_db_bits: std::array::from_fn(|_| AtomicU32::new(FADER_MIN_DB.to_bits())),
+            band_dyn_gain_db_bits: std::array::from_fn(|_| AtomicU32::new(0.0_f32.to_bits())),
             ui_visible: AtomicU32::new(0),
             channels: AtomicU32::new(channels),
             listen_band: AtomicU32::new(32),
+            own_slot: AtomicU32::new(u32::MAX),
         }
+    }
+
+    pub fn set_own_slot(&self, slot: u32) {
+        self.own_slot.store(slot, Ordering::Release);
+    }
+
+    pub fn own_slot(&self) -> u32 {
+        self.own_slot.load(Ordering::Acquire)
     }
 
     pub fn sample_rate(&self) -> f32 {
@@ -1554,7 +1707,7 @@ impl<T: ParamIdExt> SharedState<T> {
             let Some(get_extension) = (*host).get_extension else {
                 return;
             };
-            let ext = get_extension(host, c"clap.host.params".as_ptr());
+            let ext = get_extension(host, c"clap.params".as_ptr());
             if ext.is_null() {
                 return;
             }
@@ -1574,7 +1727,7 @@ impl<T: ParamIdExt> SharedState<T> {
             let Some(get_extension) = (*host).get_extension else {
                 return;
             };
-            let ext = get_extension(host, c"clap.host.state".as_ptr());
+            let ext = get_extension(host, c"clap.state".as_ptr());
             if ext.is_null() {
                 return;
             }
@@ -1633,6 +1786,31 @@ impl<T: ParamIdExt> SharedState<T> {
         })
     }
 
+    pub fn set_input_spectrum_db(&self, bins_db: &[f32; SPECTRUM_BINS]) {
+        for (i, db) in bins_db.iter().enumerate() {
+            self.input_spectrum_db_bits[i].store(db.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    pub fn input_spectrum_db(&self) -> [f32; SPECTRUM_BINS] {
+        std::array::from_fn(|i| {
+            f32::from_bits(self.input_spectrum_db_bits[i].load(Ordering::Relaxed))
+        })
+    }
+
+    pub fn set_band_dyn_gain_db(&self, band: usize, db: f32) {
+        if let Some(slot) = self.band_dyn_gain_db_bits.get(band) {
+            slot.store(db.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    pub fn band_dyn_gain_db(&self, band: usize) -> f32 {
+        self.band_dyn_gain_db_bits
+            .get(band)
+            .map(|slot| f32::from_bits(slot.load(Ordering::Relaxed)))
+            .unwrap_or(0.0)
+    }
+
     pub fn set_ui_visible(&self, visible: bool) {
         self.ui_visible
             .store(if visible { 1 } else { 0 }, Ordering::Release);
@@ -1651,7 +1829,7 @@ impl<T: ParamIdExt> SharedState<T> {
             let Some(get_extension) = (*host).get_extension else {
                 return;
             };
-            let ext = get_extension(host, c"clap.host.gui".as_ptr());
+            let ext = get_extension(host, c"clap.gui".as_ptr());
             if ext.is_null() {
                 return;
             }
@@ -1671,13 +1849,33 @@ impl<T: ParamIdExt> SharedState<T> {
             let Some(get_extension) = (*host).get_extension else {
                 return;
             };
-            let ext = get_extension(host, c"clap.host.audio-ports".as_ptr());
+            let ext = get_extension(host, c"clap.audio-ports".as_ptr());
             if ext.is_null() {
                 return;
             }
             let audio_ports = &*(ext as *const clap_clap::ffi::clap_host_audio_ports);
             if let Some(rescan) = audio_ports.rescan {
                 rescan(host, clap_clap::ffi::CLAP_AUDIO_PORTS_RESCAN_LIST);
+            }
+        }
+    }
+
+    pub fn request_latency_changed(&self) {
+        let host = self.host.load(Ordering::Acquire);
+        if host.is_null() {
+            return;
+        }
+        unsafe {
+            let Some(get_extension) = (*host).get_extension else {
+                return;
+            };
+            let ext = get_extension(host, c"clap.latency".as_ptr());
+            if ext.is_null() {
+                return;
+            }
+            let latency = &*(ext as *const clap_host_latency);
+            if let Some(changed) = latency.changed {
+                changed(host);
             }
         }
     }
@@ -1723,7 +1921,7 @@ impl<T: ParamIdExt> SharedState<T> {
     }
 }
 use serde::{Deserialize, Serialize};
-const CURRENT_STATE_VERSION: &str = "0.1.0";
+const CURRENT_STATE_VERSION: &str = "0.2.0";
 const STATE_HEADER_PREFIX: &str = "maolan-equalizer-state-v";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

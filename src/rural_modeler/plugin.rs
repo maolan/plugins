@@ -1071,8 +1071,19 @@ unsafe extern "C-unwind" fn ext_state_load(
         return false;
     }
     eprintln!("RuralModeler ext_state_load: read {} bytes", bytes.len());
-    eprintln!("RuralModeler ext_state_load: first bytes hex: {}", bytes.iter().take(64).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" "));
-    eprintln!("RuralModeler ext_state_load: first bytes text: {:?}", String::from_utf8_lossy(&bytes[..bytes.len().min(128)]));
+    eprintln!(
+        "RuralModeler ext_state_load: first bytes hex: {}",
+        bytes
+            .iter()
+            .take(64)
+            .map(|b| format!("{:02x}", b))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    eprintln!(
+        "RuralModeler ext_state_load: first bytes text: {:?}",
+        String::from_utf8_lossy(&bytes[..bytes.len().min(128)])
+    );
     let state = match PluginState::from_bytes(&bytes) {
         Ok(s) => s,
         Err(e) => {
@@ -1167,7 +1178,9 @@ unsafe extern "C-unwind" fn ext_file_reference_update_path(
     };
     let instance = unsafe { instance(plugin) };
     match index {
-        0 => instance.shared.restore_model_path_and_load(path.to_string()),
+        0 => instance
+            .shared
+            .restore_model_path_and_load(path.to_string()),
         1 => instance.shared.restore_ir_path_and_load(path.to_string()),
         _ => return false,
     }

@@ -262,12 +262,8 @@ impl ProcessorState {
     }
 
     pub fn reset(&mut self) {
-        for s in &mut self.delay_line_l {
-            *s = 0.0;
-        }
-        for s in &mut self.delay_line_r {
-            *s = 0.0;
-        }
+        self.delay_line_l.fill(0.0);
+        self.delay_line_r.fill(0.0);
         self.delay_pos = 0;
         self.chorus_phase = 0.0;
         self.bitcrush_hold_l = 0.0;

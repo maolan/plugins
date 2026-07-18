@@ -267,7 +267,7 @@ impl SharedState {
             let Some(get_extension) = (*host).get_extension else {
                 return;
             };
-            let ext = get_extension(host, c"clap.host.gui".as_ptr());
+            let ext = get_extension(host, c"clap.gui".as_ptr());
             if ext.is_null() {
                 return;
             }
@@ -287,7 +287,7 @@ impl SharedState {
             let Some(get_extension) = (*host).get_extension else {
                 return;
             };
-            let ext = get_extension(host, c"clap.host.params".as_ptr());
+            let ext = get_extension(host, c"clap.params".as_ptr());
             if ext.is_null() {
                 return;
             }
@@ -307,7 +307,7 @@ impl SharedState {
             let Some(get_extension) = (*host).get_extension else {
                 return;
             };
-            let ext = get_extension(host, c"clap.host.state".as_ptr());
+            let ext = get_extension(host, c"clap.state".as_ptr());
             if ext.is_null() {
                 return;
             }
@@ -1500,7 +1500,9 @@ pub fn config_to_kit(config: &KitConfig, sample_rate: f32) -> crate::kick::dsp::
                     }
                 {
                     let samples: Vec<f32> = bytes
-                        .chunks_exact(4)
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
                         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                         .collect();
                     osc.sample_buffer = Some(crate::kick::dsp::oscillator::SampleBuffer::new(

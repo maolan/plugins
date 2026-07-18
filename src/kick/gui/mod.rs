@@ -2284,14 +2284,14 @@ fn view(state: &State) -> Element<'_, Message> {
                 state.sample_target_layer as f32,
                 |v| { Message::SampleTargetLayerChanged(v.round().clamp(0.0, 2.0) as u8) }
             )
-            .step(1.0)
+            .step(1.0_f32)
             .width(Length::Fixed(80.0)),
             maolan_baseview::iced::widget::text(format!("{}", state.sample_target_layer + 1)),
             maolan_baseview::iced::widget::text("Osc"),
             maolan_baseview::iced::widget::slider(0.0..=2.0, state.sample_target_osc as f32, |v| {
                 Message::SampleTargetOscChanged(v.round().clamp(0.0, 2.0) as u8)
             })
-            .step(1.0)
+            .step(1.0_f32)
             .width(Length::Fixed(80.0)),
             maolan_baseview::iced::widget::text(format!("{}", state.sample_target_osc + 1)),
         ]
@@ -2307,7 +2307,7 @@ fn view(state: &State) -> Element<'_, Message> {
             maolan_baseview::iced::widget::slider(0.0..=11.0, state.envelope_kind as f32, |v| {
                 Message::EnvelopeKindChanged(v.round().clamp(0.0, 11.0) as u8)
             })
-            .step(1.0)
+            .step(1.0_f32)
             .width(Length::Fixed(170.0)),
         ]
         .spacing(6),
@@ -2316,14 +2316,14 @@ fn view(state: &State) -> Element<'_, Message> {
             maolan_baseview::iced::widget::slider(0.0..=2.0, state.envelope_layer as f32, |v| {
                 Message::EnvelopeLayerChanged(v.round().clamp(0.0, 2.0) as u8)
             })
-            .step(1.0)
+            .step(1.0_f32)
             .width(Length::Fixed(90.0)),
             maolan_baseview::iced::widget::text(format!("{}", state.envelope_layer + 1)),
             maolan_baseview::iced::widget::text("Osc"),
             maolan_baseview::iced::widget::slider(0.0..=2.0, state.envelope_osc as f32, |v| {
                 Message::EnvelopeOscChanged(v.round().clamp(0.0, 2.0) as u8)
             })
-            .step(1.0)
+            .step(1.0_f32)
             .width(Length::Fixed(90.0)),
             maolan_baseview::iced::widget::text(format!("{}", state.envelope_osc + 1)),
         ]
@@ -2344,7 +2344,7 @@ fn view(state: &State) -> Element<'_, Message> {
             maolan_baseview::iced::widget::slider(0.0..=3.0, state.export_format as f32, |v| {
                 Message::ExportFormatChanged(v.round().clamp(0.0, 3.0) as u8)
             })
-            .step(1.0)
+            .step(1.0_f32)
             .width(Length::Fixed(90.0)),
             maolan_baseview::iced::widget::text(match state.export_format {
                 1 => "FLAC",
@@ -2356,7 +2356,7 @@ fn view(state: &State) -> Element<'_, Message> {
             maolan_baseview::iced::widget::slider(1.0..=2.0, state.export_channels as f32, |v| {
                 Message::ExportChannelsChanged(v.round().clamp(1.0, 2.0) as u8)
             })
-            .step(1.0)
+            .step(1.0_f32)
             .width(Length::Fixed(70.0)),
             maolan_baseview::iced::widget::text(format!("{}", state.export_channels)),
         ]
@@ -2368,7 +2368,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 state.export_midi_note as f32,
                 |v| Message::ExportMidiNoteChanged(v.round().clamp(0.0, 127.0) as u8)
             )
-            .step(1.0)
+            .step(1.0_f32)
             .width(Length::Fixed(180.0)),
             maolan_baseview::iced::widget::text(format!("{}", state.export_midi_note)),
             maolan_baseview::iced::widget::button("Export")

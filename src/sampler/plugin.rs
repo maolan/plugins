@@ -150,7 +150,7 @@ impl SharedState {
             let Some(get_extension) = (*host).get_extension else {
                 return;
             };
-            let ext = get_extension(host, c"clap.host.gui".as_ptr());
+            let ext = get_extension(host, c"clap.gui".as_ptr());
             if ext.is_null() {
                 return;
             }
@@ -170,7 +170,7 @@ impl SharedState {
             let Some(get_extension) = (*host).get_extension else {
                 return;
             };
-            let ext = get_extension(host, c"clap.host.params".as_ptr());
+            let ext = get_extension(host, c"clap.params".as_ptr());
             if ext.is_null() {
                 return;
             }
@@ -190,7 +190,7 @@ impl SharedState {
             let Some(get_extension) = (*host).get_extension else {
                 return;
             };
-            let ext = get_extension(host, c"clap.host.state".as_ptr());
+            let ext = get_extension(host, c"clap.state".as_ptr());
             if ext.is_null() {
                 return;
             }

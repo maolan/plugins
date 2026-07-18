@@ -116,7 +116,7 @@ pub fn decode_audio_to_f32(path: &Path) -> AudioDecodeResult {
 
     let mut left = Vec::with_capacity(samples.len() / 2);
     let mut right = Vec::with_capacity(samples.len() / 2);
-    for chunk in samples.chunks_exact(2) {
+    for chunk in samples.as_chunks::<2>().0 {
         left.push(chunk[0]);
         right.push(chunk[1]);
     }
