@@ -95,10 +95,6 @@ sudo dnf install -y \
     libxcb-devel \
     libxkbcommon-devel \
     libxkbcommon-x11-devel \
-    ffmpeg-free-devel \
-    llvm-devel \
-    clang-devel \
-    cmake \
     git \
     rpm-build \
     curl \
@@ -114,16 +110,6 @@ if ! command -v cargo &>/dev/null; then
     sudo dnf install -y rust cargo
 else
     echo "Rust already installed: $(rustc --version)"
-fi
-
-# ---------------------------------------------------------------------------
-# 3. Set LIBCLANG_PATH if needed
-# ---------------------------------------------------------------------------
-echo ""
-echo "[3/6] Configuring build environment..."
-if command -v llvm-config &>/dev/null; then
-    export LIBCLANG_PATH="$(llvm-config --libdir)"
-    echo "LIBCLANG_PATH set to: $LIBCLANG_PATH"
 fi
 
 # ---------------------------------------------------------------------------
@@ -196,7 +182,7 @@ URL:            https://github.com/maolan/plugins
 Source0:        maolan-plugins-files.tar.gz
 BuildArch:      $RPM_ARCH
 
-Requires:       ffmpeg-free, libX11, libxcb, libxkbcommon, libxkbcommon-x11
+Requires:       libX11, libxcb, libxkbcommon, libxkbcommon-x11
 
 %description
 A collection of CLAP audio plugins written in Rust for the Maolan ecosystem.

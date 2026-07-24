@@ -1,5 +1,13 @@
+use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
+use symphonia::core::audio::SampleBuffer;
+use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
+use symphonia::core::errors::Error as SymphoniaError;
+use symphonia::core::formats::FormatOptions;
+use symphonia::core::io::MediaSourceStream;
+use symphonia::core::meta::MetadataOptions;
+use symphonia::core::probe::Hint;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InterpolationMode {
@@ -153,7 +161,7 @@ fn window_blackman_harris(n: f32, half_width: f32) -> f32 {
 
 #[derive(Debug)]
 pub enum LoadError {
-    Ffmpeg(String),
+    Decode(String),
     NoAudioStream,
     EmptySample,
 }
@@ -161,7 +169,7 @@ pub enum LoadError {
 impl std::fmt::Display for LoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LoadError::Ffmpeg(e) => write!(f, "ffmpeg error: {e}"),
+            LoadError::Decode(e) => write!(f, "decode error: {e}"),
             LoadError::NoAudioStream => write!(f, "no audio stream found"),
             LoadError::EmptySample => write!(f, "sample contains no audio data"),
         }
@@ -184,71 +192,11 @@ fn compute_stats(data: &[f32]) -> (f32, f32) {
     (peak, rms)
 }
 
-pub fn load_audio(path: &Path) -> Result<Arc<Sample>, LoadError> {
-    let _ = ffmpeg_next::init();
-
-    let mut input =
-        ffmpeg_next::format::input(path).map_err(|e| LoadError::Ffmpeg(e.to_string()))?;
-
-    let stream = input
-        .streams()
-        .best(ffmpeg_next::media::Type::Audio)
-        .ok_or(LoadError::NoAudioStream)?;
-    let stream_index = stream.index();
-    let rate = stream.rate();
-    let sample_rate = rate.numerator() as f32 / rate.denominator().max(1) as f32;
-
-    let context = ffmpeg_next::codec::Context::from_parameters(stream.parameters())
-        .map_err(|e| LoadError::Ffmpeg(e.to_string()))?;
-    let mut decoder = context
-        .decoder()
-        .audio()
-        .map_err(|e| LoadError::Ffmpeg(e.to_string()))?;
-
-    let target_format = ffmpeg_next::format::Sample::F32(ffmpeg_next::format::sample::Type::Planar);
-    let target_layout = ffmpeg_next::util::channel_layout::ChannelLayout::STEREO;
-
-    let mut resampler = ffmpeg_next::software::resampling::context::Context::get(
-        decoder.format(),
-        decoder.channel_layout(),
-        decoder.rate(),
-        target_format,
-        target_layout,
-        decoder.rate(),
-    )
-    .map_err(|e| LoadError::Ffmpeg(e.to_string()))?;
-
-    let mut data_l: Vec<f32> = Vec::new();
-    let mut data_r: Vec<f32> = Vec::new();
-
-    let mut decoded = ffmpeg_next::util::frame::audio::Audio::empty();
-    let mut resampled = ffmpeg_next::util::frame::audio::Audio::empty();
-
-    for (stream, packet) in input.packets() {
-        if stream.index() != stream_index {
-            continue;
-        }
-        decoder
-            .send_packet(&packet)
-            .map_err(|e| LoadError::Ffmpeg(e.to_string()))?;
-        while decoder.receive_frame(&mut decoded).is_ok() {
-            resampler
-                .run(&decoded, &mut resampled)
-                .map_err(|e| LoadError::Ffmpeg(e.to_string()))?;
-            push_planar_f32(&resampled, &mut data_l, &mut data_r);
-        }
-    }
-
-    decoder
-        .send_eof()
-        .map_err(|e| LoadError::Ffmpeg(e.to_string()))?;
-    while decoder.receive_frame(&mut decoded).is_ok() {
-        resampler
-            .run(&decoded, &mut resampled)
-            .map_err(|e| LoadError::Ffmpeg(e.to_string()))?;
-        push_planar_f32(&resampled, &mut data_l, &mut data_r);
-    }
-
+fn build_sample(
+    sample_rate: f32,
+    data_l: Vec<f32>,
+    mut data_r: Vec<f32>,
+) -> Result<Arc<Sample>, LoadError> {
     let frames = data_l.len();
     if frames == 0 {
         return Err(LoadError::EmptySample);
@@ -271,33 +219,101 @@ pub fn load_audio(path: &Path) -> Result<Arc<Sample>, LoadError> {
     }))
 }
 
-fn push_planar_f32(frame: &ffmpeg_next::util::frame::Audio, l: &mut Vec<f32>, r: &mut Vec<f32>) {
-    let channels = frame.channels() as usize;
-    let samples = frame.samples();
-    if channels == 0 || samples == 0 {
-        return;
+pub fn load_audio(path: &Path) -> Result<Arc<Sample>, LoadError> {
+    decode_with_symphonia(path)
+}
+
+fn decode_with_symphonia(path: &Path) -> Result<Arc<Sample>, LoadError> {
+    let file = File::open(path).map_err(|e| LoadError::Decode(e.to_string()))?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
     }
 
-    let plane_size = samples * std::mem::size_of::<f32>();
+    let format_opts = FormatOptions::default();
+    let metadata_opts = MetadataOptions::default();
+    let decoder_opts = DecoderOptions::default();
+
+    let probed = symphonia::default::get_probe()
+        .format(&hint, mss, &format_opts, &metadata_opts)
+        .map_err(|e| LoadError::Decode(format!("probe error: {e}")))?;
+    let mut format = probed.format;
+
+    let track = format
+        .tracks()
+        .iter()
+        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .or_else(|| format.tracks().first())
+        .ok_or(LoadError::NoAudioStream)?;
+
+    let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(1);
+    if channels == 0 {
+        return Err(LoadError::NoAudioStream);
+    }
+    if channels > 2 {
+        return Err(LoadError::Decode(format!(
+            "unsupported channel count: {channels}"
+        )));
+    }
+
+    let sample_rate = track.codec_params.sample_rate.unwrap_or(48_000) as f32;
+    let track_id = track.id;
+
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&track.codec_params, &decoder_opts)
+        .map_err(|e| LoadError::Decode(format!("decoder init error: {e}")))?;
+
+    let mut sample_buf = None;
+    let mut interleaved = Vec::new();
+
+    loop {
+        let packet = match format.next_packet() {
+            Ok(packet) => packet,
+            Err(SymphoniaError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                break;
+            }
+            Err(e) => return Err(LoadError::Decode(format!("read error: {e}"))),
+        };
+
+        if packet.track_id() != track_id {
+            continue;
+        }
+
+        let decoded = decoder
+            .decode(&packet)
+            .map_err(|e| LoadError::Decode(format!("decode error: {e}")))?;
+
+        if sample_buf.is_none() {
+            let spec = *decoded.spec();
+            sample_buf = Some(SampleBuffer::<f32>::new(decoded.capacity() as u64, spec));
+        }
+        let buf = sample_buf.as_mut().unwrap();
+        buf.copy_planar_ref(decoded);
+        interleaved.extend_from_slice(buf.samples());
+    }
+
+    if interleaved.is_empty() {
+        return Err(LoadError::EmptySample);
+    }
+
+    let mut data_l = Vec::with_capacity(interleaved.len() / channels.max(1));
+    let mut data_r = Vec::with_capacity(interleaved.len() / channels.max(1));
 
     if channels == 1 {
-        let plane = frame.data(0);
-        if plane.len() >= plane_size {
-            let slice: &[f32] =
-                unsafe { std::slice::from_raw_parts(plane.as_ptr() as *const f32, samples) };
-            l.extend_from_slice(slice);
-            r.extend_from_slice(slice);
+        for s in interleaved {
+            data_l.push(s);
+            data_r.push(s);
         }
     } else {
-        for (ch, buf) in [(0, l), (1, r)] {
-            let plane = frame.data(ch);
-            if plane.len() >= plane_size {
-                let slice: &[f32] =
-                    unsafe { std::slice::from_raw_parts(plane.as_ptr() as *const f32, samples) };
-                buf.extend_from_slice(slice);
-            }
+        for chunk in interleaved.chunks(2) {
+            data_l.push(chunk[0]);
+            data_r.push(chunk[1]);
         }
     }
+
+    build_sample(sample_rate, data_l, data_r)
 }
 
 #[cfg(test)]

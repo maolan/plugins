@@ -93,12 +93,6 @@ SectionEnd
 ;--------------------------------
 Section "Uninstall"
     Delete "$INSTDIR\maolan_plugins.dll"
-    Delete "$INSTDIR\avcodec-62.dll"
-    Delete "$INSTDIR\avdevice-62.dll"
-    Delete "$INSTDIR\avfilter-11.dll"
-    Delete "$INSTDIR\avformat-62.dll"
-    Delete "$INSTDIR\avutil-60.dll"
-    Delete "$INSTDIR\swresample-6.dll"
     Delete "$INSTDIR\Uninstall-Maolan-Plugins.exe"
 
     Delete "$SMPROGRAMS\Maolan Plugins\Uninstall.lnk"

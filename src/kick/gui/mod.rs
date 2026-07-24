@@ -815,7 +815,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.export_status.clear();
         }
         Message::ExportFormatChanged(v) => {
-            state.export_format = v.min(3);
+            state.export_format = v.min(2);
         }
         Message::ExportChannelsChanged(v) => {
             state.export_channels = if v == 0 { 1 } else { 2 };
@@ -866,8 +866,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
 
             let format = match state.export_format {
                 1 => "flac",
-                2 => "ogg",
-                3 => "mp3",
                 _ => "wav",
             };
             match crate::kick::export::export_audio(
@@ -2341,15 +2339,13 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(6),
         row![
             maolan_baseview::iced::widget::text("Fmt"),
-            maolan_baseview::iced::widget::slider(0.0..=3.0, state.export_format as f32, |v| {
-                Message::ExportFormatChanged(v.round().clamp(0.0, 3.0) as u8)
+            maolan_baseview::iced::widget::slider(0.0..=1.0, state.export_format as f32, |v| {
+                Message::ExportFormatChanged(v.round().clamp(0.0, 1.0) as u8)
             })
             .step(1.0_f32)
             .width(Length::Fixed(90.0)),
             maolan_baseview::iced::widget::text(match state.export_format {
                 1 => "FLAC",
-                2 => "OGG",
-                3 => "MP3",
                 _ => "WAV",
             }),
             maolan_baseview::iced::widget::text("Ch"),

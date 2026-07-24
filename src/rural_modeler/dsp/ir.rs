@@ -1,4 +1,13 @@
 use crate::rural_modeler::dsp::core::Buffer;
+use std::fs::File;
+use std::path::Path;
+use symphonia::core::audio::SampleBuffer;
+use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
+use symphonia::core::errors::Error as SymphoniaError;
+use symphonia::core::formats::FormatOptions;
+use symphonia::core::io::MediaSourceStream;
+use symphonia::core::meta::MetadataOptions;
+use symphonia::core::probe::Hint;
 
 #[derive(Debug, Clone, Default)]
 pub struct ImpulseResponse {
@@ -11,61 +20,83 @@ pub struct ImpulseResponse {
 
 impl ImpulseResponse {
     pub fn from_wav(path: &str, target_sample_rate: f32) -> Result<Self, String> {
-        let mut reader =
-            hound::WavReader::open(path).map_err(|err| format!("failed to open IR wav: {err}"))?;
-        let spec = reader.spec();
-        let source_sr = spec.sample_rate as f32;
-        let channels = spec.channels as usize;
-        if channels != 1 {
-            return Err(format!(
-                "IR file '{path}' is not mono ({} channels). Only mono IRs are supported.",
-                channels
-            ));
+        let file = File::open(path).map_err(|err| format!("failed to open IR file: {err}"))?;
+        let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+        let mut hint = Hint::new();
+        if let Some(ext) = Path::new(path).extension().and_then(|e| e.to_str()) {
+            hint.with_extension(ext);
         }
 
-        match (spec.sample_format, spec.bits_per_sample) {
-            (hound::SampleFormat::Float, 32) => {}
-            (hound::SampleFormat::Int, 16 | 24 | 32) => {}
-            (hound::SampleFormat::Float, bits) => {
-                return Err(format!(
-                    "unsupported float WAV bit depth: {bits} (expected 32-bit float)"
-                ));
-            }
-            (hound::SampleFormat::Int, bits) => {
-                return Err(format!(
-                    "unsupported PCM WAV bit depth: {bits} (expected 16/24/32-bit PCM)"
-                ));
-            }
+        let format_opts = FormatOptions::default();
+        let metadata_opts = MetadataOptions::default();
+        let decoder_opts = DecoderOptions::default();
+
+        let probed = symphonia::default::get_probe()
+            .format(&hint, mss, &format_opts, &metadata_opts)
+            .map_err(|err| format!("failed to probe IR file: {err}"))?;
+        let mut format = probed.format;
+
+        let track = format
+            .tracks()
+            .iter()
+            .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+            .or_else(|| format.tracks().first())
+            .ok_or_else(|| "no usable audio track in IR file".to_string())?;
+
+        let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(1);
+        if channels == 0 {
+            return Err("no audio stream in IR file".to_string());
         }
 
-        let mut mono = Vec::new();
-        match spec.sample_format {
-            hound::SampleFormat::Float => {
-                let mut frame = Vec::with_capacity(channels);
-                for sample in reader.samples::<f32>() {
-                    frame.push(sample.map_err(|err| format!("failed reading IR samples: {err}"))?);
-                    if frame.len() == channels {
-                        let avg = frame.iter().copied().sum::<f32>() / channels as f32;
-                        mono.push(avg);
-                        frame.clear();
-                    }
+        let source_sr = track.codec_params.sample_rate.unwrap_or(48_000) as f32;
+        let track_id = track.id;
+
+        let mut decoder = symphonia::default::get_codecs()
+            .make(&track.codec_params, &decoder_opts)
+            .map_err(|err| format!("failed to create IR decoder: {err}"))?;
+
+        let mut sample_buf = None;
+        let mut interleaved = Vec::new();
+
+        loop {
+            let packet = match format.next_packet() {
+                Ok(packet) => packet,
+                Err(SymphoniaError::IoError(e))
+                    if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+                {
+                    break;
                 }
+                Err(err) => return Err(format!("failed reading IR packets: {err}")),
+            };
+
+            if packet.track_id() != track_id {
+                continue;
             }
-            hound::SampleFormat::Int => {
-                let scale = (1_i64 << (spec.bits_per_sample.saturating_sub(1) as u32)) as f32;
-                let mut frame = Vec::with_capacity(channels);
-                for sample in reader.samples::<i32>() {
-                    frame.push(
-                        sample.map_err(|err| format!("failed reading IR samples: {err}"))? as f32
-                            / scale.max(1.0),
-                    );
-                    if frame.len() == channels {
-                        let avg = frame.iter().copied().sum::<f32>() / channels as f32;
-                        mono.push(avg);
-                        frame.clear();
-                    }
-                }
+
+            let decoded = decoder
+                .decode(&packet)
+                .map_err(|err| format!("failed decoding IR packet: {err}"))?;
+
+            if sample_buf.is_none() {
+                let spec = *decoded.spec();
+                sample_buf = Some(SampleBuffer::<f32>::new(decoded.capacity() as u64, spec));
             }
+            let buf = sample_buf.as_mut().unwrap();
+            buf.copy_planar_ref(decoded);
+            interleaved.extend_from_slice(buf.samples());
+        }
+
+        if interleaved.is_empty() {
+            return Err("IR file contains no samples".to_string());
+        }
+
+        // Downmix to mono by averaging channels. If the file is already mono
+        // this is a no-op.
+        let mut mono = Vec::with_capacity(interleaved.len() / channels.max(1));
+        for frame in interleaved.chunks(channels.max(1)) {
+            let avg = frame.iter().copied().sum::<f32>() / channels.max(1) as f32;
+            mono.push(avg);
         }
 
         let mut ir = Self {

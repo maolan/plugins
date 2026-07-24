@@ -96,17 +96,8 @@ sudo apt-get install -y \
     libxcb-xfixes0-dev \
     libxkbcommon-dev \
     libxkbcommon-x11-dev \
-    libavcodec-dev \
-    libavdevice-dev \
-    libavfilter-dev \
-    libavformat-dev \
-    libavutil-dev \
-    libswresample-dev \
-    llvm-dev \
-    libclang-dev \
     curl \
     ca-certificates \
-    cmake \
     git
 
 # ---------------------------------------------------------------------------
@@ -127,14 +118,6 @@ fi
 # Ensure cargo is in PATH for the rest of the script
 if [[ -f "${CARGO_HOME:-$HOME/.cargo}/env" ]]; then
     source "${CARGO_HOME:-$HOME/.cargo}/env"
-fi
-
-# ---------------------------------------------------------------------------
-# 3. Set LIBCLANG_PATH if needed
-# ---------------------------------------------------------------------------
-if command -v llvm-config &>/dev/null; then
-    export LIBCLANG_PATH="$(llvm-config --libdir)"
-    echo "LIBCLANG_PATH set to: $LIBCLANG_PATH"
 fi
 
 # ---------------------------------------------------------------------------
@@ -198,7 +181,7 @@ Version: $PKG_VERSION
 Section: sound
 Priority: optional
 Architecture: $DEB_ARCH
-Depends: libavcodec61, libavdevice61, libavfilter10, libavformat61, libavutil59, libswresample5, libx11-6, libxcb1, libxkbcommon0, libxkbcommon-x11-0
+Depends: libx11-6, libxcb1, libxkbcommon0, libxkbcommon-x11-0
 Maintainer: Maolan Team <maolan@github.io>
 Description: Maolan CLAP Audio Plugins
  A collection of CLAP audio plugins written in Rust for the Maolan ecosystem.
