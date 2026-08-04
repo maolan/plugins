@@ -94,16 +94,17 @@ impl MmapView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
     use std::io::Write;
 
     #[test]
     fn test_mmap_file() {
-        let path = "/tmp/test_mmap_sample.txt";
-        let mut file = File::create(path).unwrap();
+        let path = std::env::temp_dir().join("test_mmap_sample.txt");
+        let mut file = File::create(&path).unwrap();
         file.write_all(b"Hello, mmap!").unwrap();
         drop(file);
 
-        let view = MmapView::map_file(Path::new(path)).unwrap();
+        let view = MmapView::map_file(&path).unwrap();
         assert_eq!(view.len(), 12);
         assert_eq!(view.as_bytes(), b"Hello, mmap!");
     }

@@ -15,13 +15,13 @@ use clap_clap::{
         CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END, CLAP_EVENT_PARAM_VALUE,
         CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI, CLAP_EXT_NOTE_PORTS, CLAP_EXT_PARAMS, CLAP_EXT_STATE,
         CLAP_EXT_TAIL, CLAP_INVALID_ID, CLAP_NOTE_DIALECT_MIDI, CLAP_PLUGIN_FEATURE_INSTRUMENT,
-        CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_COCOA,
-        CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info, clap_event_header,
-        clap_event_param_gesture, clap_gui_resize_hints, clap_host, clap_host_gui,
-        clap_host_params, clap_host_state, clap_id, clap_istream, clap_note_port_info,
-        clap_ostream, clap_param_info, clap_plugin, clap_plugin_audio_ports,
-        clap_plugin_descriptor, clap_plugin_gui, clap_plugin_note_ports, clap_plugin_params,
-        clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status, clap_window,
+        CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_WIN32,
+        CLAP_WINDOW_API_X11, clap_audio_port_info, clap_event_header, clap_event_param_gesture,
+        clap_gui_resize_hints, clap_host, clap_host_gui, clap_host_params, clap_host_state,
+        clap_id, clap_istream, clap_note_port_info, clap_ostream, clap_param_info, clap_plugin,
+        clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_gui, clap_plugin_note_ports,
+        clap_plugin_params, clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status,
+        clap_window,
     },
     id::ClapId,
     process::Process,
@@ -1546,7 +1546,7 @@ unsafe extern "C-unwind" fn ext_gui_is_api_supported(
         return false;
     }
     let api = unsafe { CStr::from_ptr(api) };
-    api == CLAP_WINDOW_API_X11 || api == CLAP_WINDOW_API_WIN32 || api == CLAP_WINDOW_API_COCOA
+    api == CLAP_WINDOW_API_X11 || api == CLAP_WINDOW_API_WIN32
 }
 
 unsafe extern "C-unwind" fn ext_gui_get_preferred_api(
@@ -1567,12 +1567,7 @@ unsafe extern "C-unwind" fn ext_gui_get_preferred_api(
         unsafe { *api = CLAP_WINDOW_API_WIN32.as_ptr() };
         true
     }
-    #[cfg(target_os = "macos")]
-    {
-        unsafe { *api = CLAP_WINDOW_API_COCOA.as_ptr() };
-        true
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         false
     }
@@ -1670,24 +1665,13 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     let window = unsafe { &*window };
     let api = unsafe { CStr::from_ptr(window.api) };
     let parent = if api == CLAP_WINDOW_API_X11 {
-        #[cfg(all(unix, not(target_os = "macos")))]
+        #[cfg(unix)]
         {
             Some(crate::kick::gui::ParentWindowHandle::X11(unsafe {
                 window.clap_window__.x11
             }))
         }
-        #[cfg(not(all(unix, not(target_os = "macos"))))]
-        {
-            None
-        }
-    } else if api == CLAP_WINDOW_API_COCOA {
-        #[cfg(target_os = "macos")]
-        {
-            Some(crate::kick::gui::ParentWindowHandle::Cocoa(unsafe {
-                window.clap_window__.cocoa
-            }))
-        }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(unix))]
         {
             None
         }

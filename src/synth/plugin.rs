@@ -18,12 +18,11 @@ use clap_clap::{
         CLAP_NOTE_EXPRESSION_PAN, CLAP_NOTE_EXPRESSION_PRESSURE, CLAP_NOTE_EXPRESSION_TUNING,
         CLAP_NOTE_EXPRESSION_VOLUME, CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_MONO,
         CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_STEREO, CLAP_PROCESS_CONTINUE, CLAP_VERSION,
-        CLAP_WINDOW_API_COCOA, CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info,
-        clap_gui_resize_hints, clap_host, clap_host_gui, clap_host_params, clap_host_state,
-        clap_id, clap_istream, clap_note_port_info, clap_ostream, clap_param_info, clap_plugin,
-        clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_gui, clap_plugin_note_ports,
-        clap_plugin_params, clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status,
-        clap_window,
+        CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info, clap_gui_resize_hints,
+        clap_host, clap_host_gui, clap_host_params, clap_host_state, clap_id, clap_istream,
+        clap_note_port_info, clap_ostream, clap_param_info, clap_plugin, clap_plugin_audio_ports,
+        clap_plugin_descriptor, clap_plugin_gui, clap_plugin_note_ports, clap_plugin_params,
+        clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status, clap_window,
     },
     process::Process,
     stream::{IStream, OStream},
@@ -2142,20 +2141,11 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     let api = unsafe { CStr::from_ptr(window.api) };
 
     let parent = if api == CLAP_WINDOW_API_X11 {
-        #[cfg(all(unix, not(target_os = "macos")))]
+        #[cfg(unix)]
         {
             crate::synth::gui::ParentWindowHandle::X11(unsafe { window.clap_window__.x11 as u32 })
         }
-        #[cfg(not(all(unix, not(target_os = "macos"))))]
-        {
-            return false;
-        }
-    } else if api == CLAP_WINDOW_API_COCOA {
-        #[cfg(target_os = "macos")]
-        {
-            crate::synth::gui::ParentWindowHandle::Cocoa(unsafe { window.clap_window__.cocoa })
-        }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(unix))]
         {
             return false;
         }

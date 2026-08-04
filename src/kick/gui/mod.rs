@@ -7,11 +7,9 @@ use std::{
     thread,
 };
 
-#[cfg(target_os = "macos")]
-use clap_clap::ffi::CLAP_WINDOW_API_COCOA;
 #[cfg(target_os = "windows")]
 use clap_clap::ffi::CLAP_WINDOW_API_WIN32;
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(unix)]
 use clap_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::widget::canvas::{Frame, Geometry, Path, Program, Stroke, Text};
 use maolan_baseview::iced::{
@@ -37,10 +35,6 @@ pub fn preferred_api() -> &'static CStr {
     {
         CLAP_WINDOW_API_WIN32
     }
-    #[cfg(target_os = "macos")]
-    {
-        CLAP_WINDOW_API_COCOA
-    }
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     {
         CLAP_WINDOW_API_X11
@@ -52,10 +46,8 @@ pub fn is_api_supported(api: &CStr, _is_floating: bool) -> bool {
 }
 
 pub enum ParentWindowHandle {
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(unix)]
     X11(u64),
-    #[cfg(target_os = "macos")]
-    Cocoa(*mut std::ffi::c_void),
     #[cfg(target_os = "windows")]
     Win32(*mut std::ffi::c_void),
 }
@@ -63,17 +55,11 @@ pub enum ParentWindowHandle {
 unsafe impl HasRawWindowHandle for ParentWindowHandle {
     fn raw_window_handle(&self) -> RawWindowHandle {
         match self {
-            #[cfg(all(unix, not(target_os = "macos")))]
+            #[cfg(unix)]
             ParentWindowHandle::X11(window) => {
                 let mut handle = raw_window_handle::XlibWindowHandle::empty();
                 handle.window = *window;
                 RawWindowHandle::Xlib(handle)
-            }
-            #[cfg(target_os = "macos")]
-            ParentWindowHandle::Cocoa(ns_view) => {
-                let mut handle = raw_window_handle::AppKitWindowHandle::empty();
-                handle.ns_view = *ns_view;
-                RawWindowHandle::AppKit(handle)
             }
             #[cfg(target_os = "windows")]
             ParentWindowHandle::Win32(hwnd) => {

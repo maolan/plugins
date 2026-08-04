@@ -17,9 +17,9 @@ use clap_clap::{
         CLAP_EXT_LATENCY, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL, CLAP_INVALID_ID,
         CLAP_PLUGIN_FEATURE_AUDIO_EFFECT, CLAP_PLUGIN_FEATURE_EQUALIZER, CLAP_PLUGIN_FEATURE_MONO,
         CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION,
-        CLAP_WINDOW_API_COCOA, CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info,
-        clap_event_header, clap_event_param_gesture, clap_host, clap_host_latency, clap_id,
-        clap_istream, clap_ostream, clap_param_info, clap_plugin, clap_plugin_audio_ports,
+        CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info, clap_event_header,
+        clap_event_param_gesture, clap_host, clap_host_latency, clap_id, clap_istream,
+        clap_ostream, clap_param_info, clap_plugin, clap_plugin_audio_ports,
         clap_plugin_descriptor, clap_plugin_factory, clap_plugin_gui, clap_plugin_latency,
         clap_plugin_params, clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status,
         clap_window,
@@ -1346,20 +1346,11 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     let api = unsafe { CStr::from_ptr(window.api) };
 
     let parent = if api == CLAP_WINDOW_API_X11 {
-        #[cfg(all(unix, not(target_os = "macos")))]
+        #[cfg(unix)]
         {
             ParentWindowHandle::X11(unsafe { window.clap_window__.x11 })
         }
-        #[cfg(not(all(unix, not(target_os = "macos"))))]
-        {
-            return false;
-        }
-    } else if api == CLAP_WINDOW_API_COCOA {
-        #[cfg(target_os = "macos")]
-        {
-            ParentWindowHandle::Cocoa(unsafe { window.clap_window__.cocoa })
-        }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(unix))]
         {
             return false;
         }

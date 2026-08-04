@@ -534,7 +534,7 @@ fn open_url_in_browser(url: &str) -> Result<(), String> {
             .map_err(|e| format!("Failed to open browser for OAuth URL: {e}"))?;
         return Ok(());
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any())]
     {
         Command::new("open")
             .arg(url)
@@ -542,7 +542,7 @@ fn open_url_in_browser(url: &str) -> Result<(), String> {
             .map_err(|e| format!("Failed to open browser for OAuth URL: {e}"))?;
         return Ok(());
     }
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(unix)]
     {
         let mut attempts = Vec::new();
 
@@ -568,7 +568,7 @@ fn open_url_in_browser(url: &str) -> Result<(), String> {
     Err("Unsupported platform for automatic browser launch".to_string())
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(unix)]
 fn run_browser_opener(program: &str, args: &[&str]) -> Result<(), String> {
     let _child = Command::new(program)
         .args(args)

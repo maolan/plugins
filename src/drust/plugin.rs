@@ -984,13 +984,9 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     let api = unsafe { CStr::from_ptr(window.api) };
 
     let parent = if api == crate::drust::gui::preferred_api() {
-        #[cfg(all(unix, not(target_os = "macos")))]
+        #[cfg(unix)]
         {
             crate::drust::gui::ParentWindowHandle::X11(unsafe { window.clap_window__.x11 })
-        }
-        #[cfg(target_os = "macos")]
-        {
-            crate::drust::gui::ParentWindowHandle::Cocoa(unsafe { window.clap_window__.cocoa })
         }
         #[cfg(target_os = "windows")]
         {

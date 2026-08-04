@@ -295,7 +295,7 @@ In the Windows environment execute the following:
 
 ## Platform Support
 
-Linux, FreeBSD, macOS, and Windows are supported.
+Linux, FreeBSD, and Windows are supported.
 
 ---
 

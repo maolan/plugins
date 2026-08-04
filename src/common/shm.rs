@@ -138,38 +138,38 @@ mod imp {
     use std::ffi::{CString, c_void};
     use std::os::raw::c_char;
 
-    type HANDLE = *mut c_void;
+    type Handle = *mut c_void;
 
     const PAGE_READWRITE: u32 = 0x04;
     const FILE_MAP_ALL_ACCESS: u32 = 0xF001F;
 
     unsafe extern "system" {
         fn CreateFileMappingA(
-            hFile: HANDLE,
+            hFile: Handle,
             lpAttributes: *mut c_void,
             flProtect: u32,
             dwMaximumSizeHigh: u32,
             dwMaximumSizeLow: u32,
             lpName: *const c_char,
-        ) -> HANDLE;
+        ) -> Handle;
         fn OpenFileMappingA(
             dwDesiredAccess: u32,
             bInheritHandle: i32,
             lpName: *const c_char,
-        ) -> HANDLE;
+        ) -> Handle;
         fn MapViewOfFile(
-            hFileMappingObject: HANDLE,
+            hFileMappingObject: Handle,
             dwDesiredAccess: u32,
             dwFileOffsetHigh: u32,
             dwFileOffsetLow: u32,
             dwNumberOfBytesToMap: usize,
         ) -> *mut c_void;
         fn UnmapViewOfFile(lpBaseAddress: *const c_void) -> i32;
-        fn CloseHandle(hObject: HANDLE) -> i32;
+        fn CloseHandle(hObject: Handle) -> i32;
     }
 
     pub struct ShmMapping {
-        handle: HANDLE,
+        handle: Handle,
         ptr: *mut u8,
         size: usize,
         name: String,

@@ -71,11 +71,6 @@ impl MtsEspClient {
         }
     }
 
-    #[cfg(target_os = "macos")]
-    fn load_library() -> Option<Library> {
-        unsafe { Library::new("/Library/Application Support/MTS-ESP/libMTS.dylib").ok() }
-    }
-
     #[cfg(target_os = "windows")]
     fn load_library() -> Option<Library> {
         unsafe {
@@ -85,7 +80,7 @@ impl MtsEspClient {
         }
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     fn load_library() -> Option<Library> {
         unsafe {
             Library::new("libMTS.so")

@@ -11,11 +11,10 @@ use clap_clap::{
     ffi::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI, CLAP_EXT_TAIL,
         CLAP_INVALID_ID, CLAP_PLUGIN_FEATURE_AUDIO_EFFECT, CLAP_PLUGIN_FEATURE_STEREO,
-        CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_COCOA,
-        CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info, clap_gui_resize_hints,
-        clap_host, clap_plugin, clap_plugin_audio_ports, clap_plugin_descriptor,
-        clap_plugin_factory, clap_plugin_gui, clap_plugin_tail, clap_process, clap_process_status,
-        clap_window,
+        CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_WIN32,
+        CLAP_WINDOW_API_X11, clap_audio_port_info, clap_gui_resize_hints, clap_host, clap_plugin,
+        clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_factory, clap_plugin_gui,
+        clap_plugin_tail, clap_process, clap_process_status, clap_window,
     },
     process::Process,
 };
@@ -487,20 +486,11 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     let api = unsafe { CStr::from_ptr(window.api) };
 
     let parent = if api == CLAP_WINDOW_API_X11 {
-        #[cfg(all(unix, not(target_os = "macos")))]
+        #[cfg(unix)]
         {
             crate::vumeter::gui::ParentWindowHandle::X11(unsafe { window.clap_window__.x11 })
         }
-        #[cfg(not(all(unix, not(target_os = "macos"))))]
-        {
-            return false;
-        }
-    } else if api == CLAP_WINDOW_API_COCOA {
-        #[cfg(target_os = "macos")]
-        {
-            crate::vumeter::gui::ParentWindowHandle::Cocoa(unsafe { window.clap_window__.cocoa })
-        }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(unix))]
         {
             return false;
         }
