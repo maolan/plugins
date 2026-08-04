@@ -19,7 +19,7 @@ use maolan_baseview::iced::{
 use maolan_widgets::arch_slider::arch_slider;
 use maolan_widgets::horizontal_slider::HorizontalSlider;
 use maolan_widgets::slider::Slider;
-use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
+use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 
 use crate::{
     common::filter::FilterType,
@@ -55,20 +55,20 @@ pub enum ParentWindowHandle {
     Win32(*mut std::ffi::c_void),
 }
 
-unsafe impl HasRawWindowHandle for ParentWindowHandle {
-    fn raw_window_handle(&self) -> RawWindowHandle {
+impl HasWindowHandle for ParentWindowHandle {
+    fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
         match self {
             #[cfg(unix)]
             ParentWindowHandle::X11(window) => {
-                let mut handle = raw_window_handle::XlibWindowHandle::empty();
-                handle.window = *window as u64;
-                RawWindowHandle::Xlib(handle)
+                let handle = raw_window_handle::XlibWindowHandle::new(*window as u64);
+                Ok(unsafe { WindowHandle::borrow_raw(RawWindowHandle::Xlib(handle)) })
             }
             #[cfg(target_os = "windows")]
             ParentWindowHandle::Win32(hwnd) => {
-                let mut handle = raw_window_handle::Win32WindowHandle::empty();
-                handle.hwnd = *hwnd;
-                RawWindowHandle::Win32(handle)
+                let handle = raw_window_handle::Win32WindowHandle::new(
+                    std::num::NonZeroIsize::new(*hwnd as isize).unwrap(),
+                );
+                Ok(unsafe { WindowHandle::borrow_raw(RawWindowHandle::Win32(handle)) })
             }
         }
     }

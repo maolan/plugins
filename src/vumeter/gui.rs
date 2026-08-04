@@ -18,6 +18,7 @@ use maolan_baseview::iced::{
     widget::{column, container, row, text},
 };
 use maolan_widgets::meters;
+use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 
 use crate::vumeter::plugin::SharedState;
 
@@ -44,6 +45,25 @@ pub enum ParentWindowHandle {
     X11(u64),
     #[cfg(target_os = "windows")]
     Win32(*mut std::ffi::c_void),
+}
+
+impl HasWindowHandle for ParentWindowHandle {
+    fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+        match self {
+            #[cfg(unix)]
+            ParentWindowHandle::X11(window) => {
+                let handle = raw_window_handle::XlibWindowHandle::new(*window);
+                Ok(unsafe { WindowHandle::borrow_raw(RawWindowHandle::Xlib(handle)) })
+            }
+            #[cfg(target_os = "windows")]
+            ParentWindowHandle::Win32(hwnd) => {
+                let handle = raw_window_handle::Win32WindowHandle::new(
+                    std::num::NonZeroIsize::new(*hwnd as isize).unwrap(),
+                );
+                Ok(unsafe { WindowHandle::borrow_raw(RawWindowHandle::Win32(handle)) })
+            }
+        }
+    }
 }
 
 struct State {
