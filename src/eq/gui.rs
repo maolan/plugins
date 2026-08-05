@@ -101,6 +101,10 @@ impl BandType {
     pub fn dyn_capable(self) -> bool {
         dsp::dyn_capable(u8::from(self))
     }
+
+    pub fn supports_dynamic_target(self) -> bool {
+        matches!(self, BandType::Bell)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,13 +153,7 @@ impl From<Placement> for u8 {
 }
 
 impl Placement {
-    pub const ALL: [Placement; 5] = [
-        Placement::Stereo,
-        Placement::Left,
-        Placement::Right,
-        Placement::Mid,
-        Placement::Side,
-    ];
+    pub const ALL: [Placement; 3] = [Placement::Stereo, Placement::Mid, Placement::Side];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,6 +255,8 @@ pub enum Message {
     SetParam(ParamId, f32),
     SetParamImmediate(ParamId, f32),
     SetBandFreqGain(usize, f32, f32),
+    StartBandDynamicTarget(usize, f32, f32),
+    SetBandDynamicTarget(usize, f32),
     EndBandDrag(usize),
     SetBoolParam(ParamId, bool),
     ReleaseParam(ParamId),
@@ -370,6 +370,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.shared.mark_gesture_begin_pending(id);
             }
             state.shared.set_param_outbound_only(id, value as f64);
+            if let Some(band) = gain_param_band(id)
+                && state.shared.params.get_bool(ParamId::para_dyn(band))
+                && BandType::from(state.shared.params.get(ParamId::para_type(band)) as u8)
+                    .supports_dynamic_target()
+            {
+                let range_id = ParamId::para_dyn_range(band);
+                if state.active_gestures.insert(range_id) {
+                    state.shared.mark_gesture_begin_pending(range_id);
+                }
+                state
+                    .shared
+                    .set_param_outbound_only(range_id, (-value.clamp(-24.0, 24.0)) as f64);
+            }
         }
         Message::SetParamImmediate(id, value) => {
             state.shared.set_param_outbound_only(id, value as f64);
@@ -378,12 +391,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::SetBandFreqGain(index, freq, gain) => {
             let freq = freq.clamp(20.0, 20_000.0);
-            let gain = gain.clamp(-24.0, 24.0);
+            let shape = state.shared.params.get(ParamId::para_type(index)) as u8;
+            let dynamic_target_mode = state.shared.params.get_bool(ParamId::para_dyn(index))
+                && BandType::from(shape).supports_dynamic_target();
+            let value = gain.clamp(-24.0, 24.0);
+            let old_gain_for_shift = state.shared.params.get(ParamId::para_gain(index)) as f32;
             if state.selection.len() > 1 && state.selection.contains(&index) {
                 let old_freq = state.shared.params.get(ParamId::para_freq(index)) as f32;
-                let old_gain = state.shared.params.get(ParamId::para_gain(index)) as f32;
                 let log_shift = (freq / old_freq.clamp(20.0, 20_000.0)).ln();
-                let gain_shift = gain - old_gain;
+                let gain_shift = if dynamic_target_mode {
+                    0.0
+                } else {
+                    value - old_gain_for_shift
+                };
                 for &other in &state.selection {
                     if other == index {
                         continue;
@@ -397,11 +417,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     if state.active_gestures.insert(ofid) {
                         state.shared.mark_gesture_begin_pending(ofid);
                     }
-                    if state.active_gestures.insert(ogid) {
-                        state.shared.mark_gesture_begin_pending(ogid);
-                    }
                     state.shared.set_param_outbound_only(ofid, nf as f64);
-                    state.shared.set_param_outbound_only(ogid, ng as f64);
+                    if !dynamic_target_mode {
+                        if state.active_gestures.insert(ogid) {
+                            state.shared.mark_gesture_begin_pending(ogid);
+                        }
+                        state.shared.set_param_outbound_only(ogid, ng as f64);
+                    }
                 }
             }
             let fid = ParamId::para_freq(index);
@@ -409,21 +431,85 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if state.active_gestures.insert(fid) {
                 state.shared.mark_gesture_begin_pending(fid);
             }
-            if state.active_gestures.insert(gid) {
-                state.shared.mark_gesture_begin_pending(gid);
-            }
             state.shared.set_param_outbound_only(fid, freq as f64);
-            state.shared.set_param_outbound_only(gid, gain as f64);
+            if dynamic_target_mode {
+                let threshold_id = ParamId::para_dyn_threshold(index);
+                if state.active_gestures.insert(threshold_id) {
+                    state.shared.mark_gesture_begin_pending(threshold_id);
+                }
+                state
+                    .shared
+                    .set_param_outbound_only(threshold_id, value as f64);
+            } else {
+                if state.active_gestures.insert(gid) {
+                    state.shared.mark_gesture_begin_pending(gid);
+                }
+                state.shared.set_param_outbound_only(gid, value as f64);
+            }
+        }
+        Message::StartBandDynamicTarget(index, threshold, target_gain) => {
+            let shape = state.shared.params.get(ParamId::para_type(index)) as u8;
+            if !BandType::from(shape).supports_dynamic_target() {
+                return Task::none();
+            }
+            let dyn_id = ParamId::para_dyn(index);
+            let threshold_id = ParamId::para_dyn_threshold(index);
+            if !state.shared.params.get_bool(dyn_id) {
+                state.shared.set_param_outbound_only(dyn_id, 1.0);
+                state.shared.mark_gesture_begin_pending(dyn_id);
+                state.shared.mark_gesture_end_pending(dyn_id);
+                state
+                    .shared
+                    .set_param_outbound_only(threshold_id, threshold.clamp(-24.0, 24.0) as f64);
+                state.shared.mark_gesture_begin_pending(threshold_id);
+                state.shared.mark_gesture_end_pending(threshold_id);
+            }
+            return update(state, Message::SetBandDynamicTarget(index, target_gain));
+        }
+        Message::SetBandDynamicTarget(index, target_gain) => {
+            let shape = state.shared.params.get(ParamId::para_type(index)) as u8;
+            if !BandType::from(shape).supports_dynamic_target() {
+                return Task::none();
+            }
+            let gain_id = ParamId::para_gain(index);
+            let dyn_id = ParamId::para_dyn(index);
+            let range_id = ParamId::para_dyn_range(index);
+            let target_gain = target_gain.clamp(-24.0, 24.0);
+            if !state.shared.params.get_bool(dyn_id) {
+                state.shared.set_param_outbound_only(dyn_id, 1.0);
+                state.shared.mark_gesture_begin_pending(dyn_id);
+                state.shared.mark_gesture_end_pending(dyn_id);
+            }
+            if state.active_gestures.insert(gain_id) {
+                state.shared.mark_gesture_begin_pending(gain_id);
+            }
+            if state.active_gestures.insert(range_id) {
+                state.shared.mark_gesture_begin_pending(range_id);
+            }
+            state
+                .shared
+                .set_param_outbound_only(gain_id, target_gain as f64);
+            state
+                .shared
+                .set_param_outbound_only(range_id, (-target_gain).clamp(-24.0, 24.0) as f64);
         }
         Message::EndBandDrag(index) => {
             let end_gestures = |state: &mut State, band: usize| {
                 let fid = ParamId::para_freq(band);
                 let gid = ParamId::para_gain(band);
+                let range_id = ParamId::para_dyn_range(band);
+                let threshold_id = ParamId::para_dyn_threshold(band);
                 if state.active_gestures.remove(&fid) {
                     state.shared.mark_gesture_end_pending(fid);
                 }
                 if state.active_gestures.remove(&gid) {
                     state.shared.mark_gesture_end_pending(gid);
+                }
+                if state.active_gestures.remove(&range_id) {
+                    state.shared.mark_gesture_end_pending(range_id);
+                }
+                if state.active_gestures.remove(&threshold_id) {
+                    state.shared.mark_gesture_end_pending(threshold_id);
                 }
             };
             if state.selection.contains(&index) {
@@ -441,10 +527,41 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .set_param_outbound_only(id, if value { 1.0 } else { 0.0 });
             state.shared.mark_gesture_begin_pending(id);
             state.shared.mark_gesture_end_pending(id);
+            if value
+                && let Some(band) = dyn_param_band(id)
+                && BandType::from(state.shared.params.get(ParamId::para_type(band)) as u8)
+                    .supports_dynamic_target()
+            {
+                let gain = state.shared.params.get(ParamId::para_gain(band)) as f32;
+                let range_id = ParamId::para_dyn_range(band);
+                state
+                    .shared
+                    .set_param_outbound_only(range_id, (-gain).clamp(-24.0, 24.0) as f64);
+                state.shared.mark_gesture_begin_pending(range_id);
+                state.shared.mark_gesture_end_pending(range_id);
+            } else if !value
+                && let Some(band) = dyn_param_band(id)
+                && BandType::from(state.shared.params.get(ParamId::para_type(band)) as u8)
+                    .supports_dynamic_target()
+            {
+                let threshold = state.shared.params.get(ParamId::para_dyn_threshold(band)) as f32;
+                let gain_id = ParamId::para_gain(band);
+                state
+                    .shared
+                    .set_param_outbound_only(gain_id, threshold.clamp(-24.0, 24.0) as f64);
+                state.shared.mark_gesture_begin_pending(gain_id);
+                state.shared.mark_gesture_end_pending(gain_id);
+            }
         }
         Message::ReleaseParam(id) => {
             if state.active_gestures.remove(&id) {
                 state.shared.mark_gesture_end_pending(id);
+            }
+            if let Some(band) = gain_param_band(id) {
+                let range_id = ParamId::para_dyn_range(band);
+                if state.active_gestures.remove(&range_id) {
+                    state.shared.mark_gesture_end_pending(range_id);
+                }
             }
         }
         Message::CreateBand(freq, gain) => {
@@ -455,6 +572,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     let gid = ParamId::para_gain(i);
                     let qid = ParamId::para_q(i);
                     let tid = ParamId::para_type(i);
+                    let did = ParamId::para_dyn(i);
                     let q = if gain >= 0.0 {
                         1.0 + (gain / 24.0) * 2.0
                     } else {
@@ -465,6 +583,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.shared.set_param_outbound_only(gid, gain as f64);
                     state.shared.set_param_outbound_only(qid, q as f64);
                     state.shared.set_param_outbound_only(tid, 1.0);
+                    state.shared.set_param_outbound_only(did, 0.0);
                     state.selected_band = Some(i);
                     state.selection.clear();
                     state.selection.insert(i);
@@ -790,10 +909,12 @@ fn view(state: &State) -> Element<'_, Message> {
         ));
     }
 
-    let selected_dyn_on = state
-        .selected_band
-        .map(|sb| state.shared.params.get_bool(ParamId::para_dyn(sb)))
-        .unwrap_or(false);
+    let mut band_dyn_on = [false; 32];
+    let mut band_dyn_threshold = [0.0; 32];
+    for i in 0..32 {
+        band_dyn_on[i] = state.shared.params.get_bool(ParamId::para_dyn(i));
+        band_dyn_threshold[i] = p(ParamId::para_dyn_threshold(i));
+    }
     let sample_rate = state.shared.sample_rate();
     let response = eq_response_graph(EqResponseCanvas {
         bands: bands.clone(),
@@ -808,7 +929,8 @@ fn view(state: &State) -> Element<'_, Message> {
         tilt: state.tilt_db_per_oct,
         display_range_db: state.display_range_db,
         selected_band: state.selected_band,
-        selected_dyn_on,
+        band_dyn_on,
+        band_dyn_threshold,
         sample_rate,
         listen_mode: is_listen_on,
         collision_scores: state.collision_scores,
@@ -943,7 +1065,10 @@ fn view(state: &State) -> Element<'_, Message> {
         .placeholder("Shape")
         .width(Length::Fixed(100.0));
 
-        let placement = Placement::from(p(ParamId::para_placement(sb)) as u8);
+        let placement = match Placement::from(p(ParamId::para_placement(sb)) as u8) {
+            Placement::Left | Placement::Right => Placement::Stereo,
+            placement => placement,
+        };
         let placement_dropdown = maolan_baseview::iced::widget::pick_list(
             Placement::ALL.to_vec(),
             Some(placement),
@@ -982,14 +1107,13 @@ fn view(state: &State) -> Element<'_, Message> {
         let band_label = text(format!("Band {}", sb + 1))
             .size(13)
             .color(placement_color(p(ParamId::para_placement(sb)) as u8));
-        let mut controls = row![
-            band_label,
-            type_dropdown,
-            placement_dropdown,
-            freq_knob(ParamId::para_freq(sb), p(ParamId::para_freq(sb))),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center);
+        let mut controls = row![band_label, type_dropdown]
+            .spacing(12)
+            .align_y(Alignment::Center);
+        if channels > 1 {
+            controls = controls.push(placement_dropdown);
+        }
+        controls = controls.push(freq_knob(ParamId::para_freq(sb), p(ParamId::para_freq(sb))));
 
         if band_type.dyn_capable() {
             controls = controls.push(knob(
@@ -1017,77 +1141,75 @@ fn view(state: &State) -> Element<'_, Message> {
             let dyn_checkbox = maolan_baseview::iced::widget::checkbox(dyn_on)
                 .label("Dyn")
                 .on_toggle(move |v| Message::SetBoolParam(ParamId::para_dyn(sb), v));
-            let source = if p(ParamId::para_dyn_source(sb)) >= 0.5 {
-                DynSource::External
-            } else {
-                DynSource::Internal
-            };
-            let source_dropdown = maolan_baseview::iced::widget::pick_list(
-                vec![DynSource::Internal, DynSource::External],
-                Some(source),
-                move |s| {
-                    Message::SetBoolParam(
-                        ParamId::para_dyn_source(sb),
-                        matches!(s, DynSource::External),
-                    )
-                },
-            )
-            .placeholder("SC")
-            .width(Length::Fixed(95.0));
-            let spectral_on = p(ParamId::para_dyn_mode(sb)) >= 0.5;
-            let mode_dropdown = maolan_baseview::iced::widget::pick_list(
-                vec!["Band", "Spectral"],
-                Some(if spectral_on { "Spectral" } else { "Band" }),
-                move |m| Message::SetBoolParam(ParamId::para_dyn_mode(sb), m == "Spectral"),
-            )
-            .placeholder("Mode")
-            .width(Length::Fixed(95.0));
-            controls = controls
-                .push(dyn_checkbox)
-                .push(mode_dropdown)
-                .push(knob(
-                    "Thresh".to_string(),
-                    ParamId::para_dyn_threshold(sb),
-                    p(ParamId::para_dyn_threshold(sb)),
-                    "dB",
-                    0.1,
-                ))
-                .push(knob(
-                    "Ratio".to_string(),
-                    ParamId::para_dyn_ratio(sb),
-                    p(ParamId::para_dyn_ratio(sb)),
-                    ":1",
-                    0.1,
-                ))
-                .push(knob(
-                    "Knee".to_string(),
-                    ParamId::para_dyn_knee(sb),
-                    p(ParamId::para_dyn_knee(sb)),
-                    "dB",
-                    0.1,
-                ))
-                .push(knob(
-                    "Range".to_string(),
-                    ParamId::para_dyn_range(sb),
-                    p(ParamId::para_dyn_range(sb)),
-                    "dB",
-                    0.1,
-                ))
-                .push(knob(
-                    "Attack".to_string(),
-                    ParamId::para_dyn_attack(sb),
-                    p(ParamId::para_dyn_attack(sb)),
-                    "ms",
-                    0.1,
-                ))
-                .push(knob(
-                    "Release".to_string(),
-                    ParamId::para_dyn_release(sb),
-                    p(ParamId::para_dyn_release(sb)),
-                    "ms",
-                    1.0,
-                ))
-                .push(source_dropdown);
+            controls = controls.push(dyn_checkbox);
+            if dyn_on {
+                let source = if p(ParamId::para_dyn_source(sb)) >= 0.5 {
+                    DynSource::External
+                } else {
+                    DynSource::Internal
+                };
+                let source_dropdown = maolan_baseview::iced::widget::pick_list(
+                    vec![DynSource::Internal, DynSource::External],
+                    Some(source),
+                    move |s| {
+                        Message::SetBoolParam(
+                            ParamId::para_dyn_source(sb),
+                            matches!(s, DynSource::External),
+                        )
+                    },
+                )
+                .placeholder("SC")
+                .width(Length::Fixed(95.0));
+                let spectral_on = p(ParamId::para_dyn_mode(sb)) >= 0.5;
+                let mode_dropdown = maolan_baseview::iced::widget::pick_list(
+                    vec!["Band", "Spectral"],
+                    Some(if spectral_on { "Spectral" } else { "Band" }),
+                    move |m| Message::SetBoolParam(ParamId::para_dyn_mode(sb), m == "Spectral"),
+                )
+                .placeholder("Mode")
+                .width(Length::Fixed(95.0));
+                controls = controls
+                    .push(mode_dropdown)
+                    .push(knob(
+                        "Ratio".to_string(),
+                        ParamId::para_dyn_ratio(sb),
+                        p(ParamId::para_dyn_ratio(sb)),
+                        ":1",
+                        0.1,
+                    ))
+                    .push(knob(
+                        "Knee".to_string(),
+                        ParamId::para_dyn_knee(sb),
+                        p(ParamId::para_dyn_knee(sb)),
+                        "dB",
+                        0.1,
+                    ));
+                if !band_type.supports_dynamic_target() {
+                    controls = controls.push(knob(
+                        "Range".to_string(),
+                        ParamId::para_dyn_range(sb),
+                        p(ParamId::para_dyn_range(sb)),
+                        "dB",
+                        0.1,
+                    ));
+                }
+                controls = controls
+                    .push(knob(
+                        "Attack".to_string(),
+                        ParamId::para_dyn_attack(sb),
+                        p(ParamId::para_dyn_attack(sb)),
+                        "ms",
+                        0.1,
+                    ))
+                    .push(knob(
+                        "Release".to_string(),
+                        ParamId::para_dyn_release(sb),
+                        p(ParamId::para_dyn_release(sb)),
+                        "ms",
+                        1.0,
+                    ))
+                    .push(source_dropdown);
+            }
         }
 
         controls = controls
@@ -1125,9 +1247,15 @@ fn view(state: &State) -> Element<'_, Message> {
         .into()
 }
 
+#[derive(Debug, Clone, Copy)]
+enum DragTarget {
+    Band(usize),
+    DynamicTarget(usize),
+}
+
 #[derive(Default, Debug)]
 struct EqResponseState {
-    dragging: Option<usize>,
+    dragging: Option<DragTarget>,
     hover_pos: Option<Point>,
     drag_last_pos: Option<Point>,
     last_press: Option<(Instant, Point)>,
@@ -1153,7 +1281,8 @@ struct EqResponseCanvas {
     tilt: f32,
     display_range_db: f32,
     selected_band: Option<usize>,
-    selected_dyn_on: bool,
+    band_dyn_on: [bool; 32],
+    band_dyn_threshold: [f32; 32],
     sample_rate: f32,
     listen_mode: bool,
     collision_scores: [f32; 32],
@@ -1216,6 +1345,19 @@ impl EqResponseCanvas {
         let half = self.g_half();
         let t = (1.0 - ((y - bounds.y) / bounds.height)).clamp(0.0, 1.0);
         -half + t * 2.0 * half
+    }
+
+    fn threshold_to_y(&self, threshold: f32, bounds: Rectangle) -> f32 {
+        self.gain_to_y(threshold, bounds)
+    }
+
+    fn y_to_threshold(&self, y: f32, bounds: Rectangle) -> f32 {
+        self.y_to_gain(y, bounds)
+    }
+
+    fn band_uses_threshold_dot(&self, global_idx: usize, typ: u8) -> bool {
+        BandType::from(typ).supports_dynamic_target()
+            && self.band_dyn_on.get(global_idx).copied().unwrap_or(false)
     }
 
     fn spectrum_to_y(db: f32, bounds: Rectangle) -> f32 {
@@ -1336,26 +1478,50 @@ impl Program<Message> for EqResponseCanvas {
             width: bounds.width,
             height: bounds.height,
         };
-        let hit_band = |p: Point| -> Option<usize> {
+        let hit_dot = |p: Point| -> Option<(usize, bool)> {
             let mut closest = None;
             let mut best_d2 = 12.0_f32 * 12.0_f32;
-            for (local_idx, (_global_idx, freq, gain, _q, on, _typ, _slope, _placement)) in
+            for (local_idx, (global_idx, freq, gain, _q, on, typ, _slope, _placement)) in
                 self.bands.iter().enumerate()
             {
                 if !*on {
                     continue;
                 }
                 let x = Self::freq_to_x(*freq, local_bounds);
-                let y = self.gain_to_y(*gain, local_bounds);
+                let y = if self.band_uses_threshold_dot(*global_idx, *typ) {
+                    self.threshold_to_y(
+                        self.band_dyn_threshold
+                            .get(*global_idx)
+                            .copied()
+                            .unwrap_or(-24.0),
+                        local_bounds,
+                    )
+                } else {
+                    self.gain_to_y(*gain, local_bounds)
+                };
                 let dx = p.x - x;
                 let dy = p.y - y;
                 let d2 = dx * dx + dy * dy;
                 if d2 <= best_d2 {
                     best_d2 = d2;
-                    closest = Some(local_idx);
+                    closest = Some((local_idx, false));
+                }
+
+                if self.band_uses_threshold_dot(*global_idx, *typ) {
+                    let target_y = self.gain_to_y(*gain, local_bounds);
+                    let dx = p.x - x;
+                    let dy = p.y - target_y;
+                    let d2 = dx * dx + dy * dy;
+                    if d2 <= best_d2 {
+                        best_d2 = d2;
+                        closest = Some((local_idx, true));
+                    }
                 }
             }
             closest
+        };
+        let hit_band = |p: Point| -> Option<usize> {
+            hit_dot(p).map(|(local_idx, _dynamic_target)| local_idx)
         };
         match event {
             Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
@@ -1379,7 +1545,7 @@ impl Program<Message> for EqResponseCanvas {
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 if let Some(p) = cursor.position_in(bounds) {
-                    if let Some(local_idx) = hit_band(p) {
+                    if let Some((local_idx, dynamic_target)) = hit_dot(p) {
                         let global_idx = self.bands[local_idx].0;
                         if state.modifiers.alt() {
                             return Some(
@@ -1393,7 +1559,11 @@ impl Program<Message> for EqResponseCanvas {
                                     .and_capture(),
                             );
                         }
-                        state.dragging = Some(local_idx);
+                        state.dragging = Some(if dynamic_target {
+                            DragTarget::DynamicTarget(local_idx)
+                        } else {
+                            DragTarget::Band(local_idx)
+                        });
                         state.drag_last_pos = Some(p);
                         if !self.selection.contains(&global_idx) {
                             return Some(
@@ -1422,7 +1592,7 @@ impl Program<Message> for EqResponseCanvas {
                                     let raw_freq = Self::x_to_freq(p.x, local_bounds);
                                     let freq = self.snap_to_spectrum_peak(raw_freq);
                                     let gain = self.y_to_gain(p.y, local_bounds);
-                                    state.dragging = Some(local_idx);
+                                    state.dragging = Some(DragTarget::Band(local_idx));
                                     state.drag_last_pos = Some(p);
                                     state.last_press = None;
                                     return Some(
@@ -1444,6 +1614,31 @@ impl Program<Message> for EqResponseCanvas {
                     return Some(
                         CanvasAction::publish(Message::CycleBandShape(global_idx)).and_capture(),
                     );
+                }
+            }
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Middle)) => {
+                if let Some(p) = cursor.position_in(bounds)
+                    && let Some(local_idx) = hit_band(p)
+                {
+                    let (global_idx, _freq, gain, _q, on, typ, _slope, _placement) =
+                        self.bands[local_idx];
+                    if on
+                        && Some(global_idx) == self.selected_band
+                        && BandType::from(typ).supports_dynamic_target()
+                    {
+                        let threshold =
+                            self.y_to_threshold(self.gain_to_y(gain, local_bounds), local_bounds);
+                        state.dragging = Some(DragTarget::DynamicTarget(local_idx));
+                        state.drag_last_pos = Some(p);
+                        return Some(
+                            CanvasAction::publish(Message::StartBandDynamicTarget(
+                                global_idx,
+                                threshold,
+                                self.y_to_gain(p.y, local_bounds),
+                            ))
+                            .and_capture(),
+                        );
+                    }
                 }
             }
             Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
@@ -1475,7 +1670,9 @@ impl Program<Message> for EqResponseCanvas {
                     }
                 }
             }
-            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+            Event::Mouse(mouse::Event::ButtonReleased(
+                mouse::Button::Left | mouse::Button::Middle,
+            )) => {
                 if state.sketching {
                     state.sketching = false;
                     let points = std::mem::take(&mut state.sketch_points);
@@ -1486,8 +1683,13 @@ impl Program<Message> for EqResponseCanvas {
                     }
                     return Some(CanvasAction::capture());
                 }
-                if let Some(local_idx) = state.dragging.take() {
+                if let Some(dragging) = state.dragging.take() {
                     state.drag_last_pos = None;
+                    let local_idx = match dragging {
+                        DragTarget::Band(local_idx) | DragTarget::DynamicTarget(local_idx) => {
+                            local_idx
+                        }
+                    };
                     if let Some((global_idx, _freq, _gain, _q, _on, _typ, _slope, _placement)) =
                         self.bands.get(local_idx).copied()
                     {
@@ -1505,29 +1707,75 @@ impl Program<Message> for EqResponseCanvas {
                         ));
                         return Some(CanvasAction::capture());
                     }
-                    if let Some(local_idx) = state.dragging
-                        && let Some((global_idx, _freq, _gain, q, _on, _typ, _slope, _placement)) =
-                            self.bands.get(local_idx).copied()
-                    {
-                        if state.modifiers.shift() {
-                            let dy = state.drag_last_pos.map(|last| p.y - last.y).unwrap_or(0.0);
-                            state.drag_last_pos = Some(p);
-                            let new_q = (q * (1.0 - dy * 0.02)).clamp(0.1, 24.0);
-                            return Some(
-                                CanvasAction::publish(Message::SetParamImmediate(
-                                    ParamId::para_q(global_idx),
-                                    new_q,
-                                ))
-                                .and_capture(),
-                            );
+                    if let Some(dragging) = state.dragging {
+                        match dragging {
+                            DragTarget::Band(local_idx) => {
+                                if let Some((
+                                    global_idx,
+                                    _freq,
+                                    _gain,
+                                    q,
+                                    _on,
+                                    _typ,
+                                    _slope,
+                                    _placement,
+                                )) = self.bands.get(local_idx).copied()
+                                {
+                                    if state.modifiers.shift() {
+                                        let dy = state
+                                            .drag_last_pos
+                                            .map(|last| p.y - last.y)
+                                            .unwrap_or(0.0);
+                                        state.drag_last_pos = Some(p);
+                                        let new_q = (q * (1.0 - dy * 0.02)).clamp(0.1, 24.0);
+                                        return Some(
+                                            CanvasAction::publish(Message::SetParamImmediate(
+                                                ParamId::para_q(global_idx),
+                                                new_q,
+                                            ))
+                                            .and_capture(),
+                                        );
+                                    }
+                                    state.drag_last_pos = Some(p);
+                                    let freq = Self::x_to_freq(p.x, local_bounds);
+                                    let gain = if self.band_uses_threshold_dot(global_idx, _typ) {
+                                        self.y_to_threshold(p.y, local_bounds)
+                                    } else {
+                                        self.y_to_gain(p.y, local_bounds)
+                                    };
+                                    return Some(
+                                        CanvasAction::publish(Message::SetBandFreqGain(
+                                            global_idx, freq, gain,
+                                        ))
+                                        .and_capture(),
+                                    );
+                                }
+                            }
+                            DragTarget::DynamicTarget(local_idx) => {
+                                if let Some((
+                                    global_idx,
+                                    _freq,
+                                    _gain,
+                                    _q,
+                                    on,
+                                    typ,
+                                    _slope,
+                                    _placement,
+                                )) = self.bands.get(local_idx).copied()
+                                    && on
+                                    && BandType::from(typ).supports_dynamic_target()
+                                {
+                                    state.drag_last_pos = Some(Point::new(p.x, p.y));
+                                    return Some(
+                                        CanvasAction::publish(Message::SetBandDynamicTarget(
+                                            global_idx,
+                                            self.y_to_gain(p.y, local_bounds),
+                                        ))
+                                        .and_capture(),
+                                    );
+                                }
+                            }
                         }
-                        state.drag_last_pos = Some(p);
-                        let freq = Self::x_to_freq(p.x, local_bounds);
-                        let gain = self.y_to_gain(p.y, local_bounds);
-                        return Some(
-                            CanvasAction::publish(Message::SetBandFreqGain(global_idx, freq, gain))
-                                .and_capture(),
-                        );
                     }
                 } else {
                     state.hover_pos = None;
@@ -1691,36 +1939,7 @@ impl Program<Message> for EqResponseCanvas {
             );
         }
 
-        let selected = self.selected_band.and_then(|sel| {
-            self.bands
-                .iter()
-                .find(|(idx, _, _, _, on, _, _, _)| *idx == sel && *on)
-        });
-        if self.selected_dyn_on
-            && let Some((_sel_idx, sel_freq, _, sel_q, _, sel_typ, _, sel_placement)) = selected
-        {
-            let sense = dsp::detector_biquad(*sel_typ, self.sample_rate, *sel_freq, *sel_q);
-            let mut band_spec = [0.0_f32; SPECTRUM_BINS];
-            for (i, spec) in band_spec.iter_mut().enumerate() {
-                let f = self.bin_freq(i);
-                *spec = pre_tilted[i] + sense.magnitude_db(f, self.sample_rate);
-            }
-            let color = placement_color(*sel_placement);
-            let band_fill = self.spectrum_fill_path(&band_spec, local_bounds);
-            frame.fill(
-                &band_fill,
-                Color::from_rgba(color.r, color.g, color.b, 0.10),
-            );
-            let band_line = self.spectrum_path(&band_spec, local_bounds);
-            frame.stroke(
-                &band_line,
-                canvas::Stroke::default()
-                    .with_color(Color::from_rgba(color.r, color.g, color.b, 0.85))
-                    .with_width(1.2),
-            );
-        }
-
-        let band_biquads: Vec<(usize, u8, Vec<Biquad>)> = self
+        let band_biquads: Vec<(usize, u8, bool, Vec<Biquad>)> = self
             .bands
             .iter()
             .filter_map(|(idx, f0, gain, q, on, typ, slope, placement)| {
@@ -1730,13 +1949,17 @@ impl Program<Message> for EqResponseCanvas {
                 Some((
                     *idx,
                     *placement,
+                    self.band_uses_threshold_dot(*idx, *typ),
                     dsp::build_chain(*typ, *slope, self.sample_rate, *f0, *q, *gain),
                 ))
             })
             .collect();
 
-        for (idx, placement, chain) in &band_biquads {
+        for (idx, placement, threshold_dot, chain) in &band_biquads {
             if self.listen_mode && Some(*idx) != self.selected_band {
+                continue;
+            }
+            if *threshold_dot {
                 continue;
             }
             let is_selected = self.selection.contains(idx);
@@ -1846,8 +2069,11 @@ impl Program<Message> for EqResponseCanvas {
                     },
                 );
                 let mut total_lin = 1.0_f32;
-                for (idx, _placement, chain) in &band_biquads {
+                for (idx, _placement, threshold_dot, chain) in &band_biquads {
                     if self.listen_mode && Some(*idx) != self.selected_band {
+                        continue;
+                    }
+                    if *threshold_dot {
                         continue;
                     }
                     for bq in chain {
@@ -1974,7 +2200,10 @@ impl Program<Message> for EqResponseCanvas {
                         },
                     );
                     let mut total_lin = 1.0_f32;
-                    for (_idx, _placement, chain) in &band_biquads {
+                    for (_idx, _placement, threshold_dot, chain) in &band_biquads {
+                        if *threshold_dot {
+                            continue;
+                        }
                         for bq in chain {
                             total_lin *=
                                 10.0_f32.powf(bq.magnitude_db(freq, self.sample_rate) * 0.05);
@@ -2011,7 +2240,7 @@ impl Program<Message> for EqResponseCanvas {
             );
         }
 
-        for (global_idx, freq, gain, _q, on, _typ, _slope, placement) in self.bands.iter() {
+        for (global_idx, freq, gain, q, on, typ, slope, placement) in self.bands.iter() {
             if !*on {
                 continue;
             }
@@ -2031,6 +2260,22 @@ impl Program<Message> for EqResponseCanvas {
                     ..bounds
                 },
             );
+            let threshold_dot = self.band_uses_threshold_dot(*global_idx, *typ);
+            let y = if threshold_dot {
+                self.threshold_to_y(
+                    self.band_dyn_threshold
+                        .get(*global_idx)
+                        .copied()
+                        .unwrap_or(-24.0),
+                    Rectangle {
+                        x: 0.0,
+                        y: 0.0,
+                        ..bounds
+                    },
+                )
+            } else {
+                y
+            };
             let is_primary = Some(*global_idx) == self.selected_band;
             let is_selected = self.selection.contains(global_idx);
             let hovered = state
@@ -2052,7 +2297,161 @@ impl Program<Message> for EqResponseCanvas {
                 4.5
             };
             let node = Path::circle(center, radius);
+
+            if threshold_dot {
+                let threshold_gain = self.y_to_gain(y, local_bounds).clamp(-24.0, 24.0);
+                let threshold_chain = dsp::build_chain(
+                    dsp::SHAPE_BELL,
+                    *slope,
+                    self.sample_rate,
+                    *freq,
+                    *q,
+                    threshold_gain,
+                );
+                let threshold_path = Path::new(|b| {
+                    let mut first = true;
+                    for xi in 0..(bounds.width as usize).max(2) {
+                        let curve_x = xi as f32;
+                        let curve_freq = Self::x_to_freq(
+                            curve_x,
+                            Rectangle {
+                                x: 0.0,
+                                y: 0.0,
+                                ..bounds
+                            },
+                        );
+                        let band_db: f32 = threshold_chain
+                            .iter()
+                            .map(|bq| bq.magnitude_db(curve_freq, self.sample_rate))
+                            .sum();
+                        let curve_y = self.gain_to_y(
+                            band_db,
+                            Rectangle {
+                                x: 0.0,
+                                y: 0.0,
+                                ..bounds
+                            },
+                        );
+                        if first {
+                            b.move_to(Point::new(curve_x, curve_y));
+                            first = false;
+                        } else {
+                            b.line_to(Point::new(curve_x, curve_y));
+                        }
+                    }
+                });
+                frame.stroke(
+                    &threshold_path,
+                    canvas::Stroke::default()
+                        .with_color(Color::from_rgba(0.90, 0.93, 0.96, 0.90))
+                        .with_width(1.5),
+                );
+            }
+
             frame.fill(&node, color);
+            frame.stroke(
+                &node,
+                canvas::Stroke::default()
+                    .with_color(Color::from_rgba(0.95, 0.95, 0.98, 0.85))
+                    .with_width(1.5),
+            );
+
+            let dynamic_dragging_this = matches!(
+                state.dragging,
+                Some(DragTarget::DynamicTarget(local_idx))
+                    if self
+                        .bands
+                        .get(local_idx)
+                        .map(|(idx, _, _, _, _, _, _, _)| idx == global_idx)
+                        .unwrap_or(false)
+            );
+            if threshold_dot || dynamic_dragging_this {
+                let target_y = if dynamic_dragging_this {
+                    state.drag_last_pos.map(|p| p.y).unwrap_or_else(|| {
+                        self.gain_to_y(
+                            *gain,
+                            Rectangle {
+                                x: 0.0,
+                                y: 0.0,
+                                ..bounds
+                            },
+                        )
+                    })
+                } else {
+                    self.gain_to_y(
+                        *gain,
+                        Rectangle {
+                            x: 0.0,
+                            y: 0.0,
+                            ..bounds
+                        },
+                    )
+                };
+                let target_gain = self.y_to_gain(target_y, local_bounds).clamp(-24.0, 24.0);
+                let dynamic_chain = dsp::build_chain(
+                    dsp::SHAPE_BELL,
+                    *slope,
+                    self.sample_rate,
+                    *freq,
+                    *q,
+                    target_gain,
+                );
+                let dynamic_path = Path::new(|b| {
+                    let mut first = true;
+                    for xi in 0..(bounds.width as usize).max(2) {
+                        let curve_x = xi as f32;
+                        let curve_freq = Self::x_to_freq(
+                            curve_x,
+                            Rectangle {
+                                x: 0.0,
+                                y: 0.0,
+                                ..bounds
+                            },
+                        );
+                        let band_db: f32 = dynamic_chain
+                            .iter()
+                            .map(|bq| bq.magnitude_db(curve_freq, self.sample_rate))
+                            .sum();
+                        let curve_y = self.gain_to_y(
+                            band_db,
+                            Rectangle {
+                                x: 0.0,
+                                y: 0.0,
+                                ..bounds
+                            },
+                        );
+                        if first {
+                            b.move_to(Point::new(curve_x, curve_y));
+                            first = false;
+                        } else {
+                            b.line_to(Point::new(curve_x, curve_y));
+                        }
+                    }
+                });
+                frame.stroke(
+                    &dynamic_path,
+                    canvas::Stroke::default()
+                        .with_color(Color::from_rgba(
+                            color.r,
+                            color.g,
+                            color.b,
+                            if is_selected { 0.42 } else { 0.20 },
+                        ))
+                        .with_width(if is_selected { 1.5 } else { 1.0 }),
+                );
+                let dynamic_center = Point::new(x, target_y);
+                let dynamic_node = Path::circle(dynamic_center, radius);
+                frame.fill(
+                    &dynamic_node,
+                    Color::from_rgba(color.r, color.g, color.b, 0.42),
+                );
+                frame.stroke(
+                    &dynamic_node,
+                    canvas::Stroke::default()
+                        .with_color(Color::from_rgba(color.r, color.g, color.b, 0.18))
+                        .with_width(1.0),
+                );
+            }
 
             let gr = self.band_gr_db.get(*global_idx).copied().unwrap_or(0.0);
             if gr.abs() > 0.1 {
@@ -2250,6 +2649,23 @@ static BAND_CLIPBOARD: std::sync::LazyLock<parking_lot::Mutex<Vec<BandSnapshot>>
 
 fn p_of(params: &crate::eq::params::ParamStore<ParamId>, id: ParamId) -> f32 {
     params.get(id) as f32
+}
+
+fn band_param_index(id: ParamId, first: usize, stride: usize, count: usize) -> Option<usize> {
+    let idx = id.as_index();
+    if idx < first || idx >= first + stride * count {
+        return None;
+    }
+    let offset = idx - first;
+    offset.is_multiple_of(stride).then_some(offset / stride)
+}
+
+fn gain_param_band(id: ParamId) -> Option<usize> {
+    band_param_index(id, ParamId::para_gain(0).as_index(), 3, 32)
+}
+
+fn dyn_param_band(id: ParamId) -> Option<usize> {
+    band_param_index(id, ParamId::para_dyn(0).as_index(), 1, 32)
 }
 
 /// Creates bands from a fitted shape list (EQ Sketch and EQ Match share

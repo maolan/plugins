@@ -236,6 +236,12 @@ impl AudioProcessor {
                 && shared.params.get_bool(ParamId::para_dyn(i))
                 && shared.params.get(ParamId::para_dyn_mode(i)) >= 0.5
                 && crate::eq::dsp::dyn_capable(shape);
+            let gain = shared.params.get(ParamId::para_gain(i)) as f32;
+            let range_db = if shape == crate::eq::dsp::SHAPE_BELL {
+                -gain
+            } else {
+                shared.params.get(ParamId::para_dyn_range(i)) as f32
+            };
             *config = SpectralBandConfig {
                 on,
                 external: shared.params.get(ParamId::para_dyn_source(i)) >= 0.5,
@@ -245,7 +251,7 @@ impl AudioProcessor {
                 threshold_db: shared.params.get(ParamId::para_dyn_threshold(i)) as f32,
                 ratio: shared.params.get(ParamId::para_dyn_ratio(i)) as f32,
                 knee_db: shared.params.get(ParamId::para_dyn_knee(i)) as f32,
-                range_db: shared.params.get(ParamId::para_dyn_range(i)) as f32,
+                range_db,
                 attack_ms: shared.params.get(ParamId::para_dyn_attack(i)) as f32,
                 release_ms: shared.params.get(ParamId::para_dyn_release(i)) as f32,
             };

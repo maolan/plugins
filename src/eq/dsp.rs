@@ -29,6 +29,10 @@ pub fn dyn_capable(shape: u8) -> bool {
     )
 }
 
+fn uses_dynamic_target_gain(shape: u8, dyn_on: bool) -> bool {
+    dyn_on && shape == SHAPE_BELL
+}
+
 pub const SLOPE_BRICKWALL: u8 = 4;
 const BRICKWALL_STAGES: usize = 16;
 
@@ -347,7 +351,11 @@ impl Band {
         self.dyn_threshold = params.dyn_threshold;
         self.dyn_ratio = params.dyn_ratio;
         self.dyn_knee = params.dyn_knee;
-        self.dyn_range = params.dyn_range;
+        self.dyn_range = if uses_dynamic_target_gain(params.typ, params.dyn_on) {
+            -params.gain
+        } else {
+            params.dyn_range
+        };
         self.dyn_external = params.dyn_external;
         self.dyn_spectral = params.dyn_spectral;
         self.envelope.set_attack(params.dyn_attack_ms * 0.001);
@@ -422,7 +430,12 @@ impl Band {
             self.dyn_gain_db += (0.0 - self.dyn_gain_db) * (1.0 - dyn_smooth);
         }
 
-        let total_gain = self.sm_gain * gain_scale + self.dyn_gain_db;
+        let static_gain = if uses_dynamic_target_gain(self.shape, self.dyn_on) {
+            0.0
+        } else {
+            self.sm_gain * gain_scale
+        };
+        let total_gain = static_gain + self.dyn_gain_db;
         let coeff_dirty = self.chain_dirty
             || (self.sm_freq - self.built_freq).abs() > 0.01
             || (total_gain - self.built_gain).abs() > 0.001
@@ -787,7 +800,11 @@ impl ParametricEqualizer {
             band.slope,
             band.sm_freq,
             band.sm_q,
-            band.sm_gain * self.gain_scale + band.dyn_gain_db,
+            if uses_dynamic_target_gain(band.shape, band.dyn_on) {
+                band.dyn_gain_db
+            } else {
+                band.sm_gain * self.gain_scale + band.dyn_gain_db
+            },
         ))
     }
 

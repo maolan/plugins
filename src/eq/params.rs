@@ -938,9 +938,9 @@ pub static PARAMS: LazyLock<Vec<ParamDef<ParamId>>> = LazyLock::new(|| {
             &format!("P{} Dyn Threshold", i + 1),
             "Dynamics",
             ParamRange {
-                min: -60.0,
-                max: 0.0,
-                default: -24.0,
+                min: -24.0,
+                max: 24.0,
+                default: 0.0,
                 step: 0.1,
             },
             AUTOMATABLE,
