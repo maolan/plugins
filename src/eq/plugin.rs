@@ -733,13 +733,16 @@ pub fn latency_samples(params: &ParamStore<ParamId>) -> u32 {
     }
 }
 
+fn channel_count_from_value(value: f64) -> u32 {
+    (value.round() as u32).clamp(1, 2)
+}
+
 struct PluginInstance {
     shared: Arc<SharedState<ParamId>>,
     active: AtomicBool,
     processor: AtomicPtr<AudioProcessor>,
     retired_processors: Mutex<Vec<*mut AudioProcessor>>,
     gui_bridge: Mutex<GuiBridge>,
-    channels: AtomicU32,
     bus_id: bus::InstanceId,
     bus_data: bus::PluginSharedData,
 }
@@ -760,7 +763,6 @@ impl PluginInstance {
             processor: AtomicPtr::new(null_mut()),
             retired_processors: Mutex::new(Vec::new()),
             gui_bridge: Mutex::new(GuiBridge::default()),
-            channels: AtomicU32::new(channels),
             bus_id,
             bus_data,
         }
@@ -820,6 +822,10 @@ fn apply_param_events(shared: &SharedState<ParamId>, events: &InputEvents<'_>) {
                         }
                         let incoming = sanitize_param_value(id, param.value(), &PARAMS);
                         shared.params.set(id, incoming);
+                        if id == ParamId::Channels {
+                            shared.sync_channels_from_params();
+                            shared.request_audio_ports_rescan();
+                        }
                         let dyn_toggle =
                             (ParamId::Para1Dyn as u32..=ParamId::Para32Dyn as u32).contains(&raw);
                         let dyn_source = (ParamId::Para1DynSource as u32
@@ -977,13 +983,7 @@ unsafe extern "C-unwind" fn plugin_deactivate(plugin: *const clap_plugin) {
     }
     instance.active.store(false, Ordering::Release);
 
-    let channels_param = instance.shared.params.get(ParamId::Channels).round() as u32;
-    let new_channels = channels_param.clamp(1, 2);
-    instance.channels.store(new_channels, Ordering::Release);
-    instance
-        .shared
-        .channels
-        .store(new_channels, Ordering::Release);
+    instance.shared.sync_channels_from_params();
 }
 
 unsafe extern "C-unwind" fn plugin_start_processing(_plugin: *const clap_plugin) -> bool {
@@ -1020,7 +1020,7 @@ unsafe extern "C-unwind" fn ext_audio_ports_count(
     is_input: bool,
 ) -> u32 {
     let instance = unsafe { instance(plugin) };
-    let channels = instance.channels.load(Ordering::Acquire);
+    let channels = instance.shared.channels.load(Ordering::Acquire);
     let sidechain_enabled = needs_external_sidechain(&instance.shared.params);
     if is_input {
         if sidechain_enabled {
@@ -1040,7 +1040,7 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
     info: *mut clap_audio_port_info,
 ) -> bool {
     let instance = unsafe { instance(plugin) };
-    let channels = instance.channels.load(Ordering::Acquire);
+    let channels = instance.shared.channels.load(Ordering::Acquire);
     let sidechain_enabled = needs_external_sidechain(&instance.shared.params);
     let count = if is_input {
         if sidechain_enabled {
@@ -1234,6 +1234,7 @@ unsafe extern "C-unwind" fn ext_state_load(
     };
     state.apply(&instance.shared.params, &PARAMS);
 
+    instance.shared.sync_channels_from_params();
     instance.shared.request_audio_ports_rescan();
     instance.shared.request_latency_changed();
     true
@@ -1911,6 +1912,14 @@ impl<T: ParamIdExt> SharedState<T> {
         bits
     }
 }
+
+impl SharedState<ParamId> {
+    pub fn sync_channels_from_params(&self) {
+        let channels = channel_count_from_value(self.params.get(ParamId::Channels));
+        self.channels.store(channels, Ordering::Release);
+    }
+}
+
 use serde::{Deserialize, Serialize};
 const CURRENT_STATE_VERSION: &str = "0.2.0";
 const STATE_HEADER_PREFIX: &str = "maolan-equalizer-state-v";

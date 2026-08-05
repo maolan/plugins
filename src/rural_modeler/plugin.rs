@@ -609,6 +609,14 @@ impl AudioProcessor {
             .set_middle(shared.params.get(ParamId::ToneMid) as f32);
         self.tone_stack
             .set_treble(shared.params.get(ParamId::ToneTreble) as f32);
+        self.tone_stack
+            .set_bass_mode(crate::rural_modeler::dsp::tone_stack::ToneMode::from_u32(
+                shared.params.get_enum(ParamId::ToneBassMode),
+            ));
+        self.tone_stack
+            .set_treble_mode(crate::rural_modeler::dsp::tone_stack::ToneMode::from_u32(
+                shared.params.get_enum(ParamId::ToneTrebleMode),
+            ));
 
         if gate_active {
             self.noise_gate_trigger
@@ -767,6 +775,11 @@ fn param_text(id: ParamId, value: f64) -> String {
             2 => "Calibrated".into(),
             _ => format!("{value:.0}"),
         },
+        ParamId::ToneBassMode | ParamId::ToneTrebleMode => match value.round() as i32 {
+            0 => "Shelf".into(),
+            1 => "Band EQ".into(),
+            _ => format!("{value:.0}"),
+        },
         _ => format!("{value:.2}"),
     }
 }
@@ -787,6 +800,13 @@ fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
             "calibrated" => Some(2.0),
             _ => text.parse().ok(),
         },
+        ParamId::ToneBassMode | ParamId::ToneTrebleMode => {
+            match text.to_ascii_lowercase().as_str() {
+                "shelf" | "s" => Some(0.0),
+                "band" | "band eq" | "bandeq" => Some(1.0),
+                _ => text.parse().ok(),
+            }
+        }
         _ => text.parse().ok(),
     }
 }

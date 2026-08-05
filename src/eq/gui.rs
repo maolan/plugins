@@ -538,7 +538,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state
                 .shared
                 .set_param_outbound_only(ParamId::Channels, u32::from(mode) as f64);
+            state.shared.sync_channels_from_params();
             state.shared.request_audio_ports_rescan();
+            state.shared.mark_dirty();
         }
         Message::TogglePreSpectrum => {
             state.show_pre_spectrum = !state.show_pre_spectrum;
@@ -813,8 +815,18 @@ fn view(state: &State) -> Element<'_, Message> {
         band_gr_db: state.band_gr_db,
     });
 
+    let channels = p(ParamId::Channels).round() as u32;
+    let channels_dropdown = maolan_baseview::iced::widget::pick_list(
+        vec![ChannelMode::Mono, ChannelMode::Stereo],
+        Some(ChannelMode::from(channels)),
+        Message::SetChannels,
+    )
+    .placeholder("Channels")
+    .width(Length::Fixed(95.0));
+
     let peer_slots: Vec<u32> = state.eq_peers.iter().map(|p| p.slot_index()).collect();
     let analyzer_controls = row![
+        channels_dropdown,
         maolan_baseview::iced::widget::checkbox(state.show_pre_spectrum)
             .label("Pre")
             .on_toggle(|_| Message::TogglePreSpectrum),
@@ -921,14 +933,6 @@ fn view(state: &State) -> Element<'_, Message> {
         row![].spacing(0).into()
     };
 
-    let channels = p(ParamId::Channels).round() as u32;
-    let channels_dropdown = maolan_baseview::iced::widget::pick_list(
-        vec![ChannelMode::Mono, ChannelMode::Stereo],
-        Some(ChannelMode::from(channels)),
-        Message::SetChannels,
-    )
-    .placeholder("Channels");
-
     let knobs: Element<'_, Message> = if let Some(sb) = state.selected_band {
         let band_type = BandType::from(p(ParamId::para_type(sb)) as u8);
         let type_dropdown = maolan_baseview::iced::widget::pick_list(
@@ -980,7 +984,6 @@ fn view(state: &State) -> Element<'_, Message> {
             .color(placement_color(p(ParamId::para_placement(sb)) as u8));
         let mut controls = row![
             band_label,
-            channels_dropdown,
             type_dropdown,
             placement_dropdown,
             freq_knob(ParamId::para_freq(sb), p(ParamId::para_freq(sb))),
@@ -1097,7 +1100,7 @@ fn view(state: &State) -> Element<'_, Message> {
         } else {
             "Double-click: new band · tick Sketch to draw a curve · wheel on node: Q"
         };
-        row![channels_dropdown, text(hint).size(12)]
+        row![text(hint).size(12)]
             .spacing(20)
             .align_y(Alignment::Center)
             .into()
@@ -1221,6 +1224,64 @@ impl EqResponseCanvas {
         bounds.y + (1.0 - t) * bounds.height
     }
 
+    fn smoothed_spectrum_points(
+        &self,
+        bins_db: &[f32; SPECTRUM_BINS],
+        bounds: Rectangle,
+    ) -> Vec<Point> {
+        let mut smoothed = [Self::S_MIN; SPECTRUM_BINS];
+        for (i, db) in smoothed.iter_mut().enumerate() {
+            let start = i.saturating_sub(2);
+            let end = (i + 2).min(SPECTRUM_BINS - 1);
+            let mut weighted = 0.0;
+            let mut weight_sum = 0.0;
+            for (j, value) in bins_db.iter().enumerate().take(end + 1).skip(start) {
+                let distance = i.abs_diff(j) as f32;
+                let weight = 3.0 - distance;
+                weighted += *value * weight;
+                weight_sum += weight;
+            }
+            *db = weighted / weight_sum.max(1.0);
+        }
+
+        smoothed
+            .iter()
+            .enumerate()
+            .map(|(i, &db)| {
+                let t = i as f32 / (SPECTRUM_BINS.saturating_sub(1).max(1) as f32);
+                Point::new(t * bounds.width, Self::spectrum_to_y(db, bounds))
+            })
+            .collect()
+    }
+
+    fn draw_smooth_points(points: &[Point], b: &mut canvas::path::Builder) {
+        let Some(&first) = points.first() else {
+            return;
+        };
+        b.move_to(first);
+        if points.len() == 1 {
+            return;
+        }
+        if points.len() == 2 {
+            b.line_to(points[1]);
+            return;
+        }
+
+        for i in 0..points.len() - 1 {
+            let p0 = if i == 0 { points[i] } else { points[i - 1] };
+            let p1 = points[i];
+            let p2 = points[i + 1];
+            let p3 = if i + 2 < points.len() {
+                points[i + 2]
+            } else {
+                points[i + 1]
+            };
+            let c1 = Point::new(p1.x + (p2.x - p0.x) / 6.0, p1.y + (p2.y - p0.y) / 6.0);
+            let c2 = Point::new(p2.x - (p3.x - p1.x) / 6.0, p2.y - (p3.y - p1.y) / 6.0);
+            b.bezier_curve_to(c1, c2, p2);
+        }
+    }
+
     /// Spectrum Grab: snaps a newly created band's frequency to the strongest
     /// nearby peak of the post-EQ spectrum (within ±15%, above -50 dB).
     fn snap_to_spectrum_peak(&self, freq: f32) -> f32 {
@@ -1242,36 +1303,16 @@ impl EqResponseCanvas {
     }
 
     fn spectrum_path(&self, bins_db: &[f32; SPECTRUM_BINS], bounds: Rectangle) -> Path {
+        let points = self.smoothed_spectrum_points(bins_db, bounds);
         Path::new(|b| {
-            let mut first = true;
-            for (i, &db) in bins_db.iter().enumerate() {
-                let t = i as f32 / (SPECTRUM_BINS.saturating_sub(1).max(1) as f32);
-                let x = t * bounds.width;
-                let y = Self::spectrum_to_y(db, bounds);
-                if first {
-                    b.move_to(Point::new(x, y));
-                    first = false;
-                } else {
-                    b.line_to(Point::new(x, y));
-                }
-            }
+            Self::draw_smooth_points(&points, b);
         })
     }
 
     fn spectrum_fill_path(&self, bins_db: &[f32; SPECTRUM_BINS], bounds: Rectangle) -> Path {
+        let points = self.smoothed_spectrum_points(bins_db, bounds);
         Path::new(|b| {
-            let mut first = true;
-            for (i, &db) in bins_db.iter().enumerate() {
-                let t = i as f32 / (SPECTRUM_BINS.saturating_sub(1).max(1) as f32);
-                let x = t * bounds.width;
-                let y = Self::spectrum_to_y(db, bounds);
-                if first {
-                    b.move_to(Point::new(x, y));
-                    first = false;
-                } else {
-                    b.line_to(Point::new(x, y));
-                }
-            }
+            Self::draw_smooth_points(&points, b);
             b.line_to(Point::new(bounds.width, bounds.height));
             b.line_to(Point::new(0.0, bounds.height));
             b.close();
@@ -1633,19 +1674,19 @@ impl Program<Message> for EqResponseCanvas {
             frame.stroke(
                 &pre_line,
                 canvas::Stroke::default()
-                    .with_color(Color::from_rgba(0.65, 0.67, 0.72, 0.55))
+                    .with_color(Color::from_rgba(0.72, 0.74, 0.78, 0.24))
                     .with_width(1.0),
             );
         }
 
         if self.show_post {
             let post_fill = self.spectrum_fill_path(&post_tilted, local_bounds);
-            frame.fill(&post_fill, Color::from_rgba(0.53, 0.88, 0.98, 0.13));
+            frame.fill(&post_fill, Color::from_rgba(0.72, 0.74, 0.78, 0.06));
             let post_line = self.spectrum_path(&post_tilted, local_bounds);
             frame.stroke(
                 &post_line,
                 canvas::Stroke::default()
-                    .with_color(Color::from_rgba(0.53, 0.88, 0.98, 0.75))
+                    .with_color(Color::from_rgba(0.72, 0.74, 0.78, 0.32))
                     .with_width(1.2),
             );
         }

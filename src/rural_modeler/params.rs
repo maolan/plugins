@@ -20,10 +20,12 @@ pub enum ParamId {
     CalibrateInput = 9,
     InputCalibrationLevel = 10,
     OutputMode = 11,
+    ToneBassMode = 12,
+    ToneTrebleMode = 13,
 }
 
 impl ParamId {
-    pub const COUNT: usize = 12;
+    pub const COUNT: usize = 14;
 
     pub const fn all() -> [ParamId; Self::COUNT] {
         [
@@ -39,6 +41,8 @@ impl ParamId {
             ParamId::CalibrateInput,
             ParamId::InputCalibrationLevel,
             ParamId::OutputMode,
+            ParamId::ToneBassMode,
+            ParamId::ToneTrebleMode,
         ]
     }
 
@@ -60,6 +64,8 @@ impl ParamId {
             9 => Some(Self::CalibrateInput),
             10 => Some(Self::InputCalibrationLevel),
             11 => Some(Self::OutputMode),
+            12 => Some(Self::ToneBassMode),
+            13 => Some(Self::ToneTrebleMode),
             _ => None,
         }
     }
@@ -199,6 +205,26 @@ pub const PARAMS: [ParamDef; ParamId::COUNT] = [
         min: 0.0,
         max: 2.0,
         default: 1.0,
+        step: 1.0,
+        flags: ENUM_FLAGS,
+    },
+    ParamDef {
+        id: ParamId::ToneBassMode,
+        name: "BassMode",
+        module: "EQ",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        step: 1.0,
+        flags: ENUM_FLAGS,
+    },
+    ParamDef {
+        id: ParamId::ToneTrebleMode,
+        name: "TrebleMode",
+        module: "EQ",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
         step: 1.0,
         flags: ENUM_FLAGS,
     },

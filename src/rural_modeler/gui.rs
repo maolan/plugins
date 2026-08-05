@@ -81,6 +81,7 @@ pub enum Message {
     SetParam(ParamId, f32),
     SetBoolParam(ParamId, bool),
     SetOutputMode(u8),
+    SetEnumParam(ParamId, f32),
     ReleaseParam(ParamId),
     ToneModelQueryChanged(String),
     ToneIrQueryChanged(String),
@@ -106,6 +107,8 @@ pub enum Message {
     ToneOAuthBrowserLogin,
     ToneOAuthCompleted,
     ToneOAuthClear,
+    ToggleBassModeMenu,
+    ToggleTrebleModeMenu,
     WindowClosed,
 }
 
@@ -132,6 +135,8 @@ struct State {
     tone_ir_total_pages: u32,
     tone_ir_selected_variation: Option<String>,
     tone_oauth_authenticated: bool,
+    bass_mode_menu_open: bool,
+    treble_mode_menu_open: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +148,38 @@ struct VariationOption {
 impl std::fmt::Display for VariationOption {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.title)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToneFilterMode {
+    Shelf,
+    BandEq,
+}
+
+impl ToneFilterMode {
+    fn from_value(value: f32) -> Self {
+        if value >= 0.5 {
+            Self::BandEq
+        } else {
+            Self::Shelf
+        }
+    }
+
+    fn as_f32(self) -> f32 {
+        match self {
+            Self::Shelf => 0.0,
+            Self::BandEq => 1.0,
+        }
+    }
+}
+
+impl std::fmt::Display for ToneFilterMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Shelf => f.write_str("Shelf"),
+            Self::BandEq => f.write_str("Band EQ"),
+        }
     }
 }
 
@@ -188,6 +225,8 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             tone_ir_total_pages: 0,
             tone_ir_selected_variation: None,
             tone_oauth_authenticated,
+            bass_mode_menu_open: false,
+            treble_mode_menu_open: false,
         },
         Task::none(),
     )
@@ -348,6 +387,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .shared
                 .set_param_outbound_only(ParamId::OutputMode, mode as f64);
             state.shared.mark_gesture_end_pending(ParamId::OutputMode);
+            Task::none()
+        }
+        Message::SetEnumParam(id, value) => {
+            state.shared.mark_gesture_begin_pending(id);
+            state.shared.set_param_outbound_only(id, value as f64);
+            state.shared.mark_gesture_end_pending(id);
+            match id {
+                ParamId::ToneBassMode => state.bass_mode_menu_open = false,
+                ParamId::ToneTrebleMode => state.treble_mode_menu_open = false,
+                _ => {}
+            }
             Task::none()
         }
         Message::ToneModelQueryChanged(value) => {
@@ -515,6 +565,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             Task::none()
         }
+        Message::ToggleBassModeMenu => {
+            state.bass_mode_menu_open = !state.bass_mode_menu_open;
+            Task::none()
+        }
+        Message::ToggleTrebleModeMenu => {
+            state.treble_mode_menu_open = !state.treble_mode_menu_open;
+            Task::none()
+        }
         Message::ToneIrVariationSelected(reference) => {
             let reference = reference.trim();
             if reference.is_empty() {
@@ -598,14 +656,30 @@ fn view(state: &State) -> Element<'_, Message> {
                 "dB",
                 0.1
             ),
-            knob("Bass", ParamId::ToneBass, p(ParamId::ToneBass), "", 0.1),
+            tone_knob(
+                "Bass",
+                ParamId::ToneBass,
+                p(ParamId::ToneBass),
+                0.1,
+                Some(ToneKnobMode {
+                    id: ParamId::ToneBassMode,
+                    value: p(ParamId::ToneBassMode),
+                    menu_open: state.bass_mode_menu_open,
+                    toggle_menu: Message::ToggleBassModeMenu,
+                }),
+            ),
             knob("Middle", ParamId::ToneMid, p(ParamId::ToneMid), "", 0.1),
-            knob(
+            tone_knob(
                 "Treble",
                 ParamId::ToneTreble,
                 p(ParamId::ToneTreble),
-                "",
-                0.1
+                0.1,
+                Some(ToneKnobMode {
+                    id: ParamId::ToneTrebleMode,
+                    value: p(ParamId::ToneTrebleMode),
+                    menu_open: state.treble_mode_menu_open,
+                    toggle_menu: Message::ToggleTrebleModeMenu,
+                }),
             ),
             knob(
                 "Output",
@@ -938,6 +1012,63 @@ fn knob(
     )
     .width(Length::Fixed(96.0))
     .into()
+}
+
+struct ToneKnobMode {
+    id: ParamId,
+    value: f32,
+    menu_open: bool,
+    toggle_menu: Message,
+}
+
+fn tone_knob(
+    label: &'static str,
+    id: ParamId,
+    value: f32,
+    step: f32,
+    mode: Option<ToneKnobMode>,
+) -> Element<'static, Message> {
+    let def = PARAMS[id.as_index()];
+    let slider = arch_slider(def.min as f32..=def.max as f32, value, move |v| {
+        Message::SetParam(id, v)
+    })
+    .step(step)
+    .double_click_reset(def.default as f32)
+    .on_release(Message::ReleaseParam(id))
+    .fill_from_start()
+    .width(Length::Fixed(86.0))
+    .height(Length::Fixed(86.0));
+
+    let value_text = format!("{value:.1}");
+    let (slider, mode_dropdown) = if let Some(mode) = mode {
+        let dropdown = if mode.menu_open {
+            let current_mode = ToneFilterMode::from_value(mode.value);
+            let mode_id = mode.id;
+            Some(
+                maolan_baseview::iced::widget::pick_list(
+                    vec![ToneFilterMode::Shelf, ToneFilterMode::BandEq],
+                    Some(current_mode),
+                    move |mode| Message::SetEnumParam(mode_id, mode.as_f32()),
+                )
+                .placeholder("Mode")
+                .width(Length::Fixed(84.0)),
+            )
+        } else {
+            None
+        };
+        (slider.on_right_click(mode.toggle_menu), dropdown)
+    } else {
+        (slider, None)
+    };
+
+    let mut column = column![text(label).size(14), slider, text(value_text).size(13)]
+        .spacing(4)
+        .align_x(Alignment::Center);
+    if let Some(dropdown) = mode_dropdown {
+        column = column.push(dropdown);
+    }
+
+    container(column).width(Length::Fixed(96.0)).into()
 }
 
 fn variation_options(variations: &[SearchVariation]) -> Vec<VariationOption> {

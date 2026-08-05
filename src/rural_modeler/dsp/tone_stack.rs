@@ -1,11 +1,28 @@
 use crate::rural_modeler::dsp::filters::{Biquad, high_shelf, low_shelf, peaking};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToneMode {
+    Shelf = 0,
+    Band = 1,
+}
+
+impl ToneMode {
+    pub fn from_u32(value: u32) -> Self {
+        match value {
+            1 => Self::Band,
+            _ => Self::Shelf,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ToneStack {
     sample_rate: f32,
     bass: f32,
     middle: f32,
     treble: f32,
+    bass_mode: ToneMode,
+    treble_mode: ToneMode,
     bass_filter: Biquad,
     mid_filter: Biquad,
     treble_filter: Biquad,
@@ -18,6 +35,8 @@ impl Default for ToneStack {
             bass: 5.0,
             middle: 5.0,
             treble: 5.0,
+            bass_mode: ToneMode::Shelf,
+            treble_mode: ToneMode::Shelf,
             bass_filter: Biquad::default(),
             mid_filter: Biquad::default(),
             treble_filter: Biquad::default(),
@@ -48,10 +67,25 @@ impl ToneStack {
         self.refresh();
     }
 
+    pub fn set_bass_mode(&mut self, mode: ToneMode) {
+        self.bass_mode = mode;
+        self.refresh();
+    }
+
+    pub fn set_treble_mode(&mut self, mode: ToneMode) {
+        self.treble_mode = mode;
+        self.refresh();
+    }
+
     fn refresh(&mut self) {
         let bass_gain_db = 4.0 * (self.bass - 5.0);
-        self.bass_filter
-            .set_coeffs(low_shelf(self.sample_rate, 150.0, 0.707, bass_gain_db));
+        self.bass_filter.set_coeffs(match self.bass_mode {
+            ToneMode::Shelf => low_shelf(self.sample_rate, 150.0, 0.707, bass_gain_db),
+            ToneMode::Band => {
+                let q = if bass_gain_db < 0.0 { 1.5 } else { 0.7 };
+                peaking(self.sample_rate, 150.0, q, bass_gain_db)
+            }
+        });
 
         let mid_gain_db = 3.0 * (self.middle - 5.0);
         let mid_q = if mid_gain_db < 0.0 { 1.5 } else { 0.7 };
@@ -59,8 +93,13 @@ impl ToneStack {
             .set_coeffs(peaking(self.sample_rate, 425.0, mid_q, mid_gain_db));
 
         let treble_gain_db = 2.0 * (self.treble - 5.0);
-        self.treble_filter
-            .set_coeffs(high_shelf(self.sample_rate, 1800.0, 0.707, treble_gain_db));
+        self.treble_filter.set_coeffs(match self.treble_mode {
+            ToneMode::Shelf => high_shelf(self.sample_rate, 1800.0, 0.707, treble_gain_db),
+            ToneMode::Band => {
+                let q = if treble_gain_db < 0.0 { 1.5 } else { 0.7 };
+                peaking(self.sample_rate, 1800.0, q, treble_gain_db)
+            }
+        });
     }
 
     pub fn process_block(&mut self, block: &mut [f32]) {
