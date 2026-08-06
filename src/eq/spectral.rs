@@ -12,6 +12,11 @@ pub const SPECTRAL_HOP: usize = SPECTRAL_FFT_SIZE / 4;
 pub const SPECTRAL_LATENCY: u32 = SPECTRAL_FFT_SIZE as u32;
 
 const NUM_BINS: usize = SPECTRAL_FFT_SIZE / 2 + 1;
+const DETECTOR_DISPLAY_BINS: usize = 192;
+const DETECTOR_SPECTRUM_MIN_DB: f32 = -60.0;
+const DETECTOR_SPECTRUM_MAX_DB: f32 = 0.0;
+const DETECTOR_DISPLAY_MAX_DB: f32 = 12.0;
+const DETECTOR_DISPLAY_MIN_DB: f32 = -DETECTOR_DISPLAY_MAX_DB * 1.75;
 /// Sense-filter region gate: bins whose sense response is within this many dB
 /// of the +12 dB sense peak are inside the band's spectral region.
 const REGION_WITHIN_PEAK_DB: f32 = 6.0;
@@ -38,6 +43,7 @@ pub struct SpectralBandConfig {
 struct SpectralBand {
     config: SpectralBandConfig,
     contour: Vec<f32>,
+    detector_contour: Vec<f32>,
     region: Vec<bool>,
     env_db: Vec<f32>,
     gain_db: Vec<f32>,
@@ -52,6 +58,7 @@ impl SpectralBand {
         Self {
             config: SpectralBandConfig::default(),
             contour: vec![0.0; NUM_BINS],
+            detector_contour: vec![DETECTOR_SPECTRUM_MIN_DB; NUM_BINS],
             region: vec![false; NUM_BINS],
             env_db: vec![-120.0; NUM_BINS],
             gain_db: vec![0.0; NUM_BINS],
@@ -84,21 +91,51 @@ impl SpectralBand {
             config.q,
             config.threshold_db,
         );
+        let target_gain = if config.shape == dsp::SHAPE_BELL {
+            -config.range_db
+        } else {
+            0.0
+        };
+        let target_chain = dsp::build_chain(
+            config.shape,
+            config.slope,
+            sample_rate,
+            config.freq,
+            config.q,
+            target_gain,
+        );
         let bin_hz = sample_rate / SPECTRAL_FFT_SIZE as f32;
         for bin in 0..NUM_BINS {
             let freq = bin as f32 * bin_hz;
             if !(20.0..=20_000.0).contains(&freq) {
                 self.region[bin] = false;
                 self.contour[bin] = 0.0;
+                self.detector_contour[bin] = DETECTOR_SPECTRUM_MIN_DB;
                 continue;
             }
             let sense_db = sense.magnitude_db(freq, sample_rate);
-            self.region[bin] = sense_db > SENSE_REF_DB - REGION_WITHIN_PEAK_DB;
             self.contour[bin] = threshold_chain
                 .iter()
                 .map(|bq| bq.magnitude_db(freq, sample_rate))
                 .sum();
+            self.detector_contour[bin] = Self::display_curve_db_to_detector_db(self.contour[bin]);
+            if config.shape == dsp::SHAPE_BELL {
+                let target_db: f32 = target_chain
+                    .iter()
+                    .map(|bq| bq.magnitude_db(freq, sample_rate))
+                    .sum();
+                self.region[bin] = (target_db - self.contour[bin]).abs() > 0.05;
+            } else {
+                self.region[bin] = sense_db > SENSE_REF_DB - REGION_WITHIN_PEAK_DB;
+            }
         }
+    }
+
+    fn display_curve_db_to_detector_db(db: f32) -> f32 {
+        let t = ((db - DETECTOR_DISPLAY_MIN_DB)
+            / (DETECTOR_DISPLAY_MAX_DB - DETECTOR_DISPLAY_MIN_DB))
+            .clamp(0.0, 1.0);
+        DETECTOR_SPECTRUM_MIN_DB + t * (DETECTOR_SPECTRUM_MAX_DB - DETECTOR_SPECTRUM_MIN_DB)
     }
 
     /// Updates per-bin envelopes from the source magnitude spectrum and
@@ -118,7 +155,7 @@ impl SpectralBand {
             *env = coef * *env + (1.0 - coef) * m;
 
             let target = if self.region[bin] {
-                let over = *env - self.contour[bin];
+                let over = *env - self.detector_contour[bin];
                 let gr = if cfg.knee_db > 0.0 && over.abs() <= half_knee {
                     slope * (over + half_knee) * (over + half_knee) / (2.0 * cfg.knee_db)
                 } else if over > half_knee {
@@ -161,6 +198,7 @@ pub struct SpectralDynamics {
     specs: [Vec<Complex32>; 2],
     sc_spec: Vec<Complex32>,
     bands: Vec<SpectralBand>,
+    sample_rate: f32,
     consumed: usize,
     emitted: usize,
 }
@@ -198,6 +236,7 @@ impl SpectralDynamics {
             ],
             sc_spec: vec![Complex32::ZERO; SPECTRAL_FFT_SIZE],
             bands: (0..MAX_BANDS).map(|_| SpectralBand::new()).collect(),
+            sample_rate: 48_000.0,
             consumed: 0,
             emitted: 0,
         }
@@ -222,6 +261,7 @@ impl SpectralDynamics {
     }
 
     pub fn configure(&mut self, sample_rate: f32, configs: &[SpectralBandConfig]) {
+        self.sample_rate = sample_rate.max(1.0);
         for (band, config) in self.bands.iter_mut().zip(configs.iter()) {
             band.configure(sample_rate, *config);
         }
@@ -356,16 +396,22 @@ impl SpectralDynamics {
             }
         }
 
-        // Amplitude scale for a complex FFT of a real, Hann-windowed signal.
+        // Hann coherent gain 0.5 and one-sided spectrum: a full-scale sine
+        // peaks at its true amplitude with scale 4/N.
         let scale = 4.0 / SPECTRAL_FFT_SIZE as f32;
+        let scale_sqr = scale * scale;
         let mut mags_db = [0.0_f32; NUM_BINS];
+        let mut powers = [0.0_f32; NUM_BINS];
+        let mut display_power = [0.0_f32; DETECTOR_DISPLAY_BINS];
+        let mut smoothed_display_power = [0.0_f32; DETECTOR_DISPLAY_BINS];
         let mut total_gain_db = [0.0_f32; NUM_BINS];
+        let sample_rate = self.sample_rate;
 
         for band in &mut self.bands {
             if !band.config.on {
                 continue;
             }
-            for (bin, m_db) in mags_db.iter_mut().enumerate() {
+            for (bin, power) in powers.iter_mut().enumerate() {
                 let mut mag = self.specs[0][bin].norm();
                 if band.config.external {
                     mag = self.sc_spec[bin].norm();
@@ -378,13 +424,15 @@ impl SpectralDynamics {
                     };
                     mag = mag.max(other);
                 }
-                let mag = mag * scale;
-                *m_db = if mag > 1.0e-7 {
-                    20.0 * mag.log10()
-                } else {
-                    -140.0
-                };
+                *power = mag * mag * scale_sqr;
             }
+            Self::log_power_detector_db(
+                sample_rate,
+                &powers,
+                &mut display_power,
+                &mut smoothed_display_power,
+                &mut mags_db,
+            );
             band.apply(&mags_db, &mut total_gain_db);
         }
 
@@ -421,6 +469,59 @@ impl SpectralDynamics {
             }
         }
     }
+
+    fn log_power_detector_db(
+        sample_rate: f32,
+        powers: &[f32; NUM_BINS],
+        display_power: &mut [f32; DETECTOR_DISPLAY_BINS],
+        smoothed_display_power: &mut [f32; DETECTOR_DISPLAY_BINS],
+        mags_db: &mut [f32; NUM_BINS],
+    ) {
+        display_power.fill(0.0);
+        smoothed_display_power.fill(0.0);
+
+        let bin_hz = sample_rate / SPECTRAL_FFT_SIZE as f32;
+        let f_lo = 20.0_f32;
+        let f_hi = (sample_rate * 0.45).min(20_000.0).max(f_lo);
+        let ratio = f_hi / f_lo;
+        let log_ratio = ratio.ln();
+        let n = DETECTOR_DISPLAY_BINS as f32;
+
+        for (i, display_power) in display_power.iter_mut().enumerate() {
+            let f_edge_lo = f_lo * ratio.powf(i as f32 / n);
+            let f_edge_hi = f_lo * ratio.powf((i + 1) as f32 / n);
+            let mut k_lo = (f_edge_lo / bin_hz).floor() as usize;
+            let mut k_hi = (f_edge_hi / bin_hz).ceil() as usize;
+            k_lo = k_lo.min(NUM_BINS - 1);
+            k_hi = k_hi.clamp(k_lo + 1, NUM_BINS);
+
+            *display_power = powers[k_lo..k_hi].iter().sum();
+        }
+
+        for (i, power) in smoothed_display_power.iter_mut().enumerate() {
+            let start = i.saturating_sub(2);
+            let end = (i + 2).min(DETECTOR_DISPLAY_BINS - 1);
+            let mut weighted_power = 0.0;
+            for (j, display_power) in display_power.iter().enumerate().take(end + 1).skip(start) {
+                let distance = i.abs_diff(j) as f32;
+                let weight = 3.0 - distance;
+                weighted_power += *display_power * weight;
+            }
+            *power = weighted_power / 3.0;
+        }
+
+        for (bin, m_db) in mags_db.iter_mut().enumerate() {
+            let freq = (bin as f32 * bin_hz).clamp(f_lo, f_hi);
+            let t = ((freq / f_lo).ln() / log_ratio).clamp(0.0, 1.0);
+            let display_bin = (t * (DETECTOR_DISPLAY_BINS - 1) as f32).round() as usize;
+            let power = smoothed_display_power[display_bin];
+            *m_db = if power > 1.0e-14 {
+                (10.0 * power.log10()).clamp(-140.0, DETECTOR_SPECTRUM_MAX_DB)
+            } else {
+                -140.0
+            };
+        }
+    }
 }
 
 #[cfg(test)]
@@ -455,5 +556,83 @@ mod tests {
 
         assert!(band.contour[center] > 10.0);
         assert!(band.contour[center] > band.contour[edge] + 3.0);
+    }
+
+    #[test]
+    fn bell_threshold_detector_uses_displayed_spectrum_scale() {
+        let sample_rate = 48_000.0;
+        let mut band = SpectralBand::new();
+        band.configure(
+            sample_rate,
+            SpectralBandConfig {
+                on: true,
+                external: false,
+                freq: 500.0,
+                q: 1.0,
+                shape: dsp::SHAPE_BELL,
+                slope: 0,
+                threshold_db: 3.0,
+                ratio: 4.0,
+                knee_db: 0.0,
+                range_db: 3.0,
+                attack_ms: 1.0,
+                release_ms: 100.0,
+            },
+        );
+
+        let bin_hz = sample_rate / SPECTRAL_FFT_SIZE as f32;
+        let bin = (320.0 / bin_hz).round() as usize;
+        assert!(band.region[bin]);
+        assert!(band.detector_contour[bin] < -10.0);
+
+        let mut mags_db = [-140.0; NUM_BINS];
+        let mut total_gain_db = [0.0; NUM_BINS];
+        mags_db[bin] = band.detector_contour[bin] + 6.0;
+        band.apply(&mags_db, &mut total_gain_db);
+
+        assert!(
+            total_gain_db[bin] < -1.0,
+            "display-crossing spectrum did not create visible gain"
+        );
+    }
+
+    #[test]
+    fn spectral_visual_gain_reports_display_crossing_reduction() {
+        let sample_rate = 48_000.0;
+        let mut spectral = SpectralDynamics::new();
+        let mut configs = vec![SpectralBandConfig::default(); MAX_BANDS];
+        configs[0] = SpectralBandConfig {
+            on: true,
+            external: false,
+            freq: 500.0,
+            q: 1.0,
+            shape: dsp::SHAPE_BELL,
+            slope: 0,
+            threshold_db: 3.0,
+            ratio: 4.0,
+            knee_db: 0.0,
+            range_db: 3.0,
+            attack_ms: 1.0,
+            release_ms: 100.0,
+        };
+        spectral.configure(sample_rate, &configs);
+
+        let mut input = vec![0.0; 65_536];
+        for (i, sample) in input.iter_mut().enumerate() {
+            *sample = 0.2 * (2.0 * std::f32::consts::PI * 320.0 * i as f32 / sample_rate).sin();
+        }
+        for chunk in input.chunks_mut(512) {
+            spectral.process_mono(chunk, None);
+        }
+
+        let gains = spectral.band_gain_db::<DETECTOR_DISPLAY_BINS>(0, sample_rate);
+        let bin = ((320.0_f32 / 20.0).ln() / (20_000.0_f32 / 20.0).ln()
+            * (DETECTOR_DISPLAY_BINS - 1) as f32)
+            .round() as usize;
+        assert!(
+            gains[bin] < -1.0,
+            "visual gain stayed flat at {} dB",
+            gains[bin]
+        );
     }
 }

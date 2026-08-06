@@ -306,7 +306,6 @@ struct State {
     pre_spectrum_db: [[f32; SPECTRUM_BINS]; 2],
     post_spectrum_db: [[f32; SPECTRUM_BINS]; 2],
     band_gr_db: [f32; 32],
-    dyn_visual_gain_db: [f32; SPECTRUM_BINS],
     sketch_mode: bool,
     last_sketch: Vec<(f32, f32)>,
     eq_peers: Vec<bus::PluginSharedData>,
@@ -342,7 +341,6 @@ fn init(shared: Arc<SharedState<ParamId>>) -> (State, Task<Message>) {
             pre_spectrum_db: [[-90.0; SPECTRUM_BINS]; 2],
             post_spectrum_db: [[-90.0; SPECTRUM_BINS]; 2],
             band_gr_db: [0.0; 32],
-            dyn_visual_gain_db: [0.0; SPECTRUM_BINS],
             sketch_mode: false,
             last_sketch: Vec::new(),
             eq_peers: Vec::new(),
@@ -807,7 +805,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 *gr = state.shared.band_dyn_gain_db(i);
             }
             state.shared.set_dyn_visual_band(state.selected_band);
-            state.dyn_visual_gain_db = state.shared.dyn_visual_gain_db();
 
             let version = bus::registry_version();
             if version != state.last_registry_version {
@@ -940,7 +937,6 @@ fn view(state: &State) -> Element<'_, Message> {
         listen_mode: is_listen_on,
         collision_scores: state.collision_scores,
         band_gr_db: state.band_gr_db,
-        dyn_visual_gain_db: state.dyn_visual_gain_db,
     });
 
     let channels = p(ParamId::Channels).round() as u32;
@@ -1294,7 +1290,6 @@ struct EqResponseCanvas {
     listen_mode: bool,
     collision_scores: [f32; 32],
     band_gr_db: [f32; 32],
-    dyn_visual_gain_db: [f32; SPECTRUM_BINS],
 }
 
 pub fn placement_color(placement: u8) -> Color {
@@ -1944,6 +1939,24 @@ impl Program<Message> for EqResponseCanvas {
             }
         }
 
+        let visible_spectrum_y = |ui_bin: usize| -> Option<f32> {
+            let bin = ui_bin.min(SPECTRUM_BINS - 1);
+            let mut y: Option<f32> = None;
+            if self.show_pre {
+                for bins in pre_tilted.iter().take(spectrum_channels) {
+                    let next = self.spectrum_to_y(bins[bin], local_bounds);
+                    y = Some(y.map_or(next, |current| current.min(next)));
+                }
+            }
+            if self.show_post {
+                for bins in post_tilted.iter().take(spectrum_channels) {
+                    let next = self.spectrum_to_y(bins[bin], local_bounds);
+                    y = Some(y.map_or(next, |current| current.min(next)));
+                }
+            }
+            y
+        };
+
         let band_biquads: Vec<(usize, u8, bool, Vec<Biquad>)> = self
             .bands
             .iter()
@@ -2347,14 +2360,7 @@ impl Program<Message> for EqResponseCanvas {
                             .iter()
                             .map(|bq| bq.magnitude_db(curve_freq, self.sample_rate))
                             .sum();
-                        let dyn_gain = self.dyn_visual_gain_db[ui_bin];
-                        let amount = if target_gain.abs() > 0.01 {
-                            (dyn_gain / target_gain).clamp(0.0, 1.0)
-                        } else {
-                            0.0
-                        };
-                        let band_db = band_db + (target_db - band_db) * amount;
-                        let curve_y = self.gain_to_y(
+                        let threshold_y = self.gain_to_y(
                             band_db,
                             Rectangle {
                                 x: 0.0,
@@ -2362,6 +2368,20 @@ impl Program<Message> for EqResponseCanvas {
                                 ..bounds
                             },
                         );
+                        let curve_y =
+                            visible_spectrum_y(ui_bin).map_or(threshold_y, |spectrum_y| {
+                                if spectrum_y >= threshold_y {
+                                    return threshold_y;
+                                }
+                                self.gain_to_y(
+                                    band_db + target_db,
+                                    Rectangle {
+                                        x: 0.0,
+                                        y: 0.0,
+                                        ..bounds
+                                    },
+                                )
+                            });
                         if first {
                             b.move_to(Point::new(curve_x, curve_y));
                             first = false;
@@ -2554,8 +2574,20 @@ impl Program<Message> for EqResponseCanvas {
                 } else {
                     format!("{} ({}) {:+.1} dB", format_freq(*freq), note, *gain)
                 };
+                let label_dot_y = if threshold_dot {
+                    self.gain_to_y(
+                        *gain,
+                        Rectangle {
+                            x: 0.0,
+                            y: 0.0,
+                            ..bounds
+                        },
+                    )
+                } else {
+                    y
+                };
                 let label_x = (x - 22.0).clamp(0.0, (bounds.width - 64.0).max(0.0));
-                let label_y = (y - 14.0).max(10.0);
+                let label_y = (label_dot_y - 14.0).max(10.0);
                 frame.fill_text(Text {
                     content: label,
                     position: Point::new(label_x, label_y),
@@ -2563,6 +2595,27 @@ impl Program<Message> for EqResponseCanvas {
                     size: 10.0.into(),
                     ..Text::default()
                 });
+                if threshold_dot {
+                    let threshold = self
+                        .band_dyn_threshold
+                        .get(*global_idx)
+                        .copied()
+                        .unwrap_or(-24.0);
+                    let threshold_label = if note.is_empty() {
+                        format!("{} {:+.1} dB", format_freq(*freq), threshold)
+                    } else {
+                        format!("{} ({}) {:+.1} dB", format_freq(*freq), note, threshold)
+                    };
+                    let threshold_label_x = (x + 10.0).clamp(0.0, (bounds.width - 64.0).max(0.0));
+                    let threshold_label_y = (y - 14.0).max(10.0);
+                    frame.fill_text(Text {
+                        content: threshold_label,
+                        position: Point::new(threshold_label_x, threshold_label_y),
+                        color: Color::from_rgba(0.95, 0.95, 0.98, 0.78),
+                        size: 10.0.into(),
+                        ..Text::default()
+                    });
+                }
             }
         }
 
