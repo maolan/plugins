@@ -3,7 +3,7 @@ use crate::common::fft::SpectrumAnalyzer;
 pub const FFT_SIZE: usize = 4096;
 pub const SPECTRUM_FLOOR_DB: f32 = -90.0;
 
-/// Real-time spectrum analyzer feeding the EQ display: mono-summed ring
+/// Real-time spectrum analyzer feeding the EQ display: single-channel ring
 /// buffer, Hann-windowed 4096-point FFT, max-magnitude remap onto
 /// log-spaced display bins, and peak-hold/decay smoothing per bin.
 pub struct LogSpectrumAnalyzer {
@@ -44,20 +44,10 @@ impl LogSpectrumAnalyzer {
         self.smoothed_db.fill(SPECTRUM_FLOOR_DB);
     }
 
-    pub fn push_block(&mut self, left: &[f32], right: Option<&[f32]>) {
-        match right {
-            Some(r) => {
-                for i in 0..left.len().min(r.len()) {
-                    self.ring[self.write_pos] = 0.5 * (left[i] + r[i]);
-                    self.write_pos = (self.write_pos + 1) % FFT_SIZE;
-                }
-            }
-            None => {
-                for &s in left {
-                    self.ring[self.write_pos] = s;
-                    self.write_pos = (self.write_pos + 1) % FFT_SIZE;
-                }
-            }
+    pub fn push_block(&mut self, samples: &[f32]) {
+        for &s in samples {
+            self.ring[self.write_pos] = s;
+            self.write_pos = (self.write_pos + 1) % FFT_SIZE;
         }
     }
 
@@ -135,7 +125,7 @@ mod tests {
                 .map(|i| (2.0 * std::f32::consts::PI * 1000.0 * (pos + i) as f32 / sr).sin())
                 .collect();
             pos += 512;
-            analyzer.push_block(&block, None);
+            analyzer.push_block(&block);
         }
         let mut out = vec![0.0_f32; bins];
         analyzer.compute(sr, &mut out);

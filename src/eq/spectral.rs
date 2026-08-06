@@ -26,6 +26,7 @@ pub struct SpectralBandConfig {
     pub freq: f32,
     pub q: f32,
     pub shape: u8,
+    pub slope: u8,
     pub threshold_db: f32,
     pub ratio: f32,
     pub knee_db: f32,
@@ -75,6 +76,14 @@ impl SpectralBand {
         self.gain_smooth = (-hop_dt / 0.010).exp();
 
         let sense = dsp::detector_biquad(config.shape, sample_rate, config.freq, config.q);
+        let threshold_chain = dsp::build_chain(
+            config.shape,
+            config.slope,
+            sample_rate,
+            config.freq,
+            config.q,
+            config.threshold_db,
+        );
         let bin_hz = sample_rate / SPECTRAL_FFT_SIZE as f32;
         for bin in 0..NUM_BINS {
             let freq = bin as f32 * bin_hz;
@@ -85,7 +94,10 @@ impl SpectralBand {
             }
             let sense_db = sense.magnitude_db(freq, sample_rate);
             self.region[bin] = sense_db > SENSE_REF_DB - REGION_WITHIN_PEAK_DB;
-            self.contour[bin] = config.threshold_db + sense_db - SENSE_REF_DB;
+            self.contour[bin] = threshold_chain
+                .iter()
+                .map(|bq| bq.magnitude_db(freq, sample_rate))
+                .sum();
         }
     }
 
@@ -217,6 +229,22 @@ impl SpectralDynamics {
 
     pub fn any_external(&self) -> bool {
         self.bands.iter().any(|b| b.config.on && b.config.external)
+    }
+
+    pub fn band_gain_db<const N: usize>(&self, band: usize, sample_rate: f32) -> [f32; N] {
+        let Some(band) = self.bands.get(band) else {
+            return [0.0; N];
+        };
+        let bin_hz = sample_rate / SPECTRAL_FFT_SIZE as f32;
+        std::array::from_fn(|i| {
+            let t = i as f32 / (N.saturating_sub(1).max(1) as f32);
+            let freq = 20.0_f32 * (20_000.0_f32 / 20.0_f32).powf(t);
+            let bin = (freq / bin_hz).round() as usize;
+            band.gain_db
+                .get(bin.min(NUM_BINS - 1))
+                .copied()
+                .unwrap_or(0.0)
+        })
     }
 
     pub fn process_stereo(
@@ -392,5 +420,40 @@ impl SpectralDynamics {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bell_threshold_contour_follows_displayed_curve() {
+        let sample_rate = 48_000.0;
+        let mut band = SpectralBand::new();
+        band.configure(
+            sample_rate,
+            SpectralBandConfig {
+                on: true,
+                external: false,
+                freq: 1000.0,
+                q: 1.0,
+                shape: dsp::SHAPE_BELL,
+                slope: 0,
+                threshold_db: 12.0,
+                ratio: 2.0,
+                knee_db: 0.0,
+                range_db: 6.0,
+                attack_ms: 10.0,
+                release_ms: 100.0,
+            },
+        );
+
+        let bin_hz = sample_rate / SPECTRAL_FFT_SIZE as f32;
+        let center = (1000.0 / bin_hz).round() as usize;
+        let edge = (2000.0 / bin_hz).round() as usize;
+
+        assert!(band.contour[center] > 10.0);
+        assert!(band.contour[center] > band.contour[edge] + 3.0);
     }
 }

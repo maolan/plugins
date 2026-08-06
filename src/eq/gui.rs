@@ -303,9 +303,10 @@ struct State {
     spectrum_frozen: bool,
     tilt_db_per_oct: f32,
     display_range_db: f32,
-    pre_spectrum_db: [f32; SPECTRUM_BINS],
-    post_spectrum_db: [f32; SPECTRUM_BINS],
+    pre_spectrum_db: [[f32; SPECTRUM_BINS]; 2],
+    post_spectrum_db: [[f32; SPECTRUM_BINS]; 2],
     band_gr_db: [f32; 32],
+    dyn_visual_gain_db: [f32; SPECTRUM_BINS],
     sketch_mode: bool,
     last_sketch: Vec<(f32, f32)>,
     eq_peers: Vec<bus::PluginSharedData>,
@@ -338,9 +339,10 @@ fn init(shared: Arc<SharedState<ParamId>>) -> (State, Task<Message>) {
             spectrum_frozen: false,
             tilt_db_per_oct: 0.0,
             display_range_db: 12.0,
-            pre_spectrum_db: [-90.0; SPECTRUM_BINS],
-            post_spectrum_db: [-90.0; SPECTRUM_BINS],
+            pre_spectrum_db: [[-90.0; SPECTRUM_BINS]; 2],
+            post_spectrum_db: [[-90.0; SPECTRUM_BINS]; 2],
             band_gr_db: [0.0; 32],
+            dyn_visual_gain_db: [0.0; SPECTRUM_BINS],
             sketch_mode: false,
             last_sketch: Vec::new(),
             eq_peers: Vec::new(),
@@ -727,7 +729,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 } else {
                     -90.0
                 };
-                let our_db = state.pre_spectrum_db[i];
+                let our_db = state.pre_spectrum_db[0][i].max(state.pre_spectrum_db[1][i]);
                 *d = if peer_db > -70.0 && our_db > -70.0 {
                     (peer_db - our_db).clamp(-30.0, 30.0)
                 } else {
@@ -804,6 +806,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             for (i, gr) in state.band_gr_db.iter_mut().enumerate() {
                 *gr = state.shared.band_dyn_gain_db(i);
             }
+            state.shared.set_dyn_visual_band(state.selected_band);
+            state.dyn_visual_gain_db = state.shared.dyn_visual_gain_db();
 
             let version = bus::registry_version();
             if version != state.last_registry_version {
@@ -924,6 +928,7 @@ fn view(state: &State) -> Element<'_, Message> {
         ghost_bands: state.ghost_bands.clone(),
         pre_spectrum_db: state.pre_spectrum_db,
         post_spectrum_db: state.post_spectrum_db,
+        stereo: state.shared.channels.load(Ordering::Acquire) >= 2,
         show_pre: state.show_pre_spectrum,
         show_post: state.show_post_spectrum,
         tilt: state.tilt_db_per_oct,
@@ -935,6 +940,7 @@ fn view(state: &State) -> Element<'_, Message> {
         listen_mode: is_listen_on,
         collision_scores: state.collision_scores,
         band_gr_db: state.band_gr_db,
+        dyn_visual_gain_db: state.dyn_visual_gain_db,
     });
 
     let channels = p(ParamId::Channels).round() as u32;
@@ -1274,8 +1280,9 @@ struct EqResponseCanvas {
     sketch_mode: bool,
     last_sketch: Vec<(f32, f32)>,
     ghost_bands: Vec<bus::EqBand>,
-    pre_spectrum_db: [f32; SPECTRUM_BINS],
-    post_spectrum_db: [f32; SPECTRUM_BINS],
+    pre_spectrum_db: [[f32; SPECTRUM_BINS]; 2],
+    post_spectrum_db: [[f32; SPECTRUM_BINS]; 2],
+    stereo: bool,
     show_pre: bool,
     show_post: bool,
     tilt: f32,
@@ -1287,6 +1294,7 @@ struct EqResponseCanvas {
     listen_mode: bool,
     collision_scores: [f32; 32],
     band_gr_db: [f32; 32],
+    dyn_visual_gain_db: [f32; SPECTRUM_BINS],
 }
 
 pub fn placement_color(placement: u8) -> Color {
@@ -1302,13 +1310,13 @@ pub fn placement_color(placement: u8) -> Color {
 impl EqResponseCanvas {
     const F_MIN: f32 = 20.0;
     const F_MAX: f32 = 20_000.0;
-    const S_MIN: f32 = -90.0;
-    const S_MAX: f32 = 0.0;
 
-    fn g_half(&self) -> f32 {
-        // The pick-list value is the peak dB shown at the top/bottom of the
-        // graph (e.g. "12" means the curve spans -12 dB .. +12 dB).
+    fn range_max(&self) -> f32 {
         self.display_range_db.clamp(1.5, 30.0)
+    }
+
+    fn range_min(&self) -> f32 {
+        -self.range_max() * 1.75
     }
 
     fn freq_to_x(freq: f32, bounds: Rectangle) -> f32 {
@@ -1328,23 +1336,25 @@ impl EqResponseCanvas {
     }
 
     fn apply_tilt(&self, db: f32, freq: f32) -> f32 {
-        if self.tilt == 0.0 || db <= Self::S_MIN + 1.0 {
+        if self.tilt == 0.0 || db <= self.range_min() + 1.0 {
             return db;
         }
         db + self.tilt * (freq / 1000.0).log2()
     }
 
     fn gain_to_y(&self, gain: f32, bounds: Rectangle) -> f32 {
-        let half = self.g_half();
-        let g = gain.clamp(-half, half);
-        let t = (g + half) / (2.0 * half);
+        let min = self.range_min();
+        let max = self.range_max();
+        let g = gain.clamp(min, max);
+        let t = (g - min) / (max - min);
         bounds.y + (1.0 - t) * bounds.height
     }
 
     fn y_to_gain(&self, y: f32, bounds: Rectangle) -> f32 {
-        let half = self.g_half();
+        let min = self.range_min();
+        let max = self.range_max();
         let t = (1.0 - ((y - bounds.y) / bounds.height)).clamp(0.0, 1.0);
-        -half + t * 2.0 * half
+        min + t * (max - min)
     }
 
     fn threshold_to_y(&self, threshold: f32, bounds: Rectangle) -> f32 {
@@ -1360,10 +1370,8 @@ impl EqResponseCanvas {
             && self.band_dyn_on.get(global_idx).copied().unwrap_or(false)
     }
 
-    fn spectrum_to_y(db: f32, bounds: Rectangle) -> f32 {
-        let s = db.clamp(Self::S_MIN, Self::S_MAX);
-        let t = (s - Self::S_MIN) / (Self::S_MAX - Self::S_MIN);
-        bounds.y + (1.0 - t) * bounds.height
+    fn spectrum_to_y(&self, db: f32, bounds: Rectangle) -> f32 {
+        self.gain_to_y(db, bounds)
     }
 
     fn smoothed_spectrum_points(
@@ -1371,7 +1379,7 @@ impl EqResponseCanvas {
         bins_db: &[f32; SPECTRUM_BINS],
         bounds: Rectangle,
     ) -> Vec<Point> {
-        let mut smoothed = [Self::S_MIN; SPECTRUM_BINS];
+        let mut smoothed = [self.range_min(); SPECTRUM_BINS];
         for (i, db) in smoothed.iter_mut().enumerate() {
             let start = i.saturating_sub(2);
             let end = (i + 2).min(SPECTRUM_BINS - 1);
@@ -1391,7 +1399,7 @@ impl EqResponseCanvas {
             .enumerate()
             .map(|(i, &db)| {
                 let t = i as f32 / (SPECTRUM_BINS.saturating_sub(1).max(1) as f32);
-                Point::new(t * bounds.width, Self::spectrum_to_y(db, bounds))
+                Point::new(t * bounds.width, self.spectrum_to_y(db, bounds))
             })
             .collect()
     }
@@ -1433,7 +1441,7 @@ impl EqResponseCanvas {
             if f < freq * 0.85 || f > freq * 1.18 {
                 continue;
             }
-            let db = self.post_spectrum_db[bin];
+            let db = self.post_spectrum_db[0][bin].max(self.post_spectrum_db[1][bin]);
             if best.map(|(best_db, _)| db > best_db).unwrap_or(true) {
                 best = Some((db, f));
             }
@@ -1806,8 +1814,9 @@ impl Program<Message> for EqResponseCanvas {
             Color::from_rgb(0.098, 0.098, 0.106),
         );
 
-        let half = self.g_half();
-        let h_grid_db = [-half, -half * 0.5, 0.0, half * 0.5, half];
+        let min = self.range_min();
+        let max = self.range_max();
+        let h_grid_db = [min, min * 0.5, 0.0, max * 0.5, max];
         for db in h_grid_db {
             let y = self.gain_to_y(
                 db,
@@ -1910,33 +1919,40 @@ impl Program<Message> for EqResponseCanvas {
         let mut pre_tilted = self.pre_spectrum_db;
         let mut post_tilted = self.post_spectrum_db;
         if self.tilt != 0.0 {
-            for i in 0..SPECTRUM_BINS {
-                let f = self.bin_freq(i);
-                pre_tilted[i] = self.apply_tilt(pre_tilted[i], f);
-                post_tilted[i] = self.apply_tilt(post_tilted[i], f);
+            for channel in 0..2 {
+                for i in 0..SPECTRUM_BINS {
+                    let f = self.bin_freq(i);
+                    pre_tilted[channel][i] = self.apply_tilt(pre_tilted[channel][i], f);
+                    post_tilted[channel][i] = self.apply_tilt(post_tilted[channel][i], f);
+                }
             }
         }
 
+        let spectrum_channels = if self.stereo { 2 } else { 1 };
         if self.show_pre {
-            let pre_line = self.spectrum_path(&pre_tilted, local_bounds);
-            frame.stroke(
-                &pre_line,
-                canvas::Stroke::default()
-                    .with_color(Color::from_rgba(0.72, 0.74, 0.78, 0.24))
-                    .with_width(1.0),
-            );
+            for bins in pre_tilted.iter().take(spectrum_channels) {
+                let pre_line = self.spectrum_path(bins, local_bounds);
+                frame.stroke(
+                    &pre_line,
+                    canvas::Stroke::default()
+                        .with_color(Color::from_rgba(0.72, 0.74, 0.78, 0.24))
+                        .with_width(1.0),
+                );
+            }
         }
 
         if self.show_post {
-            let post_fill = self.spectrum_fill_path(&post_tilted, local_bounds);
-            frame.fill(&post_fill, Color::from_rgba(0.72, 0.74, 0.78, 0.06));
-            let post_line = self.spectrum_path(&post_tilted, local_bounds);
-            frame.stroke(
-                &post_line,
-                canvas::Stroke::default()
-                    .with_color(Color::from_rgba(0.72, 0.74, 0.78, 0.32))
-                    .with_width(1.2),
-            );
+            for bins in post_tilted.iter().take(spectrum_channels) {
+                let post_fill = self.spectrum_fill_path(bins, local_bounds);
+                frame.fill(&post_fill, Color::from_rgba(0.72, 0.74, 0.78, 0.06));
+                let post_line = self.spectrum_path(bins, local_bounds);
+                frame.stroke(
+                    &post_line,
+                    canvas::Stroke::default()
+                        .with_color(Color::from_rgba(0.72, 0.74, 0.78, 0.32))
+                        .with_width(1.2),
+                );
+            }
         }
 
         let band_biquads: Vec<(usize, u8, bool, Vec<Biquad>)> = self
@@ -2308,10 +2324,24 @@ impl Program<Message> for EqResponseCanvas {
                     *q,
                     threshold_gain,
                 );
+                let target_gain = *gain;
+                let target_chain = dsp::build_chain(
+                    dsp::SHAPE_BELL,
+                    *slope,
+                    self.sample_rate,
+                    *freq,
+                    *q,
+                    target_gain,
+                );
                 let threshold_path = Path::new(|b| {
                     let mut first = true;
                     for xi in 0..(bounds.width as usize).max(2) {
                         let curve_x = xi as f32;
+                        let ui_bin = ((curve_x / bounds.width.max(1.0))
+                            * (SPECTRUM_BINS.saturating_sub(1) as f32))
+                            .round()
+                            .clamp(0.0, SPECTRUM_BINS.saturating_sub(1) as f32)
+                            as usize;
                         let curve_freq = Self::x_to_freq(
                             curve_x,
                             Rectangle {
@@ -2324,6 +2354,17 @@ impl Program<Message> for EqResponseCanvas {
                             .iter()
                             .map(|bq| bq.magnitude_db(curve_freq, self.sample_rate))
                             .sum();
+                        let target_db: f32 = target_chain
+                            .iter()
+                            .map(|bq| bq.magnitude_db(curve_freq, self.sample_rate))
+                            .sum();
+                        let dyn_gain = self.dyn_visual_gain_db[ui_bin];
+                        let amount = if target_gain.abs() > 0.01 {
+                            (dyn_gain / target_gain).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        let band_db = band_db + (target_db - band_db) * amount;
                         let curve_y = self.gain_to_y(
                             band_db,
                             Rectangle {

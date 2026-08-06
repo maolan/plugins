@@ -393,6 +393,7 @@ fn spectral_bell(freq: f32, threshold: f32) -> SpectralBandConfig {
         freq,
         q: 1.0,
         shape: SHAPE_BELL,
+        slope: 0,
         threshold_db: threshold,
         ratio: 4.0,
         knee_db: 0.0,
@@ -408,7 +409,7 @@ fn off_configs() -> Vec<SpectralBandConfig> {
 
 fn measure_spectrum(analyzer: &mut LogSpectrumAnalyzer, input: &[f32], bins: usize) -> Vec<f32> {
     for chunk in input.chunks(512) {
-        analyzer.push_block(chunk, None);
+        analyzer.push_block(chunk);
     }
     let mut out = vec![0.0_f32; bins];
     analyzer.compute(SR, &mut out);
