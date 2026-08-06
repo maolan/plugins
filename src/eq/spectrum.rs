@@ -4,8 +4,8 @@ pub const FFT_SIZE: usize = 4096;
 pub const SPECTRUM_FLOOR_DB: f32 = -90.0;
 
 /// Real-time spectrum analyzer feeding the EQ display: single-channel ring
-/// buffer, Hann-windowed 4096-point FFT, max-magnitude remap onto
-/// log-spaced display bins, and peak-hold/decay smoothing per bin.
+/// buffer, Hann-windowed 4096-point FFT, power remap onto log-spaced display
+/// bins, and peak-hold/decay smoothing per bin.
 pub struct LogSpectrumAnalyzer {
     fft: SpectrumAnalyzer,
     ring: Vec<f32>,
@@ -13,6 +13,8 @@ pub struct LogSpectrumAnalyzer {
     hann: Vec<f32>,
     windowed: Vec<f32>,
     mags: Vec<f32>,
+    powers: Vec<f32>,
+    display_power: Vec<f32>,
     smoothed_db: Vec<f32>,
     /// Geometric edges of the display bins, as FFT bin indices at 48 kHz
     /// reference — recomputed per `compute` call for the actual sample rate.
@@ -33,6 +35,8 @@ impl LogSpectrumAnalyzer {
             hann,
             windowed: vec![0.0; FFT_SIZE],
             mags: vec![0.0; FFT_SIZE / 2 + 1],
+            powers: vec![0.0; FFT_SIZE / 2 + 1],
+            display_power: vec![0.0; bins],
             smoothed_db: vec![SPECTRUM_FLOOR_DB; bins],
             bins,
         }
@@ -70,6 +74,10 @@ impl LogSpectrumAnalyzer {
         let scale = 4.0 / FFT_SIZE as f32;
         let fft_bins = FFT_SIZE / 2 + 1;
         let bin_hz = sample_rate / FFT_SIZE as f32;
+        for (power, mag) in self.powers.iter_mut().zip(self.mags.iter()) {
+            let scaled = mag * scale;
+            *power = scaled * scaled;
+        }
 
         let f_lo = 20.0_f32;
         let f_hi = (sample_rate * 0.45).min(20_000.0);
@@ -79,7 +87,7 @@ impl LogSpectrumAnalyzer {
         // Per-tick decay so peaks fall smoothly between computes.
         const DECAY_DB_PER_TICK: f32 = 9.0;
 
-        for (i, o) in out.iter_mut().enumerate() {
+        for (i, display_power) in self.display_power.iter_mut().enumerate() {
             let f_edge_lo = f_lo * ratio.powf(i as f32 / n);
             let f_edge_hi = f_lo * ratio.powf((i + 1) as f32 / n);
             let mut k_lo = (f_edge_lo / bin_hz).floor() as usize;
@@ -87,23 +95,34 @@ impl LogSpectrumAnalyzer {
             k_lo = k_lo.min(fft_bins - 1);
             k_hi = k_hi.clamp(k_lo + 1, fft_bins);
 
-            let mut best_db = SPECTRUM_FLOOR_DB;
+            let mut power_sum = 0.0;
             for k in k_lo..k_hi {
-                let mag = self.mags[k] * scale;
-                if mag > 1.0e-7 {
-                    let db = 20.0 * mag.log10();
-                    if db > best_db {
-                        best_db = db;
-                    }
-                }
+                power_sum += self.powers[k];
             }
+            *display_power = power_sum;
+        }
 
-            let smoothed = if best_db >= self.smoothed_db[i] {
-                best_db
+        for (i, o) in out.iter_mut().enumerate() {
+            let start = i.saturating_sub(2);
+            let end = (i + 2).min(self.bins - 1);
+            let mut weighted_power = 0.0;
+            for j in start..=end {
+                let distance = i.abs_diff(j) as f32;
+                let weight = 3.0 - distance;
+                weighted_power += self.display_power[j] * weight;
+            }
+            let power = weighted_power / 3.0;
+            let db = if power > 1.0e-14 {
+                10.0 * power.log10()
             } else {
-                (self.smoothed_db[i] - DECAY_DB_PER_TICK).max(best_db)
+                SPECTRUM_FLOOR_DB
             };
-            self.smoothed_db[i] = smoothed.clamp(SPECTRUM_FLOOR_DB, 20.0);
+            let smoothed = if db >= self.smoothed_db[i] {
+                db
+            } else {
+                (self.smoothed_db[i] - DECAY_DB_PER_TICK).max(db)
+            };
+            self.smoothed_db[i] = smoothed.clamp(SPECTRUM_FLOOR_DB, 0.0);
             *o = self.smoothed_db[i];
         }
     }

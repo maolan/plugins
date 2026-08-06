@@ -1310,6 +1310,8 @@ pub fn placement_color(placement: u8) -> Color {
 impl EqResponseCanvas {
     const F_MIN: f32 = 20.0;
     const F_MAX: f32 = 20_000.0;
+    const SPECTRUM_MIN_DB: f32 = -60.0;
+    const SPECTRUM_MAX_DB: f32 = 0.0;
 
     fn range_max(&self) -> f32 {
         self.display_range_db.clamp(1.5, 30.0)
@@ -1336,7 +1338,7 @@ impl EqResponseCanvas {
     }
 
     fn apply_tilt(&self, db: f32, freq: f32) -> f32 {
-        if self.tilt == 0.0 || db <= self.range_min() + 1.0 {
+        if self.tilt == 0.0 || db <= Self::SPECTRUM_MIN_DB + 1.0 {
             return db;
         }
         db + self.tilt * (freq / 1000.0).log2()
@@ -1371,7 +1373,9 @@ impl EqResponseCanvas {
     }
 
     fn spectrum_to_y(&self, db: f32, bounds: Rectangle) -> f32 {
-        self.gain_to_y(db, bounds)
+        let db = db.clamp(Self::SPECTRUM_MIN_DB, Self::SPECTRUM_MAX_DB);
+        let t = (db - Self::SPECTRUM_MIN_DB) / (Self::SPECTRUM_MAX_DB - Self::SPECTRUM_MIN_DB);
+        bounds.y + (1.0 - t) * bounds.height
     }
 
     fn smoothed_spectrum_points(
@@ -1379,22 +1383,7 @@ impl EqResponseCanvas {
         bins_db: &[f32; SPECTRUM_BINS],
         bounds: Rectangle,
     ) -> Vec<Point> {
-        let mut smoothed = [self.range_min(); SPECTRUM_BINS];
-        for (i, db) in smoothed.iter_mut().enumerate() {
-            let start = i.saturating_sub(2);
-            let end = (i + 2).min(SPECTRUM_BINS - 1);
-            let mut weighted = 0.0;
-            let mut weight_sum = 0.0;
-            for (j, value) in bins_db.iter().enumerate().take(end + 1).skip(start) {
-                let distance = i.abs_diff(j) as f32;
-                let weight = 3.0 - distance;
-                weighted += *value * weight;
-                weight_sum += weight;
-            }
-            *db = weighted / weight_sum.max(1.0);
-        }
-
-        smoothed
+        bins_db
             .iter()
             .enumerate()
             .map(|(i, &db)| {
