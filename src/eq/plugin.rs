@@ -343,23 +343,22 @@ impl AudioProcessor {
 
         let inputs_count = process.audio_inputs_count();
         let outputs_count = process.audio_outputs_count();
-        let channels = shared.channels.load(Ordering::Acquire);
         let has_sidechain =
             needs_external_sidechain(&shared.params) && inputs_count > outputs_count;
 
-        if channels >= 2 && outputs_count >= 2 {
+        if inputs_count >= 2 && outputs_count >= 2 {
             let input_l = process.audio_inputs(0);
             let input_r = process.audio_inputs(1);
             self.temp_left[..frames].copy_from_slice(input_l.data32(0));
             self.temp_right[..frames].copy_from_slice(input_r.data32(0));
 
             let sc_guard_l = if has_sidechain {
-                Some(process.audio_inputs(channels))
+                Some(process.audio_inputs(outputs_count))
             } else {
                 None
             };
             let sc_guard_r = if has_sidechain {
-                Some(process.audio_inputs(channels + 1))
+                Some(process.audio_inputs(outputs_count + 1))
             } else {
                 None
             };
@@ -582,12 +581,12 @@ impl AudioProcessor {
                     self.spectrum_samples_since_update = 0;
                 }
             }
-        } else if channels >= 1 && outputs_count >= 1 {
+        } else if outputs_count >= 1 {
             let input_port = process.audio_inputs(0);
             self.temp_left[..frames].copy_from_slice(input_port.data32(0));
 
             let sc_guard = if has_sidechain {
-                Some(process.audio_inputs(channels))
+                Some(process.audio_inputs(outputs_count))
             } else {
                 None
             };
@@ -1055,6 +1054,49 @@ unsafe extern "C-unwind" fn plugin_reset(plugin: *const clap_plugin) {
     }
 }
 
+/// Returns false if any audio buffer that the plugin will read or write has a
+/// null data32 pointer. Hosts can briefly supply null buffers while
+/// reconfiguring ports (e.g. mono→stereo switch), so we skip those callbacks.
+unsafe fn audio_buffers_valid(process: *const clap_process) -> bool {
+    if process.is_null() {
+        return false;
+    }
+    let process = unsafe { &*process };
+    for i in 0..process.audio_inputs_count {
+        let buf = unsafe { process.audio_inputs.add(i as usize) };
+        if buf.is_null() {
+            return false;
+        }
+        let buf = unsafe { &*buf };
+        if buf.channel_count == 0 {
+            continue;
+        }
+        if buf.data32.is_null() {
+            return false;
+        }
+        if unsafe { (*buf.data32).is_null() } {
+            return false;
+        }
+    }
+    for i in 0..process.audio_outputs_count {
+        let buf = unsafe { process.audio_outputs.add(i as usize) };
+        if buf.is_null() {
+            return false;
+        }
+        let buf = unsafe { &*buf };
+        if buf.channel_count == 0 {
+            continue;
+        }
+        if buf.data32.is_null() {
+            return false;
+        }
+        if unsafe { (*buf.data32).is_null() } {
+            return false;
+        }
+    }
+    true
+}
+
 unsafe extern "C-unwind" fn plugin_process(
     plugin: *const clap_plugin,
     process: *const clap_process,
@@ -1062,6 +1104,9 @@ unsafe extern "C-unwind" fn plugin_process(
     let instance = unsafe { instance(plugin) };
     let processor_ptr = instance.processor.load(Ordering::Acquire);
     if processor_ptr.is_null() {
+        return CLAP_PROCESS_CONTINUE;
+    }
+    if unsafe { !audio_buffers_valid(process) } {
         return CLAP_PROCESS_CONTINUE;
     }
     let processor = unsafe { &mut *processor_ptr };
