@@ -19,7 +19,9 @@ theme.
 | **Maolan Limiter** | `rs.maolan.limiter` | Stereo | Adaptive clipper/limiter with Vintage and Modern variants |
 | **Maolan Monitoring** | `rs.maolan.monitoring` | Stereo | Monitoring toolbox with 17 reference modes |
 | **Maolan Reverb** | `rs.maolan.reverb` | Mono / Stereo | Stereo reverb |
+| **Maolan Sampler** | `rs.maolan.sampler` | Stereo | Polyphonic sample player |
 | **Maolan Saturator** | `rs.maolan.saturator` | Stereo | Waveshape saturation with sine-based distortion |
+| **Maolan Synth** | `rs.maolan.synth` | Stereo | Polyphonic synthesizer inspired by Surge XT |
 | **Maolan Stereo** | `rs.maolan.stereo` | Stereo | Stereo width processor |
 | **Maolan Widener** | `rs.maolan.widener` | Stereo | Multiband stereo width processor |
 | **Rural Modeler** | `rs.maolan.ruralmodeler` | Mono | Neural Amp Modeler with IR convolution |
@@ -201,6 +203,44 @@ vibrato predelay, and input/output lowpass filters.
 
 ---
 
+## Maolan Sampler
+
+A polyphonic sample player with multi-EG modulation, two LFOs, and a multimode filter. Loads samples
+through the GUI and plays them back with velocity-sensitive amplitude, per-note pitch bend, and
+MIDI CC control.
+
+**Parameters**
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Gain | 0.0 ... 2.0 | 1.0 | Master output gain |
+| Pan | −1.0 ... 1.0 | 0.0 | Master pan |
+| Amp EG Attack | 0.0 ... 10.0 s | 0.01 | Amplitude envelope attack |
+| Amp EG Decay | 0.0 ... 10.0 s | 0.2 | Amplitude envelope decay |
+| Amp EG Sustain | 0.0 ... 1.0 | 1.0 | Amplitude envelope sustain |
+| Amp EG Release | 0.0 ... 10.0 s | 0.3 | Amplitude envelope release |
+| Bend Up | 0 ... 24 semitones | 2 | Pitch-bend up range |
+| Bend Down | 0 ... 24 semitones | 2 | Pitch-bend down range |
+| Filter Type | 0 ... 48 | 1 | Multimode filter type |
+| Filter Cutoff | 20.0 ... 20000.0 Hz | 20000.0 | Filter cutoff |
+| Filter Resonance | 0.01 ... 10.0 | 0.7 | Filter resonance |
+| Filter EG Amount | −1.0 ... 1.0 | 0.0 | Filter envelope modulation |
+| Filter Enabled | 0 / 1 | 0 | Enable filter |
+| Filter EG Attack | 0.0 ... 10.0 s | 0.01 | Filter envelope attack |
+| Filter EG Decay | 0.0 ... 10.0 s | 0.2 | Filter envelope decay |
+| Filter EG Sustain | 0.0 ... 1.0 | 0.0 | Filter envelope sustain |
+| Filter EG Release | 0.0 ... 10.0 s | 0.3 | Filter envelope release |
+| EG2–EG5 Attack | 0.0 ... 10.0 s | 0.01 | Auxiliary envelope attack |
+| EG2–EG5 Decay | 0.0 ... 10.0 s | 0.2 | Auxiliary envelope decay |
+| EG2–EG5 Sustain | 0.0 ... 1.0 | 1.0 | Auxiliary envelope sustain |
+| EG2–EG5 Release | 0.0 ... 10.0 s | 0.3 | Auxiliary envelope release |
+| LFO1/2 Rate | 0.01 ... 20.0 Hz | 1.0 | LFO rate |
+| LFO1/2 Amount | 0.0 ... 1.0 | 0.0 | LFO depth |
+| LFO1/2 Shape | 0 ... 9 | 0 | LFO waveform |
+| LFO1/2 Enabled | 0 / 1 | 0 | Enable LFO |
+
+---
+
 ## Maolan Saturator
 
 Simple but effective stereo saturator using sine-wave distortion with an intensity-dependent blend.
@@ -210,6 +250,39 @@ Simple but effective stereo saturator using sine-wave distortion with an intensi
 | Parameter | Range | Default | Description |
 |-----------|-------|---------|-------------|
 | Drive | 0.0 ... 1.0 | 0.0 | Saturation amount |
+
+---
+
+## Maolan Synth
+
+A polyphonic synthesizer inspired by Surge XT. Features three oscillators with multiple synthesis
+modes (including wavetable, FM, and physical-modeling flavors), two multimode filters with
+configurable routing, three envelopes, six LFOs, a 12-slot modulation matrix, an MSEG, a step
+sequencer, noise and waveshaper sections, and microtonal tuning support.
+
+**Parameter groups**
+
+| Group | Description |
+|-------|-------------|
+| Osc1–Osc3 | Type, octave, semitone, fine, shape, skew, formant, level, unison, sync, sub, routing, solo/mute |
+| Filter1–Filter2 | Type, subtype, cutoff, resonance, EG amount, key tracking, drive, feedback, enable |
+| Filter | Filter routing and balance |
+| AmpEG / FilterEG / PitchEG | Attack, decay, sustain, release, mode, shapes, retrigger, tempo sync, uber release |
+| LFO1–LFO6 | Rate, shape, amount, deform, trigger, sync mode/division, envelope, phase, unipolar |
+| Mod | Fixed mod depths (velocity/key/LFO to filter, mod wheel/aftertouch to filter) |
+| ModRoute1–12 | Source, target, depth, curve |
+| Noise | Type, level, color, filter, stereo, enabled |
+| Waveshaper | Shape, drive, mix, enable |
+| Flavor | Additional filter-like flavor stage |
+| Step Seq | 16 step values, loop start/end, shuffle, trigger targets |
+| MSEG | 128 nodes, 127 segment curves, loop, retrigger targets |
+| Macros | Macro1–8 modulation sources |
+| Master | Volume, pan, width, polyphony, portamento, pitch-bend range, play mode, voice priority |
+| Tuning | Scale, root, SCL index |
+| FM / Twist / String / Alias | Oscillator-specific parameters for FM, twist, string, and alias engines |
+
+**Note:** The synth exposes a large parameter set (712 parameters). The exact ranges and defaults
+are defined in the plugin parameter list; the table above summarizes the available groups.
 
 ---
 

@@ -23,7 +23,7 @@ pub use crate::common::waveshaper::{Waveshape, Waveshaper};
 
 pub use engine::SynthEngine;
 pub use oscillator::{
-    AliasWaveform, ClassicWaveform, ExciterType, Fm2FeedbackMode, Fm3FeedbackMode,
+    AliasWaveform, ClassicOsc, ClassicWaveform, ExciterType, Fm2FeedbackMode, Fm3FeedbackMode,
     ModernSubWaveform, OscType, Oscillator, SineShaperMode, WindowType,
 };
 pub use twist::{TwistModel, TwistOsc};

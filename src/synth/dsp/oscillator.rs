@@ -130,6 +130,17 @@ impl ClassicWaveform {
     }
 }
 
+impl std::fmt::Display for ClassicWaveform {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ClassicWaveform::Saw => write!(f, "Saw"),
+            ClassicWaveform::Square => write!(f, "Square"),
+            ClassicWaveform::Pulse => write!(f, "Pulse"),
+            ClassicWaveform::Triangle => write!(f, "Triangle"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ClassicOsc {
     sample_rate: f32,
@@ -1647,6 +1658,16 @@ impl ModernSubWaveform {
             1 => ModernSubWaveform::Triangle,
             2 => ModernSubWaveform::Saw,
             _ => ModernSubWaveform::Square,
+        }
+    }
+}
+
+impl std::fmt::Display for ModernSubWaveform {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ModernSubWaveform::Square => write!(f, "Square"),
+            ModernSubWaveform::Triangle => write!(f, "Triangle"),
+            ModernSubWaveform::Saw => write!(f, "Saw"),
         }
     }
 }

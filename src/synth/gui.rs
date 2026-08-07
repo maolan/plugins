@@ -24,7 +24,7 @@ use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHan
 use crate::{
     common::filter::FilterType,
     synth::{
-        dsp::OscType,
+        dsp::{ClassicWaveform, ModernSubWaveform, OscType},
         params::{ParamId, param_def},
         plugin::SharedState,
     },
@@ -234,6 +234,65 @@ fn osc_type_dropdown<'a>(id: ParamId, state: &'a State) -> Element<'a, Message> 
     )
     .width(Length::Fixed(90.0))
     .into()
+}
+
+fn waveform_dropdown<'a>(state: &'a State, osc_index: usize) -> Element<'a, Message> {
+    let (type_id, wave_id) = match osc_index {
+        0 => (ParamId::Osc1Type, ParamId::Osc1Waveform),
+        1 => (ParamId::Osc2Type, ParamId::Osc2Waveform),
+        _ => (ParamId::Osc3Type, ParamId::Osc3Waveform),
+    };
+    let osc_type = OscType::from_u8(state.shared.params.get(type_id) as u8);
+    let value = state.shared.params.get(wave_id) as f32;
+
+    match osc_type {
+        OscType::Classic => {
+            let waveform = ClassicWaveform::from_u8(value as u8);
+            let options = vec![
+                ClassicWaveform::Saw,
+                ClassicWaveform::Square,
+                ClassicWaveform::Pulse,
+                ClassicWaveform::Triangle,
+            ];
+            let dropdown =
+                maolan_baseview::iced::widget::pick_list(options, Some(waveform), move |t| {
+                    Message::SetParam(wave_id, t as u8 as f32)
+                })
+                .placeholder("Wave")
+                .width(Length::Fixed(84.0));
+
+            container(
+                column![text("Wave").size(11), dropdown]
+                    .spacing(2)
+                    .align_x(Alignment::Center),
+            )
+            .width(Length::Fixed(90.0))
+            .into()
+        }
+        OscType::Modern => {
+            let waveform = ModernSubWaveform::from_u8(value as u8);
+            let options = vec![
+                ModernSubWaveform::Square,
+                ModernSubWaveform::Triangle,
+                ModernSubWaveform::Saw,
+            ];
+            let dropdown =
+                maolan_baseview::iced::widget::pick_list(options, Some(waveform), move |t| {
+                    Message::SetParam(wave_id, t as u8 as f32)
+                })
+                .placeholder("Wave")
+                .width(Length::Fixed(84.0));
+
+            container(
+                column![text("Wave").size(11), dropdown]
+                    .spacing(2)
+                    .align_x(Alignment::Center),
+            )
+            .width(Length::Fixed(90.0))
+            .into()
+        }
+        _ => param_control(wave_id, "Wave", state),
+    }
 }
 
 fn filter_type_dropdown<'a>(id: ParamId, state: &'a State) -> Element<'a, Message> {
@@ -461,7 +520,7 @@ fn view(state: &State) -> Element<'_, Message> {
         column![
             knob_row(vec![
                 osc_type_dropdown(ParamId::Osc1Type, state),
-                param_control(ParamId::Osc1Waveform, "Wave", state),
+                waveform_dropdown(state, 0),
                 param_control(ParamId::Osc1Octave, "Oct", state),
                 param_control(ParamId::Osc1Semitone, "Semi", state),
                 param_control(ParamId::Osc1Fine, "Fine", state),
@@ -487,7 +546,7 @@ fn view(state: &State) -> Element<'_, Message> {
         column![
             knob_row(vec![
                 osc_type_dropdown(ParamId::Osc2Type, state),
-                param_control(ParamId::Osc2Waveform, "Wave", state),
+                waveform_dropdown(state, 1),
                 param_control(ParamId::Osc2Octave, "Oct", state),
                 param_control(ParamId::Osc2Semitone, "Semi", state),
                 param_control(ParamId::Osc2Fine, "Fine", state),
@@ -513,7 +572,7 @@ fn view(state: &State) -> Element<'_, Message> {
         column![
             knob_row(vec![
                 osc_type_dropdown(ParamId::Osc3Type, state),
-                param_control(ParamId::Osc3Waveform, "Wave", state),
+                waveform_dropdown(state, 2),
                 param_control(ParamId::Osc3Octave, "Oct", state),
                 param_control(ParamId::Osc3Semitone, "Semi", state),
                 param_control(ParamId::Osc3Fine, "Fine", state),

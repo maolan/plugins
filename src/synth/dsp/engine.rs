@@ -589,8 +589,9 @@ impl SynthEngine {
                 let mut oldest_idx = 0;
                 let mut oldest_counter = usize::MAX;
                 for (idx, voice) in self.voices.iter().enumerate() {
-                    if voice.sample_counter < oldest_counter {
-                        oldest_counter = voice.sample_counter;
+                    let age = voice.note_age();
+                    if age < oldest_counter {
+                        oldest_counter = age;
                         oldest_idx = idx;
                     }
                 }
@@ -600,9 +601,12 @@ impl SynthEngine {
                 let mut released_idx = None;
                 let mut released_counter = usize::MAX;
                 for (idx, voice) in self.voices.iter().enumerate() {
-                    if !voice.gate && voice.is_active() && voice.sample_counter < released_counter {
-                        released_counter = voice.sample_counter;
-                        released_idx = Some(idx);
+                    if !voice.gate && voice.is_active() {
+                        let age = voice.note_age();
+                        if age < released_counter {
+                            released_counter = age;
+                            released_idx = Some(idx);
+                        }
                     }
                 }
                 if released_idx.is_some() {
@@ -612,8 +616,9 @@ impl SynthEngine {
                 let mut oldest_idx = 0;
                 let mut oldest_counter = usize::MAX;
                 for (idx, voice) in self.voices.iter().enumerate() {
-                    if voice.sample_counter < oldest_counter {
-                        oldest_counter = voice.sample_counter;
+                    let age = voice.note_age();
+                    if age < oldest_counter {
+                        oldest_counter = age;
                         oldest_idx = idx;
                     }
                 }

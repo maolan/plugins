@@ -3,8 +3,8 @@
 use rand::random;
 
 use super::{
-    AdsrEnvelope, AliasWaveform, ClassicWaveform, EnvelopeSettings, ExciterType, Filter,
-    FilterSettings, FilterType, FlavorFilter, Fm2FeedbackMode, Lfo, LfoSettings, LfoShape,
+    AdsrEnvelope, AliasWaveform, ClassicOsc, ClassicWaveform, EnvelopeSettings, ExciterType,
+    Filter, FilterSettings, FilterType, FlavorFilter, Fm2FeedbackMode, Lfo, LfoSettings, LfoShape,
     MSEG_MAX_NODES, MSEG_MAX_SEGMENTS, ModernSubWaveform, MsegCurve, MsegLoopMode, MtsEspClient,
     NoiseColorMode, NoiseGenerator, NoiseType, OscType, Oscillator, PlayMode, PortamentoCurve,
     SineShaperMode, Tuning, VoicePriority, Waveshape, Waveshaper, WaveshaperSettings, WindowType,
@@ -12,7 +12,7 @@ use super::{
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-const NOTE_ON_DECLICK_SAMPLES: usize = 64;
+const OSC1_ONLY_BYPASS: bool = false;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OscPhaseMode {
@@ -898,7 +898,13 @@ impl Default for VoiceParams {
             filter_balance: 0.0,
             amp_eg: EnvelopeSettings::default(),
             filter_eg: EnvelopeSettings::default(),
-            pitch_eg: EnvelopeSettings::default(),
+            pitch_eg: EnvelopeSettings {
+                attack: 0.0,
+                decay: 0.0,
+                sustain: 0.0,
+                release: 0.0,
+                ..EnvelopeSettings::default()
+            },
             lfo1: LfoSettings::default(),
             lfo2: LfoSettings::default(),
             lfo3: LfoSettings::default(),
@@ -1021,7 +1027,6 @@ pub struct Voice {
     pub pitch_bend: f32,
     pub gate: bool,
     pub active: bool,
-    pub sample_counter: usize,
     pub tempo_bpm: f32,
 
     current_freq: f32,
@@ -1100,7 +1105,6 @@ impl Voice {
             pitch_bend: 0.0,
             gate: false,
             active: false,
-            sample_counter: 0,
             tempo_bpm: 120.0,
             current_freq: 440.0,
             target_freq: 440.0,
@@ -1593,7 +1597,6 @@ impl Voice {
         self.velocity = velocity;
         self.gate = true;
         self.active = true;
-        self.sample_counter = 0;
         self.note_counter += 1;
 
         self.filter_feedback_prev_l = 0.0;
@@ -1664,9 +1667,8 @@ impl Voice {
         self.active && (self.amp_eg.is_active() || self.gate)
     }
 
-    fn note_on_declick_gain(&self) -> f32 {
-        let x = (self.sample_counter as f32 / NOTE_ON_DECLICK_SAMPLES as f32).clamp(0.0, 1.0);
-        x * x * (3.0 - 2.0 * x)
+    pub fn note_age(&self) -> usize {
+        self.note_counter
     }
 
     fn osc_sync_amount(&self, idx: usize, mods: &ModValues) -> f32 {
@@ -1869,6 +1871,240 @@ impl Voice {
     ) {
         let frames = out_l.len().min(out_r.len());
         if frames == 0 {
+            return;
+        }
+
+        if OSC1_ONLY_BYPASS {
+            if !matches!(self.oscillators[0], Oscillator::Classic(_)) {
+                self.oscillators[0] = Oscillator::Classic(ClassicOsc::new(self.sample_rate));
+            }
+            if let Oscillator::Classic(o) = &mut self.oscillators[0] {
+                o.set_waveform(ClassicWaveform::from_u8(self.params.oscs[0].waveform));
+                o.set_sub_level(self.params.oscs[0].sub_level);
+                o.set_sub_octave(self.params.oscs[0].sub_octave as i8);
+                o.set_sync_amount(0.0);
+                o.set_unison(
+                    self.params.oscs[0].unison_voices as usize,
+                    self.params.oscs[0].unison_detune,
+                );
+                o.set_unison_spread(self.params.oscs[0].unison_spread);
+            }
+
+            let f1_enabled = self.params.filter1.enabled;
+            let f1_cutoff_base = if f1_enabled {
+                let base = self.params.filter1.cutoff_hz;
+                let eg_mod = self.filter_eg_output * self.params.filter1.eg_amount * 10000.0;
+                let lfo_mod = self.lfo1_output * 5000.0;
+                let key_track = self.params.filter1.key_tracking * (self.note as f32 - 60.0) * 50.0;
+                (base + key_track + lfo_mod + eg_mod).clamp(20.0, 20000.0)
+            } else {
+                20000.0
+            };
+            let f1_res_base = if f1_enabled {
+                (self.params.filter1.resonance + self.lfo3_output).clamp(0.01, 10.0)
+            } else {
+                0.7
+            };
+            self.filter1_l
+                .prepare_block(f1_cutoff_base, f1_res_base, frames);
+            self.filter1_r
+                .prepare_block(f1_cutoff_base, f1_res_base, frames);
+
+            let f2_enabled = self.params.filter2.enabled;
+            let f2_cutoff_base = if f2_enabled {
+                let base = if self.params.f2_cutoff_offset {
+                    f1_cutoff_base * (self.params.filter2.cutoff_hz / 10000.0).clamp(0.2, 5.0)
+                } else {
+                    self.params.filter2.cutoff_hz
+                };
+                let eg_mod = self.filter_eg_output * self.params.filter2.eg_amount * 10000.0;
+                let key_track = self.params.filter2.key_tracking * (self.note as f32 - 60.0) * 50.0;
+                let lfo_mod = self.lfo2_output * 5000.0;
+                (base + key_track + lfo_mod + eg_mod).clamp(20.0, 20000.0)
+            } else {
+                20000.0
+            };
+            let f2_res_base = if f2_enabled {
+                if self.params.f2_res_link {
+                    f1_res_base
+                } else {
+                    (self.params.filter2.resonance + self.lfo4_output).clamp(0.01, 10.0)
+                }
+            } else {
+                0.7
+            };
+            self.filter2_l
+                .prepare_block(f2_cutoff_base, f2_res_base, frames);
+            self.filter2_r
+                .prepare_block(f2_cutoff_base, f2_res_base, frames);
+
+            for i in 0..frames {
+                let audio_l = audio_in_l.map(|b| b[i]).unwrap_or(0.0);
+                let audio_r = audio_in_r.map(|b| b[i]).unwrap_or(0.0);
+
+                self.amp_eg_output = self.amp_eg.next();
+                self.filter_eg_output = self.filter_eg.next();
+                self.pitch_eg_output = self.pitch_eg.next();
+                self.lfo1_output = self.lfo1.next();
+                self.lfo2_output = self.lfo2.next();
+                self.lfo3_output = self.lfo3.next();
+                self.lfo4_output = self.lfo4.next();
+                self.lfo5_output = self.lfo5.next();
+                self.lfo6_output = self.lfo6.next();
+
+                let portamento_time = if self.params.portamento_sync && self.tempo_bpm > 0.0 {
+                    self.params.portamento * 60.0 / self.tempo_bpm
+                } else {
+                    self.params.portamento
+                };
+                let freq_diff = self.target_freq - self.current_freq;
+                if portamento_time > 0.0 && freq_diff.abs() > 0.01 {
+                    if self.params.glissando {
+                        let current_note = freq_to_note(self.current_freq);
+                        let target_note = freq_to_note(self.target_freq).round();
+                        let note_diff = target_note - current_note;
+                        if note_diff.abs() > 0.01 {
+                            let rate = 1.0 / (portamento_time * self.sample_rate);
+                            let step = note_diff.signum() * rate.min(1.0);
+                            let next_note = if note_diff > 0.0 {
+                                (current_note + step).min(target_note)
+                            } else {
+                                (current_note + step).max(target_note)
+                            };
+                            self.current_freq =
+                                note_to_freq(next_note as u8, &self.tuning, &self.mts_esp);
+                        } else {
+                            self.current_freq =
+                                note_to_freq(target_note as u8, &self.tuning, &self.mts_esp);
+                        }
+                    } else {
+                        match self.params.portamento_curve {
+                            PortamentoCurve::Linear => {
+                                let rate = 1.0 / (portamento_time * self.sample_rate);
+                                self.current_freq += freq_diff * rate.min(1.0);
+                            }
+                            PortamentoCurve::Exponential => {
+                                let rate = 1.0 / (portamento_time * self.sample_rate);
+                                self.current_freq += freq_diff
+                                    * rate.min(1.0)
+                                    * (self.current_freq / self.target_freq.max(1.0));
+                            }
+                            PortamentoCurve::ConstantTime => {
+                                let rate = 1.0 / (portamento_time * self.sample_rate);
+                                let log_diff = (self.target_freq / self.current_freq).ln();
+                                self.current_freq *= (log_diff * rate).exp();
+                            }
+                        }
+                    }
+                } else {
+                    self.current_freq = self.target_freq;
+                }
+
+                let pb_range = if self.pitch_bend >= 0.0 {
+                    if self.params.pitch_bend_up > 0.0 {
+                        self.params.pitch_bend_up
+                    } else {
+                        self.params.pitch_bend_range
+                    }
+                } else {
+                    if self.params.pitch_bend_down > 0.0 {
+                        self.params.pitch_bend_down
+                    } else {
+                        self.params.pitch_bend_range
+                    }
+                };
+                let pb_mul = 2.0f32.powf(self.pitch_bend * pb_range / 12.0);
+                let pitch_eg_mul = 2.0f32.powf(self.pitch_eg_output * 2.0);
+                let lfo5_pitch_mul = 2.0f32.powf(self.lfo5_output * 50.0 / 1200.0);
+                self.oscillators[0]
+                    .set_freq_hz(self.current_freq * pb_mul * pitch_eg_mul * lfo5_pitch_mul);
+
+                let (osc1_l, osc1_r) = self.oscillators[0].next(0.0, audio_l, audio_r);
+
+                let osc2_settings = &self.params.oscs[1];
+                let lfo6_pitch_mul = 2.0f32.powf(self.lfo6_output * 50.0 / 1200.0);
+                let osc2_freq = self.current_freq
+                    * pb_mul
+                    * pitch_eg_mul
+                    * lfo6_pitch_mul
+                    * 2.0f32.powi(osc2_settings.octave as i32)
+                    * 2.0f32.powf(osc2_settings.semitone as f32 / 12.0)
+                    * 2.0f32.powf(osc2_settings.fine / 1200.0);
+                self.oscillators[1].set_freq_hz(osc2_freq);
+                self.oscillators[1].set_shape(osc2_settings.shape.clamp(0.0, 1.0));
+                self.oscillators[1].set_skew(osc2_settings.skew.clamp(-1.0, 1.0));
+                self.oscillators[1].set_formant(osc2_settings.formant.clamp(0.25, 4.0));
+                let (osc2_l, osc2_r) = self.oscillators[1].next(0.0, audio_l, audio_r);
+
+                let osc3_settings = &self.params.oscs[2];
+                let osc3_freq = self.current_freq
+                    * pb_mul
+                    * pitch_eg_mul
+                    * 2.0f32.powi(osc3_settings.octave as i32)
+                    * 2.0f32.powf(osc3_settings.semitone as f32 / 12.0)
+                    * 2.0f32.powf(osc3_settings.fine / 1200.0);
+                self.oscillators[2].set_freq_hz(osc3_freq);
+                self.oscillators[2].set_shape(osc3_settings.shape.clamp(0.0, 1.0));
+                self.oscillators[2].set_skew(osc3_settings.skew.clamp(-1.0, 1.0));
+                self.oscillators[2].set_formant(osc3_settings.formant.clamp(0.25, 4.0));
+                let (osc3_l, osc3_r) = self.oscillators[2].next(0.0, audio_l, audio_r);
+
+                let any_osc_soloed = self.params.oscs.iter().any(|o| o.solo);
+                let osc1_level = self.params.oscs[0].level.clamp(0.0, 2.0);
+                let osc2_level = if osc2_settings.enabled
+                    && (if any_osc_soloed {
+                        osc2_settings.solo
+                    } else {
+                        !osc2_settings.mute
+                    }) {
+                    osc2_settings.level.clamp(0.0, 2.0)
+                } else {
+                    0.0
+                };
+                let osc3_level = if osc3_settings.enabled
+                    && (if any_osc_soloed {
+                        osc3_settings.solo
+                    } else {
+                        !osc3_settings.mute
+                    }) {
+                    osc3_settings.level.clamp(0.0, 2.0)
+                } else {
+                    0.0
+                };
+
+                let (mut mix_l, mut mix_r) = (
+                    osc1_l * osc1_level + osc2_l * osc2_level + osc3_l * osc3_level,
+                    osc1_r * osc1_level + osc2_r * osc2_level + osc3_r * osc3_level,
+                );
+
+                if f1_enabled {
+                    let f1_drive = self.params.filter1.drive.clamp(0.0, 1.0);
+                    self.filter1_l.set_drive(f1_drive);
+                    self.filter1_r.set_drive(f1_drive);
+                    mix_l = self.filter1_l.process(mix_l);
+                    mix_r = self.filter1_r.process(mix_r);
+                }
+
+                if f2_enabled {
+                    let f2_drive = self.params.filter2.drive.clamp(0.0, 1.0);
+                    self.filter2_l.set_drive(f2_drive);
+                    self.filter2_r.set_drive(f2_drive);
+                    mix_l = self.filter2_l.process(mix_l);
+                    mix_r = self.filter2_r.process(mix_r);
+                }
+
+                let vol = self.params.volume.clamp(0.0, 2.0);
+                let vca_level = self.params.vca_level.clamp(0.0, 2.0);
+                let vel_sense = self.params.vca_velsense.clamp(0.0, 1.0);
+                let effective_vel = 1.0 - vel_sense + vel_sense * self.velocity;
+                let gain = self.amp_eg_output * effective_vel * vol * vca_level;
+
+                out_l[i] = mix_l * gain;
+                out_r[i] = mix_r * gain;
+            }
+            if !self.amp_eg.is_active() && !self.gate {
+                self.active = false;
+            }
             return;
         }
 
@@ -2719,9 +2955,8 @@ impl Voice {
             let vca_level = self.params.vca_level.clamp(0.0, 2.0);
             let vel_sense = self.params.vca_velsense.clamp(0.0, 1.0);
             let effective_vel = 1.0 - vel_sense + vel_sense * self.velocity;
-            let de_click = self.note_on_declick_gain();
-            char_l *= self.amp_eg_output * effective_vel * vol * vca_level * de_click;
-            char_r *= self.amp_eg_output * effective_vel * vol * vca_level * de_click;
+            char_l *= self.amp_eg_output * effective_vel * vol * vca_level;
+            char_r *= self.amp_eg_output * effective_vel * vol * vca_level;
 
             let pan = (self.params.pan + mods.output_pan).clamp(-1.0, 1.0);
             let width = (self.params.width + mods.output_width).clamp(-1.0, 1.0);
@@ -2734,8 +2969,6 @@ impl Voice {
 
             out_l[i] = (mid + side) * pan_l;
             out_r[i] = (mid - side) * pan_r;
-
-            self.sample_counter += 1;
         }
 
         if !self.amp_eg.is_active() && !self.gate {
@@ -2854,4 +3087,85 @@ fn freq_to_scale_degree(freq: f32, tuning: &Tuning) -> i32 {
 #[inline]
 fn freq_to_note(freq: f32) -> f32 {
     69.0 + 12.0 * (freq / 440.0).log2()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_wav_stereo(
+        path: &str,
+        left: &[f32],
+        right: &[f32],
+        sample_rate: u32,
+    ) -> std::io::Result<()> {
+        let channels = 2u16;
+        let bits_per_sample = 16u16;
+        let bytes_per_sample = bits_per_sample / 8;
+        let byte_rate = sample_rate * channels as u32 * bytes_per_sample as u32;
+        let block_align = channels * bytes_per_sample;
+        let data_size = (left.len() * channels as usize * bytes_per_sample as usize) as u32;
+        let file_size = 36 + data_size;
+
+        let mut file = std::fs::File::create(path)?;
+        file.write_all(b"RIFF")?;
+        file.write_all(&file_size.to_le_bytes())?;
+        file.write_all(b"WAVE")?;
+        file.write_all(b"fmt ")?;
+        file.write_all(&16u32.to_le_bytes())?;
+        file.write_all(&1u16.to_le_bytes())?;
+        file.write_all(&channels.to_le_bytes())?;
+        file.write_all(&sample_rate.to_le_bytes())?;
+        file.write_all(&byte_rate.to_le_bytes())?;
+        file.write_all(&block_align.to_le_bytes())?;
+        file.write_all(&bits_per_sample.to_le_bytes())?;
+        file.write_all(b"data")?;
+        file.write_all(&data_size.to_le_bytes())?;
+
+        for (l, r) in left.iter().zip(right.iter()) {
+            let l_i = (l * 32767.0).clamp(-32768.0, 32767.0) as i16;
+            let r_i = (r * 32767.0).clamp(-32768.0, 32767.0) as i16;
+            file.write_all(&l_i.to_le_bytes())?;
+            file.write_all(&r_i.to_le_bytes())?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn render_simple_saw_to_wav() {
+        let sample_rate = 48000.0;
+        let mut voice = Voice::new(sample_rate);
+        voice.params.oscs[0].level = 0.8;
+        voice.params.volume = 0.8;
+        voice.params.amp_eg.attack = 0.0;
+        voice.params.amp_eg.decay = 0.0;
+        voice.params.amp_eg.sustain = 1.0;
+        voice.params.amp_eg.release = 0.1;
+        let params = voice.params.clone();
+        voice.set_params(&params);
+
+        let frames = sample_rate as usize;
+        let mut out_l = vec![0.0f32; frames];
+        let mut out_r = vec![0.0f32; frames];
+
+        voice.trigger(60, 1.0);
+        voice.process_block(&mut out_l, &mut out_r, None, None);
+
+        let path = "/tmp/maolan_saw_test.wav";
+        write_wav_stereo(path, &out_l, &out_r, sample_rate as u32).unwrap();
+
+        let (min, max) = out_l
+            .iter()
+            .copied()
+            .chain(out_r.iter().copied())
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), v| {
+                (min.min(v), max.max(v))
+            });
+        println!("Wrote {path}");
+        println!("samples={frames} min={min:.6} max={max:.6}");
+        for i in 0..20.min(frames) {
+            println!("{i}: {:.6} {:.6}", out_l[i], out_r[i]);
+        }
+    }
 }
