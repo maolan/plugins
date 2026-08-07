@@ -112,6 +112,230 @@ struct AudioProcessor {
     post_spectrum_left: LogSpectrumAnalyzer,
     post_spectrum_right: LogSpectrumAnalyzer,
     bus_data: Option<bus::PluginSharedData>,
+    last_params_version: u64,
+}
+
+#[derive(Default)]
+struct DirtyFlags {
+    global: bool,
+    bands: bool,
+    linear_phase: bool,
+    spectral: bool,
+    bus_bands: bool,
+}
+
+fn apply_global_eq_state(processor: &mut AudioProcessor, shared: &SharedState<ParamId>) {
+    let in_gain = shared.params.get(ParamId::InputGain) as f32;
+    let out_gain = shared.params.get(ParamId::OutputGain) as f32;
+    let bypass = shared.params.get_bool(ParamId::Bypass);
+    let gain_scale = shared.params.get(ParamId::GainScale) as f32;
+    let phase_invert = shared.params.get_bool(ParamId::PhaseInvert);
+    let auto_gain = shared.params.get_bool(ParamId::AutoGain);
+    let character = shared.params.get(ParamId::Character) as u8;
+    for eq in [&mut processor.equalizer, &mut processor.equalizer_2x] {
+        eq.set_input_gain_db(in_gain);
+        eq.set_output_gain_db(out_gain);
+        eq.set_bypass(bypass);
+        eq.set_gain_scale(gain_scale);
+        eq.set_phase_invert(phase_invert);
+        eq.set_auto_gain(auto_gain);
+        eq.set_character(character);
+    }
+}
+
+fn apply_eq_band(processor: &mut AudioProcessor, shared: &SharedState<ParamId>, i: usize) {
+    if i >= crate::eq::dsp::MAX_BANDS {
+        return;
+    }
+    let shape = shared.params.get(ParamId::para_type(i)) as u8;
+    let bell_dynamic =
+        shape == crate::eq::dsp::SHAPE_BELL && shared.params.get_bool(ParamId::para_dyn(i));
+    let band = crate::eq::dsp::BandParams {
+        freq: shared.params.get(ParamId::para_freq(i)) as f32,
+        gain: shared.params.get(ParamId::para_gain(i)) as f32,
+        q: shared.params.get(ParamId::para_q(i)) as f32,
+        on: shared.params.get_bool(ParamId::para_on(i)),
+        typ: shape,
+        slope: shared.params.get(ParamId::para_slope(i)) as u8,
+        placement: shared.params.get(ParamId::para_placement(i)) as u8,
+        dyn_on: shared.params.get_bool(ParamId::para_dyn(i)),
+        dyn_threshold: shared.params.get(ParamId::para_dyn_threshold(i)) as f32,
+        dyn_ratio: shared.params.get(ParamId::para_dyn_ratio(i)) as f32,
+        dyn_knee: shared.params.get(ParamId::para_dyn_knee(i)) as f32,
+        dyn_range: shared.params.get(ParamId::para_dyn_range(i)) as f32,
+        dyn_attack_ms: shared.params.get(ParamId::para_dyn_attack(i)) as f32,
+        dyn_release_ms: shared.params.get(ParamId::para_dyn_release(i)) as f32,
+        dyn_external: shared.params.get(ParamId::para_dyn_source(i)) >= 0.5,
+        dyn_spectral: bell_dynamic || shared.params.get(ParamId::para_dyn_mode(i)) >= 0.5,
+    };
+    processor.equalizer.set_para_band(i, band);
+    processor.equalizer_2x.set_para_band(i, band);
+}
+
+fn apply_linear_designs(processor: &mut AudioProcessor, shared: &SharedState<ParamId>) {
+    processor.linear_designs.clear();
+    for i in 0..32 {
+        let (shape, slope, freq, q, gain) = processor
+            .equalizer
+            .band_design(i)
+            .unwrap_or((0, 0, 0.0, 0.0, 0.0));
+        processor.linear_designs.push(BandDesign {
+            on: processor.equalizer.band_design(i).is_some(),
+            shape,
+            slope,
+            freq,
+            q,
+            gain_db: gain,
+        });
+    }
+    let mode = shared.params.get(ParamId::ProcessingMode).round() as u32;
+    if mode == MODE_LINEAR_PHASE {
+        processor
+            .linear
+            .set_bands(&processor.linear_designs, processor.equalizer.sample_rate());
+    }
+}
+
+fn apply_spectral_configs(processor: &mut AudioProcessor, shared: &SharedState<ParamId>) {
+    let mut any_spectral = false;
+    for (i, config) in processor.spectral_configs.iter_mut().enumerate() {
+        let shape = shared.params.get(ParamId::para_type(i)) as u8;
+        let on = shared.params.get_bool(ParamId::para_on(i))
+            && shared.params.get_bool(ParamId::para_dyn(i))
+            && (shape == crate::eq::dsp::SHAPE_BELL
+                || shared.params.get(ParamId::para_dyn_mode(i)) >= 0.5)
+            && crate::eq::dsp::dyn_capable(shape);
+        let gain = shared.params.get(ParamId::para_gain(i)) as f32;
+        let range_db = if shape == crate::eq::dsp::SHAPE_BELL {
+            -gain
+        } else {
+            shared.params.get(ParamId::para_dyn_range(i)) as f32
+        };
+        *config = SpectralBandConfig {
+            on,
+            external: shared.params.get(ParamId::para_dyn_source(i)) >= 0.5,
+            freq: shared.params.get(ParamId::para_freq(i)) as f32,
+            q: shared.params.get(ParamId::para_q(i)) as f32,
+            shape,
+            slope: shared.params.get(ParamId::para_slope(i)) as u8,
+            threshold_db: shared.params.get(ParamId::para_dyn_threshold(i)) as f32,
+            ratio: shared.params.get(ParamId::para_dyn_ratio(i)) as f32,
+            knee_db: shared.params.get(ParamId::para_dyn_knee(i)) as f32,
+            range_db,
+            attack_ms: shared.params.get(ParamId::para_dyn_attack(i)) as f32,
+            release_ms: shared.params.get(ParamId::para_dyn_release(i)) as f32,
+        };
+        any_spectral |= on;
+    }
+    processor.spectral_active = any_spectral;
+    processor.spectral.configure(
+        processor.equalizer.sample_rate(),
+        &processor.spectral_configs,
+    );
+}
+
+fn apply_bus_bands(processor: &mut AudioProcessor, shared: &SharedState<ParamId>) {
+    if let Some(ref bus) = processor.bus_data
+        && let Some(slot) = bus.bands_slot()
+    {
+        let mut count = 0;
+        let mut bands = [bus::EqBand::default(); 64];
+        for i in 0..32 {
+            if shared.params.get_bool(ParamId::para_on(i)) && count < bands.len() {
+                bands[count] = bus::EqBand {
+                    freq: shared.params.get(ParamId::para_freq(i)) as f32,
+                    gain: shared.params.get(ParamId::para_gain(i)) as f32,
+                    q: shared.params.get(ParamId::para_q(i)) as f32,
+                    on: true,
+                    typ: shared.params.get(ParamId::para_type(i)) as u8,
+                    slope: shared.params.get(ParamId::para_slope(i)) as u8,
+                };
+                count += 1;
+            }
+        }
+        slot.write(|data| {
+            data.len = count;
+            data.bands = bands;
+        });
+    }
+}
+
+fn band_index_from_param_id(id: ParamId) -> Option<usize> {
+    let raw = id as u16;
+    if (3..=98).contains(&raw) {
+        Some(((raw - 3) / 3) as usize)
+    } else if (99..=130).contains(&raw) {
+        Some((raw - 99) as usize)
+    } else if (132..=163).contains(&raw) {
+        Some((raw - 132) as usize)
+    } else if (164..=195).contains(&raw) {
+        Some((raw - 164) as usize)
+    } else if (201..=232).contains(&raw) {
+        Some((raw - 201) as usize)
+    } else if (233..=264).contains(&raw) {
+        Some((raw - 233) as usize)
+    } else if (265..=296).contains(&raw) {
+        Some((raw - 265) as usize)
+    } else if (297..=328).contains(&raw) {
+        Some((raw - 297) as usize)
+    } else if (329..=360).contains(&raw) {
+        Some((raw - 329) as usize)
+    } else if (361..=392).contains(&raw) {
+        Some((raw - 361) as usize)
+    } else if (393..=424).contains(&raw) {
+        Some((raw - 393) as usize)
+    } else if (425..=456).contains(&raw) {
+        Some((raw - 425) as usize)
+    } else if (457..=488).contains(&raw) {
+        Some((raw - 457) as usize)
+    } else if (489..=520).contains(&raw) {
+        Some((raw - 489) as usize)
+    } else {
+        None
+    }
+}
+
+fn apply_param_id(
+    _processor: &mut AudioProcessor,
+    _shared: &SharedState<ParamId>,
+    id: ParamId,
+    _value: f64,
+    dirty: &mut DirtyFlags,
+) -> bool {
+    match id {
+        ParamId::InputGain
+        | ParamId::OutputGain
+        | ParamId::Bypass
+        | ParamId::GainScale
+        | ParamId::PhaseInvert
+        | ParamId::AutoGain
+        | ParamId::Character => {
+            dirty.global = true;
+            true
+        }
+        ParamId::ProcessingMode => {
+            dirty.global = true;
+            dirty.linear_phase = true;
+            true
+        }
+        ParamId::Channels
+        | ParamId::SidechainEnable
+        | ParamId::SidechainThreshold
+        | ParamId::SidechainRatio
+        | ParamId::SidechainAttackMs
+        | ParamId::SidechainReleaseMs => true,
+        _ => {
+            if band_index_from_param_id(id).is_some() {
+                dirty.bands = true;
+                dirty.spectral = true;
+                dirty.bus_bands = true;
+                dirty.linear_phase = true;
+                true
+            } else {
+                false
+            }
+        }
+    }
 }
 
 impl AudioProcessor {
@@ -144,6 +368,7 @@ impl AudioProcessor {
             post_spectrum_left: LogSpectrumAnalyzer::new(SPECTRUM_BINS),
             post_spectrum_right: LogSpectrumAnalyzer::new(SPECTRUM_BINS),
             bus_data,
+            last_params_version: 0,
         }
     }
 
@@ -188,22 +413,7 @@ impl AudioProcessor {
     }
 
     fn apply_params(&mut self, shared: &SharedState<ParamId>) {
-        let in_gain = shared.params.get(ParamId::InputGain) as f32;
-        let out_gain = shared.params.get(ParamId::OutputGain) as f32;
-        let bypass = shared.params.get_bool(ParamId::Bypass);
-        let gain_scale = shared.params.get(ParamId::GainScale) as f32;
-        let phase_invert = shared.params.get_bool(ParamId::PhaseInvert);
-        let auto_gain = shared.params.get_bool(ParamId::AutoGain);
-        let character = shared.params.get(ParamId::Character) as u8;
-        for eq in [&mut self.equalizer, &mut self.equalizer_2x] {
-            eq.set_input_gain_db(in_gain);
-            eq.set_output_gain_db(out_gain);
-            eq.set_bypass(bypass);
-            eq.set_gain_scale(gain_scale);
-            eq.set_phase_invert(phase_invert);
-            eq.set_auto_gain(auto_gain);
-            eq.set_character(character);
-        }
+        apply_global_eq_state(self, shared);
         let listen = shared.get_listen_band();
         self.equalizer.set_listen_band(if listen < 32 {
             Some(listen as usize)
@@ -211,109 +421,11 @@ impl AudioProcessor {
             None
         });
         for i in 0..32 {
-            let shape = shared.params.get(ParamId::para_type(i)) as u8;
-            let bell_dynamic =
-                shape == crate::eq::dsp::SHAPE_BELL && shared.params.get_bool(ParamId::para_dyn(i));
-            let band = crate::eq::dsp::BandParams {
-                freq: shared.params.get(ParamId::para_freq(i)) as f32,
-                gain: shared.params.get(ParamId::para_gain(i)) as f32,
-                q: shared.params.get(ParamId::para_q(i)) as f32,
-                on: shared.params.get_bool(ParamId::para_on(i)),
-                typ: shape,
-                slope: shared.params.get(ParamId::para_slope(i)) as u8,
-                placement: shared.params.get(ParamId::para_placement(i)) as u8,
-                dyn_on: shared.params.get_bool(ParamId::para_dyn(i)),
-                dyn_threshold: shared.params.get(ParamId::para_dyn_threshold(i)) as f32,
-                dyn_ratio: shared.params.get(ParamId::para_dyn_ratio(i)) as f32,
-                dyn_knee: shared.params.get(ParamId::para_dyn_knee(i)) as f32,
-                dyn_range: shared.params.get(ParamId::para_dyn_range(i)) as f32,
-                dyn_attack_ms: shared.params.get(ParamId::para_dyn_attack(i)) as f32,
-                dyn_release_ms: shared.params.get(ParamId::para_dyn_release(i)) as f32,
-                dyn_external: shared.params.get(ParamId::para_dyn_source(i)) >= 0.5,
-                dyn_spectral: bell_dynamic || shared.params.get(ParamId::para_dyn_mode(i)) >= 0.5,
-            };
-            self.equalizer.set_para_band(i, band);
-            self.equalizer_2x.set_para_band(i, band);
+            apply_eq_band(self, shared, i);
         }
-
-        self.linear_designs.clear();
-        for i in 0..32 {
-            let (shape, slope, freq, q, gain) = self
-                .equalizer
-                .band_design(i)
-                .unwrap_or((0, 0, 0.0, 0.0, 0.0));
-            self.linear_designs.push(BandDesign {
-                on: self.equalizer.band_design(i).is_some(),
-                shape,
-                slope,
-                freq,
-                q,
-                gain_db: gain,
-            });
-        }
-        let mode = shared.params.get(ParamId::ProcessingMode).round() as u32;
-        if mode == MODE_LINEAR_PHASE {
-            self.linear
-                .set_bands(&self.linear_designs, self.equalizer.sample_rate());
-        }
-
-        let mut any_spectral = false;
-        for (i, config) in self.spectral_configs.iter_mut().enumerate() {
-            let shape = shared.params.get(ParamId::para_type(i)) as u8;
-            let on = shared.params.get_bool(ParamId::para_on(i))
-                && shared.params.get_bool(ParamId::para_dyn(i))
-                && (shape == crate::eq::dsp::SHAPE_BELL
-                    || shared.params.get(ParamId::para_dyn_mode(i)) >= 0.5)
-                && crate::eq::dsp::dyn_capable(shape);
-            let gain = shared.params.get(ParamId::para_gain(i)) as f32;
-            let range_db = if shape == crate::eq::dsp::SHAPE_BELL {
-                -gain
-            } else {
-                shared.params.get(ParamId::para_dyn_range(i)) as f32
-            };
-            *config = SpectralBandConfig {
-                on,
-                external: shared.params.get(ParamId::para_dyn_source(i)) >= 0.5,
-                freq: shared.params.get(ParamId::para_freq(i)) as f32,
-                q: shared.params.get(ParamId::para_q(i)) as f32,
-                shape,
-                slope: shared.params.get(ParamId::para_slope(i)) as u8,
-                threshold_db: shared.params.get(ParamId::para_dyn_threshold(i)) as f32,
-                ratio: shared.params.get(ParamId::para_dyn_ratio(i)) as f32,
-                knee_db: shared.params.get(ParamId::para_dyn_knee(i)) as f32,
-                range_db,
-                attack_ms: shared.params.get(ParamId::para_dyn_attack(i)) as f32,
-                release_ms: shared.params.get(ParamId::para_dyn_release(i)) as f32,
-            };
-            any_spectral |= on;
-        }
-        self.spectral_active = any_spectral;
-        self.spectral
-            .configure(self.equalizer.sample_rate(), &self.spectral_configs);
-
-        if let Some(ref bus) = self.bus_data
-            && let Some(slot) = bus.bands_slot()
-        {
-            let mut count = 0;
-            let mut bands = [bus::EqBand::default(); 64];
-            for i in 0..32 {
-                if shared.params.get_bool(ParamId::para_on(i)) && count < bands.len() {
-                    bands[count] = bus::EqBand {
-                        freq: shared.params.get(ParamId::para_freq(i)) as f32,
-                        gain: shared.params.get(ParamId::para_gain(i)) as f32,
-                        q: shared.params.get(ParamId::para_q(i)) as f32,
-                        on: true,
-                        typ: shared.params.get(ParamId::para_type(i)) as u8,
-                        slope: shared.params.get(ParamId::para_slope(i)) as u8,
-                    };
-                    count += 1;
-                }
-            }
-            slot.write(|data| {
-                data.len = count;
-                data.bands = bands;
-            });
-        }
+        apply_linear_designs(self, shared);
+        apply_spectral_configs(self, shared);
+        apply_bus_bands(self, shared);
     }
 
     fn process(
@@ -322,11 +434,53 @@ impl AudioProcessor {
         process: &mut Process,
     ) -> clap_process_status {
         let ui_visible = shared.is_ui_visible();
-        self.apply_params(shared);
-        apply_param_events(shared, &process.in_events());
+        let mut changed_params: [Option<(ParamId, f64)>; 32] = [None; 32];
+        let overflow = apply_param_events_eq(shared, &process.in_events(), &mut changed_params);
         {
             let mut out_events = process.out_events();
             emit_pending_param_events_to_host(shared, &mut out_events);
+        }
+
+        let params_version = shared.params_version();
+        if params_version != self.last_params_version {
+            let any_changed = changed_params.iter().any(|x| x.is_some());
+            let mut use_incremental = self.last_params_version != 0 && !overflow && any_changed;
+            let mut dirty = DirtyFlags::default();
+
+            if use_incremental {
+                for item in changed_params.iter().flatten() {
+                    let (id, value) = *item;
+                    if !apply_param_id(self, shared, id, value, &mut dirty) {
+                        use_incremental = false;
+                        break;
+                    }
+                }
+            }
+
+            if use_incremental {
+                if dirty.global {
+                    apply_global_eq_state(self, shared);
+                }
+                if dirty.bands {
+                    for item in changed_params.iter().flatten() {
+                        if let Some(band) = band_index_from_param_id(item.0) {
+                            apply_eq_band(self, shared, band);
+                        }
+                    }
+                }
+                if dirty.linear_phase {
+                    apply_linear_designs(self, shared);
+                }
+                if dirty.spectral {
+                    apply_spectral_configs(self, shared);
+                }
+                if dirty.bus_bands {
+                    apply_bus_bands(self, shared);
+                }
+            } else {
+                self.apply_params(shared);
+            }
+            self.last_params_version = params_version;
         }
 
         let frames = process.frames_count() as usize;
@@ -878,6 +1032,7 @@ fn apply_param_events(shared: &SharedState<ParamId>, events: &InputEvents<'_>) {
                         }
                         let incoming = sanitize_param_value(id, param.value(), &PARAMS);
                         shared.params.set(id, incoming);
+                        shared.bump_params_version();
                         if id == ParamId::Channels {
                             shared.sync_channels_from_params();
                             shared.request_audio_ports_rescan();
@@ -902,6 +1057,81 @@ fn apply_param_events(shared: &SharedState<ParamId>, events: &InputEvents<'_>) {
             _ => {}
         }
     }
+}
+
+fn apply_param_events_eq(
+    shared: &SharedState<ParamId>,
+    events: &InputEvents<'_>,
+    changed: &mut [Option<(ParamId, f64)>; 32],
+) -> bool {
+    let mut overflow = false;
+    let mut next_idx = 0;
+
+    for index in 0..events.size() {
+        let header = events.get(index);
+        if header.space_id() != CLAP_CORE_EVENT_SPACE_ID {
+            continue;
+        }
+        match header.r#type() {
+            t if t == CLAP_EVENT_PARAM_GESTURE_BEGIN as u16 => {
+                shared.active_gesture_count.fetch_add(1, Ordering::AcqRel);
+            }
+            t if t == CLAP_EVENT_PARAM_GESTURE_END as u16 => {
+                let mut current = shared.active_gesture_count.load(Ordering::Acquire);
+                while current != 0 {
+                    match shared.active_gesture_count.compare_exchange_weak(
+                        current,
+                        current - 1,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => break,
+                        Err(next) => current = next,
+                    }
+                }
+            }
+            t if t == CLAP_EVENT_PARAM_VALUE as u16 => {
+                if let Ok(param) = header.param_value() {
+                    let raw: u32 = param.param_id().into();
+                    if let Some(id) = ParamId::from_raw(raw) {
+                        if shared.any_gesture_active() {
+                            continue;
+                        }
+                        let incoming = sanitize_param_value(id, param.value(), &PARAMS);
+                        shared.params.set(id, incoming);
+                        shared.bump_params_version();
+                        if id == ParamId::Channels {
+                            shared.sync_channels_from_params();
+                            shared.request_audio_ports_rescan();
+                        }
+                        let dyn_toggle =
+                            (ParamId::Para1Dyn as u32..=ParamId::Para32Dyn as u32).contains(&raw);
+                        let dyn_source = (ParamId::Para1DynSource as u32
+                            ..=ParamId::Para32DynSource as u32)
+                            .contains(&raw);
+                        if dyn_toggle || dyn_source {
+                            shared.request_audio_ports_rescan();
+                        }
+                        let dyn_mode = (ParamId::Para1DynMode as u32
+                            ..=ParamId::Para32DynMode as u32)
+                            .contains(&raw);
+                        if dyn_mode || dyn_toggle || id == ParamId::ProcessingMode {
+                            shared.request_latency_changed();
+                        }
+                        if next_idx < changed.len() {
+                            changed[next_idx] = Some((id, incoming));
+                            next_idx += 1;
+                        } else {
+                            overflow = true;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    overflow
 }
 
 fn emit_pending_param_events_to_host(
@@ -1335,6 +1565,7 @@ unsafe extern "C-unwind" fn ext_state_load(
         return false;
     };
     state.apply(&instance.shared.params, &PARAMS);
+    instance.shared.bump_params_version();
 
     instance.shared.sync_channels_from_params();
     instance.shared.request_audio_ports_rescan();
@@ -1625,6 +1856,7 @@ pub struct SharedState<T: ParamIdExt> {
     pub active_gesture_bits: Vec<AtomicU32>,
     pub active_gesture_count: AtomicU32,
     pub local_param_overrides: Vec<AtomicU32>,
+    pub params_version: AtomicU64,
     pub host: AtomicPtr<clap_host>,
     pub input_level_left_db_bits: AtomicU32,
     pub input_level_right_db_bits: AtomicU32,
@@ -1688,6 +1920,7 @@ impl<T: ParamIdExt> SharedState<T> {
             active_gesture_bits: active,
             active_gesture_count: AtomicU32::new(0),
             local_param_overrides: local,
+            params_version: AtomicU64::new(1),
             host: AtomicPtr::new(host.cast_mut()),
             input_level_left_db_bits: AtomicU32::new(FADER_MIN_DB.to_bits()),
             input_level_right_db_bits: AtomicU32::new(FADER_MIN_DB.to_bits()),
@@ -1725,6 +1958,14 @@ impl<T: ParamIdExt> SharedState<T> {
 
     pub fn sample_rate(&self) -> f32 {
         f64::from_bits(self.sample_rate_bits.load(Ordering::Acquire)) as f32
+    }
+
+    pub fn params_version(&self) -> u64 {
+        self.params_version.load(Ordering::Acquire)
+    }
+
+    pub fn bump_params_version(&self) {
+        self.params_version.fetch_add(1, Ordering::Release);
     }
 
     pub fn set_listen_band(&self, band: u32) {
@@ -2032,6 +2273,7 @@ impl<T: ParamIdExt> SharedState<T> {
 
     pub fn set_param(&self, id: T, value: f64) {
         self.params.set(id, value);
+        self.bump_params_version();
         self.pending_param_values_bits[id.as_index()].store(value.to_bits(), Ordering::Release);
         self.mark_local_param_override(id);
         self.mark_param_notification_pending(id);
@@ -2041,6 +2283,7 @@ impl<T: ParamIdExt> SharedState<T> {
 
     pub fn set_param_outbound_only(&self, id: T, value: f64) {
         self.params.set(id, value);
+        self.bump_params_version();
     }
 
     pub fn take_pending_param_value_or_current(&self, id: T) -> f64 {
@@ -2145,5 +2388,26 @@ impl PluginState {
             text
         };
         serde_json::from_str(json_text).map_err(|e| format!("failed to parse plugin state: {e}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_param_id_handles_all_param_ids() {
+        let params = ParamStore::new(&PARAMS);
+        let shared = SharedState::new(params, std::ptr::null(), 2);
+        let mut processor = AudioProcessor::new(48_000.0, 512, None);
+        let mut dirty = DirtyFlags::default();
+        for id in ParamId::all() {
+            let value = PARAMS[id.as_index()].default;
+            assert!(
+                apply_param_id(&mut processor, &shared, id, value, &mut dirty),
+                "apply_param_id returned false for {:?}",
+                id
+            );
+        }
     }
 }

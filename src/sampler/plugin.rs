@@ -81,6 +81,7 @@ pub struct SharedState {
     sample_rate_bits: AtomicU64,
     host: AtomicPtr<clap_host>,
     pub params: ParamStore<ParamId>,
+    params_version: AtomicU64,
     pending_param_notifications: AtomicU64,
     pending_gesture_begin: AtomicU64,
     pending_gesture_end: AtomicU64,
@@ -93,6 +94,7 @@ impl Default for SharedState {
             sample_rate_bits: AtomicU64::new(48_000.0f64.to_bits()),
             host: AtomicPtr::new(null_mut()),
             params: ParamStore::default(),
+            params_version: AtomicU64::new(1),
             pending_param_notifications: AtomicU64::new(0),
             pending_gesture_begin: AtomicU64::new(0),
             pending_gesture_end: AtomicU64::new(0),
@@ -118,6 +120,7 @@ impl SharedState {
 
     pub fn set_param_outbound_only(&self, id: ParamId, value: f64) {
         self.params.set(id, sanitize_param_value(id, value));
+        self.bump_params_version();
         let bit = 1_u64 << (id.as_index() as u64);
         self.pending_param_notifications
             .fetch_or(bit, Ordering::AcqRel);
@@ -198,6 +201,14 @@ impl SharedState {
             }
         }
     }
+
+    fn bump_params_version(&self) {
+        self.params_version.fetch_add(1, Ordering::Release);
+    }
+
+    fn params_version(&self) -> u64 {
+        self.params_version.load(Ordering::Acquire)
+    }
 }
 
 impl SharedStateExt<ParamId> for SharedState {
@@ -215,6 +226,7 @@ impl SharedStateExt<ParamId> for SharedState {
 
     fn set_param_from_host(&self, id: ParamId, value: f64) {
         self.params.set(id, value);
+        self.bump_params_version();
         let bit = 1u64 << id.as_index();
         self.pending_param_notifications
             .fetch_or(bit, Ordering::Release);
@@ -246,10 +258,158 @@ impl SharedStateExt<ParamId> for SharedState {
     }
 }
 
+#[derive(Default)]
+struct DirtyFlags {
+    master_gain: bool,
+    master_pan: bool,
+    amp_eg: bool,
+    filter: bool,
+    filter_eg: bool,
+    feg: bool,
+    eg2: bool,
+    eg3: bool,
+    eg4: bool,
+    eg5: bool,
+    lfo1: bool,
+    lfo2: bool,
+}
+
+fn apply_param_id(
+    _state: &mut AudioProcessor,
+    id: ParamId,
+    _value: f64,
+    dirty: &mut DirtyFlags,
+) -> bool {
+    match id {
+        ParamId::MasterGain => {
+            dirty.master_gain = true;
+            true
+        }
+        ParamId::MasterPan => {
+            dirty.master_pan = true;
+            true
+        }
+        ParamId::AmpAttack | ParamId::AmpDecay | ParamId::AmpSustain | ParamId::AmpRelease => {
+            dirty.amp_eg = true;
+            true
+        }
+        ParamId::PitchBendUp | ParamId::PitchBendDown => {
+            // Patch-level configuration, no per-block DSP setter.
+            true
+        }
+        ParamId::FilterType
+        | ParamId::FilterCutoff
+        | ParamId::FilterResonance
+        | ParamId::FilterEnabled => {
+            dirty.filter = true;
+            true
+        }
+        ParamId::FilterEgAmount => {
+            dirty.filter_eg = true;
+            true
+        }
+        ParamId::FilterAttack
+        | ParamId::FilterDecay
+        | ParamId::FilterSustain
+        | ParamId::FilterRelease => {
+            dirty.feg = true;
+            true
+        }
+        ParamId::Eg2Attack | ParamId::Eg2Decay | ParamId::Eg2Sustain | ParamId::Eg2Release => {
+            dirty.eg2 = true;
+            true
+        }
+        ParamId::Eg3Attack | ParamId::Eg3Decay | ParamId::Eg3Sustain | ParamId::Eg3Release => {
+            dirty.eg3 = true;
+            true
+        }
+        ParamId::Eg4Attack | ParamId::Eg4Decay | ParamId::Eg4Sustain | ParamId::Eg4Release => {
+            dirty.eg4 = true;
+            true
+        }
+        ParamId::Eg5Attack | ParamId::Eg5Decay | ParamId::Eg5Sustain | ParamId::Eg5Release => {
+            dirty.eg5 = true;
+            true
+        }
+        ParamId::Lfo1Rate | ParamId::Lfo1Amount | ParamId::Lfo1Shape | ParamId::Lfo1Enabled => {
+            dirty.lfo1 = true;
+            true
+        }
+        ParamId::Lfo2Rate | ParamId::Lfo2Amount | ParamId::Lfo2Shape | ParamId::Lfo2Enabled => {
+            dirty.lfo2 = true;
+            true
+        }
+    }
+}
+
+fn apply_param_events_sampler(
+    shared: &SharedState,
+    events: &InputEvents<'_>,
+    sanitize: impl Fn(ParamId, f64) -> f64,
+    changed: &mut [Option<(ParamId, f64)>; 32],
+) -> bool {
+    use clap_clap::ffi::{
+        CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END,
+        CLAP_EVENT_PARAM_VALUE, clap_event_header, clap_event_param_gesture,
+    };
+
+    let mut overflow = false;
+    let mut next_idx = 0;
+
+    for index in 0..events.size() {
+        let header = events.get(index);
+        if header.space_id() != CLAP_CORE_EVENT_SPACE_ID {
+            continue;
+        }
+        match header.r#type() {
+            t if t == CLAP_EVENT_PARAM_GESTURE_BEGIN as u16 => {
+                let gesture = unsafe {
+                    &*((header.as_clap_event_header() as *const clap_event_header)
+                        as *const clap_event_param_gesture)
+                };
+                if let Some(id) = ParamId::from_raw(gesture.param_id) {
+                    shared.set_gesture_active(id, true);
+                }
+            }
+            t if t == CLAP_EVENT_PARAM_GESTURE_END as u16 => {
+                let gesture = unsafe {
+                    &*((header.as_clap_event_header() as *const clap_event_header)
+                        as *const clap_event_param_gesture)
+                };
+                if let Some(id) = ParamId::from_raw(gesture.param_id) {
+                    shared.set_gesture_active(id, false);
+                }
+            }
+            t if t == CLAP_EVENT_PARAM_VALUE as u16 => {
+                if let Ok(param) = header.param_value() {
+                    let raw: u32 = param.param_id().into();
+                    if let Some(id) = ParamId::from_raw(raw) {
+                        if shared.is_gesture_active(id) {
+                            continue;
+                        }
+                        let incoming = sanitize(id, param.value());
+                        shared.set_param_from_host(id, incoming);
+                        if next_idx < changed.len() {
+                            changed[next_idx] = Some((id, incoming));
+                            next_idx += 1;
+                        } else {
+                            overflow = true;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    overflow
+}
+
 struct AudioProcessor {
     engine: SamplerEngine,
     out_l: Vec<f32>,
     out_r: Vec<f32>,
+    last_params_version: u64,
 }
 
 impl AudioProcessor {
@@ -258,25 +418,14 @@ impl AudioProcessor {
             engine: SamplerEngine::new(sample_rate as f32, 32),
             out_l: vec![0.0; max_frames as usize],
             out_r: vec![0.0; max_frames as usize],
+            last_params_version: 0,
         }
     }
 
     #[allow(dead_code)]
     fn reset(&mut self) {}
 
-    fn process(&mut self, shared: &SharedState, process: &mut Process) -> clap_process_status {
-        let frames = process.frames_count() as usize;
-        if self.out_l.len() < frames {
-            self.out_l.resize(frames, 0.0);
-            self.out_r.resize(frames, 0.0);
-        }
-
-        apply_param_events(shared, &process.in_events(), sanitize_param_value);
-        {
-            let mut out_events = process.out_events();
-            emit_pending_param_events_to_host(shared, &mut out_events);
-        }
-
+    fn apply_params(&mut self, shared: &SharedState) {
         self.engine
             .set_master_gain(shared.params.get(ParamId::MasterGain) as f32);
         self.engine.set_aeg_params(
@@ -338,6 +487,133 @@ impl AudioProcessor {
             shared.params.get(ParamId::Lfo2Enabled) as f32 >= 0.5,
         );
         self.engine.set_pitch_bend(0.0);
+    }
+
+    fn process(&mut self, shared: &SharedState, process: &mut Process) -> clap_process_status {
+        let frames = process.frames_count() as usize;
+        if self.out_l.len() < frames {
+            self.out_l.resize(frames, 0.0);
+            self.out_r.resize(frames, 0.0);
+        }
+
+        let mut changed_params: [Option<(ParamId, f64)>; 32] = [None; 32];
+        let overflow = apply_param_events_sampler(
+            shared,
+            &process.in_events(),
+            sanitize_param_value,
+            &mut changed_params,
+        );
+        {
+            let mut out_events = process.out_events();
+            emit_pending_param_events_to_host(shared, &mut out_events);
+        }
+
+        let params_version = shared.params_version();
+        if params_version != self.last_params_version {
+            let any_changed = changed_params.iter().any(|x| x.is_some());
+            let mut use_incremental = self.last_params_version != 0 && !overflow && any_changed;
+            let mut dirty = DirtyFlags::default();
+
+            if use_incremental {
+                for &(id, value) in changed_params.iter().flatten() {
+                    if !apply_param_id(self, id, value, &mut dirty) {
+                        use_incremental = false;
+                        break;
+                    }
+                }
+            }
+
+            if use_incremental {
+                if dirty.master_gain {
+                    self.engine
+                        .set_master_gain(shared.params.get(ParamId::MasterGain) as f32);
+                }
+                // SamplerEngine has no master-pan setter yet, but mark the flag as observed.
+                let _ = dirty.master_pan;
+                if dirty.amp_eg {
+                    self.engine.set_aeg_params(
+                        shared.params.get(ParamId::AmpAttack) as f32,
+                        shared.params.get(ParamId::AmpDecay) as f32,
+                        shared.params.get(ParamId::AmpSustain) as f32,
+                        shared.params.get(ParamId::AmpRelease) as f32,
+                    );
+                }
+                if dirty.filter {
+                    use crate::common::filter::FilterType;
+                    self.engine.set_filter_params(
+                        FilterType::from_u8(shared.params.get(ParamId::FilterType) as u8),
+                        shared.params.get(ParamId::FilterCutoff) as f32,
+                        shared.params.get(ParamId::FilterResonance) as f32,
+                        shared.params.get(ParamId::FilterEnabled) as f32 >= 0.5,
+                    );
+                }
+                if dirty.filter_eg {
+                    self.engine
+                        .set_filter_eg_amount(shared.params.get(ParamId::FilterEgAmount) as f32);
+                }
+                if dirty.feg {
+                    self.engine.set_feg_params(
+                        shared.params.get(ParamId::FilterAttack) as f32,
+                        shared.params.get(ParamId::FilterDecay) as f32,
+                        shared.params.get(ParamId::FilterSustain) as f32,
+                        shared.params.get(ParamId::FilterRelease) as f32,
+                    );
+                }
+                if dirty.eg2 {
+                    self.engine.set_eg2_params(
+                        shared.params.get(ParamId::Eg2Attack) as f32,
+                        shared.params.get(ParamId::Eg2Decay) as f32,
+                        shared.params.get(ParamId::Eg2Sustain) as f32,
+                        shared.params.get(ParamId::Eg2Release) as f32,
+                    );
+                }
+                if dirty.eg3 {
+                    self.engine.set_eg3_params(
+                        shared.params.get(ParamId::Eg3Attack) as f32,
+                        shared.params.get(ParamId::Eg3Decay) as f32,
+                        shared.params.get(ParamId::Eg3Sustain) as f32,
+                        shared.params.get(ParamId::Eg3Release) as f32,
+                    );
+                }
+                if dirty.eg4 {
+                    self.engine.set_eg4_params(
+                        shared.params.get(ParamId::Eg4Attack) as f32,
+                        shared.params.get(ParamId::Eg4Decay) as f32,
+                        shared.params.get(ParamId::Eg4Sustain) as f32,
+                        shared.params.get(ParamId::Eg4Release) as f32,
+                    );
+                }
+                if dirty.eg5 {
+                    self.engine.set_eg5_params(
+                        shared.params.get(ParamId::Eg5Attack) as f32,
+                        shared.params.get(ParamId::Eg5Decay) as f32,
+                        shared.params.get(ParamId::Eg5Sustain) as f32,
+                        shared.params.get(ParamId::Eg5Release) as f32,
+                    );
+                }
+                if dirty.lfo1 {
+                    use crate::common::lfo::LfoShape;
+                    self.engine.set_lfo1_params(
+                        shared.params.get(ParamId::Lfo1Rate) as f32,
+                        shared.params.get(ParamId::Lfo1Amount) as f32,
+                        LfoShape::from_u8(shared.params.get(ParamId::Lfo1Shape) as u8),
+                        shared.params.get(ParamId::Lfo1Enabled) as f32 >= 0.5,
+                    );
+                }
+                if dirty.lfo2 {
+                    use crate::common::lfo::LfoShape;
+                    self.engine.set_lfo2_params(
+                        shared.params.get(ParamId::Lfo2Rate) as f32,
+                        shared.params.get(ParamId::Lfo2Amount) as f32,
+                        LfoShape::from_u8(shared.params.get(ParamId::Lfo2Shape) as u8),
+                        shared.params.get(ParamId::Lfo2Enabled) as f32 >= 0.5,
+                    );
+                }
+            } else {
+                self.apply_params(shared);
+            }
+            self.last_params_version = params_version;
+        }
 
         let events = process.in_events();
         for i in 0..events.size() {
@@ -757,6 +1033,7 @@ unsafe extern "C-unwind" fn ext_state_load(
             return false;
         };
         state.apply(&inst.shared.params);
+        inst.shared.bump_params_version();
         true
     }
 }
@@ -1004,5 +1281,22 @@ pub unsafe fn clap_create_plugin(
             on_main_thread: None,
         });
         Box::into_raw(plugin)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sampler_apply_param_id_handles_all_param_ids() {
+        let mut processor = AudioProcessor::new(48_000.0, 128);
+        for id in ParamId::all() {
+            let mut dirty = DirtyFlags::default();
+            assert!(
+                apply_param_id(&mut processor, id, 0.0, &mut dirty),
+                "apply_param_id returned false for {id:?}"
+            );
+        }
     }
 }

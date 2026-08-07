@@ -80,6 +80,7 @@ static DESCRIPTOR: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor {
 pub struct SharedState {
     pub params: ParamStore,
     sample_rate_bits: std::sync::atomic::AtomicU64,
+    params_version: std::sync::atomic::AtomicU64,
     pending_param_notifications: std::sync::atomic::AtomicU64,
     pending_gesture_begin: std::sync::atomic::AtomicU64,
     pending_gesture_end: std::sync::atomic::AtomicU64,
@@ -93,6 +94,7 @@ impl Default for SharedState {
         Self {
             params: ParamStore::default(),
             sample_rate_bits: std::sync::atomic::AtomicU64::new(48_000.0f64.to_bits()),
+            params_version: std::sync::atomic::AtomicU64::new(1),
             pending_param_notifications: std::sync::atomic::AtomicU64::new(0),
             pending_gesture_begin: std::sync::atomic::AtomicU64::new(0),
             pending_gesture_end: std::sync::atomic::AtomicU64::new(0),
@@ -108,6 +110,14 @@ impl SharedState {
         f64::from_bits(self.sample_rate_bits.load(Ordering::Acquire)) as f32
     }
 
+    fn params_version(&self) -> u64 {
+        self.params_version.load(Ordering::Acquire)
+    }
+
+    fn bump_params_version(&self) {
+        self.params_version.fetch_add(1, Ordering::Release);
+    }
+
     fn set_host(&self, host: *const clap_host) {
         self.host.store(host.cast_mut(), Ordering::Release);
     }
@@ -119,6 +129,7 @@ impl SharedState {
 
     fn set_param_internal(&self, id: ParamId, value: f64, notify_host: bool) {
         self.params.set(id, sanitize_param_value(id, value));
+        self.bump_params_version();
         if notify_host {
             self.mark_param_notification_pending(id);
             self.request_flush();
@@ -289,6 +300,273 @@ impl SharedStateExt<ParamId> for SharedState {
     }
 }
 
+fn apply_param_events_compressor(
+    shared: &SharedState,
+    events: &clap_clap::events::InputEvents<'_>,
+    sanitize: impl Fn(ParamId, f64) -> f64,
+    changed: &mut [Option<(ParamId, f64)>; 32],
+) -> bool {
+    use clap_clap::ffi::{
+        CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END,
+        CLAP_EVENT_PARAM_VALUE, clap_event_header, clap_event_param_gesture,
+    };
+
+    let mut overflow = false;
+    let mut next_idx = 0;
+
+    for index in 0..events.size() {
+        let header = events.get(index);
+        if header.space_id() != CLAP_CORE_EVENT_SPACE_ID {
+            continue;
+        }
+        match header.r#type() {
+            t if t == CLAP_EVENT_PARAM_GESTURE_BEGIN as u16 => {
+                let gesture = unsafe {
+                    &*((header.as_clap_event_header() as *const clap_event_header)
+                        as *const clap_event_param_gesture)
+                };
+                if let Some(id) = ParamId::from_raw(gesture.param_id) {
+                    shared.set_gesture_active(id, true);
+                }
+            }
+            t if t == CLAP_EVENT_PARAM_GESTURE_END as u16 => {
+                let gesture = unsafe {
+                    &*((header.as_clap_event_header() as *const clap_event_header)
+                        as *const clap_event_param_gesture)
+                };
+                if let Some(id) = ParamId::from_raw(gesture.param_id) {
+                    shared.set_gesture_active(id, false);
+                }
+            }
+            t if t == CLAP_EVENT_PARAM_VALUE as u16 => {
+                if let Ok(param) = header.param_value() {
+                    let raw: u32 = param.param_id().into();
+                    if let Some(id) = ParamId::from_raw(raw) {
+                        if shared.is_gesture_active(id) {
+                            continue;
+                        }
+                        let incoming = sanitize(id, param.value());
+                        shared.set_param_from_host(id, incoming);
+                        if next_idx < changed.len() {
+                            changed[next_idx] = Some((id, incoming));
+                            next_idx += 1;
+                        } else {
+                            overflow = true;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    overflow
+}
+
+#[derive(Default)]
+struct DirtyFlags {
+    input_output: bool,
+    splits: bool,
+    bands: bool,
+    global: bool,
+}
+
+fn apply_param_id(
+    compressor: &mut Compressor,
+    id: ParamId,
+    value: f64,
+    dirty: &mut DirtyFlags,
+) -> bool {
+    match id {
+        ParamId::InputGain => {
+            compressor.set_input_gain_db(value as f32);
+            dirty.input_output = true;
+            true
+        }
+        ParamId::OutputGain => {
+            compressor.set_output_gain_db(value as f32);
+            dirty.input_output = true;
+            true
+        }
+        ParamId::DryGain => {
+            compressor.set_dry_gain(value as f32);
+            dirty.input_output = true;
+            true
+        }
+        ParamId::WetGain => {
+            compressor.set_wet_gain(value as f32);
+            dirty.input_output = true;
+            true
+        }
+        ParamId::Split1 => {
+            compressor.set_split_hz(0, value as f32);
+            dirty.splits = true;
+            true
+        }
+        ParamId::Split2 => {
+            compressor.set_split_hz(1, value as f32);
+            dirty.splits = true;
+            true
+        }
+        ParamId::Split3 => {
+            compressor.set_split_hz(2, value as f32);
+            dirty.splits = true;
+            true
+        }
+        ParamId::B1Threshold => {
+            compressor.set_band_threshold_db(0, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B1Ratio => {
+            compressor.set_band_ratio(0, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B1Attack => {
+            compressor.set_band_attack_ms(0, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B1Release => {
+            compressor.set_band_release_ms(0, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B1Knee => {
+            compressor.set_band_knee_db(0, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B1Makeup => {
+            compressor.set_band_makeup_db(0, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B2Threshold => {
+            compressor.set_band_threshold_db(1, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B2Ratio => {
+            compressor.set_band_ratio(1, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B2Attack => {
+            compressor.set_band_attack_ms(1, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B2Release => {
+            compressor.set_band_release_ms(1, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B2Knee => {
+            compressor.set_band_knee_db(1, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B2Makeup => {
+            compressor.set_band_makeup_db(1, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B3Threshold => {
+            compressor.set_band_threshold_db(2, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B3Ratio => {
+            compressor.set_band_ratio(2, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B3Attack => {
+            compressor.set_band_attack_ms(2, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B3Release => {
+            compressor.set_band_release_ms(2, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B3Knee => {
+            compressor.set_band_knee_db(2, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B3Makeup => {
+            compressor.set_band_makeup_db(2, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B4Threshold => {
+            compressor.set_band_threshold_db(3, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B4Ratio => {
+            compressor.set_band_ratio(3, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B4Attack => {
+            compressor.set_band_attack_ms(3, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B4Release => {
+            compressor.set_band_release_ms(3, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B4Knee => {
+            compressor.set_band_knee_db(3, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B4Makeup => {
+            compressor.set_band_makeup_db(3, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::ScMode => {
+            compressor.set_sc_mode(value.round().clamp(0.0, 1.0) as u32);
+            dirty.global = true;
+            true
+        }
+        ParamId::Mode => {
+            compressor.set_mode(value.round().clamp(0.0, 2.0) as u32);
+            dirty.global = true;
+            true
+        }
+        ParamId::Topology => {
+            compressor.set_topology_mode(value.round().clamp(0.0, 1.0) as u32);
+            dirty.global = true;
+            true
+        }
+        ParamId::Lookahead => {
+            compressor.set_lookahead_ms(value as f32);
+            dirty.global = true;
+            true
+        }
+        ParamId::ScBoost => {
+            compressor.set_sc_boost(value.round().clamp(0.0, 4.0) as u32);
+            dirty.global = true;
+            true
+        }
+        ParamId::Bypass => {
+            compressor.set_bypass(value >= 0.5);
+            dirty.global = true;
+            true
+        }
+        ParamId::Channels => true,
+    }
+}
+
 struct AudioProcessor {
     compressor: Compressor,
     temp_left: Vec<f32>,
@@ -297,6 +575,7 @@ struct AudioProcessor {
     fft_scratch: Vec<f32>,
     fft_mag: Vec<f32>,
     fft_analyzer: fft::SpectrumAnalyzer,
+    last_params_version: u64,
 }
 
 impl AudioProcessor {
@@ -311,6 +590,7 @@ impl AudioProcessor {
             fft_scratch: vec![0.0; max_frames as usize],
             fft_mag: vec![0.0; 1024],
             fft_analyzer: fft::SpectrumAnalyzer::new(max_frames as usize),
+            last_params_version: 0,
         }
     }
 
@@ -396,11 +676,41 @@ impl AudioProcessor {
     }
 
     fn process(&mut self, shared: &SharedState, process: &mut Process) -> clap_process_status {
-        self.apply_params(shared);
-        apply_param_events(shared, &process.in_events(), sanitize_param_value);
+        let mut changed_params: [Option<(ParamId, f64)>; 32] = [None; 32];
+        let overflow = apply_param_events_compressor(
+            shared,
+            &process.in_events(),
+            sanitize_param_value,
+            &mut changed_params,
+        );
         {
             let mut out_events = process.out_events();
             emit_pending_param_events_to_host(shared, &mut out_events);
+        }
+
+        let params_version = shared.params_version();
+        if params_version != self.last_params_version {
+            let any_changed = changed_params.iter().any(|x| x.is_some());
+            let mut use_incremental = self.last_params_version != 0 && !overflow && any_changed;
+            let mut dirty = DirtyFlags::default();
+
+            if use_incremental {
+                for item in changed_params.iter().flatten() {
+                    let (id, value) = *item;
+                    if !apply_param_id(&mut self.compressor, id, value, &mut dirty) {
+                        use_incremental = false;
+                        break;
+                    }
+                }
+            }
+
+            if use_incremental {
+                // Individual setters already update DSP state; dirty flags are
+                // retained for future component-oriented optimizations.
+            } else {
+                self.apply_params(shared);
+            }
+            self.last_params_version = params_version;
         }
 
         let frames = process.frames_count() as usize;
@@ -957,6 +1267,7 @@ unsafe extern "C-unwind" fn ext_state_load(
         return false;
     };
     state.apply(&instance.shared.params);
+    instance.shared.bump_params_version();
     true
 }
 
@@ -1299,4 +1610,22 @@ pub unsafe fn create_plugin(
     plugin_id: *const c_char,
 ) -> *const clap_plugin {
     unsafe { factory_create_plugin(&raw const FACTORY, host, plugin_id) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_param_id_covers_all_variants() {
+        let mut compressor = Compressor::new(48_000.0);
+        let mut dirty = DirtyFlags::default();
+        for id in ParamId::all() {
+            let value = PARAMS[id.as_index()].default;
+            assert!(
+                apply_param_id(&mut compressor, id, value, &mut dirty),
+                "apply_param_id returned false for {id:?}"
+            );
+        }
+    }
 }

@@ -31,7 +31,7 @@ impl OscPhaseMode {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct OscSettings {
     pub osc_type: OscType,
     pub octave: i8,
@@ -138,7 +138,7 @@ impl Default for OscSettings {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NoiseSettings {
     pub noise_type: NoiseType,
     pub level: f32,
@@ -702,7 +702,7 @@ impl ModDepthCurve {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ModRouting {
     pub source: ModSource,
     pub target: ModTarget,
@@ -845,7 +845,7 @@ pub struct VoiceParams {
     pub sustain: f32,
     pub tuning_scale: u8,
     pub tuning_root: u8,
-    pub tuning_override: Option<Tuning>,
+    pub tuning_override: Option<Arc<Tuning>>,
     pub play_mode: PlayMode,
     pub voice_priority: VoicePriority,
     pub drift_amount: f32,
@@ -1006,8 +1006,6 @@ pub struct Voice {
     filter1_r: Filter,
     filter2_l: Filter,
     filter2_r: Filter,
-    lowcut_l: Filter,
-    lowcut_r: Filter,
     lowcut_states_l: [f32; 4],
     lowcut_states_r: [f32; 4],
     lowcut_states_l2: [f32; 4],
@@ -1085,8 +1083,6 @@ impl Voice {
             filter1_r: Filter::new(FilterType::Lowpass, sample_rate),
             filter2_l: Filter::new(FilterType::Lowpass, sample_rate),
             filter2_r: Filter::new(FilterType::Lowpass, sample_rate),
-            lowcut_l: Filter::new(FilterType::Highpass12dB, sample_rate),
-            lowcut_r: Filter::new(FilterType::Highpass12dB, sample_rate),
             lowcut_states_l: [0.0; 4],
             lowcut_states_r: [0.0; 4],
             lowcut_states_l2: [0.0; 4],
@@ -1145,253 +1141,485 @@ impl Voice {
     pub fn set_params(&mut self, params: &VoiceParams) {
         let old_scale = self.params.tuning_scale;
         let old_root = self.params.tuning_root;
+
+        // Compute change flags before overwriting self.params so we can skip
+        // redundant per-component setup on the audio thread.
+        let amp_eg_changed = self.params.amp_eg != params.amp_eg;
+        let filter_eg_changed = self.params.filter_eg != params.filter_eg;
+        let pitch_eg_changed = self.params.pitch_eg != params.pitch_eg;
+
+        let step_seq_changed = self.params.step_seq_values != params.step_seq_values
+            || self.params.step_seq_loop_start != params.step_seq_loop_start
+            || self.params.step_seq_loop_end != params.step_seq_loop_end
+            || self.params.step_seq_shuffle != params.step_seq_shuffle;
+        let mseg_changed = self.params.mseg_nodes != params.mseg_nodes
+            || self.params.mseg_curves != params.mseg_curves
+            || self.params.mseg_loop_start != params.mseg_loop_start
+            || self.params.mseg_loop_end != params.mseg_loop_end
+            || self.params.mseg_loop_mode != params.mseg_loop_mode;
+        let lfo1_changed = self.params.lfo1 != params.lfo1 || step_seq_changed || mseg_changed;
+        let lfo2_changed = self.params.lfo2 != params.lfo2 || step_seq_changed || mseg_changed;
+        let lfo3_changed = self.params.lfo3 != params.lfo3 || step_seq_changed || mseg_changed;
+        let lfo4_changed = self.params.lfo4 != params.lfo4 || step_seq_changed || mseg_changed;
+        let lfo5_changed = self.params.lfo5 != params.lfo5 || step_seq_changed || mseg_changed;
+        let lfo6_changed = self.params.lfo6 != params.lfo6 || step_seq_changed || mseg_changed;
+
+        let filters_changed = self.params.filter1 != params.filter1
+            || self.params.filter2 != params.filter2
+            || self.params.lowcut_hz != params.lowcut_hz
+            || self.params.lowcut_slope != params.lowcut_slope;
+
+        let osc_globals_changed = self.params.string_stereo_spread != params.string_stereo_spread
+            || self.params.wavetable_keytrack != params.wavetable_keytrack
+            || self.params.sh_noise_correlation != params.sh_noise_correlation
+            || self.params.sh_noise_width != params.sh_noise_width
+            || self.params.sh_noise_sync != params.sh_noise_sync
+            || self.params.twist_aux_mix != params.twist_aux_mix
+            || self.params.twist_lpg_response != params.twist_lpg_response
+            || self.params.twist_lpg_decay != params.twist_lpg_decay;
+        let oscs_changed = self.params.oscs != params.oscs || osc_globals_changed;
+
+        let noise_changed = self.params.noise != params.noise;
+        let flavor_changed = self.params.flavor != params.flavor
+            || self.params.flavor_cutoff != params.flavor_cutoff
+            || self.params.flavor_resonance != params.flavor_resonance;
+        let waveshaper_changed = self.params.waveshaper != params.waveshaper;
+
         self.params = params.clone();
 
-        if let Some(ref tuning) = params.tuning_override {
-            self.tuning = tuning.clone();
+        if let Some(tuning) = params.tuning_override.as_ref() {
+            self.tuning = tuning.as_ref().clone();
         } else if params.tuning_scale != old_scale || params.tuning_root != old_root {
             self.tuning = crate::common::tuning::built_in_tuning(params.tuning_scale);
             self.tuning.root_midi_note = params.tuning_root as i32;
         }
 
-        self.amp_eg.set_params(
-            params.amp_eg.attack,
-            params.amp_eg.decay,
-            params.amp_eg.sustain,
-            params.amp_eg.release,
-        );
-        self.amp_eg.set_mode(params.amp_eg.mode);
-        self.amp_eg.set_shapes(
-            params.amp_eg.attack_shape,
-            params.amp_eg.decay_shape,
-            params.amp_eg.release_shape,
-        );
-        self.amp_eg.set_retrigger_mode(params.amp_eg.retrigger_mode);
-        self.amp_eg.set_tempo_sync(params.amp_eg.tempo_sync);
-        self.amp_eg.set_uber_release(params.amp_eg.uber_release);
-        self.amp_eg.set_gated_release(params.amp_eg.gated_release);
-        self.amp_eg
-            .set_correct_analog_mode(params.amp_eg.correct_analog_mode);
-
-        self.filter_eg.set_params(
-            params.filter_eg.attack,
-            params.filter_eg.decay,
-            params.filter_eg.sustain,
-            params.filter_eg.release,
-        );
-        self.filter_eg.set_mode(params.filter_eg.mode);
-        self.filter_eg.set_shapes(
-            params.filter_eg.attack_shape,
-            params.filter_eg.decay_shape,
-            params.filter_eg.release_shape,
-        );
-        self.filter_eg
-            .set_retrigger_mode(params.filter_eg.retrigger_mode);
-        self.filter_eg.set_tempo_sync(params.filter_eg.tempo_sync);
-        self.filter_eg
-            .set_uber_release(params.filter_eg.uber_release);
-        self.filter_eg
-            .set_gated_release(params.filter_eg.gated_release);
-        self.filter_eg
-            .set_correct_analog_mode(params.filter_eg.correct_analog_mode);
-
-        self.pitch_eg.set_params(
-            params.pitch_eg.attack,
-            params.pitch_eg.decay,
-            params.pitch_eg.sustain,
-            params.pitch_eg.release,
-        );
-        self.pitch_eg.set_mode(params.pitch_eg.mode);
-        self.pitch_eg.set_shapes(
-            params.pitch_eg.attack_shape,
-            params.pitch_eg.decay_shape,
-            params.pitch_eg.release_shape,
-        );
-        self.pitch_eg
-            .set_retrigger_mode(params.pitch_eg.retrigger_mode);
-        self.pitch_eg.set_tempo_sync(params.pitch_eg.tempo_sync);
-        self.pitch_eg.set_uber_release(params.pitch_eg.uber_release);
-        self.pitch_eg
-            .set_gated_release(params.pitch_eg.gated_release);
-        self.pitch_eg
-            .set_correct_analog_mode(params.pitch_eg.correct_analog_mode);
-
-        self.lfo1.set_rate_hz(params.lfo1.rate_hz);
-        self.lfo1.set_shape(params.lfo1.shape);
-        self.lfo1.set_amount(params.lfo1.amount);
-        self.lfo1.set_deform(params.lfo1.deform);
-        self.lfo1.set_deform_type(params.lfo1.deform_type);
-        self.lfo1.set_sync_mode(params.lfo1.sync_mode);
-        self.lfo1.set_sync_division(params.lfo1.sync_division);
-        self.lfo1.set_trigger_mode(params.lfo1.trigger_mode);
-        self.lfo1.set_env_params(
-            params.lfo1.env_delay,
-            params.lfo1.env_attack,
-            params.lfo1.env_hold,
-            params.lfo1.env_decay,
-            params.lfo1.env_sustain,
-            params.lfo1.env_release,
-        );
-        self.lfo1.set_start_phase(params.lfo1.start_phase);
-        self.lfo1.set_unipolar(params.lfo1.unipolar);
-        self.lfo1.set_env_tempo_sync(params.lfo1.env_tempo_sync);
-        self.lfo2.set_rate_hz(params.lfo2.rate_hz);
-        self.lfo2.set_shape(params.lfo2.shape);
-        self.lfo2.set_amount(params.lfo2.amount);
-        self.lfo2.set_deform(params.lfo2.deform);
-        self.lfo2.set_deform_type(params.lfo2.deform_type);
-        self.lfo2.set_sync_mode(params.lfo2.sync_mode);
-        self.lfo2.set_sync_division(params.lfo2.sync_division);
-        self.lfo2.set_trigger_mode(params.lfo2.trigger_mode);
-        self.lfo2.set_env_params(
-            params.lfo2.env_delay,
-            params.lfo2.env_attack,
-            params.lfo2.env_hold,
-            params.lfo2.env_decay,
-            params.lfo2.env_sustain,
-            params.lfo2.env_release,
-        );
-        self.lfo2.set_start_phase(params.lfo2.start_phase);
-        self.lfo2.set_unipolar(params.lfo2.unipolar);
-        self.lfo2.set_env_tempo_sync(params.lfo2.env_tempo_sync);
-        self.lfo3.set_rate_hz(params.lfo3.rate_hz);
-        self.lfo3.set_shape(params.lfo3.shape);
-        self.lfo3.set_amount(params.lfo3.amount);
-        self.lfo3.set_deform(params.lfo3.deform);
-        self.lfo3.set_deform_type(params.lfo3.deform_type);
-        self.lfo3.set_sync_mode(params.lfo3.sync_mode);
-        self.lfo3.set_sync_division(params.lfo3.sync_division);
-        self.lfo3.set_trigger_mode(params.lfo3.trigger_mode);
-        self.lfo3.set_env_params(
-            params.lfo3.env_delay,
-            params.lfo3.env_attack,
-            params.lfo3.env_hold,
-            params.lfo3.env_decay,
-            params.lfo3.env_sustain,
-            params.lfo3.env_release,
-        );
-        self.lfo3.set_start_phase(params.lfo3.start_phase);
-        self.lfo3.set_unipolar(params.lfo3.unipolar);
-        self.lfo3.set_env_tempo_sync(params.lfo3.env_tempo_sync);
-        self.lfo4.set_rate_hz(params.lfo4.rate_hz);
-        self.lfo4.set_shape(params.lfo4.shape);
-        self.lfo4.set_amount(params.lfo4.amount);
-        self.lfo4.set_deform(params.lfo4.deform);
-        self.lfo4.set_deform_type(params.lfo4.deform_type);
-        self.lfo4.set_sync_mode(params.lfo4.sync_mode);
-        self.lfo4.set_sync_division(params.lfo4.sync_division);
-        self.lfo4.set_trigger_mode(params.lfo4.trigger_mode);
-        self.lfo4.set_env_params(
-            params.lfo4.env_delay,
-            params.lfo4.env_attack,
-            params.lfo4.env_hold,
-            params.lfo4.env_decay,
-            params.lfo4.env_sustain,
-            params.lfo4.env_release,
-        );
-        self.lfo4.set_start_phase(params.lfo4.start_phase);
-        self.lfo4.set_unipolar(params.lfo4.unipolar);
-        self.lfo4.set_env_tempo_sync(params.lfo4.env_tempo_sync);
-        self.lfo5.set_rate_hz(params.lfo5.rate_hz);
-        self.lfo5.set_shape(params.lfo5.shape);
-        self.lfo5.set_amount(params.lfo5.amount);
-        self.lfo5.set_deform(params.lfo5.deform);
-        self.lfo5.set_deform_type(params.lfo5.deform_type);
-        self.lfo5.set_sync_mode(params.lfo5.sync_mode);
-        self.lfo5.set_sync_division(params.lfo5.sync_division);
-        self.lfo5.set_trigger_mode(params.lfo5.trigger_mode);
-        self.lfo5.set_env_params(
-            params.lfo5.env_delay,
-            params.lfo5.env_attack,
-            params.lfo5.env_hold,
-            params.lfo5.env_decay,
-            params.lfo5.env_sustain,
-            params.lfo5.env_release,
-        );
-        self.lfo5.set_start_phase(params.lfo5.start_phase);
-        self.lfo5.set_unipolar(params.lfo5.unipolar);
-        self.lfo5.set_env_tempo_sync(params.lfo5.env_tempo_sync);
-        self.lfo6.set_rate_hz(params.lfo6.rate_hz);
-        self.lfo6.set_shape(params.lfo6.shape);
-        self.lfo6.set_amount(params.lfo6.amount);
-        self.lfo6.set_deform(params.lfo6.deform);
-        self.lfo6.set_deform_type(params.lfo6.deform_type);
-        self.lfo6.set_sync_mode(params.lfo6.sync_mode);
-        self.lfo6.set_sync_division(params.lfo6.sync_division);
-        self.lfo6.set_trigger_mode(params.lfo6.trigger_mode);
-        self.lfo6.set_env_params(
-            params.lfo6.env_delay,
-            params.lfo6.env_attack,
-            params.lfo6.env_hold,
-            params.lfo6.env_decay,
-            params.lfo6.env_sustain,
-            params.lfo6.env_release,
-        );
-        self.lfo6.set_start_phase(params.lfo6.start_phase);
-        self.lfo6.set_unipolar(params.lfo6.unipolar);
-        self.lfo6.set_env_tempo_sync(params.lfo6.env_tempo_sync);
-
-        for (i, step) in params.step_seq_values.iter().enumerate() {
-            self.lfo1.stepseq.steps[i] = *step;
-            self.lfo2.stepseq.steps[i] = *step;
-            self.lfo3.stepseq.steps[i] = *step;
-            self.lfo4.stepseq.steps[i] = *step;
-            self.lfo5.stepseq.steps[i] = *step;
-            self.lfo6.stepseq.steps[i] = *step;
+        if amp_eg_changed {
+            self.amp_eg.set_params(
+                params.amp_eg.attack,
+                params.amp_eg.decay,
+                params.amp_eg.sustain,
+                params.amp_eg.release,
+            );
+            self.amp_eg.set_mode(params.amp_eg.mode);
+            self.amp_eg.set_shapes(
+                params.amp_eg.attack_shape,
+                params.amp_eg.decay_shape,
+                params.amp_eg.release_shape,
+            );
+            self.amp_eg.set_retrigger_mode(params.amp_eg.retrigger_mode);
+            self.amp_eg.set_tempo_sync(params.amp_eg.tempo_sync);
+            self.amp_eg.set_uber_release(params.amp_eg.uber_release);
+            self.amp_eg.set_gated_release(params.amp_eg.gated_release);
+            self.amp_eg
+                .set_correct_analog_mode(params.amp_eg.correct_analog_mode);
         }
-        self.lfo1.stepseq.loop_start = params.step_seq_loop_start;
-        self.lfo1.stepseq.loop_end = params.step_seq_loop_end;
-        self.lfo1.stepseq.shuffle = params.step_seq_shuffle;
-        self.lfo2.stepseq.loop_start = params.step_seq_loop_start;
-        self.lfo2.stepseq.loop_end = params.step_seq_loop_end;
-        self.lfo2.stepseq.shuffle = params.step_seq_shuffle;
-        self.lfo3.stepseq.loop_start = params.step_seq_loop_start;
-        self.lfo3.stepseq.loop_end = params.step_seq_loop_end;
-        self.lfo3.stepseq.shuffle = params.step_seq_shuffle;
-        self.lfo4.stepseq.loop_start = params.step_seq_loop_start;
-        self.lfo4.stepseq.loop_end = params.step_seq_loop_end;
-        self.lfo4.stepseq.shuffle = params.step_seq_shuffle;
-        self.lfo5.stepseq.loop_start = params.step_seq_loop_start;
-        self.lfo5.stepseq.loop_end = params.step_seq_loop_end;
-        self.lfo5.stepseq.shuffle = params.step_seq_shuffle;
-        self.lfo6.stepseq.loop_start = params.step_seq_loop_start;
-        self.lfo6.stepseq.loop_end = params.step_seq_loop_end;
-        self.lfo6.stepseq.shuffle = params.step_seq_shuffle;
 
-        for i in 0..MSEG_MAX_NODES {
-            self.lfo1.mseg.nodes[i] = params.mseg_nodes[i];
-            self.lfo2.mseg.nodes[i] = params.mseg_nodes[i];
-            self.lfo3.mseg.nodes[i] = params.mseg_nodes[i];
-            self.lfo4.mseg.nodes[i] = params.mseg_nodes[i];
-            self.lfo5.mseg.nodes[i] = params.mseg_nodes[i];
-            self.lfo6.mseg.nodes[i] = params.mseg_nodes[i];
+        if filter_eg_changed {
+            self.filter_eg.set_params(
+                params.filter_eg.attack,
+                params.filter_eg.decay,
+                params.filter_eg.sustain,
+                params.filter_eg.release,
+            );
+            self.filter_eg.set_mode(params.filter_eg.mode);
+            self.filter_eg.set_shapes(
+                params.filter_eg.attack_shape,
+                params.filter_eg.decay_shape,
+                params.filter_eg.release_shape,
+            );
+            self.filter_eg
+                .set_retrigger_mode(params.filter_eg.retrigger_mode);
+            self.filter_eg.set_tempo_sync(params.filter_eg.tempo_sync);
+            self.filter_eg
+                .set_uber_release(params.filter_eg.uber_release);
+            self.filter_eg
+                .set_gated_release(params.filter_eg.gated_release);
+            self.filter_eg
+                .set_correct_analog_mode(params.filter_eg.correct_analog_mode);
         }
-        for i in 0..MSEG_MAX_SEGMENTS {
-            self.lfo1.mseg.curves[i] = params.mseg_curves[i];
-            self.lfo2.mseg.curves[i] = params.mseg_curves[i];
-            self.lfo3.mseg.curves[i] = params.mseg_curves[i];
-            self.lfo4.mseg.curves[i] = params.mseg_curves[i];
-            self.lfo5.mseg.curves[i] = params.mseg_curves[i];
-            self.lfo6.mseg.curves[i] = params.mseg_curves[i];
+
+        if pitch_eg_changed {
+            self.pitch_eg.set_params(
+                params.pitch_eg.attack,
+                params.pitch_eg.decay,
+                params.pitch_eg.sustain,
+                params.pitch_eg.release,
+            );
+            self.pitch_eg.set_mode(params.pitch_eg.mode);
+            self.pitch_eg.set_shapes(
+                params.pitch_eg.attack_shape,
+                params.pitch_eg.decay_shape,
+                params.pitch_eg.release_shape,
+            );
+            self.pitch_eg
+                .set_retrigger_mode(params.pitch_eg.retrigger_mode);
+            self.pitch_eg.set_tempo_sync(params.pitch_eg.tempo_sync);
+            self.pitch_eg.set_uber_release(params.pitch_eg.uber_release);
+            self.pitch_eg
+                .set_gated_release(params.pitch_eg.gated_release);
+            self.pitch_eg
+                .set_correct_analog_mode(params.pitch_eg.correct_analog_mode);
         }
-        self.lfo1.mseg.loop_start = params.mseg_loop_start;
-        self.lfo1.mseg.loop_end = params.mseg_loop_end;
-        self.lfo1.mseg.loop_mode = params.mseg_loop_mode;
-        self.lfo2.mseg.loop_start = params.mseg_loop_start;
-        self.lfo2.mseg.loop_end = params.mseg_loop_end;
-        self.lfo2.mseg.loop_mode = params.mseg_loop_mode;
-        self.lfo3.mseg.loop_start = params.mseg_loop_start;
-        self.lfo3.mseg.loop_end = params.mseg_loop_end;
-        self.lfo3.mseg.loop_mode = params.mseg_loop_mode;
-        self.lfo4.mseg.loop_start = params.mseg_loop_start;
-        self.lfo4.mseg.loop_end = params.mseg_loop_end;
-        self.lfo4.mseg.loop_mode = params.mseg_loop_mode;
-        self.lfo5.mseg.loop_start = params.mseg_loop_start;
-        self.lfo5.mseg.loop_end = params.mseg_loop_end;
-        self.lfo5.mseg.loop_mode = params.mseg_loop_mode;
-        self.lfo6.mseg.loop_start = params.mseg_loop_start;
-        self.lfo6.mseg.loop_end = params.mseg_loop_end;
-        self.lfo6.mseg.loop_mode = params.mseg_loop_mode;
+
+        if lfo1_changed {
+            self.lfo1.set_rate_hz(params.lfo1.rate_hz);
+            self.lfo1.set_shape(params.lfo1.shape);
+            self.lfo1.set_amount(params.lfo1.amount);
+            self.lfo1.set_deform(params.lfo1.deform);
+            self.lfo1.set_deform_type(params.lfo1.deform_type);
+            self.lfo1.set_sync_mode(params.lfo1.sync_mode);
+            self.lfo1.set_sync_division(params.lfo1.sync_division);
+            self.lfo1.set_trigger_mode(params.lfo1.trigger_mode);
+            self.lfo1.set_env_params(
+                params.lfo1.env_delay,
+                params.lfo1.env_attack,
+                params.lfo1.env_hold,
+                params.lfo1.env_decay,
+                params.lfo1.env_sustain,
+                params.lfo1.env_release,
+            );
+            self.lfo1.set_start_phase(params.lfo1.start_phase);
+            self.lfo1.set_unipolar(params.lfo1.unipolar);
+            self.lfo1.set_env_tempo_sync(params.lfo1.env_tempo_sync);
+        }
+        if lfo2_changed {
+            self.lfo2.set_rate_hz(params.lfo2.rate_hz);
+            self.lfo2.set_shape(params.lfo2.shape);
+            self.lfo2.set_amount(params.lfo2.amount);
+            self.lfo2.set_deform(params.lfo2.deform);
+            self.lfo2.set_deform_type(params.lfo2.deform_type);
+            self.lfo2.set_sync_mode(params.lfo2.sync_mode);
+            self.lfo2.set_sync_division(params.lfo2.sync_division);
+            self.lfo2.set_trigger_mode(params.lfo2.trigger_mode);
+            self.lfo2.set_env_params(
+                params.lfo2.env_delay,
+                params.lfo2.env_attack,
+                params.lfo2.env_hold,
+                params.lfo2.env_decay,
+                params.lfo2.env_sustain,
+                params.lfo2.env_release,
+            );
+            self.lfo2.set_start_phase(params.lfo2.start_phase);
+            self.lfo2.set_unipolar(params.lfo2.unipolar);
+            self.lfo2.set_env_tempo_sync(params.lfo2.env_tempo_sync);
+        }
+        if lfo3_changed {
+            self.lfo3.set_rate_hz(params.lfo3.rate_hz);
+            self.lfo3.set_shape(params.lfo3.shape);
+            self.lfo3.set_amount(params.lfo3.amount);
+            self.lfo3.set_deform(params.lfo3.deform);
+            self.lfo3.set_deform_type(params.lfo3.deform_type);
+            self.lfo3.set_sync_mode(params.lfo3.sync_mode);
+            self.lfo3.set_sync_division(params.lfo3.sync_division);
+            self.lfo3.set_trigger_mode(params.lfo3.trigger_mode);
+            self.lfo3.set_env_params(
+                params.lfo3.env_delay,
+                params.lfo3.env_attack,
+                params.lfo3.env_hold,
+                params.lfo3.env_decay,
+                params.lfo3.env_sustain,
+                params.lfo3.env_release,
+            );
+            self.lfo3.set_start_phase(params.lfo3.start_phase);
+            self.lfo3.set_unipolar(params.lfo3.unipolar);
+            self.lfo3.set_env_tempo_sync(params.lfo3.env_tempo_sync);
+        }
+        if lfo4_changed {
+            self.lfo4.set_rate_hz(params.lfo4.rate_hz);
+            self.lfo4.set_shape(params.lfo4.shape);
+            self.lfo4.set_amount(params.lfo4.amount);
+            self.lfo4.set_deform(params.lfo4.deform);
+            self.lfo4.set_deform_type(params.lfo4.deform_type);
+            self.lfo4.set_sync_mode(params.lfo4.sync_mode);
+            self.lfo4.set_sync_division(params.lfo4.sync_division);
+            self.lfo4.set_trigger_mode(params.lfo4.trigger_mode);
+            self.lfo4.set_env_params(
+                params.lfo4.env_delay,
+                params.lfo4.env_attack,
+                params.lfo4.env_hold,
+                params.lfo4.env_decay,
+                params.lfo4.env_sustain,
+                params.lfo4.env_release,
+            );
+            self.lfo4.set_start_phase(params.lfo4.start_phase);
+            self.lfo4.set_unipolar(params.lfo4.unipolar);
+            self.lfo4.set_env_tempo_sync(params.lfo4.env_tempo_sync);
+        }
+        if lfo5_changed {
+            self.lfo5.set_rate_hz(params.lfo5.rate_hz);
+            self.lfo5.set_shape(params.lfo5.shape);
+            self.lfo5.set_amount(params.lfo5.amount);
+            self.lfo5.set_deform(params.lfo5.deform);
+            self.lfo5.set_deform_type(params.lfo5.deform_type);
+            self.lfo5.set_sync_mode(params.lfo5.sync_mode);
+            self.lfo5.set_sync_division(params.lfo5.sync_division);
+            self.lfo5.set_trigger_mode(params.lfo5.trigger_mode);
+            self.lfo5.set_env_params(
+                params.lfo5.env_delay,
+                params.lfo5.env_attack,
+                params.lfo5.env_hold,
+                params.lfo5.env_decay,
+                params.lfo5.env_sustain,
+                params.lfo5.env_release,
+            );
+            self.lfo5.set_start_phase(params.lfo5.start_phase);
+            self.lfo5.set_unipolar(params.lfo5.unipolar);
+            self.lfo5.set_env_tempo_sync(params.lfo5.env_tempo_sync);
+        }
+        if lfo6_changed {
+            self.lfo6.set_rate_hz(params.lfo6.rate_hz);
+            self.lfo6.set_shape(params.lfo6.shape);
+            self.lfo6.set_amount(params.lfo6.amount);
+            self.lfo6.set_deform(params.lfo6.deform);
+            self.lfo6.set_deform_type(params.lfo6.deform_type);
+            self.lfo6.set_sync_mode(params.lfo6.sync_mode);
+            self.lfo6.set_sync_division(params.lfo6.sync_division);
+            self.lfo6.set_trigger_mode(params.lfo6.trigger_mode);
+            self.lfo6.set_env_params(
+                params.lfo6.env_delay,
+                params.lfo6.env_attack,
+                params.lfo6.env_hold,
+                params.lfo6.env_decay,
+                params.lfo6.env_sustain,
+                params.lfo6.env_release,
+            );
+            self.lfo6.set_start_phase(params.lfo6.start_phase);
+            self.lfo6.set_unipolar(params.lfo6.unipolar);
+            self.lfo6.set_env_tempo_sync(params.lfo6.env_tempo_sync);
+        }
+
+        if step_seq_changed {
+            for (i, step) in params.step_seq_values.iter().enumerate() {
+                self.lfo1.stepseq.steps[i] = *step;
+                self.lfo2.stepseq.steps[i] = *step;
+                self.lfo3.stepseq.steps[i] = *step;
+                self.lfo4.stepseq.steps[i] = *step;
+                self.lfo5.stepseq.steps[i] = *step;
+                self.lfo6.stepseq.steps[i] = *step;
+            }
+            self.lfo1.stepseq.loop_start = params.step_seq_loop_start;
+            self.lfo1.stepseq.loop_end = params.step_seq_loop_end;
+            self.lfo1.stepseq.shuffle = params.step_seq_shuffle;
+            self.lfo2.stepseq.loop_start = params.step_seq_loop_start;
+            self.lfo2.stepseq.loop_end = params.step_seq_loop_end;
+            self.lfo2.stepseq.shuffle = params.step_seq_shuffle;
+            self.lfo3.stepseq.loop_start = params.step_seq_loop_start;
+            self.lfo3.stepseq.loop_end = params.step_seq_loop_end;
+            self.lfo3.stepseq.shuffle = params.step_seq_shuffle;
+            self.lfo4.stepseq.loop_start = params.step_seq_loop_start;
+            self.lfo4.stepseq.loop_end = params.step_seq_loop_end;
+            self.lfo4.stepseq.shuffle = params.step_seq_shuffle;
+            self.lfo5.stepseq.loop_start = params.step_seq_loop_start;
+            self.lfo5.stepseq.loop_end = params.step_seq_loop_end;
+            self.lfo5.stepseq.shuffle = params.step_seq_shuffle;
+            self.lfo6.stepseq.loop_start = params.step_seq_loop_start;
+            self.lfo6.stepseq.loop_end = params.step_seq_loop_end;
+            self.lfo6.stepseq.shuffle = params.step_seq_shuffle;
+        }
+
+        if mseg_changed {
+            for i in 0..MSEG_MAX_NODES {
+                self.lfo1.mseg.nodes[i] = params.mseg_nodes[i];
+                self.lfo2.mseg.nodes[i] = params.mseg_nodes[i];
+                self.lfo3.mseg.nodes[i] = params.mseg_nodes[i];
+                self.lfo4.mseg.nodes[i] = params.mseg_nodes[i];
+                self.lfo5.mseg.nodes[i] = params.mseg_nodes[i];
+                self.lfo6.mseg.nodes[i] = params.mseg_nodes[i];
+            }
+            for i in 0..MSEG_MAX_SEGMENTS {
+                self.lfo1.mseg.curves[i] = params.mseg_curves[i];
+                self.lfo2.mseg.curves[i] = params.mseg_curves[i];
+                self.lfo3.mseg.curves[i] = params.mseg_curves[i];
+                self.lfo4.mseg.curves[i] = params.mseg_curves[i];
+                self.lfo5.mseg.curves[i] = params.mseg_curves[i];
+                self.lfo6.mseg.curves[i] = params.mseg_curves[i];
+            }
+            self.lfo1.mseg.loop_start = params.mseg_loop_start;
+            self.lfo1.mseg.loop_end = params.mseg_loop_end;
+            self.lfo1.mseg.loop_mode = params.mseg_loop_mode;
+            self.lfo2.mseg.loop_start = params.mseg_loop_start;
+            self.lfo2.mseg.loop_end = params.mseg_loop_end;
+            self.lfo2.mseg.loop_mode = params.mseg_loop_mode;
+            self.lfo3.mseg.loop_start = params.mseg_loop_start;
+            self.lfo3.mseg.loop_end = params.mseg_loop_end;
+            self.lfo3.mseg.loop_mode = params.mseg_loop_mode;
+            self.lfo4.mseg.loop_start = params.mseg_loop_start;
+            self.lfo4.mseg.loop_end = params.mseg_loop_end;
+            self.lfo4.mseg.loop_mode = params.mseg_loop_mode;
+            self.lfo5.mseg.loop_start = params.mseg_loop_start;
+            self.lfo5.mseg.loop_end = params.mseg_loop_end;
+            self.lfo5.mseg.loop_mode = params.mseg_loop_mode;
+            self.lfo6.mseg.loop_start = params.mseg_loop_start;
+            self.lfo6.mseg.loop_end = params.mseg_loop_end;
+            self.lfo6.mseg.loop_mode = params.mseg_loop_mode;
+        }
+
+        if filters_changed {
+            self.filter1_l
+                .set_params(params.filter1.cutoff_hz, params.filter1.resonance);
+            self.filter1_r
+                .set_params(params.filter1.cutoff_hz, params.filter1.resonance);
+            self.filter2_l
+                .set_params(params.filter2.cutoff_hz, params.filter2.resonance);
+            self.filter2_r
+                .set_params(params.filter2.cutoff_hz, params.filter2.resonance);
+            self.filter1_l.set_filter_type(params.filter1.filter_type);
+            self.filter1_r.set_filter_type(params.filter1.filter_type);
+            self.filter2_l.set_filter_type(params.filter2.filter_type);
+            self.filter2_r.set_filter_type(params.filter2.filter_type);
+            self.filter1_l.set_drive(params.filter1.drive);
+            self.filter1_r.set_drive(params.filter1.drive);
+            self.filter2_l.set_drive(params.filter2.drive);
+            self.filter2_r.set_drive(params.filter2.drive);
+            self.filter1_l
+                .set_feedback_drive(params.filter1.feedback_drive);
+            self.filter1_r
+                .set_feedback_drive(params.filter1.feedback_drive);
+            self.filter2_l
+                .set_feedback_drive(params.filter2.feedback_drive);
+            self.filter2_r
+                .set_feedback_drive(params.filter2.feedback_drive);
+            self.filter1_l.set_subtype(params.filter1.subtype);
+            self.filter1_r.set_subtype(params.filter1.subtype);
+            self.filter2_l.set_subtype(params.filter2.subtype);
+            self.filter2_r.set_subtype(params.filter2.subtype);
+        }
+
+        if oscs_changed {
+            for (idx, osc) in self.oscillators.iter_mut().enumerate() {
+                let settings = &params.oscs[idx];
+                if osc.osc_type() != settings.osc_type {
+                    *osc = Oscillator::new(settings.osc_type, self.sample_rate);
+                }
+                osc.set_shape(settings.shape);
+                osc.set_skew(settings.skew);
+                osc.set_formant(settings.formant);
+                osc.set_sync_amount(settings.sync);
+                osc.set_unison(settings.unison_voices as usize, settings.unison_detune);
+                osc.set_unison_spread(settings.unison_spread);
+                if let Oscillator::Classic(o) = osc {
+                    o.set_waveform(ClassicWaveform::from_u8(settings.waveform));
+                    o.set_sub_level(settings.sub_level);
+                    o.set_sub_octave(settings.sub_octave as i8);
+                }
+                if let Oscillator::String(o) = osc {
+                    o.set_exciter(ExciterType::from_u8(settings.waveform));
+                }
+                if let Oscillator::Sine(o) = osc {
+                    o.set_pm_mode(settings.pm_mode);
+                    o.set_shaper_mode(SineShaperMode::from_u8(settings.shaper_mode));
+                }
+                if let Oscillator::Fm2(o) = osc {
+                    o.set_feedback(settings.fm2_feedback);
+                    o.set_m12offset(settings.fm2_m12offset);
+                    o.set_m12phase(settings.fm2_m12phase);
+                    o.set_feedback_mode(Fm2FeedbackMode::from_u8(settings.fm2_feedback_mode));
+                }
+                if let Oscillator::Fm3(o) = osc {
+                    o.set_m3_abs_freq(settings.fm3_m3_abs_freq);
+                    o.set_feedback(settings.fm3_feedback);
+                    o.set_feedback_mode(super::Fm3FeedbackMode::from_u8(
+                        settings.fm3_feedback_mode,
+                    ));
+                }
+                if let Oscillator::Sine(o) = osc {
+                    o.set_lowcut(settings.sine_lowcut);
+                    o.set_highcut(settings.sine_highcut);
+                }
+                if let Oscillator::Window(o) = osc {
+                    o.set_lowcut(settings.window_lowcut);
+                    o.set_highcut(settings.window_highcut);
+                }
+                if let Oscillator::Modern(o) = osc {
+                    o.set_sub_octave(settings.sub_octave as i8);
+                    o.set_sub_waveform(ModernSubWaveform::from_u8(settings.waveform));
+                    o.set_sub_one(settings.sub_one);
+                }
+                if let Oscillator::Alias(o) = osc {
+                    for (i, &amp) in settings.alias_partials.iter().enumerate() {
+                        o.set_partial_amplitude(i, amp);
+                    }
+                }
+                if let Oscillator::Window(o) = osc {
+                    o.set_window_type(WindowType::from_u8(settings.waveform));
+                }
+                if let Oscillator::String(o) = osc {
+                    o.set_stereo_spread(params.string_stereo_spread);
+                    o.set_exciter(ExciterType::from_u8(settings.waveform));
+                }
+                if let Oscillator::Wavetable(o) = osc {
+                    o.set_keytrack(params.wavetable_keytrack);
+                }
+                if let Oscillator::Alias(o) = osc {
+                    o.set_waveform(AliasWaveform::from_u8(settings.waveform));
+                }
+                osc.set_sh_noise_correlation(params.sh_noise_correlation);
+                osc.set_sh_noise_width(params.sh_noise_width);
+                osc.set_sh_noise_sync(params.sh_noise_sync);
+                osc.set_sh_noise_lowcut(settings.sh_noise_lowcut);
+                osc.set_sh_noise_highcut(settings.sh_noise_highcut);
+                osc.set_width2(settings.width2);
+                osc.set_skew_v(settings.wavetable_skew_v);
+                osc.set_saturate(settings.wavetable_saturate);
+                osc.set_tone_lp(settings.string_tone_lp);
+                osc.set_tone_hp(settings.string_tone_hp);
+                osc.set_sampler_mode(settings.wavetable_sampler_mode);
+                osc.set_dual_detune(settings.string_dual_detune);
+                osc.set_dual_decay(settings.string_dual_decay);
+                osc.set_oversample(settings.string_oversample);
+                if let Oscillator::Twist(o) = osc {
+                    o.set_aux_mix(params.twist_aux_mix);
+                    o.set_lpg_response(params.twist_lpg_response);
+                    o.set_lpg_decay(params.twist_lpg_decay);
+                }
+            }
+        }
+
+        if noise_changed {
+            self.noise.noise_type = params.noise.noise_type;
+            self.noise.level = params.noise.level;
+            self.noise.color = params.noise.color;
+            self.noise.color_mode = if params.noise.color_mode == 0 {
+                NoiseColorMode::Tilt
+            } else {
+                NoiseColorMode::Legacy
+            };
+            self.noise.filter_enabled = params.noise.filter_enabled;
+            if params.noise.filter_enabled {
+                self.noise.filter.set_filter_type(params.noise.filter_type);
+                self.noise
+                    .filter
+                    .set_params(params.noise.filter_cutoff, params.noise.filter_resonance);
+                self.noise.filter.prepare_block(
+                    params.noise.filter_cutoff,
+                    params.noise.filter_resonance,
+                    1,
+                );
+            }
+        }
+
+        if flavor_changed {
+            self.flavor.set_type(params.flavor);
+            self.flavor.cutoff_hz = params.flavor_cutoff;
+            self.flavor.resonance = params.flavor_resonance;
+            self.flavor2.set_type(params.flavor);
+            self.flavor2.cutoff_hz = params.flavor_cutoff;
+            self.flavor2.resonance = params.flavor_resonance;
+        }
+
+        if waveshaper_changed {
+            self.waveshaper.set_shape(params.waveshaper.shape);
+            self.waveshaper.drive = params.waveshaper.drive;
+            self.waveshaper.mix = params.waveshaper.mix;
+        }
+    }
+
+    pub fn update_filter_params(&mut self, params: &VoiceParams) {
+        self.params.filter1 = params.filter1.clone();
+        self.params.filter2 = params.filter2.clone();
+        self.params.lowcut_hz = params.lowcut_hz;
+        self.params.lowcut_slope = params.lowcut_slope;
 
         self.filter1_l
             .set_params(params.filter1.cutoff_hz, params.filter1.resonance);
@@ -1401,11 +1629,6 @@ impl Voice {
             .set_params(params.filter2.cutoff_hz, params.filter2.resonance);
         self.filter2_r
             .set_params(params.filter2.cutoff_hz, params.filter2.resonance);
-        let lowcut_hz = params.lowcut_hz.clamp(20.0, 20000.0);
-        self.lowcut_l.set_params(lowcut_hz, 0.7);
-        self.lowcut_l.prepare_block(lowcut_hz, 0.7, 1);
-        self.lowcut_r.set_params(lowcut_hz, 0.7);
-        self.lowcut_r.prepare_block(lowcut_hz, 0.7, 1);
         self.filter1_l.set_filter_type(params.filter1.filter_type);
         self.filter1_r.set_filter_type(params.filter1.filter_type);
         self.filter2_l.set_filter_type(params.filter2.filter_type);
@@ -1426,6 +1649,18 @@ impl Voice {
         self.filter1_r.set_subtype(params.filter1.subtype);
         self.filter2_l.set_subtype(params.filter2.subtype);
         self.filter2_r.set_subtype(params.filter2.subtype);
+    }
+
+    pub fn update_osc_params(&mut self, params: &VoiceParams) {
+        self.params.oscs = params.oscs.clone();
+        self.params.string_stereo_spread = params.string_stereo_spread;
+        self.params.wavetable_keytrack = params.wavetable_keytrack;
+        self.params.sh_noise_correlation = params.sh_noise_correlation;
+        self.params.sh_noise_width = params.sh_noise_width;
+        self.params.sh_noise_sync = params.sh_noise_sync;
+        self.params.twist_aux_mix = params.twist_aux_mix;
+        self.params.twist_lpg_response = params.twist_lpg_response;
+        self.params.twist_lpg_decay = params.twist_lpg_decay;
 
         for (idx, osc) in self.oscillators.iter_mut().enumerate() {
             let settings = &params.oscs[idx];
@@ -1512,7 +1747,139 @@ impl Voice {
                 o.set_lpg_decay(params.twist_lpg_decay);
             }
         }
+    }
 
+    pub fn update_amp_eg_params(&mut self, params: &VoiceParams) {
+        self.params.amp_eg = params.amp_eg.clone();
+        self.amp_eg.set_params(
+            params.amp_eg.attack,
+            params.amp_eg.decay,
+            params.amp_eg.sustain,
+            params.amp_eg.release,
+        );
+        self.amp_eg.set_mode(params.amp_eg.mode);
+        self.amp_eg.set_shapes(
+            params.amp_eg.attack_shape,
+            params.amp_eg.decay_shape,
+            params.amp_eg.release_shape,
+        );
+        self.amp_eg.set_retrigger_mode(params.amp_eg.retrigger_mode);
+        self.amp_eg.set_tempo_sync(params.amp_eg.tempo_sync);
+        self.amp_eg.set_uber_release(params.amp_eg.uber_release);
+        self.amp_eg.set_gated_release(params.amp_eg.gated_release);
+        self.amp_eg
+            .set_correct_analog_mode(params.amp_eg.correct_analog_mode);
+    }
+
+    pub fn update_filter_eg_params(&mut self, params: &VoiceParams) {
+        self.params.filter_eg = params.filter_eg.clone();
+        self.filter_eg.set_params(
+            params.filter_eg.attack,
+            params.filter_eg.decay,
+            params.filter_eg.sustain,
+            params.filter_eg.release,
+        );
+        self.filter_eg.set_mode(params.filter_eg.mode);
+        self.filter_eg.set_shapes(
+            params.filter_eg.attack_shape,
+            params.filter_eg.decay_shape,
+            params.filter_eg.release_shape,
+        );
+        self.filter_eg
+            .set_retrigger_mode(params.filter_eg.retrigger_mode);
+        self.filter_eg.set_tempo_sync(params.filter_eg.tempo_sync);
+        self.filter_eg
+            .set_uber_release(params.filter_eg.uber_release);
+        self.filter_eg
+            .set_gated_release(params.filter_eg.gated_release);
+        self.filter_eg
+            .set_correct_analog_mode(params.filter_eg.correct_analog_mode);
+    }
+
+    pub fn update_pitch_eg_params(&mut self, params: &VoiceParams) {
+        self.params.pitch_eg = params.pitch_eg.clone();
+        self.pitch_eg.set_params(
+            params.pitch_eg.attack,
+            params.pitch_eg.decay,
+            params.pitch_eg.sustain,
+            params.pitch_eg.release,
+        );
+        self.pitch_eg.set_mode(params.pitch_eg.mode);
+        self.pitch_eg.set_shapes(
+            params.pitch_eg.attack_shape,
+            params.pitch_eg.decay_shape,
+            params.pitch_eg.release_shape,
+        );
+        self.pitch_eg
+            .set_retrigger_mode(params.pitch_eg.retrigger_mode);
+        self.pitch_eg.set_tempo_sync(params.pitch_eg.tempo_sync);
+        self.pitch_eg.set_uber_release(params.pitch_eg.uber_release);
+        self.pitch_eg
+            .set_gated_release(params.pitch_eg.gated_release);
+        self.pitch_eg
+            .set_correct_analog_mode(params.pitch_eg.correct_analog_mode);
+    }
+
+    pub fn update_lfo_params(&mut self, params: &VoiceParams, idx: usize) {
+        let settings = match idx {
+            0 => {
+                self.params.lfo1 = params.lfo1.clone();
+                &params.lfo1
+            }
+            1 => {
+                self.params.lfo2 = params.lfo2.clone();
+                &params.lfo2
+            }
+            2 => {
+                self.params.lfo3 = params.lfo3.clone();
+                &params.lfo3
+            }
+            3 => {
+                self.params.lfo4 = params.lfo4.clone();
+                &params.lfo4
+            }
+            4 => {
+                self.params.lfo5 = params.lfo5.clone();
+                &params.lfo5
+            }
+            5 => {
+                self.params.lfo6 = params.lfo6.clone();
+                &params.lfo6
+            }
+            _ => return,
+        };
+        let lfo = match idx {
+            0 => &mut self.lfo1,
+            1 => &mut self.lfo2,
+            2 => &mut self.lfo3,
+            3 => &mut self.lfo4,
+            4 => &mut self.lfo5,
+            5 => &mut self.lfo6,
+            _ => return,
+        };
+        lfo.set_rate_hz(settings.rate_hz);
+        lfo.set_shape(settings.shape);
+        lfo.set_amount(settings.amount);
+        lfo.set_deform(settings.deform);
+        lfo.set_deform_type(settings.deform_type);
+        lfo.set_sync_mode(settings.sync_mode);
+        lfo.set_sync_division(settings.sync_division);
+        lfo.set_trigger_mode(settings.trigger_mode);
+        lfo.set_env_params(
+            settings.env_delay,
+            settings.env_attack,
+            settings.env_hold,
+            settings.env_decay,
+            settings.env_sustain,
+            settings.env_release,
+        );
+        lfo.set_start_phase(settings.start_phase);
+        lfo.set_unipolar(settings.unipolar);
+        lfo.set_env_tempo_sync(settings.env_tempo_sync);
+    }
+
+    pub fn update_noise_params(&mut self, params: &VoiceParams) {
+        self.params.noise = params.noise.clone();
         self.noise.noise_type = params.noise.noise_type;
         self.noise.level = params.noise.level;
         self.noise.color = params.noise.color;
@@ -1533,17 +1900,161 @@ impl Voice {
                 1,
             );
         }
+    }
 
+    pub fn update_waveshaper_params(&mut self, params: &VoiceParams) {
+        self.params.waveshaper = params.waveshaper.clone();
+        self.waveshaper.set_shape(params.waveshaper.shape);
+        self.waveshaper.drive = params.waveshaper.drive;
+        self.waveshaper.mix = params.waveshaper.mix;
+    }
+
+    pub fn update_flavor_params(&mut self, params: &VoiceParams) {
+        self.params.flavor = params.flavor;
+        self.params.flavor_cutoff = params.flavor_cutoff;
+        self.params.flavor_resonance = params.flavor_resonance;
         self.flavor.set_type(params.flavor);
         self.flavor.cutoff_hz = params.flavor_cutoff;
         self.flavor.resonance = params.flavor_resonance;
         self.flavor2.set_type(params.flavor);
         self.flavor2.cutoff_hz = params.flavor_cutoff;
         self.flavor2.resonance = params.flavor_resonance;
+    }
 
-        self.waveshaper.set_shape(params.waveshaper.shape);
-        self.waveshaper.drive = params.waveshaper.drive;
-        self.waveshaper.mix = params.waveshaper.mix;
+    pub fn update_modulations(&mut self, params: &VoiceParams) {
+        self.params.modulations = params.modulations;
+    }
+
+    pub fn update_step_seq(&mut self, params: &VoiceParams) {
+        self.params.step_seq_values = params.step_seq_values;
+        self.params.step_seq_loop_start = params.step_seq_loop_start;
+        self.params.step_seq_loop_end = params.step_seq_loop_end;
+        self.params.step_seq_shuffle = params.step_seq_shuffle;
+        for (i, step) in params.step_seq_values.iter().enumerate() {
+            self.lfo1.stepseq.steps[i] = *step;
+            self.lfo2.stepseq.steps[i] = *step;
+            self.lfo3.stepseq.steps[i] = *step;
+            self.lfo4.stepseq.steps[i] = *step;
+            self.lfo5.stepseq.steps[i] = *step;
+            self.lfo6.stepseq.steps[i] = *step;
+        }
+        self.lfo1.stepseq.loop_start = params.step_seq_loop_start;
+        self.lfo1.stepseq.loop_end = params.step_seq_loop_end;
+        self.lfo1.stepseq.shuffle = params.step_seq_shuffle;
+        self.lfo2.stepseq.loop_start = params.step_seq_loop_start;
+        self.lfo2.stepseq.loop_end = params.step_seq_loop_end;
+        self.lfo2.stepseq.shuffle = params.step_seq_shuffle;
+        self.lfo3.stepseq.loop_start = params.step_seq_loop_start;
+        self.lfo3.stepseq.loop_end = params.step_seq_loop_end;
+        self.lfo3.stepseq.shuffle = params.step_seq_shuffle;
+        self.lfo4.stepseq.loop_start = params.step_seq_loop_start;
+        self.lfo4.stepseq.loop_end = params.step_seq_loop_end;
+        self.lfo4.stepseq.shuffle = params.step_seq_shuffle;
+        self.lfo5.stepseq.loop_start = params.step_seq_loop_start;
+        self.lfo5.stepseq.loop_end = params.step_seq_loop_end;
+        self.lfo5.stepseq.shuffle = params.step_seq_shuffle;
+        self.lfo6.stepseq.loop_start = params.step_seq_loop_start;
+        self.lfo6.stepseq.loop_end = params.step_seq_loop_end;
+        self.lfo6.stepseq.shuffle = params.step_seq_shuffle;
+    }
+
+    pub fn update_mseg(&mut self, params: &VoiceParams) {
+        self.params.mseg_nodes = params.mseg_nodes;
+        self.params.mseg_curves = params.mseg_curves;
+        self.params.mseg_loop_start = params.mseg_loop_start;
+        self.params.mseg_loop_end = params.mseg_loop_end;
+        self.params.mseg_loop_mode = params.mseg_loop_mode;
+        for i in 0..MSEG_MAX_NODES {
+            self.lfo1.mseg.nodes[i] = params.mseg_nodes[i];
+            self.lfo2.mseg.nodes[i] = params.mseg_nodes[i];
+            self.lfo3.mseg.nodes[i] = params.mseg_nodes[i];
+            self.lfo4.mseg.nodes[i] = params.mseg_nodes[i];
+            self.lfo5.mseg.nodes[i] = params.mseg_nodes[i];
+            self.lfo6.mseg.nodes[i] = params.mseg_nodes[i];
+        }
+        for i in 0..MSEG_MAX_SEGMENTS {
+            self.lfo1.mseg.curves[i] = params.mseg_curves[i];
+            self.lfo2.mseg.curves[i] = params.mseg_curves[i];
+            self.lfo3.mseg.curves[i] = params.mseg_curves[i];
+            self.lfo4.mseg.curves[i] = params.mseg_curves[i];
+            self.lfo5.mseg.curves[i] = params.mseg_curves[i];
+            self.lfo6.mseg.curves[i] = params.mseg_curves[i];
+        }
+        self.lfo1.mseg.loop_start = params.mseg_loop_start;
+        self.lfo1.mseg.loop_end = params.mseg_loop_end;
+        self.lfo1.mseg.loop_mode = params.mseg_loop_mode;
+        self.lfo2.mseg.loop_start = params.mseg_loop_start;
+        self.lfo2.mseg.loop_end = params.mseg_loop_end;
+        self.lfo2.mseg.loop_mode = params.mseg_loop_mode;
+        self.lfo3.mseg.loop_start = params.mseg_loop_start;
+        self.lfo3.mseg.loop_end = params.mseg_loop_end;
+        self.lfo3.mseg.loop_mode = params.mseg_loop_mode;
+        self.lfo4.mseg.loop_start = params.mseg_loop_start;
+        self.lfo4.mseg.loop_end = params.mseg_loop_end;
+        self.lfo4.mseg.loop_mode = params.mseg_loop_mode;
+        self.lfo5.mseg.loop_start = params.mseg_loop_start;
+        self.lfo5.mseg.loop_end = params.mseg_loop_end;
+        self.lfo5.mseg.loop_mode = params.mseg_loop_mode;
+        self.lfo6.mseg.loop_start = params.mseg_loop_start;
+        self.lfo6.mseg.loop_end = params.mseg_loop_end;
+        self.lfo6.mseg.loop_mode = params.mseg_loop_mode;
+    }
+
+    pub fn update_tuning(&mut self, params: &VoiceParams) {
+        self.params.tuning_scale = params.tuning_scale;
+        self.params.tuning_root = params.tuning_root;
+        if let Some(tuning) = params.tuning_override.as_ref() {
+            self.tuning = tuning.as_ref().clone();
+        } else {
+            self.tuning = crate::common::tuning::built_in_tuning(params.tuning_scale);
+            self.tuning.root_midi_note = params.tuning_root as i32;
+        }
+    }
+
+    pub fn update_output_vca(&mut self, params: &VoiceParams) {
+        self.params.volume = params.volume;
+        self.params.pan = params.pan;
+        self.params.width = params.width;
+        self.params.pre_filter_gain = params.pre_filter_gain;
+        self.params.vca_level = params.vca_level;
+        self.params.vca_velsense = params.vca_velsense;
+    }
+
+    pub fn update_portamento_pitchbend(&mut self, params: &VoiceParams) {
+        self.params.portamento = params.portamento;
+        self.params.portamento_curve = params.portamento_curve;
+        self.params.pitch_bend_range = params.pitch_bend_range;
+        self.params.pitch_bend_up = params.pitch_bend_up;
+        self.params.pitch_bend_down = params.pitch_bend_down;
+        self.params.glissando = params.glissando;
+        self.params.portamento_sync = params.portamento_sync;
+        self.params.portamento_retrigger = params.portamento_retrigger;
+        self.params.pitch_bend_smooth = params.pitch_bend_smooth;
+    }
+
+    pub fn update_play_mode_steal_poly(&mut self, params: &VoiceParams) {
+        self.params.play_mode = params.play_mode;
+        self.params.voice_priority = params.voice_priority;
+        self.params.poly_repeated_key_mode = params.poly_repeated_key_mode;
+        self.params.mono_pedal_mode = params.mono_pedal_mode;
+    }
+
+    pub fn update_misc_globals(&mut self, params: &VoiceParams) {
+        self.params.osc_fm_mode = params.osc_fm_mode;
+        self.params.osc_fm_depth = params.osc_fm_depth;
+        self.params.ring12_combinator = params.ring12_combinator;
+        self.params.ring23_combinator = params.ring23_combinator;
+        self.params.drift_amount = params.drift_amount;
+        self.params.mpe_enabled = params.mpe_enabled;
+        self.params.string_stereo_spread = params.string_stereo_spread;
+        self.params.wavetable_keytrack = params.wavetable_keytrack;
+        self.params.twist_aux_mix = params.twist_aux_mix;
+        self.params.twist_lpg_response = params.twist_lpg_response;
+        self.params.twist_lpg_decay = params.twist_lpg_decay;
+        self.params.sh_noise_correlation = params.sh_noise_correlation;
+        self.params.sh_noise_width = params.sh_noise_width;
+        self.params.sh_noise_sync = params.sh_noise_sync;
+        self.params.macros = params.macros;
     }
 
     pub fn set_mts_esp(&mut self, client: Option<Arc<Mutex<MtsEspClient>>>) {
@@ -1556,8 +2067,6 @@ impl Voice {
         self.filter1_r = Filter::new(self.params.filter1.filter_type, sample_rate);
         self.filter2_l = Filter::new(self.params.filter2.filter_type, sample_rate);
         self.filter2_r = Filter::new(self.params.filter2.filter_type, sample_rate);
-        self.lowcut_l = Filter::new(FilterType::Highpass12dB, sample_rate);
-        self.lowcut_r = Filter::new(FilterType::Highpass12dB, sample_rate);
         self.amp_eg.set_sample_rate(sample_rate);
         self.filter_eg.set_sample_rate(sample_rate);
         self.pitch_eg.set_sample_rate(sample_rate);
@@ -2703,7 +3212,7 @@ impl Voice {
                 let sum_l = f1_l + f2_l;
                 let sum_r = f1_r + f2_r;
                 let (ws_l, ws_r) = if ws_active {
-                    let mut ws = self.waveshaper.clone();
+                    let mut ws = self.waveshaper;
                     ws.drive = ws_drive;
                     (ws.process(sum_l), ws.process(sum_r))
                 } else {
@@ -2712,7 +3221,7 @@ impl Voice {
                 (ws_l, ws_r, f1_l, f1_r)
             } else if !f1_enabled && !f2_enabled {
                 let (ws_l, ws_r) = if ws_active {
-                    let mut ws = self.waveshaper.clone();
+                    let mut ws = self.waveshaper;
                     ws.drive = ws_drive;
                     (ws.process(pre_filter_l), ws.process(pre_filter_r))
                 } else {
@@ -2731,7 +3240,7 @@ impl Voice {
                             s_r = self.filter1_r.process(s_r);
                         }
                         let (ws_l, ws_r) = if ws_active {
-                            let mut ws = self.waveshaper.clone();
+                            let mut ws = self.waveshaper;
                             ws.drive = ws_drive;
                             (ws.process(s_l), ws.process(s_r))
                         } else {
@@ -2767,7 +3276,7 @@ impl Voice {
                         let sum_l = (f1_l + f2_l) * 0.5;
                         let sum_r = (f1_r + f2_r) * 0.5;
                         let (ws_l, ws_r) = if ws_active {
-                            let mut ws = self.waveshaper.clone();
+                            let mut ws = self.waveshaper;
                             ws.drive = ws_drive;
                             (ws.process(sum_l), ws.process(sum_r))
                         } else {
@@ -2785,7 +3294,7 @@ impl Voice {
                             s_r = self.filter2_r.process(s_r);
                         }
                         let (ws_l, ws_r) = if ws_active {
-                            let mut ws = self.waveshaper.clone();
+                            let mut ws = self.waveshaper;
                             ws.drive = ws_drive;
                             (ws.process(s_l), ws.process(s_r))
                         } else {
@@ -2821,7 +3330,7 @@ impl Voice {
                         let stereo_l = f1_l;
                         let stereo_r = f2_r;
                         let (ws_l, ws_r) = if ws_active {
-                            let mut ws = self.waveshaper.clone();
+                            let mut ws = self.waveshaper;
                             ws.drive = ws_drive;
                             (ws.process(stereo_l), ws.process(stereo_r))
                         } else {
@@ -2839,7 +3348,7 @@ impl Voice {
                             s_r = self.filter2_r.process(s_r);
                         }
                         let (ws_l, ws_r) = if ws_active {
-                            let mut ws = self.waveshaper.clone();
+                            let mut ws = self.waveshaper;
                             ws.drive = ws_drive;
                             (ws.process(s_l), ws.process(s_r))
                         } else {
@@ -2865,7 +3374,7 @@ impl Voice {
                             s_r = self.filter1_r.process(s_r);
                         }
                         let (ws_l, ws_r) = if ws_active {
-                            let mut ws = self.waveshaper.clone();
+                            let mut ws = self.waveshaper;
                             ws.drive = ws_drive;
                             (ws.process(s_l), ws.process(s_r))
                         } else {
@@ -2895,7 +3404,7 @@ impl Voice {
                             f1_r = self.filter1_r.process(f1_r);
                         }
                         let (f1_ws_l, f1_ws_r) = if ws_active {
-                            let mut ws = self.waveshaper.clone();
+                            let mut ws = self.waveshaper;
                             ws.drive = ws_drive;
                             (ws.process(f1_l), ws.process(f1_r))
                         } else {
@@ -2931,7 +3440,7 @@ impl Voice {
                         let ring_l = f1_l * f2_l;
                         let ring_r = f1_r * f2_r;
                         let (ws_l, ws_r) = if ws_active {
-                            let mut ws = self.waveshaper.clone();
+                            let mut ws = self.waveshaper;
                             ws.drive = ws_drive;
                             (ws.process(ring_l), ws.process(ring_r))
                         } else {

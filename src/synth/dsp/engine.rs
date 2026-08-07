@@ -21,6 +21,8 @@ pub struct SynthEngine {
     pub scene_lfo4: Lfo,
     pub scene_lfo5: Lfo,
     pub scene_lfo6: Lfo,
+    temp_l: Vec<f32>,
+    temp_r: Vec<f32>,
 }
 
 impl SynthEngine {
@@ -45,6 +47,8 @@ impl SynthEngine {
             scene_lfo4: Lfo::new(sample_rate),
             scene_lfo5: Lfo::new(sample_rate),
             scene_lfo6: Lfo::new(sample_rate),
+            temp_l: Vec::new(),
+            temp_r: Vec::new(),
         }
     }
 
@@ -84,6 +88,10 @@ impl SynthEngine {
             voice.set_mts_esp(self.mts_esp.clone());
         }
 
+        self.update_scene_lfos();
+    }
+
+    fn update_scene_lfos(&mut self) {
         let scene_lfos = [
             (&mut self.scene_lfo1, &self.params.scene_lfo1),
             (&mut self.scene_lfo2, &self.params.scene_lfo2),
@@ -102,6 +110,129 @@ impl SynthEngine {
             lfo.set_trigger_mode(settings.trigger_mode);
             lfo.set_start_phase(settings.start_phase);
             lfo.set_unipolar(settings.unipolar);
+        }
+    }
+
+    pub fn update_filter_params(&mut self) {
+        for voice in &mut self.voices {
+            voice.update_filter_params(&self.params);
+        }
+    }
+
+    pub fn update_osc_params(&mut self) {
+        for voice in &mut self.voices {
+            voice.update_osc_params(&self.params);
+        }
+    }
+
+    pub fn update_amp_eg_params(&mut self) {
+        for voice in &mut self.voices {
+            voice.update_amp_eg_params(&self.params);
+        }
+    }
+
+    pub fn update_filter_eg_params(&mut self) {
+        for voice in &mut self.voices {
+            voice.update_filter_eg_params(&self.params);
+        }
+    }
+
+    pub fn update_pitch_eg_params(&mut self) {
+        for voice in &mut self.voices {
+            voice.update_pitch_eg_params(&self.params);
+        }
+    }
+
+    pub fn update_lfo_params(&mut self, idx: usize) {
+        for voice in &mut self.voices {
+            voice.update_lfo_params(&self.params, idx);
+        }
+    }
+
+    pub fn update_scene_lfo_params(&mut self, idx: usize) {
+        let (lfo, settings) = match idx {
+            0 => (&mut self.scene_lfo1, &self.params.scene_lfo1),
+            1 => (&mut self.scene_lfo2, &self.params.scene_lfo2),
+            2 => (&mut self.scene_lfo3, &self.params.scene_lfo3),
+            3 => (&mut self.scene_lfo4, &self.params.scene_lfo4),
+            4 => (&mut self.scene_lfo5, &self.params.scene_lfo5),
+            5 => (&mut self.scene_lfo6, &self.params.scene_lfo6),
+            _ => return,
+        };
+        lfo.set_rate_hz(settings.rate_hz);
+        lfo.set_shape(settings.shape);
+        lfo.set_amount(settings.amount);
+        lfo.set_deform(settings.deform);
+        lfo.set_sync_mode(settings.sync_mode);
+        lfo.set_sync_division(settings.sync_division);
+        lfo.set_trigger_mode(settings.trigger_mode);
+        lfo.set_start_phase(settings.start_phase);
+        lfo.set_unipolar(settings.unipolar);
+    }
+
+    pub fn update_noise_params(&mut self) {
+        for voice in &mut self.voices {
+            voice.update_noise_params(&self.params);
+        }
+    }
+
+    pub fn update_waveshaper_params(&mut self) {
+        for voice in &mut self.voices {
+            voice.update_waveshaper_params(&self.params);
+        }
+    }
+
+    pub fn update_flavor_params(&mut self) {
+        for voice in &mut self.voices {
+            voice.update_flavor_params(&self.params);
+        }
+    }
+
+    pub fn update_modulations(&mut self) {
+        for voice in &mut self.voices {
+            voice.update_modulations(&self.params);
+        }
+    }
+
+    pub fn update_step_seq(&mut self) {
+        for voice in &mut self.voices {
+            voice.update_step_seq(&self.params);
+        }
+    }
+
+    pub fn update_mseg(&mut self) {
+        for voice in &mut self.voices {
+            voice.update_mseg(&self.params);
+        }
+    }
+
+    pub fn update_tuning(&mut self) {
+        for voice in &mut self.voices {
+            voice.update_tuning(&self.params);
+        }
+    }
+
+    pub fn update_output_vca(&mut self) {
+        for voice in &mut self.voices {
+            voice.update_output_vca(&self.params);
+        }
+    }
+
+    pub fn update_portamento_pitchbend(&mut self) {
+        for voice in &mut self.voices {
+            voice.update_portamento_pitchbend(&self.params);
+        }
+    }
+
+    pub fn update_play_mode_steal_poly(&mut self) {
+        for voice in &mut self.voices {
+            voice.update_play_mode_steal_poly(&self.params);
+        }
+    }
+
+    pub fn update_misc_globals(&mut self) {
+        for voice in &mut self.voices {
+            voice.update_misc_globals(&self.params);
         }
     }
 
@@ -527,8 +658,10 @@ impl SynthEngine {
         out_l.fill(0.0);
         out_r.fill(0.0);
 
-        let mut temp_l = vec![0.0f32; frames];
-        let mut temp_r = vec![0.0f32; frames];
+        if self.temp_l.len() < frames {
+            self.temp_l.resize(frames, 0.0);
+            self.temp_r.resize(frames, 0.0);
+        }
 
         let scene_lfo_outputs = [
             self.scene_lfo1.next(),
@@ -560,13 +693,18 @@ impl SynthEngine {
             voice.set_scene_lfo_outputs(scene_lfo_outputs);
             voice.set_key_mod_values(lowest_key_norm, highest_key_norm, latest_key_norm);
 
-            temp_l.fill(0.0);
-            temp_r.fill(0.0);
-            voice.process_block(&mut temp_l, &mut temp_r, audio_in_l, audio_in_r);
+            self.temp_l[..frames].fill(0.0);
+            self.temp_r[..frames].fill(0.0);
+            voice.process_block(
+                &mut self.temp_l[..frames],
+                &mut self.temp_r[..frames],
+                audio_in_l,
+                audio_in_r,
+            );
 
             for i in 0..frames {
-                out_l[i] += temp_l[i];
-                out_r[i] += temp_r[i];
+                out_l[i] += self.temp_l[i];
+                out_r[i] += self.temp_r[i];
             }
         }
     }

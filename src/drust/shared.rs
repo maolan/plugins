@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use clap_clap::ffi::{
     clap_host, clap_host_latency, clap_host_note_name, clap_host_params, clap_host_state,
@@ -18,6 +18,7 @@ pub struct SharedState {
     pub pending_midimap_path: RwLock<Option<String>>,
     pub pending_param_notifications: AtomicU32,
     pub local_param_overrides: AtomicU32,
+    pub params_version: AtomicU64,
     pub host: AtomicPtr<clap_host>,
     pub active_channels: AtomicU32,
     pub state_id: RwLock<String>,
@@ -36,6 +37,7 @@ impl Default for SharedState {
             pending_midimap_path: RwLock::new(None),
             pending_param_notifications: AtomicU32::new(0),
             local_param_overrides: AtomicU32::new(0),
+            params_version: AtomicU64::new(1),
             host: AtomicPtr::new(std::ptr::null_mut()),
             active_channels: AtomicU32::new(0),
             state_id: RwLock::new(String::new()),
@@ -47,6 +49,7 @@ impl Default for SharedState {
 impl SharedState {
     pub fn set_param(&self, id: ParamId, value: f64) {
         self.params.set(id, sanitize_param_value(id, value));
+        self.bump_params_version();
         let bit = 1_u32 << (id.as_index() as u32);
         self.local_param_overrides.fetch_or(bit, Ordering::AcqRel);
         self.pending_param_notifications
@@ -57,6 +60,15 @@ impl SharedState {
 
     pub fn set_param_from_host(&self, id: ParamId, value: f64) {
         self.params.set(id, sanitize_param_value(id, value));
+        self.bump_params_version();
+    }
+
+    pub fn bump_params_version(&self) {
+        self.params_version.fetch_add(1, Ordering::Release);
+    }
+
+    pub fn params_version(&self) -> u64 {
+        self.params_version.load(Ordering::Acquire)
     }
 
     fn request_flush(&self) {

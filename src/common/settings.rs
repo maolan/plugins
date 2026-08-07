@@ -5,7 +5,7 @@ use crate::common::{
     waveshaper::Waveshape,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FilterSettings {
     pub filter_type: FilterType,
     pub subtype: FilterSubtype,
@@ -34,7 +34,7 @@ impl Default for FilterSettings {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EnvelopeSettings {
     pub attack: f32,
     pub decay: f32,
@@ -71,7 +71,7 @@ impl Default for EnvelopeSettings {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LfoSettings {
     pub rate_hz: f32,
     pub shape: LfoShape,
@@ -118,7 +118,7 @@ impl Default for LfoSettings {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WaveshaperSettings {
     pub shape: Waveshape,
     pub drive: f32,

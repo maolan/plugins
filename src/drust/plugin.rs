@@ -70,6 +70,7 @@ struct AudioProcessor {
     shared: Arc<SharedState>,
     engine: Arc<DrumGizmoEngine>,
     limiter: Limiter,
+    last_params_version: u64,
     bus_data: Option<bus::PluginSharedData>,
     fft_scratch: Vec<f32>,
     fft_mag: Vec<f32>,
@@ -91,6 +92,7 @@ impl AudioProcessor {
             shared,
             engine,
             limiter,
+            last_params_version: 0,
             bus_data,
             fft_scratch: vec![0.0; max_frames as usize],
             fft_mag: vec![0.0; 1024],
@@ -203,8 +205,12 @@ impl AudioProcessor {
         }
 
         let bypass = self.shared.params.get(ParamId::Bypass) >= 0.5;
-        if !bypass && kit_ready {
+        let params_version = self.shared.params_version();
+        if params_version != self.last_params_version {
             self.engine.sync_params(&self.shared.params);
+            self.last_params_version = params_version;
+        }
+        if !bypass && kit_ready {
             self.engine.render_outputs(frames, &mut out_outputs);
         }
 
@@ -822,6 +828,7 @@ unsafe extern "C-unwind" fn ext_state_load(
     let saved_state_id = state.state_id.clone();
 
     let (kit_path, midimap_path, variation, active_channels) = state.apply(&inst.shared.params);
+    inst.shared.bump_params_version();
     *inst.shared.variation.write() = variation;
     inst.shared
         .active_channels

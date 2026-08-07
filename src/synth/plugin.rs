@@ -34,11 +34,13 @@ use crate::common::param_events::ParamGesture;
 use crate::common::{bus, fft};
 use crate::synth::{
     dsp::{
-        EnvelopeMode, FilterRouting, FilterSettings, FilterSubtype, FilterType, FlavorType,
-        LfoSettings, LfoSyncDivision, LfoSyncMode, MSEG_MAX_NODES, MSEG_MAX_SEGMENTS, ModRouting,
-        ModSource, ModTarget, MsegCurve, MtsEspClient, NoiseSettings, NoiseType, OscFmMode,
-        OscPhaseMode, OscSettings, OscType, PlayMode, PortamentoCurve, StealMode, SynthEngine,
-        Tuning, VoiceParams, VoicePriority, Waveshape, WaveshaperSettings,
+        AttackShape, CombinatorMode, DecayReleaseShape, EnvelopeMode, EnvelopeRetriggerMode,
+        EnvelopeSettings, FilterRouting, FilterSettings, FilterSubtype, FilterType, FlavorType,
+        LfoSettings, LfoShape, LfoSyncDivision, LfoSyncMode, LfoTriggerMode, ModDepthCurve,
+        ModRouting, ModSource, ModTarget, MsegCurve, MsegLoopMode, MtsEspClient, NoiseSettings,
+        NoiseType, OscFmMode, OscPhaseMode, OscRoute, OscSettings, OscType, PlayMode,
+        PortamentoCurve, StealMode, SynthEngine, Tuning, VoiceParams, VoicePriority, Waveshape,
+        WaveshaperSettings,
     },
     gui::GuiBridge,
     params::{PARAMS, ParamId, ParamStore, sanitize_param_value},
@@ -82,6 +84,7 @@ static DESCRIPTOR: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor {
 pub struct SharedState {
     pub params: ParamStore,
     sample_rate_bits: std::sync::atomic::AtomicU64,
+    params_version: std::sync::atomic::AtomicU64,
     pending_param_notifications: Vec<std::sync::atomic::AtomicBool>,
     pending_gesture_begin: Vec<std::sync::atomic::AtomicBool>,
     pending_gesture_end: Vec<std::sync::atomic::AtomicBool>,
@@ -94,6 +97,7 @@ impl Default for SharedState {
         Self {
             params: ParamStore::default(),
             sample_rate_bits: std::sync::atomic::AtomicU64::new(48_000.0f64.to_bits()),
+            params_version: std::sync::atomic::AtomicU64::new(1),
             pending_param_notifications: (0..ParamId::COUNT)
                 .map(|_| std::sync::atomic::AtomicBool::new(false))
                 .collect(),
@@ -125,8 +129,17 @@ impl SharedState {
         f64::from_bits(self.sample_rate_bits.load(Ordering::Acquire))
     }
 
+    pub fn params_version(&self) -> u64 {
+        self.params_version.load(Ordering::Acquire)
+    }
+
+    fn bump_params_version(&self) {
+        self.params_version.fetch_add(1, Ordering::Release);
+    }
+
     fn set_param_internal(&self, id: ParamId, value: f64, notify_host: bool) {
         self.params.set(id, sanitize_param_value(id, value));
+        self.bump_params_version();
         if notify_host {
             self.mark_param_notification_pending(id);
             self.request_flush();
@@ -235,11 +248,15 @@ fn apply_param_events_synth(
     shared: &SharedState,
     events: &clap_clap::events::InputEvents<'_>,
     sanitize: impl Fn(ParamId, f64) -> f64,
-) {
+    changed: &mut [Option<(ParamId, f64)>; 32],
+) -> bool {
     use clap_clap::ffi::{
         CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END,
         CLAP_EVENT_PARAM_VALUE, clap_event_header, clap_event_param_gesture,
     };
+
+    let mut overflow = false;
+    let mut next_idx = 0;
 
     for index in 0..events.size() {
         let header = events.get(index);
@@ -274,12 +291,20 @@ fn apply_param_events_synth(
                         }
                         let incoming = sanitize(id, param.value());
                         shared.set_param_from_host(id, incoming);
+                        if next_idx < changed.len() {
+                            changed[next_idx] = Some((id, incoming));
+                            next_idx += 1;
+                        } else {
+                            overflow = true;
+                        }
                     }
                 }
             }
             _ => {}
         }
     }
+
+    overflow
 }
 
 fn emit_pending_param_events_to_host_synth(
@@ -316,12 +341,43 @@ fn emit_pending_param_events_to_host_synth(
 }
 
 fn build_voice_params(params: &ParamStore) -> VoiceParams {
-    use crate::synth::dsp::{
-        AttackShape, CombinatorMode, DecayReleaseShape, EnvelopeRetriggerMode, EnvelopeSettings,
-        ModDepthCurve, MsegLoopMode, OscRoute,
-    };
+    let mut result = VoiceParams::default();
+    build_modulations_params(&mut result, params);
+    build_step_seq_params(&mut result, params);
+    build_mseg_params(&mut result, params);
+    build_osc_params(&mut result, params, 0);
+    build_osc_params(&mut result, params, 1);
+    build_osc_params(&mut result, params, 2);
+    build_filter1_params(&mut result, params);
+    build_filter2_params(&mut result, params);
+    build_amp_eg_params(&mut result, params);
+    build_filter_eg_params(&mut result, params);
+    build_pitch_eg_params(&mut result, params);
+    build_lfo_params(&mut result, params, 0);
+    build_lfo_params(&mut result, params, 1);
+    build_lfo_params(&mut result, params, 2);
+    build_lfo_params(&mut result, params, 3);
+    build_lfo_params(&mut result, params, 4);
+    build_lfo_params(&mut result, params, 5);
+    build_scene_lfo_params(&mut result, params, 0);
+    build_scene_lfo_params(&mut result, params, 1);
+    build_scene_lfo_params(&mut result, params, 2);
+    build_scene_lfo_params(&mut result, params, 3);
+    build_scene_lfo_params(&mut result, params, 4);
+    build_scene_lfo_params(&mut result, params, 5);
+    build_noise_params(&mut result, params);
+    build_waveshaper_params(&mut result, params);
+    build_flavor_params(&mut result, params);
+    build_tuning_params(&mut result, params);
+    build_output_vca_params(&mut result, params);
+    build_portamento_pitchbend_params(&mut result, params);
+    build_play_mode_steal_poly_params(&mut result, params);
+    build_filters_routing_balance_params(&mut result, params);
+    build_misc_globals_params(&mut result, params);
+    result
+}
 
-    let mut modulations = [ModRouting::default(); 12];
+fn build_modulations_params(params: &mut VoiceParams, store: &ParamStore) {
     let mod_route_params = [
         (
             ParamId::ModRoute1Source,
@@ -396,14 +452,13 @@ fn build_voice_params(params: &ParamStore) -> VoiceParams {
             ParamId::ModRoute12Curve,
         ),
     ];
-
     for (idx, (src_id, tgt_id, depth_id, curve_id)) in mod_route_params.iter().enumerate() {
-        let src = ModSource::from_u8(params.get(*src_id) as u8);
-        let tgt = ModTarget::from_u8(params.get(*tgt_id) as u8);
-        let depth = params.get(*depth_id) as f32;
-        let curve = ModDepthCurve::from_u8(params.get(*curve_id) as u8);
+        let src = ModSource::from_u8(store.get(*src_id) as u8);
+        let tgt = ModTarget::from_u8(store.get(*tgt_id) as u8);
+        let depth = store.get(*depth_id) as f32;
+        let curve = ModDepthCurve::from_u8(store.get(*curve_id) as u8);
         if let (Some(source), Some(target)) = (src, tgt) {
-            modulations[idx] = ModRouting {
+            params.modulations[idx] = ModRouting {
                 source,
                 target,
                 depth,
@@ -412,8 +467,9 @@ fn build_voice_params(params: &ParamStore) -> VoiceParams {
             };
         }
     }
+}
 
-    let mut step_seq = [0.0f32; 16];
+fn build_step_seq_params(params: &mut VoiceParams, store: &ParamStore) {
     let step_params = [
         ParamId::StepSeq1,
         ParamId::StepSeq2,
@@ -433,10 +489,17 @@ fn build_voice_params(params: &ParamStore) -> VoiceParams {
         ParamId::StepSeq16,
     ];
     for (i, pid) in step_params.iter().enumerate() {
-        step_seq[i] = params.get(*pid) as f32;
+        params.step_seq_values[i] = store.get(*pid) as f32;
     }
+    params.step_seq_loop_start = store.get(ParamId::StepSeqLoopStart) as usize;
+    params.step_seq_loop_end = store.get(ParamId::StepSeqLoopEnd) as usize;
+    params.step_seq_shuffle = store.get(ParamId::StepSeqShuffle) as f32;
+    params.step_seq_trig_amp = store.get(ParamId::StepSeqTrigAmp) as u16;
+    params.step_seq_trig_filter = store.get(ParamId::StepSeqTrigFilter) as u16;
+    params.step_seq_trig_pitch = store.get(ParamId::StepSeqTrigPitch) as u16;
+}
 
-    let mut mseg_nodes = [0.0f32; MSEG_MAX_NODES];
+fn build_mseg_params(params: &mut VoiceParams, store: &ParamStore) {
     let mseg_node_params = [
         ParamId::MsegNode1,
         ParamId::MsegNode2,
@@ -568,10 +631,9 @@ fn build_voice_params(params: &ParamStore) -> VoiceParams {
         ParamId::MsegNode128,
     ];
     for (i, pid) in mseg_node_params.iter().enumerate() {
-        mseg_nodes[i] = params.get(*pid) as f32;
+        params.mseg_nodes[i] = store.get(*pid) as f32;
     }
 
-    let mut mseg_curves = [MsegCurve::Linear; MSEG_MAX_SEGMENTS];
     let mseg_curve_params = [
         ParamId::MsegCurve1,
         ParamId::MsegCurve2,
@@ -702,675 +764,1662 @@ fn build_voice_params(params: &ParamStore) -> VoiceParams {
         ParamId::MsegCurve127,
     ];
     for (i, pid) in mseg_curve_params.iter().enumerate() {
-        mseg_curves[i] = MsegCurve::from_u8(params.get(*pid) as u8);
+        params.mseg_curves[i] = MsegCurve::from_u8(store.get(*pid) as u8);
     }
 
-    let eg_attack = |per: ParamId| {
-        let v = params.get(per) as u8;
-        if v == 0 {
-            params.get(ParamId::EgAttackCurve) as u8
-        } else {
-            v.saturating_sub(1)
-        }
-    };
-    let eg_decay = |per: ParamId| {
-        let v = params.get(per) as u8;
-        if v == 0 {
-            params.get(ParamId::EgDecayCurve) as u8
-        } else {
-            v.saturating_sub(1)
-        }
-    };
-    let eg_release = |per: ParamId| {
-        let v = params.get(per) as u8;
-        if v == 0 {
-            params.get(ParamId::EgReleaseCurve) as u8
-        } else {
-            v.saturating_sub(1)
-        }
-    };
+    params.mseg_loop_start = store.get(ParamId::MsegLoopStart) as usize;
+    params.mseg_loop_end = store.get(ParamId::MsegLoopEnd) as usize;
+    params.mseg_loop_mode = MsegLoopMode::from_u8(store.get(ParamId::MsegLoopMode) as u8);
+    params.mseg_retrig_amp = store.get(ParamId::MsegRetrigAmp) as u16;
+    params.mseg_retrig_filter = store.get(ParamId::MsegRetrigFilter) as u16;
+    params.mseg_retrig_pitch = store.get(ParamId::MsegRetrigPitch) as u16;
+}
 
-    VoiceParams {
-        oscs: [
-            OscSettings {
-                osc_type: OscType::from_u8(params.get(ParamId::Osc1Type) as u8),
-                octave: (params.get(ParamId::Osc1Octave) as i8) - 3,
-                semitone: (params.get(ParamId::Osc1Semitone) as i8) - 12,
-                fine: params.get(ParamId::Osc1Fine) as f32,
-                shape: params.get(ParamId::Osc1Shape) as f32,
-                skew: params.get(ParamId::Osc1Skew) as f32,
+fn build_filter1_params(params: &mut VoiceParams, store: &ParamStore) {
+    params.filter1 = FilterSettings {
+        filter_type: FilterType::from_u8(store.get(ParamId::F1Type) as u8),
+        subtype: FilterSubtype::from_u8(store.get(ParamId::F1Subtype) as u8),
+        cutoff_hz: store.get(ParamId::F1Cutoff) as f32,
+        resonance: store.get(ParamId::F1Resonance) as f32,
+        eg_amount: store.get(ParamId::F1EgAmount) as f32,
+        key_tracking: store.get(ParamId::F1KeyTrack) as f32,
+        drive: store.get(ParamId::F1Drive) as f32,
+        feedback_drive: store.get(ParamId::F1FeedbackDrive) as f32,
+        enabled: store.get_bool(ParamId::F1Enabled),
+    };
+}
+
+fn build_filter2_params(params: &mut VoiceParams, store: &ParamStore) {
+    params.filter2 = FilterSettings {
+        filter_type: FilterType::from_u8(store.get(ParamId::F2Type) as u8),
+        subtype: FilterSubtype::from_u8(store.get(ParamId::F2Subtype) as u8),
+        cutoff_hz: store.get(ParamId::F2Cutoff) as f32,
+        resonance: store.get(ParamId::F2Resonance) as f32,
+        eg_amount: store.get(ParamId::F2EgAmount) as f32,
+        key_tracking: store.get(ParamId::F2KeyTrack) as f32,
+        drive: store.get(ParamId::F2Drive) as f32,
+        feedback_drive: store.get(ParamId::F2FeedbackDrive) as f32,
+        enabled: store.get_bool(ParamId::F2Enabled),
+    };
+}
+
+fn eg_attack(store: &ParamStore, per: ParamId) -> u8 {
+    let v = store.get(per) as u8;
+    if v == 0 {
+        store.get(ParamId::EgAttackCurve) as u8
+    } else {
+        v.saturating_sub(1)
+    }
+}
+
+fn eg_decay(store: &ParamStore, per: ParamId) -> u8 {
+    let v = store.get(per) as u8;
+    if v == 0 {
+        store.get(ParamId::EgDecayCurve) as u8
+    } else {
+        v.saturating_sub(1)
+    }
+}
+
+fn eg_release(store: &ParamStore, per: ParamId) -> u8 {
+    let v = store.get(per) as u8;
+    if v == 0 {
+        store.get(ParamId::EgReleaseCurve) as u8
+    } else {
+        v.saturating_sub(1)
+    }
+}
+
+fn build_amp_eg_params(params: &mut VoiceParams, store: &ParamStore) {
+    params.amp_eg = EnvelopeSettings {
+        attack: store.get(ParamId::AmpAttack) as f32,
+        decay: store.get(ParamId::AmpDecay) as f32,
+        sustain: store.get(ParamId::AmpSustain) as f32,
+        release: store.get(ParamId::AmpRelease) as f32,
+        mode: if store.get(ParamId::AmpEgMode) > 0.5 {
+            EnvelopeMode::Analog
+        } else {
+            EnvelopeMode::Digital
+        },
+        attack_shape: AttackShape::from_u8(eg_attack(store, ParamId::AmpEgAttackCurve)),
+        decay_shape: DecayReleaseShape::from_u8(eg_decay(store, ParamId::AmpEgDecayCurve)),
+        release_shape: DecayReleaseShape::from_u8(eg_release(store, ParamId::AmpEgReleaseCurve)),
+        retrigger_mode: EnvelopeRetriggerMode::from_u8(store.get(ParamId::AmpEgRetrigger) as u8),
+        tempo_sync: store.get_bool(ParamId::AmpEgTempoSync),
+        uber_release: store.get(ParamId::AmpEgUberRelease) as f32,
+        gated_release: store.get_bool(ParamId::AmpEgGatedRelease),
+        correct_analog_mode: store.get_bool(ParamId::AmpEgCorrectAnalog),
+    };
+}
+
+fn build_filter_eg_params(params: &mut VoiceParams, store: &ParamStore) {
+    params.filter_eg = EnvelopeSettings {
+        attack: store.get(ParamId::FilterAttack) as f32,
+        decay: store.get(ParamId::FilterDecay) as f32,
+        sustain: store.get(ParamId::FilterSustain) as f32,
+        release: store.get(ParamId::FilterRelease) as f32,
+        mode: if store.get(ParamId::FilterEgMode) > 0.5 {
+            EnvelopeMode::Analog
+        } else {
+            EnvelopeMode::Digital
+        },
+        attack_shape: AttackShape::from_u8(eg_attack(store, ParamId::FilterEgAttackCurve)),
+        decay_shape: DecayReleaseShape::from_u8(eg_decay(store, ParamId::FilterEgDecayCurve)),
+        release_shape: DecayReleaseShape::from_u8(eg_release(store, ParamId::FilterEgReleaseCurve)),
+        retrigger_mode: EnvelopeRetriggerMode::from_u8(store.get(ParamId::FilterEgRetrigger) as u8),
+        tempo_sync: store.get_bool(ParamId::FilterEgTempoSync),
+        uber_release: store.get(ParamId::FilterEgUberRelease) as f32,
+        gated_release: store.get_bool(ParamId::FilterEgGatedRelease),
+        correct_analog_mode: store.get_bool(ParamId::FilterEgCorrectAnalog),
+    };
+}
+
+fn build_pitch_eg_params(params: &mut VoiceParams, store: &ParamStore) {
+    params.pitch_eg = EnvelopeSettings {
+        attack: store.get(ParamId::PitchAttack) as f32,
+        decay: store.get(ParamId::PitchDecay) as f32,
+        sustain: store.get(ParamId::PitchSustain) as f32,
+        release: store.get(ParamId::PitchRelease) as f32,
+        mode: if store.get(ParamId::PitchEgMode) > 0.5 {
+            EnvelopeMode::Analog
+        } else {
+            EnvelopeMode::Digital
+        },
+        attack_shape: AttackShape::from_u8(eg_attack(store, ParamId::PitchEgAttackCurve)),
+        decay_shape: DecayReleaseShape::from_u8(eg_decay(store, ParamId::PitchEgDecayCurve)),
+        release_shape: DecayReleaseShape::from_u8(eg_release(store, ParamId::PitchEgReleaseCurve)),
+        retrigger_mode: EnvelopeRetriggerMode::from_u8(store.get(ParamId::PitchEgRetrigger) as u8),
+        tempo_sync: store.get_bool(ParamId::PitchEgTempoSync),
+        uber_release: store.get(ParamId::PitchEgUberRelease) as f32,
+        gated_release: store.get_bool(ParamId::PitchEgGatedRelease),
+        correct_analog_mode: store.get_bool(ParamId::PitchEgCorrectAnalog),
+    };
+}
+
+fn build_lfo_params(params: &mut VoiceParams, store: &ParamStore, idx: usize) {
+    let (
+        rate,
+        shape,
+        amount,
+        deform,
+        deform_type,
+        sync_mode,
+        sync_div,
+        trigger,
+        env_delay,
+        env_attack,
+        env_hold,
+        env_decay,
+        env_sustain,
+        env_release,
+        phase,
+        unipolar,
+        env_tempo_sync,
+    ) = match idx {
+        0 => (
+            ParamId::Lfo1Rate,
+            ParamId::Lfo1Shape,
+            ParamId::Lfo1Amount,
+            ParamId::Lfo1Deform,
+            ParamId::Lfo1DeformType,
+            ParamId::Lfo1SyncMode,
+            ParamId::Lfo1SyncDiv,
+            ParamId::Lfo1Trigger,
+            ParamId::Lfo1EnvDelay,
+            ParamId::Lfo1EnvAttack,
+            ParamId::Lfo1EnvHold,
+            ParamId::Lfo1EnvDecay,
+            ParamId::Lfo1EnvSustain,
+            ParamId::Lfo1EnvRelease,
+            ParamId::Lfo1Phase,
+            ParamId::Lfo1Unipolar,
+            ParamId::Lfo1EnvTempoSync,
+        ),
+        1 => (
+            ParamId::Lfo2Rate,
+            ParamId::Lfo2Shape,
+            ParamId::Lfo2Amount,
+            ParamId::Lfo2Deform,
+            ParamId::Lfo2DeformType,
+            ParamId::Lfo2SyncMode,
+            ParamId::Lfo2SyncDiv,
+            ParamId::Lfo2Trigger,
+            ParamId::Lfo2EnvDelay,
+            ParamId::Lfo2EnvAttack,
+            ParamId::Lfo2EnvHold,
+            ParamId::Lfo2EnvDecay,
+            ParamId::Lfo2EnvSustain,
+            ParamId::Lfo2EnvRelease,
+            ParamId::Lfo2Phase,
+            ParamId::Lfo2Unipolar,
+            ParamId::Lfo2EnvTempoSync,
+        ),
+        2 => (
+            ParamId::Lfo3Rate,
+            ParamId::Lfo3Shape,
+            ParamId::Lfo3Amount,
+            ParamId::Lfo3Deform,
+            ParamId::Lfo3DeformType,
+            ParamId::Lfo3SyncMode,
+            ParamId::Lfo3SyncDiv,
+            ParamId::Lfo3Trigger,
+            ParamId::Lfo3EnvDelay,
+            ParamId::Lfo3EnvAttack,
+            ParamId::Lfo3EnvHold,
+            ParamId::Lfo3EnvDecay,
+            ParamId::Lfo3EnvSustain,
+            ParamId::Lfo3EnvRelease,
+            ParamId::Lfo3Phase,
+            ParamId::Lfo3Unipolar,
+            ParamId::Lfo3EnvTempoSync,
+        ),
+        3 => (
+            ParamId::Lfo4Rate,
+            ParamId::Lfo4Shape,
+            ParamId::Lfo4Amount,
+            ParamId::Lfo4Deform,
+            ParamId::Lfo4DeformType,
+            ParamId::Lfo4SyncMode,
+            ParamId::Lfo4SyncDiv,
+            ParamId::Lfo4Trigger,
+            ParamId::Lfo4EnvDelay,
+            ParamId::Lfo4EnvAttack,
+            ParamId::Lfo4EnvHold,
+            ParamId::Lfo4EnvDecay,
+            ParamId::Lfo4EnvSustain,
+            ParamId::Lfo4EnvRelease,
+            ParamId::Lfo4Phase,
+            ParamId::Lfo4Unipolar,
+            ParamId::Lfo4EnvTempoSync,
+        ),
+        4 => (
+            ParamId::Lfo5Rate,
+            ParamId::Lfo5Shape,
+            ParamId::Lfo5Amount,
+            ParamId::Lfo5Deform,
+            ParamId::Lfo5DeformType,
+            ParamId::Lfo5SyncMode,
+            ParamId::Lfo5SyncDiv,
+            ParamId::Lfo5Trigger,
+            ParamId::Lfo5EnvDelay,
+            ParamId::Lfo5EnvAttack,
+            ParamId::Lfo5EnvHold,
+            ParamId::Lfo5EnvDecay,
+            ParamId::Lfo5EnvSustain,
+            ParamId::Lfo5EnvRelease,
+            ParamId::Lfo5Phase,
+            ParamId::Lfo5Unipolar,
+            ParamId::Lfo5EnvTempoSync,
+        ),
+        5 => (
+            ParamId::Lfo6Rate,
+            ParamId::Lfo6Shape,
+            ParamId::Lfo6Amount,
+            ParamId::Lfo6Deform,
+            ParamId::Lfo6DeformType,
+            ParamId::Lfo6SyncMode,
+            ParamId::Lfo6SyncDiv,
+            ParamId::Lfo6Trigger,
+            ParamId::Lfo6EnvDelay,
+            ParamId::Lfo6EnvAttack,
+            ParamId::Lfo6EnvHold,
+            ParamId::Lfo6EnvDecay,
+            ParamId::Lfo6EnvSustain,
+            ParamId::Lfo6EnvRelease,
+            ParamId::Lfo6Phase,
+            ParamId::Lfo6Unipolar,
+            ParamId::Lfo6EnvTempoSync,
+        ),
+        _ => return,
+    };
+    let settings = LfoSettings {
+        rate_hz: store.get(rate) as f32,
+        shape: LfoShape::from_u8(store.get(shape) as u8),
+        amount: store.get(amount) as f32,
+        deform: store.get(deform) as f32,
+        deform_type: store.get(deform_type) as u8,
+        enabled: true,
+        sync_mode: LfoSyncMode::from_u8(store.get(sync_mode) as u8),
+        sync_division: LfoSyncDivision::from_u8(store.get(sync_div) as u8),
+        trigger_mode: LfoTriggerMode::from_u8(store.get(trigger) as u8),
+        env_delay: store.get(env_delay) as f32,
+        env_attack: store.get(env_attack) as f32,
+        env_hold: store.get(env_hold) as f32,
+        env_decay: store.get(env_decay) as f32,
+        env_sustain: store.get(env_sustain) as f32,
+        env_release: store.get(env_release) as f32,
+        start_phase: store.get(phase) as f32,
+        unipolar: store.get_bool(unipolar),
+        env_tempo_sync: store.get_bool(env_tempo_sync),
+    };
+    match idx {
+        0 => params.lfo1 = settings,
+        1 => params.lfo2 = settings,
+        2 => params.lfo3 = settings,
+        3 => params.lfo4 = settings,
+        4 => params.lfo5 = settings,
+        5 => params.lfo6 = settings,
+        _ => {}
+    }
+}
+
+fn build_scene_lfo_params(params: &mut VoiceParams, store: &ParamStore, idx: usize) {
+    let (rate, shape, amount, deform) = match idx {
+        0 => (
+            ParamId::SceneLfo1Rate,
+            ParamId::SceneLfo1Shape,
+            ParamId::SceneLfo1Amount,
+            ParamId::SceneLfo1Deform,
+        ),
+        1 => (
+            ParamId::SceneLfo2Rate,
+            ParamId::SceneLfo2Shape,
+            ParamId::SceneLfo2Amount,
+            ParamId::SceneLfo2Deform,
+        ),
+        2 => (
+            ParamId::SceneLfo3Rate,
+            ParamId::SceneLfo3Shape,
+            ParamId::SceneLfo3Amount,
+            ParamId::SceneLfo3Deform,
+        ),
+        3 => (
+            ParamId::SceneLfo4Rate,
+            ParamId::SceneLfo4Shape,
+            ParamId::SceneLfo4Amount,
+            ParamId::SceneLfo4Deform,
+        ),
+        4 => (
+            ParamId::SceneLfo5Rate,
+            ParamId::SceneLfo5Shape,
+            ParamId::SceneLfo5Amount,
+            ParamId::SceneLfo5Deform,
+        ),
+        5 => (
+            ParamId::SceneLfo6Rate,
+            ParamId::SceneLfo6Shape,
+            ParamId::SceneLfo6Amount,
+            ParamId::SceneLfo6Deform,
+        ),
+        _ => return,
+    };
+    let settings = LfoSettings {
+        rate_hz: store.get(rate) as f32,
+        shape: LfoShape::from_u8(store.get(shape) as u8),
+        amount: store.get(amount) as f32,
+        deform: store.get(deform) as f32,
+        deform_type: 0,
+        enabled: true,
+        sync_mode: LfoSyncMode::Free,
+        sync_division: LfoSyncDivision::One4,
+        trigger_mode: LfoTriggerMode::FreeRun,
+        env_delay: 0.0,
+        env_attack: 0.0,
+        env_hold: 0.0,
+        env_decay: 0.0,
+        env_sustain: 1.0,
+        env_release: 0.0,
+        start_phase: 0.0,
+        unipolar: false,
+        env_tempo_sync: false,
+    };
+    match idx {
+        0 => params.scene_lfo1 = settings,
+        1 => params.scene_lfo2 = settings,
+        2 => params.scene_lfo3 = settings,
+        3 => params.scene_lfo4 = settings,
+        4 => params.scene_lfo5 = settings,
+        5 => params.scene_lfo6 = settings,
+        _ => {}
+    }
+}
+
+fn build_osc_params(params: &mut VoiceParams, store: &ParamStore, idx: usize) {
+    match idx {
+        0 => {
+            params.oscs[0] = OscSettings {
+                osc_type: OscType::from_u8(store.get(ParamId::Osc1Type) as u8),
+                octave: (store.get(ParamId::Osc1Octave) as i8) - 3,
+                semitone: (store.get(ParamId::Osc1Semitone) as i8) - 12,
+                fine: store.get(ParamId::Osc1Fine) as f32,
+                shape: store.get(ParamId::Osc1Shape) as f32,
+                skew: store.get(ParamId::Osc1Skew) as f32,
                 formant: 1.0,
-                level: params.get(ParamId::Osc1Level) as f32,
-                enabled: params.get_bool(ParamId::Osc1Enabled),
-                unison_voices: (params.get(ParamId::Osc1Unison) as u8) + 1,
-                unison_detune: params.get(ParamId::Osc1UnisonDetune) as f32,
-                unison_spread: params.get(ParamId::Osc1UnisonSpread) as f32,
-                phase_mode: OscPhaseMode::from_u8(params.get(ParamId::Osc1PhaseMode) as u8),
-                sync: params.get(ParamId::Osc1Sync) as f32,
-                waveform: params.get(ParamId::Osc1Waveform) as u8,
-                fm_depth: params.get(ParamId::Osc1FmDepth) as f32,
-                sub_level: params.get(ParamId::Osc1SubLevel) as f32,
-                sub_octave: params.get(ParamId::Osc1SubOctave) as u8,
-                pm_mode: params.get_bool(ParamId::Osc1PmMode),
-                shaper_mode: params.get(ParamId::Osc1Shaper) as u8,
-                fm2_feedback: params.get(ParamId::Fm2Feedback) as f32,
-                fm2_m12offset: params.get(ParamId::Fm2M12Offset) as f32,
-                fm2_m12phase: params.get(ParamId::Fm2M12Phase) as f32,
-                fm2_feedback_mode: params.get(ParamId::Fm2FeedbackMode) as u8,
-                fm3_m3_abs_freq: params.get(ParamId::Fm3M3AbsFreq) as f32,
-                fm3_feedback: params.get(ParamId::Fm3Feedback) as f32,
-                fm3_feedback_mode: params.get(ParamId::Fm3FeedbackMode) as u8,
-                sine_lowcut: params.get(ParamId::SineLowcut) as f32,
-                sine_highcut: params.get(ParamId::SineHighcut) as f32,
-                window_lowcut: params.get(ParamId::WindowLowcut) as f32,
-                window_highcut: params.get(ParamId::WindowHighcut) as f32,
-                sh_noise_lowcut: params.get(ParamId::ShNoiseLowcut) as f32,
-                sh_noise_highcut: params.get(ParamId::ShNoiseHighcut) as f32,
-                width2: params.get(ParamId::Osc1Width2) as f32,
-                wavetable_skew_v: params.get(ParamId::WavetableSkewV) as f32,
-                wavetable_saturate: params.get(ParamId::WavetableSaturate) as f32,
-                string_tone_lp: params.get(ParamId::StringToneLp) as f32,
-                string_tone_hp: params.get(ParamId::StringToneHp) as f32,
-                wavetable_sampler_mode: params.get(ParamId::WavetableSamplerMode) as u8,
-                string_dual_detune: params.get(ParamId::StringDualDetune) as f32,
-                string_dual_decay: params.get(ParamId::StringDualDecay) as f32,
-                string_oversample: params.get_bool(ParamId::StringOversample),
-                sub_one: params.get_bool(ParamId::Osc1SubOne),
+                level: store.get(ParamId::Osc1Level) as f32,
+                enabled: store.get_bool(ParamId::Osc1Enabled),
+                unison_voices: (store.get(ParamId::Osc1Unison) as u8) + 1,
+                unison_detune: store.get(ParamId::Osc1UnisonDetune) as f32,
+                unison_spread: store.get(ParamId::Osc1UnisonSpread) as f32,
+                phase_mode: OscPhaseMode::from_u8(store.get(ParamId::Osc1PhaseMode) as u8),
+                sync: store.get(ParamId::Osc1Sync) as f32,
+                waveform: store.get(ParamId::Osc1Waveform) as u8,
+                fm_depth: store.get(ParamId::Osc1FmDepth) as f32,
+                sub_level: store.get(ParamId::Osc1SubLevel) as f32,
+                sub_octave: store.get(ParamId::Osc1SubOctave) as u8,
+                pm_mode: store.get_bool(ParamId::Osc1PmMode),
+                shaper_mode: store.get(ParamId::Osc1Shaper) as u8,
+                fm2_feedback: store.get(ParamId::Fm2Feedback) as f32,
+                fm2_m12offset: store.get(ParamId::Fm2M12Offset) as f32,
+                fm2_m12phase: store.get(ParamId::Fm2M12Phase) as f32,
+                fm2_feedback_mode: store.get(ParamId::Fm2FeedbackMode) as u8,
+                fm3_m3_abs_freq: store.get(ParamId::Fm3M3AbsFreq) as f32,
+                fm3_feedback: store.get(ParamId::Fm3Feedback) as f32,
+                fm3_feedback_mode: store.get(ParamId::Fm3FeedbackMode) as u8,
+                sine_lowcut: store.get(ParamId::SineLowcut) as f32,
+                sine_highcut: store.get(ParamId::SineHighcut) as f32,
+                window_lowcut: store.get(ParamId::WindowLowcut) as f32,
+                window_highcut: store.get(ParamId::WindowHighcut) as f32,
+                sh_noise_lowcut: store.get(ParamId::ShNoiseLowcut) as f32,
+                sh_noise_highcut: store.get(ParamId::ShNoiseHighcut) as f32,
+                width2: store.get(ParamId::Osc1Width2) as f32,
+                wavetable_skew_v: store.get(ParamId::WavetableSkewV) as f32,
+                wavetable_saturate: store.get(ParamId::WavetableSaturate) as f32,
+                string_tone_lp: store.get(ParamId::StringToneLp) as f32,
+                string_tone_hp: store.get(ParamId::StringToneHp) as f32,
+                wavetable_sampler_mode: store.get(ParamId::WavetableSamplerMode) as u8,
+                string_dual_detune: store.get(ParamId::StringDualDetune) as f32,
+                string_dual_decay: store.get(ParamId::StringDualDecay) as f32,
+                string_oversample: store.get_bool(ParamId::StringOversample),
+                sub_one: store.get_bool(ParamId::Osc1SubOne),
                 alias_partials: [
-                    params.get(ParamId::AliasPartial1) as f32,
-                    params.get(ParamId::AliasPartial2) as f32,
-                    params.get(ParamId::AliasPartial3) as f32,
-                    params.get(ParamId::AliasPartial4) as f32,
-                    params.get(ParamId::AliasPartial5) as f32,
-                    params.get(ParamId::AliasPartial6) as f32,
-                    params.get(ParamId::AliasPartial7) as f32,
-                    params.get(ParamId::AliasPartial8) as f32,
-                    params.get(ParamId::AliasPartial9) as f32,
-                    params.get(ParamId::AliasPartial10) as f32,
-                    params.get(ParamId::AliasPartial11) as f32,
-                    params.get(ParamId::AliasPartial12) as f32,
-                    params.get(ParamId::AliasPartial13) as f32,
-                    params.get(ParamId::AliasPartial14) as f32,
-                    params.get(ParamId::AliasPartial15) as f32,
-                    params.get(ParamId::AliasPartial16) as f32,
+                    store.get(ParamId::AliasPartial1) as f32,
+                    store.get(ParamId::AliasPartial2) as f32,
+                    store.get(ParamId::AliasPartial3) as f32,
+                    store.get(ParamId::AliasPartial4) as f32,
+                    store.get(ParamId::AliasPartial5) as f32,
+                    store.get(ParamId::AliasPartial6) as f32,
+                    store.get(ParamId::AliasPartial7) as f32,
+                    store.get(ParamId::AliasPartial8) as f32,
+                    store.get(ParamId::AliasPartial9) as f32,
+                    store.get(ParamId::AliasPartial10) as f32,
+                    store.get(ParamId::AliasPartial11) as f32,
+                    store.get(ParamId::AliasPartial12) as f32,
+                    store.get(ParamId::AliasPartial13) as f32,
+                    store.get(ParamId::AliasPartial14) as f32,
+                    store.get(ParamId::AliasPartial15) as f32,
+                    store.get(ParamId::AliasPartial16) as f32,
                 ],
-                route: OscRoute::from_u8(params.get(ParamId::Osc1Route) as u8),
-                mute: params.get_bool(ParamId::Osc1Mute),
-                solo: params.get_bool(ParamId::Osc1Solo),
-            },
-            OscSettings {
-                osc_type: OscType::from_u8(params.get(ParamId::Osc2Type) as u8),
-                octave: (params.get(ParamId::Osc2Octave) as i8) - 3,
-                semitone: (params.get(ParamId::Osc2Semitone) as i8) - 12,
-                fine: params.get(ParamId::Osc2Fine) as f32,
-                shape: params.get(ParamId::Osc2Shape) as f32,
-                skew: params.get(ParamId::Osc2Skew) as f32,
+                route: OscRoute::from_u8(store.get(ParamId::Osc1Route) as u8),
+                mute: store.get_bool(ParamId::Osc1Mute),
+                solo: store.get_bool(ParamId::Osc1Solo),
+            };
+        }
+        1 => {
+            params.oscs[1] = OscSettings {
+                osc_type: OscType::from_u8(store.get(ParamId::Osc2Type) as u8),
+                octave: (store.get(ParamId::Osc2Octave) as i8) - 3,
+                semitone: (store.get(ParamId::Osc2Semitone) as i8) - 12,
+                fine: store.get(ParamId::Osc2Fine) as f32,
+                shape: store.get(ParamId::Osc2Shape) as f32,
+                skew: store.get(ParamId::Osc2Skew) as f32,
                 formant: 1.0,
-                level: params.get(ParamId::Osc2Level) as f32,
-                enabled: params.get_bool(ParamId::Osc2Enabled),
-                unison_voices: (params.get(ParamId::Osc2Unison) as u8) + 1,
-                unison_detune: params.get(ParamId::Osc2UnisonDetune) as f32,
-                unison_spread: params.get(ParamId::Osc2UnisonSpread) as f32,
-                phase_mode: OscPhaseMode::from_u8(params.get(ParamId::Osc2PhaseMode) as u8),
-                sync: params.get(ParamId::Osc2Sync) as f32,
-                waveform: params.get(ParamId::Osc2Waveform) as u8,
-                fm_depth: params.get(ParamId::Osc2FmDepth) as f32,
-                sub_level: params.get(ParamId::Osc2SubLevel) as f32,
-                sub_octave: params.get(ParamId::Osc2SubOctave) as u8,
-                pm_mode: params.get_bool(ParamId::Osc2PmMode),
-                shaper_mode: params.get(ParamId::Osc2Shaper) as u8,
-                fm2_feedback: params.get(ParamId::Fm2Feedback) as f32,
-                fm2_m12offset: params.get(ParamId::Fm2M12Offset) as f32,
-                fm2_m12phase: params.get(ParamId::Fm2M12Phase) as f32,
-                fm2_feedback_mode: params.get(ParamId::Fm2FeedbackMode) as u8,
-                fm3_m3_abs_freq: params.get(ParamId::Fm3M3AbsFreq) as f32,
-                fm3_feedback: params.get(ParamId::Fm3Feedback) as f32,
-                fm3_feedback_mode: params.get(ParamId::Fm3FeedbackMode) as u8,
-                sine_lowcut: params.get(ParamId::SineLowcut) as f32,
-                sine_highcut: params.get(ParamId::SineHighcut) as f32,
-                window_lowcut: params.get(ParamId::WindowLowcut) as f32,
-                window_highcut: params.get(ParamId::WindowHighcut) as f32,
-                sh_noise_lowcut: params.get(ParamId::ShNoiseLowcut) as f32,
-                sh_noise_highcut: params.get(ParamId::ShNoiseHighcut) as f32,
-                width2: params.get(ParamId::Osc2Width2) as f32,
-                wavetable_skew_v: params.get(ParamId::WavetableSkewV) as f32,
-                wavetable_saturate: params.get(ParamId::WavetableSaturate) as f32,
-                string_tone_lp: params.get(ParamId::StringToneLp) as f32,
-                string_tone_hp: params.get(ParamId::StringToneHp) as f32,
-                wavetable_sampler_mode: params.get(ParamId::WavetableSamplerMode) as u8,
-                string_dual_detune: params.get(ParamId::StringDualDetune) as f32,
-                string_dual_decay: params.get(ParamId::StringDualDecay) as f32,
-                string_oversample: params.get_bool(ParamId::StringOversample),
-                sub_one: params.get_bool(ParamId::Osc2SubOne),
+                level: store.get(ParamId::Osc2Level) as f32,
+                enabled: store.get_bool(ParamId::Osc2Enabled),
+                unison_voices: (store.get(ParamId::Osc2Unison) as u8) + 1,
+                unison_detune: store.get(ParamId::Osc2UnisonDetune) as f32,
+                unison_spread: store.get(ParamId::Osc2UnisonSpread) as f32,
+                phase_mode: OscPhaseMode::from_u8(store.get(ParamId::Osc2PhaseMode) as u8),
+                sync: store.get(ParamId::Osc2Sync) as f32,
+                waveform: store.get(ParamId::Osc2Waveform) as u8,
+                fm_depth: store.get(ParamId::Osc2FmDepth) as f32,
+                sub_level: store.get(ParamId::Osc2SubLevel) as f32,
+                sub_octave: store.get(ParamId::Osc2SubOctave) as u8,
+                pm_mode: store.get_bool(ParamId::Osc2PmMode),
+                shaper_mode: store.get(ParamId::Osc2Shaper) as u8,
+                fm2_feedback: store.get(ParamId::Fm2Feedback) as f32,
+                fm2_m12offset: store.get(ParamId::Fm2M12Offset) as f32,
+                fm2_m12phase: store.get(ParamId::Fm2M12Phase) as f32,
+                fm2_feedback_mode: store.get(ParamId::Fm2FeedbackMode) as u8,
+                fm3_m3_abs_freq: store.get(ParamId::Fm3M3AbsFreq) as f32,
+                fm3_feedback: store.get(ParamId::Fm3Feedback) as f32,
+                fm3_feedback_mode: store.get(ParamId::Fm3FeedbackMode) as u8,
+                sine_lowcut: store.get(ParamId::SineLowcut) as f32,
+                sine_highcut: store.get(ParamId::SineHighcut) as f32,
+                window_lowcut: store.get(ParamId::WindowLowcut) as f32,
+                window_highcut: store.get(ParamId::WindowHighcut) as f32,
+                sh_noise_lowcut: store.get(ParamId::ShNoiseLowcut) as f32,
+                sh_noise_highcut: store.get(ParamId::ShNoiseHighcut) as f32,
+                width2: store.get(ParamId::Osc2Width2) as f32,
+                wavetable_skew_v: store.get(ParamId::WavetableSkewV) as f32,
+                wavetable_saturate: store.get(ParamId::WavetableSaturate) as f32,
+                string_tone_lp: store.get(ParamId::StringToneLp) as f32,
+                string_tone_hp: store.get(ParamId::StringToneHp) as f32,
+                wavetable_sampler_mode: store.get(ParamId::WavetableSamplerMode) as u8,
+                string_dual_detune: store.get(ParamId::StringDualDetune) as f32,
+                string_dual_decay: store.get(ParamId::StringDualDecay) as f32,
+                string_oversample: store.get_bool(ParamId::StringOversample),
+                sub_one: store.get_bool(ParamId::Osc2SubOne),
                 alias_partials: [
-                    params.get(ParamId::AliasPartial1) as f32,
-                    params.get(ParamId::AliasPartial2) as f32,
-                    params.get(ParamId::AliasPartial3) as f32,
-                    params.get(ParamId::AliasPartial4) as f32,
-                    params.get(ParamId::AliasPartial5) as f32,
-                    params.get(ParamId::AliasPartial6) as f32,
-                    params.get(ParamId::AliasPartial7) as f32,
-                    params.get(ParamId::AliasPartial8) as f32,
-                    params.get(ParamId::AliasPartial9) as f32,
-                    params.get(ParamId::AliasPartial10) as f32,
-                    params.get(ParamId::AliasPartial11) as f32,
-                    params.get(ParamId::AliasPartial12) as f32,
-                    params.get(ParamId::AliasPartial13) as f32,
-                    params.get(ParamId::AliasPartial14) as f32,
-                    params.get(ParamId::AliasPartial15) as f32,
-                    params.get(ParamId::AliasPartial16) as f32,
+                    store.get(ParamId::AliasPartial1) as f32,
+                    store.get(ParamId::AliasPartial2) as f32,
+                    store.get(ParamId::AliasPartial3) as f32,
+                    store.get(ParamId::AliasPartial4) as f32,
+                    store.get(ParamId::AliasPartial5) as f32,
+                    store.get(ParamId::AliasPartial6) as f32,
+                    store.get(ParamId::AliasPartial7) as f32,
+                    store.get(ParamId::AliasPartial8) as f32,
+                    store.get(ParamId::AliasPartial9) as f32,
+                    store.get(ParamId::AliasPartial10) as f32,
+                    store.get(ParamId::AliasPartial11) as f32,
+                    store.get(ParamId::AliasPartial12) as f32,
+                    store.get(ParamId::AliasPartial13) as f32,
+                    store.get(ParamId::AliasPartial14) as f32,
+                    store.get(ParamId::AliasPartial15) as f32,
+                    store.get(ParamId::AliasPartial16) as f32,
                 ],
-                route: OscRoute::from_u8(params.get(ParamId::Osc2Route) as u8),
-                mute: params.get_bool(ParamId::Osc2Mute),
-                solo: params.get_bool(ParamId::Osc2Solo),
-            },
-            OscSettings {
-                osc_type: OscType::from_u8(params.get(ParamId::Osc3Type) as u8),
-                octave: (params.get(ParamId::Osc3Octave) as i8) - 3,
-                semitone: (params.get(ParamId::Osc3Semitone) as i8) - 12,
-                fine: params.get(ParamId::Osc3Fine) as f32,
-                shape: params.get(ParamId::Osc3Shape) as f32,
-                skew: params.get(ParamId::Osc3Skew) as f32,
-                formant: params.get(ParamId::Osc3Formant) as f32,
-                level: params.get(ParamId::Osc3Level) as f32,
-                enabled: params.get_bool(ParamId::Osc3Enabled),
-                unison_voices: (params.get(ParamId::Osc3Unison) as u8) + 1,
-                unison_detune: params.get(ParamId::Osc3UnisonDetune) as f32,
-                unison_spread: params.get(ParamId::Osc3UnisonSpread) as f32,
-                phase_mode: OscPhaseMode::from_u8(params.get(ParamId::Osc3PhaseMode) as u8),
-                sync: params.get(ParamId::Osc3Sync) as f32,
-                waveform: params.get(ParamId::Osc3Waveform) as u8,
-                fm_depth: params.get(ParamId::Osc3FmDepth) as f32,
-                sub_level: params.get(ParamId::Osc3SubLevel) as f32,
-                sub_octave: params.get(ParamId::Osc3SubOctave) as u8,
-                pm_mode: params.get_bool(ParamId::Osc3PmMode),
-                shaper_mode: params.get(ParamId::Osc3Shaper) as u8,
-                fm2_feedback: params.get(ParamId::Fm2Feedback) as f32,
-                fm2_m12offset: params.get(ParamId::Fm2M12Offset) as f32,
-                fm2_m12phase: params.get(ParamId::Fm2M12Phase) as f32,
-                fm2_feedback_mode: params.get(ParamId::Fm2FeedbackMode) as u8,
-                fm3_m3_abs_freq: params.get(ParamId::Fm3M3AbsFreq) as f32,
-                fm3_feedback: params.get(ParamId::Fm3Feedback) as f32,
-                fm3_feedback_mode: params.get(ParamId::Fm3FeedbackMode) as u8,
-                sine_lowcut: params.get(ParamId::SineLowcut) as f32,
-                sine_highcut: params.get(ParamId::SineHighcut) as f32,
-                window_lowcut: params.get(ParamId::WindowLowcut) as f32,
-                window_highcut: params.get(ParamId::WindowHighcut) as f32,
-                sh_noise_lowcut: params.get(ParamId::ShNoiseLowcut) as f32,
-                sh_noise_highcut: params.get(ParamId::ShNoiseHighcut) as f32,
-                width2: params.get(ParamId::Osc3Width2) as f32,
-                wavetable_skew_v: params.get(ParamId::WavetableSkewV) as f32,
-                wavetable_saturate: params.get(ParamId::WavetableSaturate) as f32,
-                string_tone_lp: params.get(ParamId::StringToneLp) as f32,
-                string_tone_hp: params.get(ParamId::StringToneHp) as f32,
-                wavetable_sampler_mode: params.get(ParamId::WavetableSamplerMode) as u8,
-                string_dual_detune: params.get(ParamId::StringDualDetune) as f32,
-                string_dual_decay: params.get(ParamId::StringDualDecay) as f32,
-                string_oversample: params.get_bool(ParamId::StringOversample),
-                sub_one: params.get_bool(ParamId::Osc3SubOne),
+                route: OscRoute::from_u8(store.get(ParamId::Osc2Route) as u8),
+                mute: store.get_bool(ParamId::Osc2Mute),
+                solo: store.get_bool(ParamId::Osc2Solo),
+            };
+        }
+        2 => {
+            params.oscs[2] = OscSettings {
+                osc_type: OscType::from_u8(store.get(ParamId::Osc3Type) as u8),
+                octave: (store.get(ParamId::Osc3Octave) as i8) - 3,
+                semitone: (store.get(ParamId::Osc3Semitone) as i8) - 12,
+                fine: store.get(ParamId::Osc3Fine) as f32,
+                shape: store.get(ParamId::Osc3Shape) as f32,
+                skew: store.get(ParamId::Osc3Skew) as f32,
+                formant: store.get(ParamId::Osc3Formant) as f32,
+                level: store.get(ParamId::Osc3Level) as f32,
+                enabled: store.get_bool(ParamId::Osc3Enabled),
+                unison_voices: (store.get(ParamId::Osc3Unison) as u8) + 1,
+                unison_detune: store.get(ParamId::Osc3UnisonDetune) as f32,
+                unison_spread: store.get(ParamId::Osc3UnisonSpread) as f32,
+                phase_mode: OscPhaseMode::from_u8(store.get(ParamId::Osc3PhaseMode) as u8),
+                sync: store.get(ParamId::Osc3Sync) as f32,
+                waveform: store.get(ParamId::Osc3Waveform) as u8,
+                fm_depth: store.get(ParamId::Osc3FmDepth) as f32,
+                sub_level: store.get(ParamId::Osc3SubLevel) as f32,
+                sub_octave: store.get(ParamId::Osc3SubOctave) as u8,
+                pm_mode: store.get_bool(ParamId::Osc3PmMode),
+                shaper_mode: store.get(ParamId::Osc3Shaper) as u8,
+                fm2_feedback: store.get(ParamId::Fm2Feedback) as f32,
+                fm2_m12offset: store.get(ParamId::Fm2M12Offset) as f32,
+                fm2_m12phase: store.get(ParamId::Fm2M12Phase) as f32,
+                fm2_feedback_mode: store.get(ParamId::Fm2FeedbackMode) as u8,
+                fm3_m3_abs_freq: store.get(ParamId::Fm3M3AbsFreq) as f32,
+                fm3_feedback: store.get(ParamId::Fm3Feedback) as f32,
+                fm3_feedback_mode: store.get(ParamId::Fm3FeedbackMode) as u8,
+                sine_lowcut: store.get(ParamId::SineLowcut) as f32,
+                sine_highcut: store.get(ParamId::SineHighcut) as f32,
+                window_lowcut: store.get(ParamId::WindowLowcut) as f32,
+                window_highcut: store.get(ParamId::WindowHighcut) as f32,
+                sh_noise_lowcut: store.get(ParamId::ShNoiseLowcut) as f32,
+                sh_noise_highcut: store.get(ParamId::ShNoiseHighcut) as f32,
+                width2: store.get(ParamId::Osc3Width2) as f32,
+                wavetable_skew_v: store.get(ParamId::WavetableSkewV) as f32,
+                wavetable_saturate: store.get(ParamId::WavetableSaturate) as f32,
+                string_tone_lp: store.get(ParamId::StringToneLp) as f32,
+                string_tone_hp: store.get(ParamId::StringToneHp) as f32,
+                wavetable_sampler_mode: store.get(ParamId::WavetableSamplerMode) as u8,
+                string_dual_detune: store.get(ParamId::StringDualDetune) as f32,
+                string_dual_decay: store.get(ParamId::StringDualDecay) as f32,
+                string_oversample: store.get_bool(ParamId::StringOversample),
+                sub_one: store.get_bool(ParamId::Osc3SubOne),
                 alias_partials: [
-                    params.get(ParamId::AliasPartial1) as f32,
-                    params.get(ParamId::AliasPartial2) as f32,
-                    params.get(ParamId::AliasPartial3) as f32,
-                    params.get(ParamId::AliasPartial4) as f32,
-                    params.get(ParamId::AliasPartial5) as f32,
-                    params.get(ParamId::AliasPartial6) as f32,
-                    params.get(ParamId::AliasPartial7) as f32,
-                    params.get(ParamId::AliasPartial8) as f32,
-                    params.get(ParamId::AliasPartial9) as f32,
-                    params.get(ParamId::AliasPartial10) as f32,
-                    params.get(ParamId::AliasPartial11) as f32,
-                    params.get(ParamId::AliasPartial12) as f32,
-                    params.get(ParamId::AliasPartial13) as f32,
-                    params.get(ParamId::AliasPartial14) as f32,
-                    params.get(ParamId::AliasPartial15) as f32,
-                    params.get(ParamId::AliasPartial16) as f32,
+                    store.get(ParamId::AliasPartial1) as f32,
+                    store.get(ParamId::AliasPartial2) as f32,
+                    store.get(ParamId::AliasPartial3) as f32,
+                    store.get(ParamId::AliasPartial4) as f32,
+                    store.get(ParamId::AliasPartial5) as f32,
+                    store.get(ParamId::AliasPartial6) as f32,
+                    store.get(ParamId::AliasPartial7) as f32,
+                    store.get(ParamId::AliasPartial8) as f32,
+                    store.get(ParamId::AliasPartial9) as f32,
+                    store.get(ParamId::AliasPartial10) as f32,
+                    store.get(ParamId::AliasPartial11) as f32,
+                    store.get(ParamId::AliasPartial12) as f32,
+                    store.get(ParamId::AliasPartial13) as f32,
+                    store.get(ParamId::AliasPartial14) as f32,
+                    store.get(ParamId::AliasPartial15) as f32,
+                    store.get(ParamId::AliasPartial16) as f32,
                 ],
-                route: OscRoute::from_u8(params.get(ParamId::Osc3Route) as u8),
-                mute: params.get_bool(ParamId::Osc3Mute),
-                solo: params.get_bool(ParamId::Osc3Solo),
-            },
-        ],
-        filter1: FilterSettings {
-            filter_type: FilterType::from_u8(params.get(ParamId::F1Type) as u8),
-            subtype: FilterSubtype::from_u8(params.get(ParamId::F1Subtype) as u8),
-            cutoff_hz: params.get(ParamId::F1Cutoff) as f32,
-            resonance: params.get(ParamId::F1Resonance) as f32,
-            eg_amount: params.get(ParamId::F1EgAmount) as f32,
-            key_tracking: params.get(ParamId::F1KeyTrack) as f32,
-            drive: params.get(ParamId::F1Drive) as f32,
-            feedback_drive: params.get(ParamId::F1FeedbackDrive) as f32,
-            enabled: params.get_bool(ParamId::F1Enabled),
-        },
-        filter2: FilterSettings {
-            filter_type: FilterType::from_u8(params.get(ParamId::F2Type) as u8),
-            subtype: FilterSubtype::from_u8(params.get(ParamId::F2Subtype) as u8),
-            cutoff_hz: params.get(ParamId::F2Cutoff) as f32,
-            resonance: params.get(ParamId::F2Resonance) as f32,
-            eg_amount: params.get(ParamId::F2EgAmount) as f32,
-            key_tracking: params.get(ParamId::F2KeyTrack) as f32,
-            drive: params.get(ParamId::F2Drive) as f32,
-            feedback_drive: params.get(ParamId::F2FeedbackDrive) as f32,
-            enabled: params.get_bool(ParamId::F2Enabled),
-        },
-        filter_routing: FilterRouting::from_u8(params.get(ParamId::FilterRouting) as u8),
-        filter_balance: params.get(ParamId::FilterBalance) as f32,
-        amp_eg: EnvelopeSettings {
-            attack: params.get(ParamId::AmpAttack) as f32,
-            decay: params.get(ParamId::AmpDecay) as f32,
-            sustain: params.get(ParamId::AmpSustain) as f32,
-            release: params.get(ParamId::AmpRelease) as f32,
-            mode: if params.get(ParamId::AmpEgMode) > 0.5 {
-                EnvelopeMode::Analog
-            } else {
-                EnvelopeMode::Digital
-            },
-            attack_shape: AttackShape::from_u8(eg_attack(ParamId::AmpEgAttackCurve)),
-            decay_shape: DecayReleaseShape::from_u8(eg_decay(ParamId::AmpEgDecayCurve)),
-            release_shape: DecayReleaseShape::from_u8(eg_release(ParamId::AmpEgReleaseCurve)),
-            retrigger_mode: EnvelopeRetriggerMode::from_u8(
-                params.get(ParamId::AmpEgRetrigger) as u8
-            ),
-            tempo_sync: params.get_bool(ParamId::AmpEgTempoSync),
-            uber_release: params.get(ParamId::AmpEgUberRelease) as f32,
-            gated_release: params.get_bool(ParamId::AmpEgGatedRelease),
-            correct_analog_mode: params.get_bool(ParamId::AmpEgCorrectAnalog),
-        },
-        filter_eg: EnvelopeSettings {
-            attack: params.get(ParamId::FilterAttack) as f32,
-            decay: params.get(ParamId::FilterDecay) as f32,
-            sustain: params.get(ParamId::FilterSustain) as f32,
-            release: params.get(ParamId::FilterRelease) as f32,
-            mode: if params.get(ParamId::FilterEgMode) > 0.5 {
-                EnvelopeMode::Analog
-            } else {
-                EnvelopeMode::Digital
-            },
-            attack_shape: AttackShape::from_u8(eg_attack(ParamId::FilterEgAttackCurve)),
-            decay_shape: DecayReleaseShape::from_u8(eg_decay(ParamId::FilterEgDecayCurve)),
-            release_shape: DecayReleaseShape::from_u8(eg_release(ParamId::FilterEgReleaseCurve)),
-            retrigger_mode: EnvelopeRetriggerMode::from_u8(
-                params.get(ParamId::FilterEgRetrigger) as u8
-            ),
-            tempo_sync: params.get_bool(ParamId::FilterEgTempoSync),
-            uber_release: params.get(ParamId::FilterEgUberRelease) as f32,
-            gated_release: params.get_bool(ParamId::FilterEgGatedRelease),
-            correct_analog_mode: params.get_bool(ParamId::FilterEgCorrectAnalog),
-        },
-        pitch_eg: EnvelopeSettings {
-            attack: params.get(ParamId::PitchAttack) as f32,
-            decay: params.get(ParamId::PitchDecay) as f32,
-            sustain: params.get(ParamId::PitchSustain) as f32,
-            release: params.get(ParamId::PitchRelease) as f32,
-            mode: if params.get(ParamId::PitchEgMode) > 0.5 {
-                EnvelopeMode::Analog
-            } else {
-                EnvelopeMode::Digital
-            },
-            attack_shape: AttackShape::from_u8(eg_attack(ParamId::PitchEgAttackCurve)),
-            decay_shape: DecayReleaseShape::from_u8(eg_decay(ParamId::PitchEgDecayCurve)),
-            release_shape: DecayReleaseShape::from_u8(eg_release(ParamId::PitchEgReleaseCurve)),
-            retrigger_mode: EnvelopeRetriggerMode::from_u8(
-                params.get(ParamId::PitchEgRetrigger) as u8
-            ),
-            tempo_sync: params.get_bool(ParamId::PitchEgTempoSync),
-            uber_release: params.get(ParamId::PitchEgUberRelease) as f32,
-            gated_release: params.get_bool(ParamId::PitchEgGatedRelease),
-            correct_analog_mode: params.get_bool(ParamId::PitchEgCorrectAnalog),
-        },
-        lfo1: LfoSettings {
-            rate_hz: params.get(ParamId::Lfo1Rate) as f32,
-            shape: super::dsp::LfoShape::from_u8(params.get(ParamId::Lfo1Shape) as u8),
-            amount: params.get(ParamId::Lfo1Amount) as f32,
-            deform: params.get(ParamId::Lfo1Deform) as f32,
-            deform_type: params.get(ParamId::Lfo1DeformType) as u8,
-            enabled: true,
-            sync_mode: LfoSyncMode::from_u8(params.get(ParamId::Lfo1SyncMode) as u8),
-            sync_division: LfoSyncDivision::from_u8(params.get(ParamId::Lfo1SyncDiv) as u8),
-            trigger_mode: super::dsp::LfoTriggerMode::from_u8(
-                params.get(ParamId::Lfo1Trigger) as u8
-            ),
-            env_delay: params.get(ParamId::Lfo1EnvDelay) as f32,
-            env_attack: params.get(ParamId::Lfo1EnvAttack) as f32,
-            env_hold: params.get(ParamId::Lfo1EnvHold) as f32,
-            env_decay: params.get(ParamId::Lfo1EnvDecay) as f32,
-            env_sustain: params.get(ParamId::Lfo1EnvSustain) as f32,
-            env_release: params.get(ParamId::Lfo1EnvRelease) as f32,
-            start_phase: params.get(ParamId::Lfo1Phase) as f32,
-            unipolar: params.get_bool(ParamId::Lfo1Unipolar),
-            env_tempo_sync: params.get_bool(ParamId::Lfo1EnvTempoSync),
-        },
-        lfo2: LfoSettings {
-            rate_hz: params.get(ParamId::Lfo2Rate) as f32,
-            shape: super::dsp::LfoShape::from_u8(params.get(ParamId::Lfo2Shape) as u8),
-            amount: params.get(ParamId::Lfo2Amount) as f32,
-            deform: params.get(ParamId::Lfo2Deform) as f32,
-            deform_type: params.get(ParamId::Lfo2DeformType) as u8,
-            enabled: true,
-            sync_mode: LfoSyncMode::from_u8(params.get(ParamId::Lfo2SyncMode) as u8),
-            sync_division: LfoSyncDivision::from_u8(params.get(ParamId::Lfo2SyncDiv) as u8),
-            trigger_mode: super::dsp::LfoTriggerMode::from_u8(
-                params.get(ParamId::Lfo2Trigger) as u8
-            ),
-            env_delay: params.get(ParamId::Lfo2EnvDelay) as f32,
-            env_attack: params.get(ParamId::Lfo2EnvAttack) as f32,
-            env_hold: params.get(ParamId::Lfo2EnvHold) as f32,
-            env_decay: params.get(ParamId::Lfo2EnvDecay) as f32,
-            env_sustain: params.get(ParamId::Lfo2EnvSustain) as f32,
-            env_release: params.get(ParamId::Lfo2EnvRelease) as f32,
-            start_phase: params.get(ParamId::Lfo2Phase) as f32,
-            unipolar: params.get_bool(ParamId::Lfo2Unipolar),
-            env_tempo_sync: params.get_bool(ParamId::Lfo2EnvTempoSync),
-        },
-        lfo3: LfoSettings {
-            rate_hz: params.get(ParamId::Lfo3Rate) as f32,
-            shape: super::dsp::LfoShape::from_u8(params.get(ParamId::Lfo3Shape) as u8),
-            amount: params.get(ParamId::Lfo3Amount) as f32,
-            deform: params.get(ParamId::Lfo3Deform) as f32,
-            deform_type: params.get(ParamId::Lfo3DeformType) as u8,
-            enabled: true,
-            sync_mode: LfoSyncMode::from_u8(params.get(ParamId::Lfo3SyncMode) as u8),
-            sync_division: LfoSyncDivision::from_u8(params.get(ParamId::Lfo3SyncDiv) as u8),
-            trigger_mode: super::dsp::LfoTriggerMode::from_u8(
-                params.get(ParamId::Lfo3Trigger) as u8
-            ),
-            env_delay: params.get(ParamId::Lfo3EnvDelay) as f32,
-            env_attack: params.get(ParamId::Lfo3EnvAttack) as f32,
-            env_hold: params.get(ParamId::Lfo3EnvHold) as f32,
-            env_decay: params.get(ParamId::Lfo3EnvDecay) as f32,
-            env_sustain: params.get(ParamId::Lfo3EnvSustain) as f32,
-            env_release: params.get(ParamId::Lfo3EnvRelease) as f32,
-            start_phase: params.get(ParamId::Lfo3Phase) as f32,
-            unipolar: params.get_bool(ParamId::Lfo3Unipolar),
-            env_tempo_sync: params.get_bool(ParamId::Lfo3EnvTempoSync),
-        },
-        lfo4: LfoSettings {
-            rate_hz: params.get(ParamId::Lfo4Rate) as f32,
-            shape: super::dsp::LfoShape::from_u8(params.get(ParamId::Lfo4Shape) as u8),
-            amount: params.get(ParamId::Lfo4Amount) as f32,
-            deform: params.get(ParamId::Lfo4Deform) as f32,
-            deform_type: params.get(ParamId::Lfo4DeformType) as u8,
-            enabled: true,
-            sync_mode: LfoSyncMode::from_u8(params.get(ParamId::Lfo4SyncMode) as u8),
-            sync_division: LfoSyncDivision::from_u8(params.get(ParamId::Lfo4SyncDiv) as u8),
-            trigger_mode: super::dsp::LfoTriggerMode::from_u8(
-                params.get(ParamId::Lfo4Trigger) as u8
-            ),
-            env_delay: params.get(ParamId::Lfo4EnvDelay) as f32,
-            env_attack: params.get(ParamId::Lfo4EnvAttack) as f32,
-            env_hold: params.get(ParamId::Lfo4EnvHold) as f32,
-            env_decay: params.get(ParamId::Lfo4EnvDecay) as f32,
-            env_sustain: params.get(ParamId::Lfo4EnvSustain) as f32,
-            env_release: params.get(ParamId::Lfo4EnvRelease) as f32,
-            start_phase: params.get(ParamId::Lfo4Phase) as f32,
-            unipolar: params.get_bool(ParamId::Lfo4Unipolar),
-            env_tempo_sync: params.get_bool(ParamId::Lfo4EnvTempoSync),
-        },
-        lfo5: LfoSettings {
-            rate_hz: params.get(ParamId::Lfo5Rate) as f32,
-            shape: super::dsp::LfoShape::from_u8(params.get(ParamId::Lfo5Shape) as u8),
-            amount: params.get(ParamId::Lfo5Amount) as f32,
-            deform: params.get(ParamId::Lfo5Deform) as f32,
-            deform_type: params.get(ParamId::Lfo5DeformType) as u8,
-            enabled: true,
-            sync_mode: LfoSyncMode::from_u8(params.get(ParamId::Lfo5SyncMode) as u8),
-            sync_division: LfoSyncDivision::from_u8(params.get(ParamId::Lfo5SyncDiv) as u8),
-            trigger_mode: super::dsp::LfoTriggerMode::from_u8(
-                params.get(ParamId::Lfo5Trigger) as u8
-            ),
-            env_delay: params.get(ParamId::Lfo5EnvDelay) as f32,
-            env_attack: params.get(ParamId::Lfo5EnvAttack) as f32,
-            env_hold: params.get(ParamId::Lfo5EnvHold) as f32,
-            env_decay: params.get(ParamId::Lfo5EnvDecay) as f32,
-            env_sustain: params.get(ParamId::Lfo5EnvSustain) as f32,
-            env_release: params.get(ParamId::Lfo5EnvRelease) as f32,
-            start_phase: params.get(ParamId::Lfo5Phase) as f32,
-            unipolar: params.get_bool(ParamId::Lfo5Unipolar),
-            env_tempo_sync: params.get_bool(ParamId::Lfo5EnvTempoSync),
-        },
-        lfo6: LfoSettings {
-            rate_hz: params.get(ParamId::Lfo6Rate) as f32,
-            shape: super::dsp::LfoShape::from_u8(params.get(ParamId::Lfo6Shape) as u8),
-            amount: params.get(ParamId::Lfo6Amount) as f32,
-            deform: params.get(ParamId::Lfo6Deform) as f32,
-            deform_type: params.get(ParamId::Lfo6DeformType) as u8,
-            enabled: true,
-            sync_mode: LfoSyncMode::from_u8(params.get(ParamId::Lfo6SyncMode) as u8),
-            sync_division: LfoSyncDivision::from_u8(params.get(ParamId::Lfo6SyncDiv) as u8),
-            trigger_mode: super::dsp::LfoTriggerMode::from_u8(
-                params.get(ParamId::Lfo6Trigger) as u8
-            ),
-            env_delay: params.get(ParamId::Lfo6EnvDelay) as f32,
-            env_attack: params.get(ParamId::Lfo6EnvAttack) as f32,
-            env_hold: params.get(ParamId::Lfo6EnvHold) as f32,
-            env_decay: params.get(ParamId::Lfo6EnvDecay) as f32,
-            env_sustain: params.get(ParamId::Lfo6EnvSustain) as f32,
-            env_release: params.get(ParamId::Lfo6EnvRelease) as f32,
-            start_phase: params.get(ParamId::Lfo6Phase) as f32,
-            unipolar: params.get_bool(ParamId::Lfo6Unipolar),
-            env_tempo_sync: params.get_bool(ParamId::Lfo6EnvTempoSync),
-        },
-        scene_lfo1: LfoSettings {
-            rate_hz: params.get(ParamId::SceneLfo1Rate) as f32,
-            shape: super::dsp::LfoShape::from_u8(params.get(ParamId::SceneLfo1Shape) as u8),
-            amount: params.get(ParamId::SceneLfo1Amount) as f32,
-            deform: params.get(ParamId::SceneLfo1Deform) as f32,
-            deform_type: 0,
-            enabled: true,
-            sync_mode: LfoSyncMode::Free,
-            sync_division: LfoSyncDivision::One4,
-            trigger_mode: super::dsp::LfoTriggerMode::FreeRun,
-            env_delay: 0.0,
-            env_attack: 0.0,
-            env_hold: 0.0,
-            env_decay: 0.0,
-            env_sustain: 1.0,
-            env_release: 0.0,
-            start_phase: 0.0,
-            unipolar: false,
-            env_tempo_sync: false,
-        },
-        scene_lfo2: LfoSettings {
-            rate_hz: params.get(ParamId::SceneLfo2Rate) as f32,
-            shape: super::dsp::LfoShape::from_u8(params.get(ParamId::SceneLfo2Shape) as u8),
-            amount: params.get(ParamId::SceneLfo2Amount) as f32,
-            deform: params.get(ParamId::SceneLfo2Deform) as f32,
-            deform_type: 0,
-            enabled: true,
-            sync_mode: LfoSyncMode::Free,
-            sync_division: LfoSyncDivision::One4,
-            trigger_mode: super::dsp::LfoTriggerMode::FreeRun,
-            env_delay: 0.0,
-            env_attack: 0.0,
-            env_hold: 0.0,
-            env_decay: 0.0,
-            env_sustain: 1.0,
-            env_release: 0.0,
-            start_phase: 0.0,
-            unipolar: false,
-            env_tempo_sync: false,
-        },
-        scene_lfo3: LfoSettings {
-            rate_hz: params.get(ParamId::SceneLfo3Rate) as f32,
-            shape: super::dsp::LfoShape::from_u8(params.get(ParamId::SceneLfo3Shape) as u8),
-            amount: params.get(ParamId::SceneLfo3Amount) as f32,
-            deform: params.get(ParamId::SceneLfo3Deform) as f32,
-            deform_type: 0,
-            enabled: true,
-            sync_mode: LfoSyncMode::Free,
-            sync_division: LfoSyncDivision::One4,
-            trigger_mode: super::dsp::LfoTriggerMode::FreeRun,
-            env_delay: 0.0,
-            env_attack: 0.0,
-            env_hold: 0.0,
-            env_decay: 0.0,
-            env_sustain: 1.0,
-            env_release: 0.0,
-            start_phase: 0.0,
-            unipolar: false,
-            env_tempo_sync: false,
-        },
-        scene_lfo4: LfoSettings {
-            rate_hz: params.get(ParamId::SceneLfo4Rate) as f32,
-            shape: super::dsp::LfoShape::from_u8(params.get(ParamId::SceneLfo4Shape) as u8),
-            amount: params.get(ParamId::SceneLfo4Amount) as f32,
-            deform: params.get(ParamId::SceneLfo4Deform) as f32,
-            deform_type: 0,
-            enabled: true,
-            sync_mode: LfoSyncMode::Free,
-            sync_division: LfoSyncDivision::One4,
-            trigger_mode: super::dsp::LfoTriggerMode::FreeRun,
-            env_delay: 0.0,
-            env_attack: 0.0,
-            env_hold: 0.0,
-            env_decay: 0.0,
-            env_sustain: 1.0,
-            env_release: 0.0,
-            start_phase: 0.0,
-            unipolar: false,
-            env_tempo_sync: false,
-        },
-        scene_lfo5: LfoSettings {
-            rate_hz: params.get(ParamId::SceneLfo5Rate) as f32,
-            shape: super::dsp::LfoShape::from_u8(params.get(ParamId::SceneLfo5Shape) as u8),
-            amount: params.get(ParamId::SceneLfo5Amount) as f32,
-            deform: params.get(ParamId::SceneLfo5Deform) as f32,
-            deform_type: 0,
-            enabled: true,
-            sync_mode: LfoSyncMode::Free,
-            sync_division: LfoSyncDivision::One4,
-            trigger_mode: super::dsp::LfoTriggerMode::FreeRun,
-            env_delay: 0.0,
-            env_attack: 0.0,
-            env_hold: 0.0,
-            env_decay: 0.0,
-            env_sustain: 1.0,
-            env_release: 0.0,
-            start_phase: 0.0,
-            unipolar: false,
-            env_tempo_sync: false,
-        },
-        scene_lfo6: LfoSettings {
-            rate_hz: params.get(ParamId::SceneLfo6Rate) as f32,
-            shape: super::dsp::LfoShape::from_u8(params.get(ParamId::SceneLfo6Shape) as u8),
-            amount: params.get(ParamId::SceneLfo6Amount) as f32,
-            deform: params.get(ParamId::SceneLfo6Deform) as f32,
-            deform_type: 0,
-            enabled: true,
-            sync_mode: LfoSyncMode::Free,
-            sync_division: LfoSyncDivision::One4,
-            trigger_mode: super::dsp::LfoTriggerMode::FreeRun,
-            env_delay: 0.0,
-            env_attack: 0.0,
-            env_hold: 0.0,
-            env_decay: 0.0,
-            env_sustain: 1.0,
-            env_release: 0.0,
-            start_phase: 0.0,
-            unipolar: false,
-            env_tempo_sync: false,
-        },
-        noise: NoiseSettings {
-            noise_type: NoiseType::from_u8(params.get(ParamId::NoiseType) as u8),
-            level: params.get(ParamId::NoiseLevel) as f32,
-            filter_type: FilterType::from_u8(params.get(ParamId::NoiseFilterType) as u8),
-            filter_cutoff: params.get(ParamId::NoiseFilterCutoff) as f32,
-            filter_resonance: params.get(ParamId::NoiseFilterResonance) as f32,
-            filter_enabled: params.get_bool(ParamId::NoiseFilterEnabled),
-            enabled: params.get_bool(ParamId::NoiseEnabled),
-            color: params.get(ParamId::NoiseColor) as f32,
-            stereo: params.get_bool(ParamId::NoiseStereo),
-            color_mode: params.get(ParamId::NoiseColorMode) as u8,
-            mute: params.get_bool(ParamId::NoiseMute),
-            solo: params.get_bool(ParamId::NoiseSolo),
-            route: OscRoute::from_u8(params.get(ParamId::NoiseRoute) as u8),
-        },
-        waveshaper: WaveshaperSettings {
-            shape: Waveshape::from_u8(params.get(ParamId::WaveshaperShape) as u8),
-            drive: params.get(ParamId::WaveshaperDrive) as f32,
-            mix: params.get(ParamId::WaveshaperMix) as f32,
-            enabled: params.get_bool(ParamId::WaveshaperEnabled),
-        },
-        flavor: FlavorType::from_u8(params.get(ParamId::FlavorType) as u8),
-        flavor_cutoff: params.get(ParamId::FlavorCutoff) as f32,
-        flavor_resonance: params.get(ParamId::FlavorResonance) as f32,
-        osc_fm_mode: OscFmMode::from_u8(params.get(ParamId::OscFmMode) as u8),
-        osc_fm_depth: params.get(ParamId::OscFmDepth) as f32,
-        portamento: params.get(ParamId::Portamento) as f32,
-        portamento_curve: PortamentoCurve::from_u8(params.get(ParamId::PortamentoCurve) as u8),
-        volume: params.get(ParamId::Volume) as f32,
-        pan: params.get(ParamId::Pan) as f32,
-        width: params.get(ParamId::Width) as f32,
-        pitch_bend_range: params.get(ParamId::PitchBendRange) as f32,
-        pitch_bend_up: params.get(ParamId::PitchBendUp) as f32,
-        pitch_bend_down: params.get(ParamId::PitchBendDown) as f32,
-        glissando: params.get_bool(ParamId::Glissando),
-        portamento_sync: params.get_bool(ParamId::PortamentoSync),
-        portamento_retrigger: params.get_bool(ParamId::PortamentoRetrigger),
-        mpe_enabled: params.get_bool(ParamId::MpeEnabled),
-        pitch_bend_smooth: params.get(ParamId::PitchBendSmooth) as f32,
-        modulations,
-        mod_wheel: 0.0,
-        aftertouch: 0.0,
-        poly_aftertouch: 0.0,
-        mpe_timbre: 0.0,
-        note_expression_volume: 1.0,
-        note_expression_pan: 0.0,
-        release_velocity: 0.0,
-        macros: [
-            params.get(ParamId::Macro1) as f32,
-            params.get(ParamId::Macro2) as f32,
-            params.get(ParamId::Macro3) as f32,
-            params.get(ParamId::Macro4) as f32,
-            params.get(ParamId::Macro5) as f32,
-            params.get(ParamId::Macro6) as f32,
-            params.get(ParamId::Macro7) as f32,
-            params.get(ParamId::Macro8) as f32,
-        ],
-        breath: 0.0,
-        expression: 0.0,
-        sustain: 0.0,
-        play_mode: PlayMode::from_u8(params.get(ParamId::PlayMode) as u8),
-        poly_repeated_key_mode: params.get_bool(ParamId::PolyRepeatedKeyMode),
-        voice_priority: VoicePriority::from_u8(params.get(ParamId::VoicePriority) as u8),
-        twist_aux_mix: params.get(ParamId::TwistAuxMix) as f32,
-        twist_lpg_response: params.get(ParamId::TwistLpgResponse) as f32,
-        twist_lpg_decay: params.get(ParamId::TwistLpgDecay) as f32,
-        mono_pedal_mode: params.get_bool(ParamId::MonoPedalMode),
-        lowcut_slope: params.get(ParamId::LowcutSlope) as u8,
-        drift_amount: params.get(ParamId::OscDrift) as f32,
-        step_seq_values: step_seq,
-        step_seq_loop_start: params.get(ParamId::StepSeqLoopStart) as usize,
-        step_seq_loop_end: params.get(ParamId::StepSeqLoopEnd) as usize,
-        step_seq_shuffle: params.get(ParamId::StepSeqShuffle) as f32,
-        step_seq_trig_amp: params.get(ParamId::StepSeqTrigAmp) as u16,
-        step_seq_trig_filter: params.get(ParamId::StepSeqTrigFilter) as u16,
-        step_seq_trig_pitch: params.get(ParamId::StepSeqTrigPitch) as u16,
-        mseg_retrig_amp: params.get(ParamId::MsegRetrigAmp) as u16,
-        mseg_retrig_filter: params.get(ParamId::MsegRetrigFilter) as u16,
-        mseg_retrig_pitch: params.get(ParamId::MsegRetrigPitch) as u16,
-        mseg_nodes,
-        mseg_curves,
-        mseg_loop_start: params.get(ParamId::MsegLoopStart) as usize,
-        mseg_loop_end: params.get(ParamId::MsegLoopEnd) as usize,
-        mseg_loop_mode: MsegLoopMode::from_u8(params.get(ParamId::MsegLoopMode) as u8),
-        string_stereo_spread: params.get(ParamId::StringStereoSpread) as f32,
-        wavetable_keytrack: params.get(ParamId::WavetableKeytrack) as f32,
-        pre_filter_gain: params.get(ParamId::PreFilterGain) as f32,
-        vca_level: params.get(ParamId::VcaLevel) as f32,
-        vca_velsense: params.get(ParamId::VcaVelSense) as f32,
-        f2_cutoff_offset: params.get_bool(ParamId::F2CutoffOffset),
-        f2_res_link: params.get_bool(ParamId::F2ResLink),
-        lowcut_hz: params.get(ParamId::Lowcut) as f32,
-        filter_feedback: params.get(ParamId::FilterFeedback) as f32,
-        sh_noise_correlation: params.get(ParamId::ShNoiseCorrelation) as f32,
-        sh_noise_width: params.get(ParamId::ShNoiseWidth) as f32,
-        sh_noise_sync: params.get(ParamId::ShNoiseSync) as f32,
-        tuning_scale: params.get(ParamId::TuningScale) as u8,
-        tuning_root: params.get(ParamId::TuningRoot) as u8,
-        ring12_combinator: CombinatorMode::from_u8(params.get(ParamId::Ring12Combinator) as u8),
-        ring23_combinator: CombinatorMode::from_u8(params.get(ParamId::Ring23Combinator) as u8),
-        tuning_override: None,
+                route: OscRoute::from_u8(store.get(ParamId::Osc3Route) as u8),
+                mute: store.get_bool(ParamId::Osc3Mute),
+                solo: store.get_bool(ParamId::Osc3Solo),
+            };
+        }
+        _ => {}
+    }
+}
+
+fn build_noise_params(params: &mut VoiceParams, store: &ParamStore) {
+    params.noise = NoiseSettings {
+        noise_type: NoiseType::from_u8(store.get(ParamId::NoiseType) as u8),
+        level: store.get(ParamId::NoiseLevel) as f32,
+        filter_type: FilterType::from_u8(store.get(ParamId::NoiseFilterType) as u8),
+        filter_cutoff: store.get(ParamId::NoiseFilterCutoff) as f32,
+        filter_resonance: store.get(ParamId::NoiseFilterResonance) as f32,
+        filter_enabled: store.get_bool(ParamId::NoiseFilterEnabled),
+        enabled: store.get_bool(ParamId::NoiseEnabled),
+        color: store.get(ParamId::NoiseColor) as f32,
+        stereo: store.get_bool(ParamId::NoiseStereo),
+        color_mode: store.get(ParamId::NoiseColorMode) as u8,
+        mute: store.get_bool(ParamId::NoiseMute),
+        solo: store.get_bool(ParamId::NoiseSolo),
+        route: OscRoute::from_u8(store.get(ParamId::NoiseRoute) as u8),
+    };
+}
+
+fn build_waveshaper_params(params: &mut VoiceParams, store: &ParamStore) {
+    params.waveshaper = WaveshaperSettings {
+        shape: Waveshape::from_u8(store.get(ParamId::WaveshaperShape) as u8),
+        drive: store.get(ParamId::WaveshaperDrive) as f32,
+        mix: store.get(ParamId::WaveshaperMix) as f32,
+        enabled: store.get_bool(ParamId::WaveshaperEnabled),
+    };
+}
+
+fn build_flavor_params(params: &mut VoiceParams, store: &ParamStore) {
+    params.flavor = FlavorType::from_u8(store.get(ParamId::FlavorType) as u8);
+    params.flavor_cutoff = store.get(ParamId::FlavorCutoff) as f32;
+    params.flavor_resonance = store.get(ParamId::FlavorResonance) as f32;
+}
+
+fn build_tuning_params(params: &mut VoiceParams, store: &ParamStore) {
+    params.tuning_scale = store.get(ParamId::TuningScale) as u8;
+    params.tuning_root = store.get(ParamId::TuningRoot) as u8;
+}
+
+fn build_output_vca_params(params: &mut VoiceParams, store: &ParamStore) {
+    params.volume = store.get(ParamId::Volume) as f32;
+    params.pan = store.get(ParamId::Pan) as f32;
+    params.width = store.get(ParamId::Width) as f32;
+    params.pre_filter_gain = store.get(ParamId::PreFilterGain) as f32;
+    params.vca_level = store.get(ParamId::VcaLevel) as f32;
+    params.vca_velsense = store.get(ParamId::VcaVelSense) as f32;
+}
+
+fn build_portamento_pitchbend_params(params: &mut VoiceParams, store: &ParamStore) {
+    params.portamento = store.get(ParamId::Portamento) as f32;
+    params.portamento_curve = PortamentoCurve::from_u8(store.get(ParamId::PortamentoCurve) as u8);
+    params.pitch_bend_range = store.get(ParamId::PitchBendRange) as f32;
+    params.pitch_bend_up = store.get(ParamId::PitchBendUp) as f32;
+    params.pitch_bend_down = store.get(ParamId::PitchBendDown) as f32;
+    params.glissando = store.get_bool(ParamId::Glissando);
+    params.portamento_sync = store.get_bool(ParamId::PortamentoSync);
+    params.portamento_retrigger = store.get_bool(ParamId::PortamentoRetrigger);
+    params.pitch_bend_smooth = store.get(ParamId::PitchBendSmooth) as f32;
+}
+
+fn build_play_mode_steal_poly_params(params: &mut VoiceParams, store: &ParamStore) {
+    params.play_mode = PlayMode::from_u8(store.get(ParamId::PlayMode) as u8);
+    params.voice_priority = VoicePriority::from_u8(store.get(ParamId::VoicePriority) as u8);
+    params.poly_repeated_key_mode = store.get_bool(ParamId::PolyRepeatedKeyMode);
+    params.mono_pedal_mode = store.get_bool(ParamId::MonoPedalMode);
+}
+
+fn build_filters_routing_balance_params(params: &mut VoiceParams, store: &ParamStore) {
+    params.filter_routing = FilterRouting::from_u8(store.get(ParamId::FilterRouting) as u8);
+    params.filter_balance = store.get(ParamId::FilterBalance) as f32;
+    params.f2_cutoff_offset = store.get_bool(ParamId::F2CutoffOffset);
+    params.f2_res_link = store.get_bool(ParamId::F2ResLink);
+    params.lowcut_hz = store.get(ParamId::Lowcut) as f32;
+    params.lowcut_slope = store.get(ParamId::LowcutSlope) as u8;
+    params.filter_feedback = store.get(ParamId::FilterFeedback) as f32;
+}
+
+fn build_misc_globals_params(params: &mut VoiceParams, store: &ParamStore) {
+    params.osc_fm_mode = OscFmMode::from_u8(store.get(ParamId::OscFmMode) as u8);
+    params.osc_fm_depth = store.get(ParamId::OscFmDepth) as f32;
+    params.ring12_combinator = CombinatorMode::from_u8(store.get(ParamId::Ring12Combinator) as u8);
+    params.ring23_combinator = CombinatorMode::from_u8(store.get(ParamId::Ring23Combinator) as u8);
+    params.drift_amount = store.get(ParamId::OscDrift) as f32;
+    params.mpe_enabled = store.get_bool(ParamId::MpeEnabled);
+    params.string_stereo_spread = store.get(ParamId::StringStereoSpread) as f32;
+    params.wavetable_keytrack = store.get(ParamId::WavetableKeytrack) as f32;
+    params.twist_aux_mix = store.get(ParamId::TwistAuxMix) as f32;
+    params.twist_lpg_response = store.get(ParamId::TwistLpgResponse) as f32;
+    params.twist_lpg_decay = store.get(ParamId::TwistLpgDecay) as f32;
+    params.sh_noise_correlation = store.get(ParamId::ShNoiseCorrelation) as f32;
+    params.sh_noise_width = store.get(ParamId::ShNoiseWidth) as f32;
+    params.sh_noise_sync = store.get(ParamId::ShNoiseSync) as f32;
+    params.macros = [
+        store.get(ParamId::Macro1) as f32,
+        store.get(ParamId::Macro2) as f32,
+        store.get(ParamId::Macro3) as f32,
+        store.get(ParamId::Macro4) as f32,
+        store.get(ParamId::Macro5) as f32,
+        store.get(ParamId::Macro6) as f32,
+        store.get(ParamId::Macro7) as f32,
+        store.get(ParamId::Macro8) as f32,
+    ];
+}
+
+#[derive(Default, Debug, Clone, Copy)]
+struct ParamDirtyFlags {
+    filter1: bool,
+    filter2: bool,
+    filters_routing_balance: bool,
+    amp_eg: bool,
+    filter_eg: bool,
+    pitch_eg: bool,
+    oscs: bool,
+    osc_globals: bool,
+    lfos: [bool; 6],
+    scene_lfos: [bool; 6],
+    noise: bool,
+    waveshaper: bool,
+    flavor: bool,
+    modulations: bool,
+    step_seq: bool,
+    mseg: bool,
+    tuning: bool,
+    output_vca: bool,
+    portamento_pitchbend: bool,
+    play_mode_steal_poly: bool,
+    misc_globals: bool,
+}
+
+fn apply_param_id_to_voice_params(
+    params: &mut VoiceParams,
+    store: &ParamStore,
+    id: ParamId,
+    _value: f64,
+    dirty: &mut ParamDirtyFlags,
+) -> bool {
+    match id {
+        // Oscillator 1
+        ParamId::Osc1Type
+        | ParamId::Osc1Octave
+        | ParamId::Osc1Semitone
+        | ParamId::Osc1Fine
+        | ParamId::Osc1Shape
+        | ParamId::Osc1Skew
+        | ParamId::Osc1Level
+        | ParamId::Osc1Enabled
+        | ParamId::Osc1Unison
+        | ParamId::Osc1UnisonDetune
+        | ParamId::Osc1UnisonSpread
+        | ParamId::Osc1PhaseMode
+        | ParamId::Osc1Sync
+        | ParamId::Osc1Waveform
+        | ParamId::Osc1FmDepth
+        | ParamId::Osc1SubLevel
+        | ParamId::Osc1SubOctave
+        | ParamId::Osc1PmMode
+        | ParamId::Osc1Shaper
+        | ParamId::Osc1Width2
+        | ParamId::Osc1SubOne
+        | ParamId::Osc1Mute
+        | ParamId::Osc1Solo
+        | ParamId::Osc1Route => {
+            build_osc_params(params, store, 0);
+            dirty.oscs = true;
+            true
+        }
+
+        // Oscillator 2
+        ParamId::Osc2Type
+        | ParamId::Osc2Octave
+        | ParamId::Osc2Semitone
+        | ParamId::Osc2Fine
+        | ParamId::Osc2Shape
+        | ParamId::Osc2Skew
+        | ParamId::Osc2Level
+        | ParamId::Osc2Enabled
+        | ParamId::Osc2Unison
+        | ParamId::Osc2UnisonDetune
+        | ParamId::Osc2UnisonSpread
+        | ParamId::Osc2PhaseMode
+        | ParamId::Osc2Sync
+        | ParamId::Osc2Waveform
+        | ParamId::Osc2FmDepth
+        | ParamId::Osc2SubLevel
+        | ParamId::Osc2SubOctave
+        | ParamId::Osc2PmMode
+        | ParamId::Osc2Shaper
+        | ParamId::Osc2Width2
+        | ParamId::Osc2SubOne
+        | ParamId::Osc2Mute
+        | ParamId::Osc2Solo
+        | ParamId::Osc2Route => {
+            build_osc_params(params, store, 1);
+            dirty.oscs = true;
+            true
+        }
+
+        // Oscillator 3
+        ParamId::Osc3Type
+        | ParamId::Osc3Octave
+        | ParamId::Osc3Semitone
+        | ParamId::Osc3Fine
+        | ParamId::Osc3Shape
+        | ParamId::Osc3Skew
+        | ParamId::Osc3Formant
+        | ParamId::Osc3Level
+        | ParamId::Osc3Enabled
+        | ParamId::Osc3Unison
+        | ParamId::Osc3UnisonDetune
+        | ParamId::Osc3UnisonSpread
+        | ParamId::Osc3PhaseMode
+        | ParamId::Osc3Sync
+        | ParamId::Osc3Waveform
+        | ParamId::Osc3FmDepth
+        | ParamId::Osc3SubLevel
+        | ParamId::Osc3SubOctave
+        | ParamId::Osc3PmMode
+        | ParamId::Osc3Shaper
+        | ParamId::Osc3Width2
+        | ParamId::Osc3SubOne
+        | ParamId::Osc3Mute
+        | ParamId::Osc3Solo
+        | ParamId::Osc3Route => {
+            build_osc_params(params, store, 2);
+            dirty.oscs = true;
+            true
+        }
+
+        // Shared oscillator/global params
+        ParamId::Fm2Feedback
+        | ParamId::Fm2M12Offset
+        | ParamId::Fm2M12Phase
+        | ParamId::Fm2FeedbackMode
+        | ParamId::Fm3M3AbsFreq
+        | ParamId::Fm3Feedback
+        | ParamId::Fm3FeedbackMode
+        | ParamId::SineLowcut
+        | ParamId::SineHighcut
+        | ParamId::WindowLowcut
+        | ParamId::WindowHighcut
+        | ParamId::ShNoiseLowcut
+        | ParamId::ShNoiseHighcut
+        | ParamId::WavetableSkewV
+        | ParamId::WavetableSaturate
+        | ParamId::StringToneLp
+        | ParamId::StringToneHp
+        | ParamId::WavetableSamplerMode
+        | ParamId::StringDualDetune
+        | ParamId::StringDualDecay
+        | ParamId::StringOversample
+        | ParamId::AliasPartial1
+        | ParamId::AliasPartial2
+        | ParamId::AliasPartial3
+        | ParamId::AliasPartial4
+        | ParamId::AliasPartial5
+        | ParamId::AliasPartial6
+        | ParamId::AliasPartial7
+        | ParamId::AliasPartial8
+        | ParamId::AliasPartial9
+        | ParamId::AliasPartial10
+        | ParamId::AliasPartial11
+        | ParamId::AliasPartial12
+        | ParamId::AliasPartial13
+        | ParamId::AliasPartial14
+        | ParamId::AliasPartial15
+        | ParamId::AliasPartial16 => {
+            build_osc_params(params, store, 0);
+            build_osc_params(params, store, 1);
+            build_osc_params(params, store, 2);
+            dirty.osc_globals = true;
+            true
+        }
+
+        // Filter 1
+        ParamId::F1Type
+        | ParamId::F1Subtype
+        | ParamId::F1Cutoff
+        | ParamId::F1Resonance
+        | ParamId::F1EgAmount
+        | ParamId::F1KeyTrack
+        | ParamId::F1Drive
+        | ParamId::F1FeedbackDrive
+        | ParamId::F1Enabled => {
+            build_filter1_params(params, store);
+            dirty.filter1 = true;
+            true
+        }
+
+        // Filter 2
+        ParamId::F2Type
+        | ParamId::F2Subtype
+        | ParamId::F2Cutoff
+        | ParamId::F2Resonance
+        | ParamId::F2EgAmount
+        | ParamId::F2KeyTrack
+        | ParamId::F2Drive
+        | ParamId::F2FeedbackDrive
+        | ParamId::F2Enabled => {
+            build_filter2_params(params, store);
+            dirty.filter2 = true;
+            true
+        }
+
+        // Filter routing / balance / globals
+        ParamId::FilterRouting
+        | ParamId::FilterBalance
+        | ParamId::F2CutoffOffset
+        | ParamId::F2ResLink
+        | ParamId::Lowcut
+        | ParamId::LowcutSlope
+        | ParamId::FilterFeedback => {
+            build_filters_routing_balance_params(params, store);
+            dirty.filters_routing_balance = true;
+            true
+        }
+
+        // Amp EG
+        ParamId::AmpAttack
+        | ParamId::AmpDecay
+        | ParamId::AmpSustain
+        | ParamId::AmpRelease
+        | ParamId::AmpEgMode
+        | ParamId::AmpEgRetrigger
+        | ParamId::AmpEgTempoSync
+        | ParamId::AmpEgUberRelease
+        | ParamId::AmpEgGatedRelease
+        | ParamId::AmpEgCorrectAnalog
+        | ParamId::AmpEgAttackCurve
+        | ParamId::AmpEgDecayCurve
+        | ParamId::AmpEgReleaseCurve
+        | ParamId::EgAttackCurve
+        | ParamId::EgDecayCurve
+        | ParamId::EgReleaseCurve => {
+            build_amp_eg_params(params, store);
+            dirty.amp_eg = true;
+            true
+        }
+
+        // Filter EG
+        ParamId::FilterAttack
+        | ParamId::FilterDecay
+        | ParamId::FilterSustain
+        | ParamId::FilterRelease
+        | ParamId::FilterEgMode
+        | ParamId::FilterEgRetrigger
+        | ParamId::FilterEgTempoSync
+        | ParamId::FilterEgUberRelease
+        | ParamId::FilterEgGatedRelease
+        | ParamId::FilterEgCorrectAnalog
+        | ParamId::FilterEgAttackCurve
+        | ParamId::FilterEgDecayCurve
+        | ParamId::FilterEgReleaseCurve => {
+            build_filter_eg_params(params, store);
+            dirty.filter_eg = true;
+            true
+        }
+
+        // Pitch EG
+        ParamId::PitchAttack
+        | ParamId::PitchDecay
+        | ParamId::PitchSustain
+        | ParamId::PitchRelease
+        | ParamId::PitchEgMode
+        | ParamId::PitchEgRetrigger
+        | ParamId::PitchEgTempoSync
+        | ParamId::PitchEgUberRelease
+        | ParamId::PitchEgGatedRelease
+        | ParamId::PitchEgCorrectAnalog
+        | ParamId::PitchEgAttackCurve
+        | ParamId::PitchEgDecayCurve
+        | ParamId::PitchEgReleaseCurve => {
+            build_pitch_eg_params(params, store);
+            dirty.pitch_eg = true;
+            true
+        }
+
+        // LFOs
+        ParamId::Lfo1Rate
+        | ParamId::Lfo1Shape
+        | ParamId::Lfo1Amount
+        | ParamId::Lfo1Deform
+        | ParamId::Lfo1DeformType
+        | ParamId::Lfo1SyncMode
+        | ParamId::Lfo1SyncDiv
+        | ParamId::Lfo1Trigger
+        | ParamId::Lfo1EnvDelay
+        | ParamId::Lfo1EnvAttack
+        | ParamId::Lfo1EnvHold
+        | ParamId::Lfo1EnvDecay
+        | ParamId::Lfo1EnvSustain
+        | ParamId::Lfo1EnvRelease
+        | ParamId::Lfo1Phase
+        | ParamId::Lfo1Unipolar
+        | ParamId::Lfo1EnvTempoSync => {
+            build_lfo_params(params, store, 0);
+            dirty.lfos[0] = true;
+            true
+        }
+        ParamId::Lfo2Rate
+        | ParamId::Lfo2Shape
+        | ParamId::Lfo2Amount
+        | ParamId::Lfo2Deform
+        | ParamId::Lfo2DeformType
+        | ParamId::Lfo2SyncMode
+        | ParamId::Lfo2SyncDiv
+        | ParamId::Lfo2Trigger
+        | ParamId::Lfo2EnvDelay
+        | ParamId::Lfo2EnvAttack
+        | ParamId::Lfo2EnvHold
+        | ParamId::Lfo2EnvDecay
+        | ParamId::Lfo2EnvSustain
+        | ParamId::Lfo2EnvRelease
+        | ParamId::Lfo2Phase
+        | ParamId::Lfo2Unipolar
+        | ParamId::Lfo2EnvTempoSync => {
+            build_lfo_params(params, store, 1);
+            dirty.lfos[1] = true;
+            true
+        }
+        ParamId::Lfo3Rate
+        | ParamId::Lfo3Shape
+        | ParamId::Lfo3Amount
+        | ParamId::Lfo3Deform
+        | ParamId::Lfo3DeformType
+        | ParamId::Lfo3SyncMode
+        | ParamId::Lfo3SyncDiv
+        | ParamId::Lfo3Trigger
+        | ParamId::Lfo3EnvDelay
+        | ParamId::Lfo3EnvAttack
+        | ParamId::Lfo3EnvHold
+        | ParamId::Lfo3EnvDecay
+        | ParamId::Lfo3EnvSustain
+        | ParamId::Lfo3EnvRelease
+        | ParamId::Lfo3Phase
+        | ParamId::Lfo3Unipolar
+        | ParamId::Lfo3EnvTempoSync => {
+            build_lfo_params(params, store, 2);
+            dirty.lfos[2] = true;
+            true
+        }
+        ParamId::Lfo4Rate
+        | ParamId::Lfo4Shape
+        | ParamId::Lfo4Amount
+        | ParamId::Lfo4Deform
+        | ParamId::Lfo4DeformType
+        | ParamId::Lfo4SyncMode
+        | ParamId::Lfo4SyncDiv
+        | ParamId::Lfo4Trigger
+        | ParamId::Lfo4EnvDelay
+        | ParamId::Lfo4EnvAttack
+        | ParamId::Lfo4EnvHold
+        | ParamId::Lfo4EnvDecay
+        | ParamId::Lfo4EnvSustain
+        | ParamId::Lfo4EnvRelease
+        | ParamId::Lfo4Phase
+        | ParamId::Lfo4Unipolar
+        | ParamId::Lfo4EnvTempoSync => {
+            build_lfo_params(params, store, 3);
+            dirty.lfos[3] = true;
+            true
+        }
+        ParamId::Lfo5Rate
+        | ParamId::Lfo5Shape
+        | ParamId::Lfo5Amount
+        | ParamId::Lfo5Deform
+        | ParamId::Lfo5DeformType
+        | ParamId::Lfo5SyncMode
+        | ParamId::Lfo5SyncDiv
+        | ParamId::Lfo5Trigger
+        | ParamId::Lfo5EnvDelay
+        | ParamId::Lfo5EnvAttack
+        | ParamId::Lfo5EnvHold
+        | ParamId::Lfo5EnvDecay
+        | ParamId::Lfo5EnvSustain
+        | ParamId::Lfo5EnvRelease
+        | ParamId::Lfo5Phase
+        | ParamId::Lfo5Unipolar
+        | ParamId::Lfo5EnvTempoSync => {
+            build_lfo_params(params, store, 4);
+            dirty.lfos[4] = true;
+            true
+        }
+        ParamId::Lfo6Rate
+        | ParamId::Lfo6Shape
+        | ParamId::Lfo6Amount
+        | ParamId::Lfo6Deform
+        | ParamId::Lfo6DeformType
+        | ParamId::Lfo6SyncMode
+        | ParamId::Lfo6SyncDiv
+        | ParamId::Lfo6Trigger
+        | ParamId::Lfo6EnvDelay
+        | ParamId::Lfo6EnvAttack
+        | ParamId::Lfo6EnvHold
+        | ParamId::Lfo6EnvDecay
+        | ParamId::Lfo6EnvSustain
+        | ParamId::Lfo6EnvRelease
+        | ParamId::Lfo6Phase
+        | ParamId::Lfo6Unipolar
+        | ParamId::Lfo6EnvTempoSync => {
+            build_lfo_params(params, store, 5);
+            dirty.lfos[5] = true;
+            true
+        }
+
+        // Scene LFOs
+        ParamId::SceneLfo1Rate
+        | ParamId::SceneLfo1Shape
+        | ParamId::SceneLfo1Amount
+        | ParamId::SceneLfo1Deform => {
+            build_scene_lfo_params(params, store, 0);
+            dirty.scene_lfos[0] = true;
+            true
+        }
+        ParamId::SceneLfo2Rate
+        | ParamId::SceneLfo2Shape
+        | ParamId::SceneLfo2Amount
+        | ParamId::SceneLfo2Deform => {
+            build_scene_lfo_params(params, store, 1);
+            dirty.scene_lfos[1] = true;
+            true
+        }
+        ParamId::SceneLfo3Rate
+        | ParamId::SceneLfo3Shape
+        | ParamId::SceneLfo3Amount
+        | ParamId::SceneLfo3Deform => {
+            build_scene_lfo_params(params, store, 2);
+            dirty.scene_lfos[2] = true;
+            true
+        }
+        ParamId::SceneLfo4Rate
+        | ParamId::SceneLfo4Shape
+        | ParamId::SceneLfo4Amount
+        | ParamId::SceneLfo4Deform => {
+            build_scene_lfo_params(params, store, 3);
+            dirty.scene_lfos[3] = true;
+            true
+        }
+        ParamId::SceneLfo5Rate
+        | ParamId::SceneLfo5Shape
+        | ParamId::SceneLfo5Amount
+        | ParamId::SceneLfo5Deform => {
+            build_scene_lfo_params(params, store, 4);
+            dirty.scene_lfos[4] = true;
+            true
+        }
+        ParamId::SceneLfo6Rate
+        | ParamId::SceneLfo6Shape
+        | ParamId::SceneLfo6Amount
+        | ParamId::SceneLfo6Deform => {
+            build_scene_lfo_params(params, store, 5);
+            dirty.scene_lfos[5] = true;
+            true
+        }
+
+        // Noise
+        ParamId::NoiseType
+        | ParamId::NoiseLevel
+        | ParamId::NoiseFilterType
+        | ParamId::NoiseFilterCutoff
+        | ParamId::NoiseFilterResonance
+        | ParamId::NoiseFilterEnabled
+        | ParamId::NoiseEnabled
+        | ParamId::NoiseColor
+        | ParamId::NoiseStereo
+        | ParamId::NoiseColorMode
+        | ParamId::NoiseMute
+        | ParamId::NoiseSolo
+        | ParamId::NoiseRoute => {
+            build_noise_params(params, store);
+            dirty.noise = true;
+            true
+        }
+
+        // Waveshaper
+        ParamId::WaveshaperShape
+        | ParamId::WaveshaperDrive
+        | ParamId::WaveshaperMix
+        | ParamId::WaveshaperEnabled => {
+            build_waveshaper_params(params, store);
+            dirty.waveshaper = true;
+            true
+        }
+
+        // Flavor
+        ParamId::FlavorType | ParamId::FlavorCutoff | ParamId::FlavorResonance => {
+            build_flavor_params(params, store);
+            dirty.flavor = true;
+            true
+        }
+
+        // Modulations (legacy unused modulation-to-filter params)
+        ParamId::ModVelToF1
+        | ParamId::ModKeyToF1
+        | ParamId::ModLfo1ToF1
+        | ParamId::ModLfo1ToOsc1
+        | ParamId::ModWheelToF1
+        | ParamId::ModAtToF1
+        // Alias oscillator extras not currently wired to VoiceParams.
+        | ParamId::AliasWrap
+        | ParamId::AliasMask
+        | ParamId::AliasThreshold
+        // MSEG retrigger mode not currently wired to VoiceParams.
+        | ParamId::MsegRetrigger
+        // Ring routes not currently wired to VoiceParams.
+        | ParamId::Ring12Route
+        | ParamId::Ring23Route => true,
+
+        // Output / VCA
+        ParamId::Volume
+        | ParamId::Pan
+        | ParamId::Width
+        | ParamId::PreFilterGain
+        | ParamId::VcaLevel
+        | ParamId::VcaVelSense => {
+            build_output_vca_params(params, store);
+            dirty.output_vca = true;
+            true
+        }
+
+        // Portamento / pitchbend
+        ParamId::Portamento
+        | ParamId::PortamentoCurve
+        | ParamId::PitchBendRange
+        | ParamId::PitchBendUp
+        | ParamId::PitchBendDown
+        | ParamId::Glissando
+        | ParamId::PortamentoSync
+        | ParamId::PortamentoRetrigger
+        | ParamId::PitchBendSmooth => {
+            build_portamento_pitchbend_params(params, store);
+            dirty.portamento_pitchbend = true;
+            true
+        }
+
+        // Play mode / steal / poly
+        ParamId::PlayMode
+        | ParamId::VoicePriority
+        | ParamId::PolyRepeatedKeyMode
+        | ParamId::MonoPedalMode => {
+            build_play_mode_steal_poly_params(params, store);
+            dirty.play_mode_steal_poly = true;
+            true
+        }
+
+        // Tuning
+        ParamId::TuningScale | ParamId::TuningRoot => {
+            build_tuning_params(params, store);
+            dirty.tuning = true;
+            true
+        }
+
+        // Modulation routes
+        ParamId::ModRoute1Source
+        | ParamId::ModRoute1Target
+        | ParamId::ModRoute1Depth
+        | ParamId::ModRoute1Curve => {
+            build_modulations_params(params, store);
+            dirty.modulations = true;
+            true
+        }
+        ParamId::ModRoute2Source
+        | ParamId::ModRoute2Target
+        | ParamId::ModRoute2Depth
+        | ParamId::ModRoute2Curve => {
+            build_modulations_params(params, store);
+            dirty.modulations = true;
+            true
+        }
+        ParamId::ModRoute3Source
+        | ParamId::ModRoute3Target
+        | ParamId::ModRoute3Depth
+        | ParamId::ModRoute3Curve => {
+            build_modulations_params(params, store);
+            dirty.modulations = true;
+            true
+        }
+        ParamId::ModRoute4Source
+        | ParamId::ModRoute4Target
+        | ParamId::ModRoute4Depth
+        | ParamId::ModRoute4Curve => {
+            build_modulations_params(params, store);
+            dirty.modulations = true;
+            true
+        }
+        ParamId::ModRoute5Source
+        | ParamId::ModRoute5Target
+        | ParamId::ModRoute5Depth
+        | ParamId::ModRoute5Curve => {
+            build_modulations_params(params, store);
+            dirty.modulations = true;
+            true
+        }
+        ParamId::ModRoute6Source
+        | ParamId::ModRoute6Target
+        | ParamId::ModRoute6Depth
+        | ParamId::ModRoute6Curve => {
+            build_modulations_params(params, store);
+            dirty.modulations = true;
+            true
+        }
+        ParamId::ModRoute7Source
+        | ParamId::ModRoute7Target
+        | ParamId::ModRoute7Depth
+        | ParamId::ModRoute7Curve => {
+            build_modulations_params(params, store);
+            dirty.modulations = true;
+            true
+        }
+        ParamId::ModRoute8Source
+        | ParamId::ModRoute8Target
+        | ParamId::ModRoute8Depth
+        | ParamId::ModRoute8Curve => {
+            build_modulations_params(params, store);
+            dirty.modulations = true;
+            true
+        }
+        ParamId::ModRoute9Source
+        | ParamId::ModRoute9Target
+        | ParamId::ModRoute9Depth
+        | ParamId::ModRoute9Curve => {
+            build_modulations_params(params, store);
+            dirty.modulations = true;
+            true
+        }
+        ParamId::ModRoute10Source
+        | ParamId::ModRoute10Target
+        | ParamId::ModRoute10Depth
+        | ParamId::ModRoute10Curve => {
+            build_modulations_params(params, store);
+            dirty.modulations = true;
+            true
+        }
+        ParamId::ModRoute11Source
+        | ParamId::ModRoute11Target
+        | ParamId::ModRoute11Depth
+        | ParamId::ModRoute11Curve => {
+            build_modulations_params(params, store);
+            dirty.modulations = true;
+            true
+        }
+        ParamId::ModRoute12Source
+        | ParamId::ModRoute12Target
+        | ParamId::ModRoute12Depth
+        | ParamId::ModRoute12Curve => {
+            build_modulations_params(params, store);
+            dirty.modulations = true;
+            true
+        }
+
+        // Step sequencer
+        ParamId::StepSeq1
+        | ParamId::StepSeq2
+        | ParamId::StepSeq3
+        | ParamId::StepSeq4
+        | ParamId::StepSeq5
+        | ParamId::StepSeq6
+        | ParamId::StepSeq7
+        | ParamId::StepSeq8
+        | ParamId::StepSeq9
+        | ParamId::StepSeq10
+        | ParamId::StepSeq11
+        | ParamId::StepSeq12
+        | ParamId::StepSeq13
+        | ParamId::StepSeq14
+        | ParamId::StepSeq15
+        | ParamId::StepSeq16
+        | ParamId::StepSeqLoopStart
+        | ParamId::StepSeqLoopEnd
+        | ParamId::StepSeqShuffle
+        | ParamId::StepSeqTrigAmp
+        | ParamId::StepSeqTrigFilter
+        | ParamId::StepSeqTrigPitch => {
+            build_step_seq_params(params, store);
+            dirty.step_seq = true;
+            true
+        }
+
+        // MSEG
+        ParamId::MsegNode1
+        | ParamId::MsegNode2
+        | ParamId::MsegNode3
+        | ParamId::MsegNode4
+        | ParamId::MsegNode5
+        | ParamId::MsegNode6
+        | ParamId::MsegNode7
+        | ParamId::MsegNode8
+        | ParamId::MsegNode9
+        | ParamId::MsegNode10
+        | ParamId::MsegNode11
+        | ParamId::MsegNode12
+        | ParamId::MsegNode13
+        | ParamId::MsegNode14
+        | ParamId::MsegNode15
+        | ParamId::MsegNode16
+        | ParamId::MsegNode17
+        | ParamId::MsegNode18
+        | ParamId::MsegNode19
+        | ParamId::MsegNode20
+        | ParamId::MsegNode21
+        | ParamId::MsegNode22
+        | ParamId::MsegNode23
+        | ParamId::MsegNode24
+        | ParamId::MsegNode25
+        | ParamId::MsegNode26
+        | ParamId::MsegNode27
+        | ParamId::MsegNode28
+        | ParamId::MsegNode29
+        | ParamId::MsegNode30
+        | ParamId::MsegNode31
+        | ParamId::MsegNode32
+        | ParamId::MsegNode33
+        | ParamId::MsegNode34
+        | ParamId::MsegNode35
+        | ParamId::MsegNode36
+        | ParamId::MsegNode37
+        | ParamId::MsegNode38
+        | ParamId::MsegNode39
+        | ParamId::MsegNode40
+        | ParamId::MsegNode41
+        | ParamId::MsegNode42
+        | ParamId::MsegNode43
+        | ParamId::MsegNode44
+        | ParamId::MsegNode45
+        | ParamId::MsegNode46
+        | ParamId::MsegNode47
+        | ParamId::MsegNode48
+        | ParamId::MsegNode49
+        | ParamId::MsegNode50
+        | ParamId::MsegNode51
+        | ParamId::MsegNode52
+        | ParamId::MsegNode53
+        | ParamId::MsegNode54
+        | ParamId::MsegNode55
+        | ParamId::MsegNode56
+        | ParamId::MsegNode57
+        | ParamId::MsegNode58
+        | ParamId::MsegNode59
+        | ParamId::MsegNode60
+        | ParamId::MsegNode61
+        | ParamId::MsegNode62
+        | ParamId::MsegNode63
+        | ParamId::MsegNode64
+        | ParamId::MsegNode65
+        | ParamId::MsegNode66
+        | ParamId::MsegNode67
+        | ParamId::MsegNode68
+        | ParamId::MsegNode69
+        | ParamId::MsegNode70
+        | ParamId::MsegNode71
+        | ParamId::MsegNode72
+        | ParamId::MsegNode73
+        | ParamId::MsegNode74
+        | ParamId::MsegNode75
+        | ParamId::MsegNode76
+        | ParamId::MsegNode77
+        | ParamId::MsegNode78
+        | ParamId::MsegNode79
+        | ParamId::MsegNode80
+        | ParamId::MsegNode81
+        | ParamId::MsegNode82
+        | ParamId::MsegNode83
+        | ParamId::MsegNode84
+        | ParamId::MsegNode85
+        | ParamId::MsegNode86
+        | ParamId::MsegNode87
+        | ParamId::MsegNode88
+        | ParamId::MsegNode89
+        | ParamId::MsegNode90
+        | ParamId::MsegNode91
+        | ParamId::MsegNode92
+        | ParamId::MsegNode93
+        | ParamId::MsegNode94
+        | ParamId::MsegNode95
+        | ParamId::MsegNode96
+        | ParamId::MsegNode97
+        | ParamId::MsegNode98
+        | ParamId::MsegNode99
+        | ParamId::MsegNode100
+        | ParamId::MsegNode101
+        | ParamId::MsegNode102
+        | ParamId::MsegNode103
+        | ParamId::MsegNode104
+        | ParamId::MsegNode105
+        | ParamId::MsegNode106
+        | ParamId::MsegNode107
+        | ParamId::MsegNode108
+        | ParamId::MsegNode109
+        | ParamId::MsegNode110
+        | ParamId::MsegNode111
+        | ParamId::MsegNode112
+        | ParamId::MsegNode113
+        | ParamId::MsegNode114
+        | ParamId::MsegNode115
+        | ParamId::MsegNode116
+        | ParamId::MsegNode117
+        | ParamId::MsegNode118
+        | ParamId::MsegNode119
+        | ParamId::MsegNode120
+        | ParamId::MsegNode121
+        | ParamId::MsegNode122
+        | ParamId::MsegNode123
+        | ParamId::MsegNode124
+        | ParamId::MsegNode125
+        | ParamId::MsegNode126
+        | ParamId::MsegNode127
+        | ParamId::MsegNode128
+        | ParamId::MsegCurve1
+        | ParamId::MsegCurve2
+        | ParamId::MsegCurve3
+        | ParamId::MsegCurve4
+        | ParamId::MsegCurve5
+        | ParamId::MsegCurve6
+        | ParamId::MsegCurve7
+        | ParamId::MsegCurve8
+        | ParamId::MsegCurve9
+        | ParamId::MsegCurve10
+        | ParamId::MsegCurve11
+        | ParamId::MsegCurve12
+        | ParamId::MsegCurve13
+        | ParamId::MsegCurve14
+        | ParamId::MsegCurve15
+        | ParamId::MsegCurve16
+        | ParamId::MsegCurve17
+        | ParamId::MsegCurve18
+        | ParamId::MsegCurve19
+        | ParamId::MsegCurve20
+        | ParamId::MsegCurve21
+        | ParamId::MsegCurve22
+        | ParamId::MsegCurve23
+        | ParamId::MsegCurve24
+        | ParamId::MsegCurve25
+        | ParamId::MsegCurve26
+        | ParamId::MsegCurve27
+        | ParamId::MsegCurve28
+        | ParamId::MsegCurve29
+        | ParamId::MsegCurve30
+        | ParamId::MsegCurve31
+        | ParamId::MsegCurve32
+        | ParamId::MsegCurve33
+        | ParamId::MsegCurve34
+        | ParamId::MsegCurve35
+        | ParamId::MsegCurve36
+        | ParamId::MsegCurve37
+        | ParamId::MsegCurve38
+        | ParamId::MsegCurve39
+        | ParamId::MsegCurve40
+        | ParamId::MsegCurve41
+        | ParamId::MsegCurve42
+        | ParamId::MsegCurve43
+        | ParamId::MsegCurve44
+        | ParamId::MsegCurve45
+        | ParamId::MsegCurve46
+        | ParamId::MsegCurve47
+        | ParamId::MsegCurve48
+        | ParamId::MsegCurve49
+        | ParamId::MsegCurve50
+        | ParamId::MsegCurve51
+        | ParamId::MsegCurve52
+        | ParamId::MsegCurve53
+        | ParamId::MsegCurve54
+        | ParamId::MsegCurve55
+        | ParamId::MsegCurve56
+        | ParamId::MsegCurve57
+        | ParamId::MsegCurve58
+        | ParamId::MsegCurve59
+        | ParamId::MsegCurve60
+        | ParamId::MsegCurve61
+        | ParamId::MsegCurve62
+        | ParamId::MsegCurve63
+        | ParamId::MsegCurve64
+        | ParamId::MsegCurve65
+        | ParamId::MsegCurve66
+        | ParamId::MsegCurve67
+        | ParamId::MsegCurve68
+        | ParamId::MsegCurve69
+        | ParamId::MsegCurve70
+        | ParamId::MsegCurve71
+        | ParamId::MsegCurve72
+        | ParamId::MsegCurve73
+        | ParamId::MsegCurve74
+        | ParamId::MsegCurve75
+        | ParamId::MsegCurve76
+        | ParamId::MsegCurve77
+        | ParamId::MsegCurve78
+        | ParamId::MsegCurve79
+        | ParamId::MsegCurve80
+        | ParamId::MsegCurve81
+        | ParamId::MsegCurve82
+        | ParamId::MsegCurve83
+        | ParamId::MsegCurve84
+        | ParamId::MsegCurve85
+        | ParamId::MsegCurve86
+        | ParamId::MsegCurve87
+        | ParamId::MsegCurve88
+        | ParamId::MsegCurve89
+        | ParamId::MsegCurve90
+        | ParamId::MsegCurve91
+        | ParamId::MsegCurve92
+        | ParamId::MsegCurve93
+        | ParamId::MsegCurve94
+        | ParamId::MsegCurve95
+        | ParamId::MsegCurve96
+        | ParamId::MsegCurve97
+        | ParamId::MsegCurve98
+        | ParamId::MsegCurve99
+        | ParamId::MsegCurve100
+        | ParamId::MsegCurve101
+        | ParamId::MsegCurve102
+        | ParamId::MsegCurve103
+        | ParamId::MsegCurve104
+        | ParamId::MsegCurve105
+        | ParamId::MsegCurve106
+        | ParamId::MsegCurve107
+        | ParamId::MsegCurve108
+        | ParamId::MsegCurve109
+        | ParamId::MsegCurve110
+        | ParamId::MsegCurve111
+        | ParamId::MsegCurve112
+        | ParamId::MsegCurve113
+        | ParamId::MsegCurve114
+        | ParamId::MsegCurve115
+        | ParamId::MsegCurve116
+        | ParamId::MsegCurve117
+        | ParamId::MsegCurve118
+        | ParamId::MsegCurve119
+        | ParamId::MsegCurve120
+        | ParamId::MsegCurve121
+        | ParamId::MsegCurve122
+        | ParamId::MsegCurve123
+        | ParamId::MsegCurve124
+        | ParamId::MsegCurve125
+        | ParamId::MsegCurve126
+        | ParamId::MsegCurve127
+        | ParamId::MsegLoopStart
+        | ParamId::MsegLoopEnd
+        | ParamId::MsegLoopMode
+        | ParamId::MsegRetrigAmp
+        | ParamId::MsegRetrigFilter
+        | ParamId::MsegRetrigPitch => {
+            build_mseg_params(params, store);
+            dirty.mseg = true;
+            true
+        }
+
+        // Misc globals
+        ParamId::OscFmMode
+        | ParamId::OscFmDepth
+        | ParamId::Ring12Combinator
+        | ParamId::Ring23Combinator
+        | ParamId::OscDrift
+        | ParamId::MpeEnabled
+        | ParamId::StringStereoSpread
+        | ParamId::WavetableKeytrack
+        | ParamId::TwistAuxMix
+        | ParamId::TwistLpgResponse
+        | ParamId::TwistLpgDecay
+        | ParamId::ShNoiseCorrelation
+        | ParamId::ShNoiseWidth
+        | ParamId::ShNoiseSync
+        | ParamId::Macro1
+        | ParamId::Macro2
+        | ParamId::Macro3
+        | ParamId::Macro4
+        | ParamId::Macro5
+        | ParamId::Macro6
+        | ParamId::Macro7
+        | ParamId::Macro8 => {
+            build_misc_globals_params(params, store);
+            dirty.misc_globals = true;
+            true
+        }
+
+        // Polyphony and steal mode are handled directly by the engine, not VoiceParams.
+        ParamId::Polyphony | ParamId::StealMode => true,
+
+        // Tuning SCL index is handled separately by the processor.
+        ParamId::TuningSclIndex => true,
     }
 }
 
@@ -1385,8 +2434,9 @@ struct AudioProcessor {
     last_polyphony: usize,
     last_steal_mode: u8,
     scl_files: Vec<std::path::PathBuf>,
-    scl_cache: Vec<Option<Tuning>>,
+    scl_cache: Vec<Option<Arc<Tuning>>>,
     last_scl_index: u8,
+    last_params_version: u64,
 }
 
 impl AudioProcessor {
@@ -1409,10 +2459,11 @@ impl AudioProcessor {
             scl_files,
             scl_cache,
             last_scl_index: 0,
+            last_params_version: 0,
         }
     }
 
-    fn scan_scl_files() -> (Vec<std::path::PathBuf>, Vec<Option<Tuning>>) {
+    fn scan_scl_files() -> (Vec<std::path::PathBuf>, Vec<Option<Arc<Tuning>>>) {
         let mut files = Vec::new();
         if let Some(config_dir) = dirs::config_dir() {
             let scales_dir = config_dir.join("maolan").join("scales");
@@ -1432,7 +2483,7 @@ impl AudioProcessor {
         (files, cache)
     }
 
-    fn get_scl_tuning(&mut self, index: u8) -> Option<Tuning> {
+    fn get_scl_tuning(&mut self, index: u8) -> Option<Arc<Tuning>> {
         let idx = (index as usize).saturating_sub(1);
         if idx >= self.scl_files.len() {
             return None;
@@ -1441,7 +2492,7 @@ impl AudioProcessor {
             && let Ok(content) = std::fs::read_to_string(&self.scl_files[idx])
             && let Ok(tuning) = Tuning::from_scl(&content)
         {
-            self.scl_cache[idx] = Some(tuning);
+            self.scl_cache[idx] = Some(Arc::new(tuning));
         }
         self.scl_cache[idx].clone()
     }
@@ -1449,37 +2500,136 @@ impl AudioProcessor {
     fn reset(&mut self) {}
 
     fn process(&mut self, shared: &SharedState, process: &mut Process) -> clap_process_status {
-        apply_param_events_synth(shared, &process.in_events(), sanitize_param_value);
+        let mut changed_params: [Option<(ParamId, f64)>; 32] = [None; 32];
+        let overflow = apply_param_events_synth(
+            shared,
+            &process.in_events(),
+            sanitize_param_value,
+            &mut changed_params,
+        );
         {
             let mut out_events = process.out_events();
             emit_pending_param_events_to_host_synth(shared, &mut out_events);
         }
 
-        let mut params = build_voice_params(&shared.params);
+        let params_version = shared.params_version();
+        if params_version != self.last_params_version {
+            let scl_index = shared.params.get(ParamId::TuningSclIndex) as u8;
+            if scl_index != self.last_scl_index {
+                self.last_scl_index = scl_index;
+            }
 
-        let scl_index = shared.params.get(ParamId::TuningSclIndex) as u8;
-        if scl_index != self.last_scl_index {
-            self.last_scl_index = scl_index;
-        }
-        if scl_index > 0
-            && let Some(tuning) = self.get_scl_tuning(scl_index)
-        {
-            params.tuning_override = Some(tuning);
-        }
+            let polyphony = shared.params.get(ParamId::Polyphony) as usize;
+            if polyphony != self.last_polyphony {
+                self.engine.set_max_voices(polyphony.clamp(1, 32));
+                self.last_polyphony = polyphony;
+            }
+            let steal_mode = shared.params.get(ParamId::StealMode) as u8;
+            if steal_mode != self.last_steal_mode {
+                self.engine.set_steal_mode(StealMode::from_u8(steal_mode));
+                self.last_steal_mode = steal_mode;
+            }
 
-        let _polyphony = params.oscs.len();
-        let polyphony = shared.params.get(ParamId::Polyphony) as usize;
-        if polyphony != self.last_polyphony {
-            self.engine.set_max_voices(polyphony.clamp(1, 32));
-            self.last_polyphony = polyphony;
+            let any_changed = changed_params.iter().any(|x| x.is_some());
+            let mut use_incremental = !overflow && any_changed;
+            let mut dirty = ParamDirtyFlags::default();
+
+            if use_incremental {
+                for item in changed_params.iter().flatten() {
+                    let (id, value) = *item;
+                    if !apply_param_id_to_voice_params(
+                        &mut self.engine.params,
+                        &shared.params,
+                        id,
+                        value,
+                        &mut dirty,
+                    ) {
+                        use_incremental = false;
+                        break;
+                    }
+                }
+            }
+
+            if use_incremental {
+                if scl_index > 0 {
+                    if let Some(tuning) = self.get_scl_tuning(scl_index) {
+                        self.engine.params.tuning_override = Some(tuning);
+                        dirty.tuning = true;
+                    }
+                } else {
+                    self.engine.params.tuning_override = None;
+                    dirty.tuning = true;
+                }
+
+                if dirty.filter1 || dirty.filter2 || dirty.filters_routing_balance {
+                    self.engine.update_filter_params();
+                }
+                if dirty.oscs || dirty.osc_globals {
+                    self.engine.update_osc_params();
+                }
+                if dirty.amp_eg {
+                    self.engine.update_amp_eg_params();
+                }
+                if dirty.filter_eg {
+                    self.engine.update_filter_eg_params();
+                }
+                if dirty.pitch_eg {
+                    self.engine.update_pitch_eg_params();
+                }
+                for i in 0..6 {
+                    if dirty.lfos[i] {
+                        self.engine.update_lfo_params(i);
+                    }
+                    if dirty.scene_lfos[i] {
+                        self.engine.update_scene_lfo_params(i);
+                    }
+                }
+                if dirty.noise {
+                    self.engine.update_noise_params();
+                }
+                if dirty.waveshaper {
+                    self.engine.update_waveshaper_params();
+                }
+                if dirty.flavor {
+                    self.engine.update_flavor_params();
+                }
+                if dirty.modulations {
+                    self.engine.update_modulations();
+                }
+                if dirty.step_seq {
+                    self.engine.update_step_seq();
+                }
+                if dirty.mseg {
+                    self.engine.update_mseg();
+                }
+                if dirty.tuning {
+                    self.engine.update_tuning();
+                }
+                if dirty.output_vca {
+                    self.engine.update_output_vca();
+                }
+                if dirty.portamento_pitchbend {
+                    self.engine.update_portamento_pitchbend();
+                }
+                if dirty.play_mode_steal_poly {
+                    self.engine.update_play_mode_steal_poly();
+                }
+                if dirty.misc_globals {
+                    self.engine.update_misc_globals();
+                }
+            } else {
+                let mut params = build_voice_params(&shared.params);
+                if scl_index > 0
+                    && let Some(tuning) = self.get_scl_tuning(scl_index)
+                {
+                    params.tuning_override = Some(tuning);
+                }
+                self.engine.params = params;
+                self.engine.update_params();
+            }
+
+            self.last_params_version = params_version;
         }
-        let steal_mode = shared.params.get(ParamId::StealMode) as u8;
-        if steal_mode != self.last_steal_mode {
-            self.engine.set_steal_mode(StealMode::from_u8(steal_mode));
-            self.last_steal_mode = steal_mode;
-        }
-        self.engine.params = params;
-        self.engine.update_params();
 
         if let Some(transport) = process.transport() {
             let tempo = transport.tempo() as f32;
@@ -1963,7 +3113,8 @@ unsafe extern "C-unwind" fn ext_params_flush(
     let inst = unsafe { instance(plugin) };
     if !in_events.is_null() {
         let input = unsafe { InputEvents::new_unchecked(&*in_events) };
-        apply_param_events_synth(&inst.shared, &input, sanitize_param_value);
+        let mut changed = [None; 32];
+        apply_param_events_synth(&inst.shared, &input, sanitize_param_value, &mut changed);
     }
     if !out_events.is_null() {
         let mut output = unsafe { OutputEvents::new_unchecked(&*out_events) };
@@ -2013,6 +3164,7 @@ unsafe extern "C-unwind" fn ext_state_load(
         return false;
     };
     state.apply(&inst.shared.params);
+    inst.shared.bump_params_version();
     true
 }
 
@@ -2289,7 +3441,12 @@ pub unsafe fn clap_create_plugin(
 
 #[cfg(test)]
 mod tests {
-    use super::{ParamStore, SynthEngine, build_voice_params};
+    use super::{
+        ParamDirtyFlags, ParamStore, SynthEngine, apply_param_id_to_voice_params,
+        build_voice_params,
+    };
+    use crate::synth::dsp::VoiceParams;
+    use crate::synth::params::ParamId;
     use crate::synth::state::PluginState;
 
     #[test]
@@ -2346,5 +3503,16 @@ mod tests {
             peak_l,
             peak_r
         );
+    }
+
+    #[test]
+    fn dispatcher_handles_all_param_ids() {
+        let store = ParamStore::default();
+        let mut params = VoiceParams::default();
+        for id in ParamId::all() {
+            let mut dirty = ParamDirtyFlags::default();
+            let handled = apply_param_id_to_voice_params(&mut params, &store, id, 0.0, &mut dirty);
+            assert!(handled, "ParamId {:?} is not handled by dispatcher", id);
+        }
     }
 }

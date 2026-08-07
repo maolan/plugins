@@ -478,3 +478,38 @@ fn test_osc_sync_semitone_scaling() {
          off={off_freq}, on={on_12_freq}, ratio={ratio_12}"
     );
 }
+
+#[test]
+fn test_filter_cutoff_changes_stay_finite() {
+    let mut engine = osc1_saw_test_engine();
+    engine.params.filter1.enabled = true;
+    engine.params.filter1.cutoff_hz = 1000.0;
+    engine.params.filter1.resonance = 0.7;
+    engine.update_params();
+
+    let mut out_l = vec![0.0f32; 256];
+    let mut out_r = vec![0.0f32; 256];
+    engine.trigger(60, 1.0);
+    engine.process_block(&mut out_l, &mut out_r, None, None);
+
+    for cutoff in [500.0, 2000.0, 8000.0, 200.0, 10000.0] {
+        engine.params.filter1.cutoff_hz = cutoff;
+        engine.update_params();
+        out_l.fill(0.0);
+        out_r.fill(0.0);
+        engine.process_block(&mut out_l, &mut out_r, None, None);
+
+        let peak = out_l.iter().map(|&s| s.abs()).fold(0.0f32, f32::max);
+        assert!(
+            peak.is_finite(),
+            "cutoff {} produced non-finite peak",
+            cutoff
+        );
+        assert!(
+            peak < 50.0,
+            "cutoff {} produced huge peak: {}",
+            cutoff,
+            peak
+        );
+    }
+}

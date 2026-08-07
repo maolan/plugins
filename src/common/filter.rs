@@ -566,6 +566,11 @@ pub struct BiquadFilter {
     b2: f32,
     a1: f32,
     a2: f32,
+    db0: f32,
+    db1: f32,
+    db2: f32,
+    da1: f32,
+    da2: f32,
     x1: f32,
     x2: f32,
     y1: f32,
@@ -587,6 +592,11 @@ impl BiquadFilter {
             b2: 0.0,
             a1: 0.0,
             a2: 0.0,
+            db0: 0.0,
+            db1: 0.0,
+            db2: 0.0,
+            da1: 0.0,
+            da2: 0.0,
             x1: 0.0,
             x2: 0.0,
             y1: 0.0,
@@ -610,16 +620,18 @@ impl BiquadFilter {
         self.resonance = resonance;
     }
 
-    pub fn prepare_block(&mut self, _cutoff: f32, _resonance: f32, _block_size: usize) {
-        let w0 =
-            2.0 * std::f32::consts::PI * (self.cutoff_hz / self.sample_rate).clamp(0.0001, 0.4999);
+    pub fn prepare_block(&mut self, cutoff: f32, resonance: f32, block_size: usize) {
+        self.cutoff_hz = cutoff;
+        self.resonance = resonance;
+        let bs = block_size.max(1) as f32;
+        let w0 = 2.0 * std::f32::consts::PI * (cutoff / self.sample_rate).clamp(0.0001, 0.4999);
         let cosw0 = w0.cos();
         let sinw0 = w0.sin();
-        let q = self.resonance.max(0.1);
+        let q = resonance.max(0.1);
         let alpha = sinw0 / (2.0 * q);
         let a = 10.0f32.powf(self.gain_db / 40.0);
 
-        let (b0, b1, b2, a0, a1, a2) = match self.filter_type {
+        let (b0_t, b1_t, b2_t, a0_t, a1_t, a2_t) = match self.filter_type {
             FilterType::Lowpass12dB => {
                 let b0 = (1.0 - cosw0) * 0.5;
                 let b1 = 1.0 - cosw0;
@@ -688,20 +700,25 @@ impl BiquadFilter {
             _ => (1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
         };
 
-        let b0 = b0 / a0;
-        let b1 = b1 / a0;
-        let b2 = b2 / a0;
-        let a1 = a1 / a0;
-        let a2 = a2 / a0;
+        let b0_t = b0_t / a0_t;
+        let b1_t = b1_t / a0_t;
+        let b2_t = b2_t / a0_t;
+        let a1_t = a1_t / a0_t;
+        let a2_t = a2_t / a0_t;
 
-        self.b0 = b0;
-        self.b1 = b1;
-        self.b2 = b2;
-        self.a1 = a1;
-        self.a2 = a2;
+        self.db0 = (b0_t - self.b0) / bs;
+        self.db1 = (b1_t - self.b1) / bs;
+        self.db2 = (b2_t - self.b2) / bs;
+        self.da1 = (a1_t - self.a1) / bs;
+        self.da2 = (a2_t - self.a2) / bs;
     }
 
     pub fn process(&mut self, input: f32) -> f32 {
+        self.b0 += self.db0;
+        self.b1 += self.db1;
+        self.b2 += self.db2;
+        self.a1 += self.da1;
+        self.a2 += self.da2;
         let drive = 1.0 + self.drive * 4.0;
         let in_driven = apply_subtype(input, self.subtype, self.drive);
         let output = self.b0 * in_driven + self.b1 * self.x1 + self.b2 * self.x2

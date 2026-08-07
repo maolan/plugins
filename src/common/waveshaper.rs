@@ -102,7 +102,7 @@ impl Waveshape {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Waveshaper {
     pub shape: Waveshape,
     pub drive: f32,

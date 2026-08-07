@@ -74,6 +74,7 @@ pub struct SharedState {
     pub params: ParamStore,
     pub kit: Mutex<crate::kick::dsp::Kit>,
     pub kit_version: AtomicU64,
+    pub params_version: AtomicU64,
     pub instrument_clipboard: Mutex<Option<crate::kick::dsp::Instrument>>,
     sample_rate_bits: AtomicU64,
     pending_param_notifications: Vec<AtomicU32>,
@@ -93,6 +94,7 @@ impl SharedState {
             params: ParamStore::default(),
             kit: Mutex::new(crate::kick::dsp::Kit::new(48000.0)),
             kit_version: AtomicU64::new(0),
+            params_version: AtomicU64::new(1),
             instrument_clipboard: Mutex::new(None),
             sample_rate_bits: AtomicU64::new(48_000.0f64.to_bits()),
             pending_param_notifications: (0..words).map(|_| AtomicU32::new(0)).collect(),
@@ -117,11 +119,20 @@ impl SharedState {
 
     pub fn set_param_internal(&self, id: ParamId, value: f64, notify_host: bool) {
         self.params.set(id, sanitize_param_value(id, value));
+        self.bump_params_version();
         if notify_host {
             self.mark_param_notification_pending(id);
             self.request_flush();
             self.mark_dirty();
         }
+    }
+
+    pub fn params_version(&self) -> u64 {
+        self.params_version.load(Ordering::Acquire)
+    }
+
+    pub fn bump_params_version(&self) {
+        self.params_version.fetch_add(1, Ordering::Release);
     }
 
     fn mark_param_notification_pending(&self, id: ParamId) {
@@ -319,7 +330,14 @@ impl SharedState {
     }
 }
 
-fn apply_param_events(shared: &SharedState, events: &InputEvents<'_>) {
+fn apply_param_events_kick(
+    shared: &SharedState,
+    events: &InputEvents<'_>,
+    changed: &mut [Option<(ParamId, f64)>; 32],
+) -> bool {
+    let mut overflow = false;
+    let mut next_idx = 0;
+
     for index in 0..events.size() {
         let header = events.get(index);
         if header.space_id() != CLAP_CORE_EVENT_SPACE_ID {
@@ -353,12 +371,20 @@ fn apply_param_events(shared: &SharedState, events: &InputEvents<'_>) {
                         }
                         let incoming = sanitize_param_value(id, param.value());
                         shared.set_param_from_host(id, incoming);
+                        if next_idx < changed.len() {
+                            changed[next_idx] = Some((id, incoming));
+                            next_idx += 1;
+                        } else {
+                            overflow = true;
+                        }
                     }
                 }
             }
             _ => {}
         }
     }
+
+    overflow
 }
 
 fn emit_pending_param_events_to_host(shared: &SharedState, out_events: &mut OutputEvents<'_>) {
@@ -767,6 +793,710 @@ fn apply_params_to_synth(synth: &mut KickSynthesizer, params: &ParamStore) {
         }
     }
 }
+#[derive(Default)]
+#[allow(dead_code)]
+struct DirtyFlags {
+    kit: bool,
+    master: bool,
+    layer0: bool,
+    layer12: bool,
+    osc0: bool,
+    osc1: bool,
+    osc2: bool,
+    noise: bool,
+}
+
+#[allow(dead_code)]
+fn apply_param_id(
+    synth: &mut KickSynthesizer,
+    params: &ParamStore,
+    id: ParamId,
+    value: f64,
+    dirty: &mut DirtyFlags,
+) -> bool {
+    let inst_idx = id.instrument() as usize;
+    if inst_idx >= synth.kit.instruments.len() {
+        return false;
+    }
+    let inst_id = |ty: ParamType| ParamId::new(id.instrument(), ty);
+
+    match id.param_type() {
+        ParamType::HumanizerVelocity => {
+            synth.kit.humanizer_velocity = value as f32;
+            dirty.kit = true;
+        }
+        ParamType::HumanizerTiming => {
+            synth.kit.humanizer_timing_ms = value as f32;
+            dirty.kit = true;
+        }
+        ParamType::ActiveInstrument => {
+            // GUI-only state; nothing to update in the DSP.
+        }
+
+        // Master
+        ParamType::MasterLength => {
+            synth.kit.instruments[inst_idx].length_ms = value as f32;
+            dirty.master = true;
+        }
+        ParamType::MasterOutputGain => {
+            synth.kit.instruments[inst_idx].output_gain_db = value as f32;
+            dirty.master = true;
+        }
+        ParamType::MasterNoteOffDecay => {
+            synth.kit.instruments[inst_idx].note_off_decay_ms = value as f32;
+            dirty.master = true;
+        }
+        ParamType::MasterNoteOffEnabled => {
+            synth.kit.instruments[inst_idx].note_off_enabled = value != 0.0;
+            dirty.master = true;
+        }
+        ParamType::MasterPitchToNote => {
+            synth.kit.instruments[inst_idx].pitch_to_note = value != 0.0;
+            dirty.master = true;
+        }
+        ParamType::MasterKeyMin => {
+            synth.kit.instruments[inst_idx].key_min = value as u8;
+            dirty.master = true;
+        }
+        ParamType::MasterKeyMax => {
+            synth.kit.instruments[inst_idx].key_max = value as u8;
+            dirty.master = true;
+        }
+        ParamType::MasterMidiChannel => {
+            synth.kit.instruments[inst_idx].midi_channel = value as u8;
+            dirty.master = true;
+        }
+        ParamType::MasterMuted => {
+            synth.kit.instruments[inst_idx].muted = value != 0.0;
+            dirty.master = true;
+        }
+        ParamType::MasterSoloed => {
+            synth.kit.instruments[inst_idx].soloed = value != 0.0;
+            synth.kit.update_solo_state();
+            dirty.master = true;
+        }
+        ParamType::MasterFilterType => {
+            synth.kit.instruments[inst_idx].master_filter_type = FilterType::from_u8(value as u8);
+            dirty.master = true;
+        }
+        ParamType::MasterFilterCutoff => {
+            synth.kit.instruments[inst_idx].master_filter_cutoff_hz = value as f32;
+            dirty.master = true;
+        }
+        ParamType::MasterFilterQ => {
+            synth.kit.instruments[inst_idx].master_filter_q = value as f32;
+            dirty.master = true;
+        }
+        ParamType::MasterDistortionType => {
+            synth.kit.instruments[inst_idx].master_distortion.ty =
+                DistortionType::from_u8(value as u8);
+            dirty.master = true;
+        }
+        ParamType::MasterDistortionDrive => {
+            synth.kit.instruments[inst_idx].master_distortion.drive = value as f32;
+            dirty.master = true;
+        }
+        ParamType::MasterDistortionInputLimit => {
+            synth.kit.instruments[inst_idx]
+                .master_distortion
+                .input_limit = value as f32;
+            dirty.master = true;
+        }
+        ParamType::MasterDistortionOutputLimit => {
+            synth.kit.instruments[inst_idx]
+                .master_distortion
+                .output_limit = value as f32;
+            dirty.master = true;
+        }
+        ParamType::MasterDistortionVolEnvAttack
+        | ParamType::MasterDistortionVolEnvDecay
+        | ParamType::MasterDistortionVolEnvSustain
+        | ParamType::MasterDistortionVolEnvRelease => {
+            synth.kit.instruments[inst_idx].master_distortion.volume_env = adsr_env(
+                params.get(inst_id(ParamType::MasterDistortionVolEnvAttack)) as f32,
+                params.get(inst_id(ParamType::MasterDistortionVolEnvDecay)) as f32,
+                params.get(inst_id(ParamType::MasterDistortionVolEnvSustain)) as f32,
+                params.get(inst_id(ParamType::MasterDistortionVolEnvRelease)) as f32,
+            );
+            dirty.master = true;
+        }
+        ParamType::MasterLimiterThreshold => {
+            synth.kit.instruments[inst_idx].master_limiter.threshold_db = value as f32;
+            dirty.master = true;
+        }
+        ParamType::MasterLimiterRelease => {
+            synth.kit.instruments[inst_idx].master_limiter.release_ms = value as f32;
+            dirty.master = true;
+        }
+        ParamType::MasterGlobalAmpEnvAttack
+        | ParamType::MasterGlobalAmpEnvDecay
+        | ParamType::MasterGlobalAmpEnvSustain
+        | ParamType::MasterGlobalAmpEnvRelease => {
+            synth.kit.instruments[inst_idx].global_amp_env = adsr_env(
+                params.get(inst_id(ParamType::MasterGlobalAmpEnvAttack)) as f32,
+                params.get(inst_id(ParamType::MasterGlobalAmpEnvDecay)) as f32,
+                params.get(inst_id(ParamType::MasterGlobalAmpEnvSustain)) as f32,
+                params.get(inst_id(ParamType::MasterGlobalAmpEnvRelease)) as f32,
+            );
+            dirty.master = true;
+        }
+
+        // Layer 0
+        ParamType::Layer0Enabled => {
+            synth.kit.instruments[inst_idx].layers[0].enabled = value != 0.0;
+            dirty.layer0 = true;
+        }
+        ParamType::Layer0Amp => {
+            synth.kit.instruments[inst_idx].layers[0].amplitude = value as f32;
+            dirty.layer0 = true;
+        }
+        ParamType::Layer0FilterType => {
+            synth.kit.instruments[inst_idx].layers[0].filter_type =
+                FilterType::from_u8(value as u8);
+            dirty.layer0 = true;
+        }
+        ParamType::Layer0FilterCutoff => {
+            synth.kit.instruments[inst_idx].layers[0].filter_cutoff_hz = value as f32;
+            dirty.layer0 = true;
+        }
+        ParamType::Layer0FilterQ => {
+            synth.kit.instruments[inst_idx].layers[0].filter_q = value as f32;
+            dirty.layer0 = true;
+        }
+        ParamType::Layer0DistortionType => {
+            synth.kit.instruments[inst_idx].layers[0].distortion.ty =
+                DistortionType::from_u8(value as u8);
+            dirty.layer0 = true;
+        }
+        ParamType::Layer0DistortionDrive => {
+            synth.kit.instruments[inst_idx].layers[0].distortion.drive = value as f32;
+            dirty.layer0 = true;
+        }
+        ParamType::Layer0DistortionVolEnvAttack
+        | ParamType::Layer0DistortionVolEnvDecay
+        | ParamType::Layer0DistortionVolEnvSustain
+        | ParamType::Layer0DistortionVolEnvRelease => {
+            synth.kit.instruments[inst_idx].layers[0]
+                .distortion
+                .volume_env = adsr_env(
+                params.get(inst_id(ParamType::Layer0DistortionVolEnvAttack)) as f32,
+                params.get(inst_id(ParamType::Layer0DistortionVolEnvDecay)) as f32,
+                params.get(inst_id(ParamType::Layer0DistortionVolEnvSustain)) as f32,
+                params.get(inst_id(ParamType::Layer0DistortionVolEnvRelease)) as f32,
+            );
+            dirty.layer0 = true;
+        }
+        ParamType::Layer0FmRouting0 => {
+            synth.kit.instruments[inst_idx].layers[0].fm_routing[0] = value as u8;
+            dirty.layer0 = true;
+        }
+        ParamType::Layer0FmRouting1 => {
+            synth.kit.instruments[inst_idx].layers[0].fm_routing[1] = value as u8;
+            dirty.layer0 = true;
+        }
+        ParamType::Layer0FmRouting2 => {
+            synth.kit.instruments[inst_idx].layers[0].fm_routing[2] = value as u8;
+            dirty.layer0 = true;
+        }
+
+        // Layer 1/2
+        ParamType::Layer1Enabled => {
+            synth.kit.instruments[inst_idx].layers[1].enabled = value != 0.0;
+            dirty.layer12 = true;
+        }
+        ParamType::Layer1Amp => {
+            synth.kit.instruments[inst_idx].layers[1].amplitude = value as f32;
+            dirty.layer12 = true;
+        }
+        ParamType::Layer2Enabled => {
+            synth.kit.instruments[inst_idx].layers[2].enabled = value != 0.0;
+            dirty.layer12 = true;
+        }
+        ParamType::Layer2Amp => {
+            synth.kit.instruments[inst_idx].layers[2].amplitude = value as f32;
+            dirty.layer12 = true;
+        }
+
+        // Oscillator 0
+        ParamType::Osc0Waveform => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[0].waveform =
+                Waveform::from_u8(value as u8);
+            dirty.osc0 = true;
+        }
+        ParamType::Osc0Freq => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[0].base_freq_hz = value as f32;
+            dirty.osc0 = true;
+        }
+        ParamType::Osc0Amp => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[0].amplitude = value as f32;
+            dirty.osc0 = true;
+        }
+        ParamType::Osc0Phase => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[0].initial_phase = value as f32;
+            dirty.osc0 = true;
+        }
+        ParamType::Osc0FmAmount => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[0].fm_amount = value as f32;
+            dirty.osc0 = true;
+        }
+        ParamType::Osc0FilterType => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[0].filter_type =
+                FilterType::from_u8(value as u8);
+            dirty.osc0 = true;
+        }
+        ParamType::Osc0FilterCutoff => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[0].filter_cutoff_hz =
+                value as f32;
+            dirty.osc0 = true;
+        }
+        ParamType::Osc0FilterQ => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[0].filter_q = value as f32;
+            dirty.osc0 = true;
+        }
+        ParamType::Osc0DistortionType => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[0]
+                .distortion
+                .ty = DistortionType::from_u8(value as u8);
+            dirty.osc0 = true;
+        }
+        ParamType::Osc0DistortionDrive => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[0]
+                .distortion
+                .drive = value as f32;
+            dirty.osc0 = true;
+        }
+        ParamType::Osc0DistortionVolEnvAttack
+        | ParamType::Osc0DistortionVolEnvDecay
+        | ParamType::Osc0DistortionVolEnvSustain
+        | ParamType::Osc0DistortionVolEnvRelease => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[0]
+                .distortion
+                .volume_env = adsr_env(
+                params.get(inst_id(ParamType::Osc0DistortionVolEnvAttack)) as f32,
+                params.get(inst_id(ParamType::Osc0DistortionVolEnvDecay)) as f32,
+                params.get(inst_id(ParamType::Osc0DistortionVolEnvSustain)) as f32,
+                params.get(inst_id(ParamType::Osc0DistortionVolEnvRelease)) as f32,
+            );
+            dirty.osc0 = true;
+        }
+        ParamType::Osc0FilterCutoffEnvAttack
+        | ParamType::Osc0FilterCutoffEnvDecay
+        | ParamType::Osc0FilterCutoffEnvSustain
+        | ParamType::Osc0FilterCutoffEnvRelease => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[0].filter_cutoff_env = adsr_env(
+                params.get(inst_id(ParamType::Osc0FilterCutoffEnvAttack)) as f32,
+                params.get(inst_id(ParamType::Osc0FilterCutoffEnvDecay)) as f32,
+                params.get(inst_id(ParamType::Osc0FilterCutoffEnvSustain)) as f32,
+                params.get(inst_id(ParamType::Osc0FilterCutoffEnvRelease)) as f32,
+            );
+            dirty.osc0 = true;
+        }
+        ParamType::Osc0FilterQEnvAttack
+        | ParamType::Osc0FilterQEnvDecay
+        | ParamType::Osc0FilterQEnvSustain
+        | ParamType::Osc0FilterQEnvRelease => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[0].filter_q_env = adsr_env(
+                params.get(inst_id(ParamType::Osc0FilterQEnvAttack)) as f32,
+                params.get(inst_id(ParamType::Osc0FilterQEnvDecay)) as f32,
+                params.get(inst_id(ParamType::Osc0FilterQEnvSustain)) as f32,
+                params.get(inst_id(ParamType::Osc0FilterQEnvRelease)) as f32,
+            );
+            dirty.osc0 = true;
+        }
+        ParamType::Osc0DistortionDriveEnvAttack
+        | ParamType::Osc0DistortionDriveEnvDecay
+        | ParamType::Osc0DistortionDriveEnvSustain
+        | ParamType::Osc0DistortionDriveEnvRelease => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[0].distortion_drive_env =
+                adsr_env(
+                    params.get(inst_id(ParamType::Osc0DistortionDriveEnvAttack)) as f32,
+                    params.get(inst_id(ParamType::Osc0DistortionDriveEnvDecay)) as f32,
+                    params.get(inst_id(ParamType::Osc0DistortionDriveEnvSustain)) as f32,
+                    params.get(inst_id(ParamType::Osc0DistortionDriveEnvRelease)) as f32,
+                );
+            dirty.osc0 = true;
+        }
+        ParamType::Osc0PitchShiftEnvAttack
+        | ParamType::Osc0PitchShiftEnvDecay
+        | ParamType::Osc0PitchShiftEnvSustain
+        | ParamType::Osc0PitchShiftEnvRelease => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[0].pitch_shift_env = adsr_env(
+                params.get(inst_id(ParamType::Osc0PitchShiftEnvAttack)) as f32,
+                params.get(inst_id(ParamType::Osc0PitchShiftEnvDecay)) as f32,
+                params.get(inst_id(ParamType::Osc0PitchShiftEnvSustain)) as f32,
+                params.get(inst_id(ParamType::Osc0PitchShiftEnvRelease)) as f32,
+            );
+            dirty.osc0 = true;
+        }
+        ParamType::Osc0FreqEnvAttack
+        | ParamType::Osc0FreqEnvDecay
+        | ParamType::Osc0FreqEnvSustain
+        | ParamType::Osc0FreqEnvRelease => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[0].freq_env = adsr_env(
+                params.get(inst_id(ParamType::Osc0FreqEnvAttack)) as f32,
+                params.get(inst_id(ParamType::Osc0FreqEnvDecay)) as f32,
+                params.get(inst_id(ParamType::Osc0FreqEnvSustain)) as f32,
+                params.get(inst_id(ParamType::Osc0FreqEnvRelease)) as f32,
+            );
+            dirty.osc0 = true;
+        }
+        ParamType::Osc0FreqEnvMode => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[0].freq_env_mode =
+                FreqEnvMode::from_u8(value as u8);
+            dirty.osc0 = true;
+        }
+        ParamType::Osc0AmpEnvAttack
+        | ParamType::Osc0AmpEnvDecay
+        | ParamType::Osc0AmpEnvSustain
+        | ParamType::Osc0AmpEnvRelease => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[0].amp_env = adsr_env(
+                params.get(inst_id(ParamType::Osc0AmpEnvAttack)) as f32,
+                params.get(inst_id(ParamType::Osc0AmpEnvDecay)) as f32,
+                params.get(inst_id(ParamType::Osc0AmpEnvSustain)) as f32,
+                params.get(inst_id(ParamType::Osc0AmpEnvRelease)) as f32,
+            );
+            dirty.osc0 = true;
+        }
+
+        // Oscillator 1
+        ParamType::Osc1Waveform => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[1].waveform =
+                Waveform::from_u8(value as u8);
+            dirty.osc1 = true;
+        }
+        ParamType::Osc1Freq => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[1].base_freq_hz = value as f32;
+            dirty.osc1 = true;
+        }
+        ParamType::Osc1Amp => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[1].amplitude = value as f32;
+            dirty.osc1 = true;
+        }
+        ParamType::Osc1Phase => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[1].initial_phase = value as f32;
+            dirty.osc1 = true;
+        }
+        ParamType::Osc1FmAmount => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[1].fm_amount = value as f32;
+            dirty.osc1 = true;
+        }
+        ParamType::Osc1FilterType => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[1].filter_type =
+                FilterType::from_u8(value as u8);
+            dirty.osc1 = true;
+        }
+        ParamType::Osc1FilterCutoff => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[1].filter_cutoff_hz =
+                value as f32;
+            dirty.osc1 = true;
+        }
+        ParamType::Osc1FilterQ => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[1].filter_q = value as f32;
+            dirty.osc1 = true;
+        }
+        ParamType::Osc1DistortionType => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[1]
+                .distortion
+                .ty = DistortionType::from_u8(value as u8);
+            dirty.osc1 = true;
+        }
+        ParamType::Osc1DistortionDrive => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[1]
+                .distortion
+                .drive = value as f32;
+            dirty.osc1 = true;
+        }
+        ParamType::Osc1DistortionVolEnvAttack
+        | ParamType::Osc1DistortionVolEnvDecay
+        | ParamType::Osc1DistortionVolEnvSustain
+        | ParamType::Osc1DistortionVolEnvRelease => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[1]
+                .distortion
+                .volume_env = adsr_env(
+                params.get(inst_id(ParamType::Osc1DistortionVolEnvAttack)) as f32,
+                params.get(inst_id(ParamType::Osc1DistortionVolEnvDecay)) as f32,
+                params.get(inst_id(ParamType::Osc1DistortionVolEnvSustain)) as f32,
+                params.get(inst_id(ParamType::Osc1DistortionVolEnvRelease)) as f32,
+            );
+            dirty.osc1 = true;
+        }
+        ParamType::Osc1FilterCutoffEnvAttack
+        | ParamType::Osc1FilterCutoffEnvDecay
+        | ParamType::Osc1FilterCutoffEnvSustain
+        | ParamType::Osc1FilterCutoffEnvRelease => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[1].filter_cutoff_env = adsr_env(
+                params.get(inst_id(ParamType::Osc1FilterCutoffEnvAttack)) as f32,
+                params.get(inst_id(ParamType::Osc1FilterCutoffEnvDecay)) as f32,
+                params.get(inst_id(ParamType::Osc1FilterCutoffEnvSustain)) as f32,
+                params.get(inst_id(ParamType::Osc1FilterCutoffEnvRelease)) as f32,
+            );
+            dirty.osc1 = true;
+        }
+        ParamType::Osc1FilterQEnvAttack
+        | ParamType::Osc1FilterQEnvDecay
+        | ParamType::Osc1FilterQEnvSustain
+        | ParamType::Osc1FilterQEnvRelease => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[1].filter_q_env = adsr_env(
+                params.get(inst_id(ParamType::Osc1FilterQEnvAttack)) as f32,
+                params.get(inst_id(ParamType::Osc1FilterQEnvDecay)) as f32,
+                params.get(inst_id(ParamType::Osc1FilterQEnvSustain)) as f32,
+                params.get(inst_id(ParamType::Osc1FilterQEnvRelease)) as f32,
+            );
+            dirty.osc1 = true;
+        }
+        ParamType::Osc1DistortionDriveEnvAttack
+        | ParamType::Osc1DistortionDriveEnvDecay
+        | ParamType::Osc1DistortionDriveEnvSustain
+        | ParamType::Osc1DistortionDriveEnvRelease => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[1].distortion_drive_env =
+                adsr_env(
+                    params.get(inst_id(ParamType::Osc1DistortionDriveEnvAttack)) as f32,
+                    params.get(inst_id(ParamType::Osc1DistortionDriveEnvDecay)) as f32,
+                    params.get(inst_id(ParamType::Osc1DistortionDriveEnvSustain)) as f32,
+                    params.get(inst_id(ParamType::Osc1DistortionDriveEnvRelease)) as f32,
+                );
+            dirty.osc1 = true;
+        }
+        ParamType::Osc1PitchShiftEnvAttack
+        | ParamType::Osc1PitchShiftEnvDecay
+        | ParamType::Osc1PitchShiftEnvSustain
+        | ParamType::Osc1PitchShiftEnvRelease => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[1].pitch_shift_env = adsr_env(
+                params.get(inst_id(ParamType::Osc1PitchShiftEnvAttack)) as f32,
+                params.get(inst_id(ParamType::Osc1PitchShiftEnvDecay)) as f32,
+                params.get(inst_id(ParamType::Osc1PitchShiftEnvSustain)) as f32,
+                params.get(inst_id(ParamType::Osc1PitchShiftEnvRelease)) as f32,
+            );
+            dirty.osc1 = true;
+        }
+        ParamType::Osc1FreqEnvAttack
+        | ParamType::Osc1FreqEnvDecay
+        | ParamType::Osc1FreqEnvSustain
+        | ParamType::Osc1FreqEnvRelease => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[1].freq_env = adsr_env(
+                params.get(inst_id(ParamType::Osc1FreqEnvAttack)) as f32,
+                params.get(inst_id(ParamType::Osc1FreqEnvDecay)) as f32,
+                params.get(inst_id(ParamType::Osc1FreqEnvSustain)) as f32,
+                params.get(inst_id(ParamType::Osc1FreqEnvRelease)) as f32,
+            );
+            dirty.osc1 = true;
+        }
+        ParamType::Osc1FreqEnvMode => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[1].freq_env_mode =
+                FreqEnvMode::from_u8(value as u8);
+            dirty.osc1 = true;
+        }
+        ParamType::Osc1AmpEnvAttack
+        | ParamType::Osc1AmpEnvDecay
+        | ParamType::Osc1AmpEnvSustain
+        | ParamType::Osc1AmpEnvRelease => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[1].amp_env = adsr_env(
+                params.get(inst_id(ParamType::Osc1AmpEnvAttack)) as f32,
+                params.get(inst_id(ParamType::Osc1AmpEnvDecay)) as f32,
+                params.get(inst_id(ParamType::Osc1AmpEnvSustain)) as f32,
+                params.get(inst_id(ParamType::Osc1AmpEnvRelease)) as f32,
+            );
+            dirty.osc1 = true;
+        }
+
+        // Oscillator 2
+        ParamType::Osc2Waveform => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[2].waveform =
+                Waveform::from_u8(value as u8);
+            dirty.osc2 = true;
+        }
+        ParamType::Osc2Freq => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[2].base_freq_hz = value as f32;
+            dirty.osc2 = true;
+        }
+        ParamType::Osc2Amp => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[2].amplitude = value as f32;
+            dirty.osc2 = true;
+        }
+        ParamType::Osc2Phase => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[2].initial_phase = value as f32;
+            dirty.osc2 = true;
+        }
+        ParamType::Osc2FmAmount => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[2].fm_amount = value as f32;
+            dirty.osc2 = true;
+        }
+        ParamType::Osc2FilterType => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[2].filter_type =
+                FilterType::from_u8(value as u8);
+            dirty.osc2 = true;
+        }
+        ParamType::Osc2FilterCutoff => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[2].filter_cutoff_hz =
+                value as f32;
+            dirty.osc2 = true;
+        }
+        ParamType::Osc2FilterQ => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[2].filter_q = value as f32;
+            dirty.osc2 = true;
+        }
+        ParamType::Osc2DistortionType => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[2]
+                .distortion
+                .ty = DistortionType::from_u8(value as u8);
+            dirty.osc2 = true;
+        }
+        ParamType::Osc2DistortionDrive => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[2]
+                .distortion
+                .drive = value as f32;
+            dirty.osc2 = true;
+        }
+        ParamType::Osc2DistortionVolEnvAttack
+        | ParamType::Osc2DistortionVolEnvDecay
+        | ParamType::Osc2DistortionVolEnvSustain
+        | ParamType::Osc2DistortionVolEnvRelease => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[2]
+                .distortion
+                .volume_env = adsr_env(
+                params.get(inst_id(ParamType::Osc2DistortionVolEnvAttack)) as f32,
+                params.get(inst_id(ParamType::Osc2DistortionVolEnvDecay)) as f32,
+                params.get(inst_id(ParamType::Osc2DistortionVolEnvSustain)) as f32,
+                params.get(inst_id(ParamType::Osc2DistortionVolEnvRelease)) as f32,
+            );
+            dirty.osc2 = true;
+        }
+        ParamType::Osc2FilterCutoffEnvAttack
+        | ParamType::Osc2FilterCutoffEnvDecay
+        | ParamType::Osc2FilterCutoffEnvSustain
+        | ParamType::Osc2FilterCutoffEnvRelease => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[2].filter_cutoff_env = adsr_env(
+                params.get(inst_id(ParamType::Osc2FilterCutoffEnvAttack)) as f32,
+                params.get(inst_id(ParamType::Osc2FilterCutoffEnvDecay)) as f32,
+                params.get(inst_id(ParamType::Osc2FilterCutoffEnvSustain)) as f32,
+                params.get(inst_id(ParamType::Osc2FilterCutoffEnvRelease)) as f32,
+            );
+            dirty.osc2 = true;
+        }
+        ParamType::Osc2FilterQEnvAttack
+        | ParamType::Osc2FilterQEnvDecay
+        | ParamType::Osc2FilterQEnvSustain
+        | ParamType::Osc2FilterQEnvRelease => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[2].filter_q_env = adsr_env(
+                params.get(inst_id(ParamType::Osc2FilterQEnvAttack)) as f32,
+                params.get(inst_id(ParamType::Osc2FilterQEnvDecay)) as f32,
+                params.get(inst_id(ParamType::Osc2FilterQEnvSustain)) as f32,
+                params.get(inst_id(ParamType::Osc2FilterQEnvRelease)) as f32,
+            );
+            dirty.osc2 = true;
+        }
+        ParamType::Osc2DistortionDriveEnvAttack
+        | ParamType::Osc2DistortionDriveEnvDecay
+        | ParamType::Osc2DistortionDriveEnvSustain
+        | ParamType::Osc2DistortionDriveEnvRelease => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[2].distortion_drive_env =
+                adsr_env(
+                    params.get(inst_id(ParamType::Osc2DistortionDriveEnvAttack)) as f32,
+                    params.get(inst_id(ParamType::Osc2DistortionDriveEnvDecay)) as f32,
+                    params.get(inst_id(ParamType::Osc2DistortionDriveEnvSustain)) as f32,
+                    params.get(inst_id(ParamType::Osc2DistortionDriveEnvRelease)) as f32,
+                );
+            dirty.osc2 = true;
+        }
+        ParamType::Osc2PitchShiftEnvAttack
+        | ParamType::Osc2PitchShiftEnvDecay
+        | ParamType::Osc2PitchShiftEnvSustain
+        | ParamType::Osc2PitchShiftEnvRelease => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[2].pitch_shift_env = adsr_env(
+                params.get(inst_id(ParamType::Osc2PitchShiftEnvAttack)) as f32,
+                params.get(inst_id(ParamType::Osc2PitchShiftEnvDecay)) as f32,
+                params.get(inst_id(ParamType::Osc2PitchShiftEnvSustain)) as f32,
+                params.get(inst_id(ParamType::Osc2PitchShiftEnvRelease)) as f32,
+            );
+            dirty.osc2 = true;
+        }
+        ParamType::Osc2FreqEnvAttack
+        | ParamType::Osc2FreqEnvDecay
+        | ParamType::Osc2FreqEnvSustain
+        | ParamType::Osc2FreqEnvRelease => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[2].freq_env = adsr_env(
+                params.get(inst_id(ParamType::Osc2FreqEnvAttack)) as f32,
+                params.get(inst_id(ParamType::Osc2FreqEnvDecay)) as f32,
+                params.get(inst_id(ParamType::Osc2FreqEnvSustain)) as f32,
+                params.get(inst_id(ParamType::Osc2FreqEnvRelease)) as f32,
+            );
+            dirty.osc2 = true;
+        }
+        ParamType::Osc2FreqEnvMode => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[2].freq_env_mode =
+                FreqEnvMode::from_u8(value as u8);
+            dirty.osc2 = true;
+        }
+        ParamType::Osc2AmpEnvAttack
+        | ParamType::Osc2AmpEnvDecay
+        | ParamType::Osc2AmpEnvSustain
+        | ParamType::Osc2AmpEnvRelease => {
+            synth.kit.instruments[inst_idx].layers[0].oscillators[2].amp_env = adsr_env(
+                params.get(inst_id(ParamType::Osc2AmpEnvAttack)) as f32,
+                params.get(inst_id(ParamType::Osc2AmpEnvDecay)) as f32,
+                params.get(inst_id(ParamType::Osc2AmpEnvSustain)) as f32,
+                params.get(inst_id(ParamType::Osc2AmpEnvRelease)) as f32,
+            );
+            dirty.osc2 = true;
+        }
+
+        // Noise
+        ParamType::NoiseType => {
+            synth.kit.instruments[inst_idx].layers[0].noise.noise_type =
+                NoiseType::from_u8(value as u8);
+            dirty.noise = true;
+        }
+        ParamType::NoiseAmp => {
+            synth.kit.instruments[inst_idx].layers[0].noise.amplitude = value as f32;
+            dirty.noise = true;
+        }
+        ParamType::NoiseDensity => {
+            synth.kit.instruments[inst_idx].layers[0].noise.density = value as f32;
+            dirty.noise = true;
+        }
+        ParamType::NoiseFilterType => {
+            synth.kit.instruments[inst_idx].layers[0].noise.filter_type =
+                FilterType::from_u8(value as u8);
+            dirty.noise = true;
+        }
+        ParamType::NoiseFilterCutoff => {
+            synth.kit.instruments[inst_idx].layers[0]
+                .noise
+                .filter_cutoff_hz = value as f32;
+            dirty.noise = true;
+        }
+        ParamType::NoiseFilterQ => {
+            synth.kit.instruments[inst_idx].layers[0].noise.filter_q = value as f32;
+            dirty.noise = true;
+        }
+        ParamType::NoiseAmpEnvAttack
+        | ParamType::NoiseAmpEnvDecay
+        | ParamType::NoiseAmpEnvSustain
+        | ParamType::NoiseAmpEnvRelease => {
+            synth.kit.instruments[inst_idx].layers[0].noise.amp_env = adsr_env(
+                params.get(inst_id(ParamType::NoiseAmpEnvAttack)) as f32,
+                params.get(inst_id(ParamType::NoiseAmpEnvDecay)) as f32,
+                params.get(inst_id(ParamType::NoiseAmpEnvSustain)) as f32,
+                params.get(inst_id(ParamType::NoiseAmpEnvRelease)) as f32,
+            );
+            dirty.noise = true;
+        }
+        ParamType::NoiseDensityEnvAttack
+        | ParamType::NoiseDensityEnvDecay
+        | ParamType::NoiseDensityEnvSustain
+        | ParamType::NoiseDensityEnvRelease => {
+            synth.kit.instruments[inst_idx].layers[0].noise.density_env = adsr_env(
+                params.get(inst_id(ParamType::NoiseDensityEnvAttack)) as f32,
+                params.get(inst_id(ParamType::NoiseDensityEnvDecay)) as f32,
+                params.get(inst_id(ParamType::NoiseDensityEnvSustain)) as f32,
+                params.get(inst_id(ParamType::NoiseDensityEnvRelease)) as f32,
+            );
+            dirty.noise = true;
+        }
+    }
+
+    true
+}
 
 struct AudioProcessor {
     synth: KickSynthesizer,
@@ -775,6 +1505,7 @@ struct AudioProcessor {
     master_temp_l: Vec<f32>,
     master_temp_r: Vec<f32>,
     last_kit_version: u64,
+    last_params_version: u64,
     bus_data: Option<bus::PluginSharedData>,
     fft_scratch: Vec<f32>,
     fft_mag: Vec<f32>,
@@ -791,6 +1522,7 @@ impl AudioProcessor {
             master_temp_l: vec![0.0; frames],
             master_temp_r: vec![0.0; frames],
             last_kit_version: 0,
+            last_params_version: 0,
             bus_data,
             fft_scratch: vec![0.0; frames],
             fft_mag: vec![0.0; 1024],
@@ -801,6 +1533,7 @@ impl AudioProcessor {
     fn reset(&mut self) {
         self.synth = KickSynthesizer::new(self.synth.sample_rate);
         self.last_kit_version = 0;
+        self.last_params_version = 0;
     }
 
     fn process(&mut self, shared: &SharedState, process: &mut Process) -> clap_process_status {
@@ -815,9 +1548,37 @@ impl AudioProcessor {
             let kit = shared.kit.lock();
             self.synth.kit = kit.clone();
             self.last_kit_version = kit_ver;
+            self.last_params_version = 0;
         }
 
-        apply_params_to_synth(&mut self.synth, &shared.params);
+        let mut changed_params: [Option<(ParamId, f64)>; 32] = [None; 32];
+        let overflow = apply_param_events_kick(shared, &process.in_events(), &mut changed_params);
+        {
+            let mut out_events = process.out_events();
+            emit_pending_param_events_to_host(shared, &mut out_events);
+        }
+
+        let params_version = shared.params_version();
+        if params_version != self.last_params_version {
+            let any_changed = changed_params.iter().any(|x| x.is_some());
+            let mut use_incremental = self.last_params_version != 0 && !overflow && any_changed;
+            let mut dirty = DirtyFlags::default();
+
+            if use_incremental {
+                for item in changed_params.iter().flatten() {
+                    let (id, value) = *item;
+                    if !apply_param_id(&mut self.synth, &shared.params, id, value, &mut dirty) {
+                        use_incremental = false;
+                        break;
+                    }
+                }
+            }
+
+            if !use_incremental {
+                apply_params_to_synth(&mut self.synth, &shared.params);
+            }
+            self.last_params_version = params_version;
+        }
 
         let events = process.in_events();
         for i in 0..events.size() {
@@ -856,12 +1617,6 @@ impl AudioProcessor {
                 }
                 _ => {}
             }
-        }
-
-        apply_param_events(shared, &process.in_events());
-        {
-            let mut out_events = process.out_events();
-            emit_pending_param_events_to_host(shared, &mut out_events);
         }
 
         let outputs_count = process.audio_outputs_count() as usize;
@@ -1237,7 +1992,8 @@ unsafe extern "C-unwind" fn ext_params_flush(
     let inst = unsafe { instance(plugin) };
     if !in_events.is_null() {
         let input = unsafe { InputEvents::new_unchecked(&*in_events) };
-        apply_param_events(&inst.shared, &input);
+        let mut _changed = [None; 32];
+        let _ = apply_param_events_kick(&inst.shared, &input, &mut _changed);
     }
     if !out_events.is_null() {
         let mut output = unsafe { OutputEvents::new_unchecked(&*out_events) };
@@ -1290,6 +2046,7 @@ unsafe extern "C-unwind" fn ext_state_load(
         Ok(state) => {
             let kit_cfg = state.kit.clone();
             state.apply_params(&inst.shared.params);
+            inst.shared.bump_params_version();
             let mut kit = inst.shared.kit.lock();
             *kit = config_to_kit(&kit_cfg, inst.shared.sample_rate());
             inst.shared.kit_version.fetch_add(1, Ordering::AcqRel);

@@ -11,11 +11,13 @@ use std::{
 use clap_clap::{
     events::{InputEvents, OutputEvents},
     ffi::{
-        CLAP_AUDIO_PORT_IS_MAIN, CLAP_AUDIO_PORTS_RESCAN_LIST, CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI,
-        CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL, CLAP_INVALID_ID,
-        CLAP_PARAM_REQUIRES_PROCESS, CLAP_PLUGIN_FEATURE_AUDIO_EFFECT, CLAP_PLUGIN_FEATURE_MONO,
-        CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION,
-        CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info, clap_gui_resize_hints,
+        CLAP_AUDIO_PORT_IS_MAIN, CLAP_AUDIO_PORTS_RESCAN_LIST, CLAP_CORE_EVENT_SPACE_ID,
+        CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END, CLAP_EVENT_PARAM_VALUE,
+        CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL,
+        CLAP_INVALID_ID, CLAP_PARAM_REQUIRES_PROCESS, CLAP_PLUGIN_FEATURE_AUDIO_EFFECT,
+        CLAP_PLUGIN_FEATURE_MONO, CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_MONO,
+        CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11,
+        clap_audio_port_info, clap_event_header, clap_event_param_gesture, clap_gui_resize_hints,
         clap_host, clap_host_audio_ports, clap_host_gui, clap_host_params, clap_host_state,
         clap_id, clap_istream, clap_ostream, clap_param_info, clap_plugin, clap_plugin_audio_ports,
         clap_plugin_descriptor, clap_plugin_factory, clap_plugin_gui, clap_plugin_params,
@@ -26,9 +28,7 @@ use clap_clap::{
 };
 use parking_lot::Mutex;
 
-use crate::common::{
-    SharedStateExt, apply_param_events, copy_str_to_array, emit_pending_param_events_to_host,
-};
+use crate::common::{SharedStateExt, copy_str_to_array, emit_pending_param_events_to_host};
 use crate::common::{bus, fft};
 use crate::reverb::{
     dsp::Reverb,
@@ -73,6 +73,7 @@ static DESCRIPTOR: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor {
 pub struct SharedState {
     pub params: ParamStore,
     sample_rate_bits: std::sync::atomic::AtomicU64,
+    params_version: std::sync::atomic::AtomicU64,
     pending_param_notifications: std::sync::atomic::AtomicU32,
     pending_gesture_begin: std::sync::atomic::AtomicU32,
     pending_gesture_end: std::sync::atomic::AtomicU32,
@@ -86,6 +87,7 @@ impl Default for SharedState {
         Self {
             params: ParamStore::default(),
             sample_rate_bits: std::sync::atomic::AtomicU64::new(48_000.0f64.to_bits()),
+            params_version: std::sync::atomic::AtomicU64::new(1),
             pending_param_notifications: std::sync::atomic::AtomicU32::new(0),
             pending_gesture_begin: std::sync::atomic::AtomicU32::new(0),
             pending_gesture_end: std::sync::atomic::AtomicU32::new(0),
@@ -106,8 +108,17 @@ impl SharedState {
             .store(sample_rate.to_bits(), Ordering::Release);
     }
 
+    pub fn params_version(&self) -> u64 {
+        self.params_version.load(Ordering::Acquire)
+    }
+
+    fn bump_params_version(&self) {
+        self.params_version.fetch_add(1, Ordering::Release);
+    }
+
     fn set_param_internal(&self, id: ParamId, value: f64, notify_host: bool) {
         self.params.set(id, sanitize_param_value(id, value));
+        self.bump_params_version();
         if notify_host {
             self.mark_param_notification_pending(id);
             self.request_flush();
@@ -280,6 +291,113 @@ impl SharedStateExt<ParamId> for SharedState {
     }
 }
 
+#[derive(Default)]
+struct DirtyFlags {
+    replace: bool,
+    brightness: bool,
+    detune: bool,
+    bigness: bool,
+    dry_wet: bool,
+}
+
+fn apply_param_id(
+    state: &mut AudioProcessor,
+    id: ParamId,
+    value: f64,
+    dirty: &mut DirtyFlags,
+) -> bool {
+    match id {
+        ParamId::Replace => {
+            state.replace = value;
+            dirty.replace = true;
+            true
+        }
+        ParamId::Brightness => {
+            state.brightness = value;
+            dirty.brightness = true;
+            true
+        }
+        ParamId::Detune => {
+            state.detune = value;
+            dirty.detune = true;
+            true
+        }
+        ParamId::Bigness => {
+            state.bigness = value;
+            dirty.bigness = true;
+            true
+        }
+        ParamId::DryWet => {
+            state.dry_wet = value;
+            dirty.dry_wet = true;
+            true
+        }
+        ParamId::Channels => {
+            // Channels only affects audio port configuration, which is
+            // handled outside of the process loop. No DSP state to update.
+            true
+        }
+    }
+}
+
+fn apply_param_events_reverb(
+    shared: &SharedState,
+    events: &InputEvents<'_>,
+    sanitize: impl Fn(ParamId, f64) -> f64,
+    changed: &mut [Option<(ParamId, f64)>; 32],
+) -> bool {
+    let mut overflow = false;
+    let mut next_idx = 0;
+
+    for index in 0..events.size() {
+        let header = events.get(index);
+        if header.space_id() != CLAP_CORE_EVENT_SPACE_ID {
+            continue;
+        }
+        match header.r#type() {
+            t if t == CLAP_EVENT_PARAM_GESTURE_BEGIN as u16 => {
+                let gesture = unsafe {
+                    &*((header.as_clap_event_header() as *const clap_event_header)
+                        as *const clap_event_param_gesture)
+                };
+                if let Some(id) = ParamId::from_raw(gesture.param_id) {
+                    shared.set_gesture_active(id, true);
+                }
+            }
+            t if t == CLAP_EVENT_PARAM_GESTURE_END as u16 => {
+                let gesture = unsafe {
+                    &*((header.as_clap_event_header() as *const clap_event_header)
+                        as *const clap_event_param_gesture)
+                };
+                if let Some(id) = ParamId::from_raw(gesture.param_id) {
+                    shared.set_gesture_active(id, false);
+                }
+            }
+            t if t == CLAP_EVENT_PARAM_VALUE as u16 => {
+                if let Ok(param) = header.param_value() {
+                    let raw: u32 = param.param_id().into();
+                    if let Some(id) = ParamId::from_raw(raw) {
+                        if shared.is_gesture_active(id) {
+                            continue;
+                        }
+                        let incoming = sanitize(id, param.value());
+                        shared.set_param_from_host(id, incoming);
+                        if next_idx < changed.len() {
+                            changed[next_idx] = Some((id, incoming));
+                            next_idx += 1;
+                        } else {
+                            overflow = true;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    overflow
+}
+
 struct AudioProcessor {
     dsp: Reverb,
     temp_left: Vec<f32>,
@@ -288,13 +406,24 @@ struct AudioProcessor {
     fft_scratch: Vec<f32>,
     fft_mag: Vec<f32>,
     fft_analyzer: fft::SpectrumAnalyzer,
+    replace: f64,
+    brightness: f64,
+    detune: f64,
+    bigness: f64,
+    dry_wet: f64,
+    last_params_version: u64,
 }
 
 impl AudioProcessor {
-    fn new(sample_rate: f64, max_frames: u32, bus_data: Option<bus::PluginSharedData>) -> Self {
+    fn new(
+        sample_rate: f64,
+        max_frames: u32,
+        bus_data: Option<bus::PluginSharedData>,
+        shared: &SharedState,
+    ) -> Self {
         let mut dsp = Reverb::default();
         dsp.set_sample_rate(sample_rate);
-        Self {
+        let mut processor = Self {
             dsp,
             temp_left: vec![0.0; max_frames as usize],
             temp_right: vec![0.0; max_frames as usize],
@@ -302,18 +431,64 @@ impl AudioProcessor {
             fft_scratch: vec![0.0; max_frames as usize],
             fft_mag: vec![0.0; 1024],
             fft_analyzer: fft::SpectrumAnalyzer::new(max_frames as usize),
-        }
+            replace: 0.0,
+            brightness: 0.0,
+            detune: 0.0,
+            bigness: 0.0,
+            dry_wet: 0.0,
+            last_params_version: 0,
+        };
+        processor.apply_params(shared);
+        processor
     }
 
     fn reset(&mut self) {
         self.dsp.reset();
     }
 
+    fn apply_params(&mut self, shared: &SharedState) {
+        self.replace = shared.params.get(ParamId::Replace);
+        self.brightness = shared.params.get(ParamId::Brightness);
+        self.detune = shared.params.get(ParamId::Detune);
+        self.bigness = shared.params.get(ParamId::Bigness);
+        self.dry_wet = shared.params.get(ParamId::DryWet);
+        self.last_params_version = shared.params_version();
+    }
+
     fn process(&mut self, shared: &SharedState, process: &mut Process) -> clap_process_status {
-        apply_param_events(shared, &process.in_events(), sanitize_param_value);
+        let mut changed_params: [Option<(ParamId, f64)>; 32] = [None; 32];
+        let overflow = apply_param_events_reverb(
+            shared,
+            &process.in_events(),
+            sanitize_param_value,
+            &mut changed_params,
+        );
         {
             let mut out_events = process.out_events();
             emit_pending_param_events_to_host(shared, &mut out_events);
+        }
+
+        let params_version = shared.params_version();
+        let any_changed = changed_params.iter().any(|x| x.is_some());
+        if params_version != self.last_params_version {
+            let mut use_incremental = !overflow && any_changed;
+            let mut dirty = DirtyFlags::default();
+
+            if use_incremental {
+                for item in changed_params.iter().flatten() {
+                    let (id, value) = *item;
+                    if !apply_param_id(self, id, value, &mut dirty) {
+                        use_incremental = false;
+                        break;
+                    }
+                }
+            }
+
+            if !use_incremental {
+                self.apply_params(shared);
+            }
+
+            self.last_params_version = params_version;
         }
 
         let frames = process.frames_count() as usize;
@@ -334,11 +509,11 @@ impl AudioProcessor {
             self.dsp.process_stereo(
                 &mut self.temp_left[..frames],
                 &mut self.temp_right[..frames],
-                shared.params.get(ParamId::Replace),
-                shared.params.get(ParamId::Brightness),
-                shared.params.get(ParamId::Detune),
-                shared.params.get(ParamId::Bigness),
-                shared.params.get(ParamId::DryWet),
+                self.replace,
+                self.brightness,
+                self.detune,
+                self.bigness,
+                self.dry_wet,
             );
 
             {
@@ -357,11 +532,11 @@ impl AudioProcessor {
             self.dsp.process_stereo(
                 &mut self.temp_left[..frames],
                 &mut self.temp_right[..frames],
-                shared.params.get(ParamId::Replace),
-                shared.params.get(ParamId::Brightness),
-                shared.params.get(ParamId::Detune),
-                shared.params.get(ParamId::Bigness),
-                shared.params.get(ParamId::DryWet),
+                self.replace,
+                self.brightness,
+                self.detune,
+                self.bigness,
+                self.dry_wet,
             );
 
             let mut output_port = process.audio_outputs(0);
@@ -479,6 +654,7 @@ unsafe extern "C-unwind" fn plugin_activate(
         sample_rate,
         max_frames,
         Some(instance.bus_data),
+        &instance.shared,
     )));
     let old = instance.processor.swap(next, Ordering::AcqRel);
     if !old.is_null() {
@@ -703,7 +879,13 @@ unsafe extern "C-unwind" fn ext_params_flush(
     let instance = unsafe { instance(plugin) };
     if !in_events.is_null() {
         let input = unsafe { InputEvents::new_unchecked(&*in_events) };
-        apply_param_events(&instance.shared, &input, sanitize_param_value);
+        let mut _changed = [None; 32];
+        let _ = apply_param_events_reverb(
+            &instance.shared,
+            &input,
+            sanitize_param_value,
+            &mut _changed,
+        );
     }
     if !out_events.is_null() {
         let mut output = unsafe { OutputEvents::new_unchecked(&*out_events) };
@@ -744,6 +926,7 @@ unsafe extern "C-unwind" fn ext_state_load(
         return false;
     };
     state.apply(&instance.shared.params);
+    instance.shared.bump_params_version();
     true
 }
 
@@ -1034,4 +1217,21 @@ pub unsafe fn clap_create_plugin(
     plugin_id: *const c_char,
 ) -> *const clap_plugin {
     unsafe { factory_create_plugin(null(), host, plugin_id) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AudioProcessor, DirtyFlags, SharedState, apply_param_id};
+    use crate::reverb::params::ParamId;
+
+    #[test]
+    fn dispatcher_handles_all_param_ids() {
+        let shared = SharedState::default();
+        let mut processor = AudioProcessor::new(48_000.0, 512, None, &shared);
+        for id in ParamId::all() {
+            let mut dirty = DirtyFlags::default();
+            let handled = apply_param_id(&mut processor, id, 0.5, &mut dirty);
+            assert!(handled, "ParamId {:?} is not handled by dispatcher", id);
+        }
+    }
 }
