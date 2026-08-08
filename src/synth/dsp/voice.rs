@@ -3118,7 +3118,7 @@ impl Voice {
             let f1_enabled = self.params.filter1.enabled;
             let f2_enabled = self.params.filter2.enabled;
 
-            let _f1_cutoff = if f1_enabled {
+            let f1_cutoff = if f1_enabled {
                 let base = self.params.filter1.cutoff_hz;
                 let eg_mod = self.filter_eg_output
                     * (self.params.filter1.eg_amount + mods.f1_eg_amount)
@@ -3136,7 +3136,7 @@ impl Voice {
             } else {
                 20000.0
             };
-            let _f1_res = if f1_enabled {
+            let f1_res = if f1_enabled {
                 (self.params.filter1.resonance + mods.f1_resonance).clamp(0.01, 10.0)
             } else {
                 0.7
@@ -3147,9 +3147,9 @@ impl Voice {
                 0.0
             };
 
-            let _f2_cutoff = if f2_enabled {
+            let f2_cutoff = if f2_enabled {
                 let base = if self.params.f2_cutoff_offset {
-                    _f1_cutoff * (self.params.filter2.cutoff_hz / 10000.0).clamp(0.2, 5.0)
+                    f1_cutoff * (self.params.filter2.cutoff_hz / 10000.0).clamp(0.2, 5.0)
                 } else {
                     self.params.filter2.cutoff_hz
                 };
@@ -3169,9 +3169,9 @@ impl Voice {
             } else {
                 20000.0
             };
-            let _f2_res = if f2_enabled {
+            let f2_res = if f2_enabled {
                 if self.params.f2_res_link {
-                    _f1_res
+                    f1_res
                 } else {
                     (self.params.filter2.resonance + mods.f2_resonance).clamp(0.01, 10.0)
                 }
@@ -3183,6 +3183,11 @@ impl Voice {
             } else {
                 0.0
             };
+
+            self.filter1_l.prepare_block(f1_cutoff, f1_res, 1);
+            self.filter1_r.prepare_block(f1_cutoff, f1_res, 1);
+            self.filter2_l.prepare_block(f2_cutoff, f2_res, 1);
+            self.filter2_r.prepare_block(f2_cutoff, f2_res, 1);
 
             let ws_active =
                 self.params.waveshaper.enabled && self.params.waveshaper.shape != Waveshape::Off;

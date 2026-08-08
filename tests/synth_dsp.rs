@@ -1,4 +1,4 @@
-use maolan_plugins::common::filter::SvfFilter;
+use maolan_plugins::common::filter::{FilterType, SvfFilter};
 use maolan_plugins::synth::dsp::{FilterRouting, OscPhaseMode, OscType, SynthEngine, VoiceParams};
 
 fn osc1_saw_test_engine() -> SynthEngine {
@@ -512,4 +512,51 @@ fn test_filter_cutoff_changes_stay_finite() {
             peak
         );
     }
+}
+
+#[test]
+fn test_filter_cutoff_changes_rendered_sound() {
+    fn render(cutoff_hz: f32) -> Vec<f32> {
+        let mut engine = osc1_saw_test_engine();
+        engine.params.filter1.enabled = true;
+        engine.params.filter1.filter_type = FilterType::Lowpass;
+        engine.params.filter1.cutoff_hz = cutoff_hz;
+        engine.params.filter1.resonance = 0.7;
+        engine.params.filter2.enabled = false;
+        engine.params.filter_routing = FilterRouting::Series;
+        engine.params.amp_eg.attack = 0.0;
+        engine.params.amp_eg.decay = 0.0;
+        engine.params.amp_eg.sustain = 1.0;
+        engine.params.oscs[0].phase_mode = OscPhaseMode::Zero;
+        engine.update_params();
+
+        let mut out_l = vec![0.0f32; 8192];
+        let mut out_r = vec![0.0f32; 8192];
+        engine.trigger(60, 1.0);
+        engine.process_block(&mut out_l, &mut out_r, None, None);
+        out_l
+    }
+
+    let low = render(300.0);
+    let high = render(18_000.0);
+    let start = 1024;
+    let diff = low[start..]
+        .iter()
+        .zip(&high[start..])
+        .map(|(a, b)| (a - b).abs())
+        .sum::<f32>()
+        / (low.len() - start) as f32;
+    let low_rms =
+        (low[start..].iter().map(|s| s * s).sum::<f32>() / (low.len() - start) as f32).sqrt();
+    let high_rms =
+        (high[start..].iter().map(|s| s * s).sum::<f32>() / (high.len() - start) as f32).sqrt();
+
+    assert!(
+        diff > 0.01,
+        "low and high cutoff renders should differ, average absolute diff={diff}"
+    );
+    assert!(
+        low_rms < high_rms * 0.85,
+        "low cutoff should attenuate the saw, low_rms={low_rms}, high_rms={high_rms}"
+    );
 }
