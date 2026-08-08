@@ -904,9 +904,12 @@ unsafe extern "C-unwind" fn ext_gui_create(
     }
     let inst = unsafe { instance(plugin) };
     let api = unsafe { CStr::from_ptr(api) };
-    inst.gui_bridge
-        .lock()
-        .create(Arc::clone(&inst.shared), api, is_floating)
+    inst.gui_bridge.lock().create(
+        Arc::clone(&inst.shared),
+        Arc::clone(&inst.engine),
+        api,
+        is_floating,
+    )
 }
 
 unsafe extern "C-unwind" fn ext_gui_destroy(plugin: *const clap_plugin) {
@@ -1004,7 +1007,7 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     };
     inst.gui_bridge
         .lock()
-        .set_parent(Arc::clone(&inst.shared), parent)
+        .set_parent(Arc::clone(&inst.shared), Arc::clone(&inst.engine), parent)
 }
 
 unsafe extern "C-unwind" fn ext_gui_set_transient(

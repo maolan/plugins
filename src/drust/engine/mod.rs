@@ -449,7 +449,7 @@ impl DrumGizmoEngine {
     pub fn load_kit_async(self: Arc<Self>, path: String) {
         self.kit_ready.store(false, Ordering::Release);
         self.is_loading.store(true, Ordering::Release);
-        self.loading_progress.store(0, Ordering::Release);
+        self.loading_progress.store(1, Ordering::Release);
         *self.last_load_error.lock() = None;
 
         self.should_cancel_loading.store(true, Ordering::Release);
@@ -457,6 +457,7 @@ impl DrumGizmoEngine {
 
         std::thread::spawn(move || {
             self.should_cancel_loading.store(false, Ordering::Release);
+            self.loading_progress.store(1, Ordering::Release);
 
             let kit = match loader::load_drumkit(&path) {
                 Ok(k) => k,
@@ -567,7 +568,6 @@ impl DrumGizmoEngine {
             }
 
             self.loading_progress.store(20, Ordering::Release);
-            self.kit_ready.store(true, Ordering::Release);
 
             let expected = expected_count.max(1);
             let success_count = std::sync::atomic::AtomicUsize::new(0);
@@ -623,6 +623,7 @@ impl DrumGizmoEngine {
 
             self.rebuild_note_cache();
 
+            self.kit_ready.store(true, Ordering::Release);
             self.loading_progress.store(100, Ordering::Release);
             self.is_loading.store(false, Ordering::Release);
         });
@@ -684,6 +685,7 @@ impl DrumGizmoEngine {
                 path: file.path.clone(),
                 sample_rate: new_sr as u32,
                 original_sample_rate: file.original_sample_rate,
+                source_channels: file.source_channels.clone(),
                 channels: new_channels,
             };
             let new_ptr = Box::into_raw(Box::new(new_file.clone()));
@@ -823,7 +825,9 @@ impl DrumGizmoEngine {
                                 continue;
                             }
                             let audio_file = unsafe { &*entry.file.load(Ordering::Acquire) };
-                            if af.filechannel < audio_file.channels.len() {
+                            if let Some(loaded_channel) =
+                                audio_file.loaded_channel_index(af.filechannel)
+                            {
                                 let is_main = instr
                                     .channelmaps
                                     .iter()
@@ -836,7 +840,7 @@ impl DrumGizmoEngine {
                                     1.0
                                 };
 
-                                let buffer = &audio_file.channels[af.filechannel];
+                                let buffer = &audio_file.channels[loaded_channel];
                                 playbacks.push(ChannelPlayback {
                                     audio_ref: AudioRef {
                                         file_index: file_idx,

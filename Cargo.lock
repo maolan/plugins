@@ -2444,9 +2444,9 @@ dependencies = [
 
 [[package]]
 name = "maolan-widgets"
-version = "0.0.31"
+version = "0.0.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66a8c1ac7ba0af63ec269a70227b79d9cc04628d92a9bbaa7401c3c1628a2dc4"
+checksum = "bcf1f8217f17df43e02b883e1c2ee673517b26484c2220ca6a380a9ba92ab0ab"
 dependencies = [
  "iced",
  "iced_fonts",

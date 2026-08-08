@@ -28,7 +28,7 @@ oxideav-mp3 = "0.1.3"
 oxideav-ogg = "0.1.8"
 symphonia = { version = "0.5.4", features = ["aac", "alac", "flac", "isomp4", "mp3", "ogg", "vorbis", "wav"] }
 maolan-baseview = "0.0.5"
-maolan-widgets = "0.0.31"
+maolan-widgets = "0.0.32"
 parking_lot = "0.12.5"
 quick-xml = { version = "0.41.0", features = ["serialize"] }
 rand = "0.10.2"

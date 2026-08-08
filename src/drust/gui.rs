@@ -19,7 +19,7 @@ use maolan_baseview::iced::{
 };
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 
-use crate::drust::{download, params::ParamId, shared::SharedState};
+use crate::drust::{download, engine::DrumGizmoEngine, params::ParamId, shared::SharedState};
 use maolan_widgets::horizontal_slider::horizontal_slider;
 
 pub const EDITOR_WIDTH: u32 = 400;
@@ -92,6 +92,7 @@ type LoadResult = Option<Result<String, String>>;
 
 struct State {
     shared: Arc<SharedState>,
+    engine: Arc<DrumGizmoEngine>,
     selected_kit: Option<String>,
     selected_variation: Option<String>,
     loaded_kit: Option<String>,
@@ -102,7 +103,7 @@ struct State {
     load_poll_count: u32,
 }
 
-fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
+fn init(shared: Arc<SharedState>, engine: Arc<DrumGizmoEngine>) -> (State, Task<Message>) {
     let raw_kit = shared.kit_path.read().clone();
     let has_kit = !raw_kit.is_empty();
     let selected_kit = if raw_kit.is_empty() {
@@ -139,7 +140,11 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             Task::none(),
         )
     } else if has_kit {
-        (None, None, poll_engine_load_task(Arc::clone(&shared)))
+        (
+            None,
+            None,
+            poll_engine_load_task(Arc::clone(&shared), Arc::clone(&engine)),
+        )
     } else {
         (None, None, Task::none())
     };
@@ -147,6 +152,7 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
     (
         State {
             shared,
+            engine,
             selected_kit: selected_kit.clone(),
             selected_variation: selected_variation.clone(),
             loaded_kit,
@@ -181,11 +187,29 @@ fn poll_download_task(progress: Arc<AtomicU32>) -> Task<Message> {
 
 const MAX_ENGINE_LOAD_POLLS: u32 = 600;
 
-fn poll_engine_load_task(shared: Arc<SharedState>) -> Task<Message> {
+fn poll_engine_load_task(shared: Arc<SharedState>, engine: Arc<DrumGizmoEngine>) -> Task<Message> {
     Task::perform(
         async move {
             thread::sleep(Duration::from_millis(100));
-            let prog = shared.loading_progress.load(Ordering::Acquire);
+            let prog = engine.loading_progress.load(Ordering::Acquire);
+            shared.loading_progress.store(prog, Ordering::Release);
+            if !engine.is_loading.load(Ordering::Acquire)
+                && let Some(err) = engine.last_load_error.lock().take()
+            {
+                *shared.last_error.write() = Some(err);
+            }
+            if !engine.is_loading.load(Ordering::Acquire) {
+                let kit_ptr = engine.kit.load(Ordering::Acquire);
+                if !kit_ptr.is_null() {
+                    let num_channels = unsafe { &*kit_ptr }
+                        .channels
+                        .len()
+                        .min(crate::drust::engine::MAX_CHANNELS);
+                    shared
+                        .active_channels
+                        .store(num_channels as u32, Ordering::Release);
+                }
+            }
             if prog >= 100 {
                 1.0
             } else {
@@ -194,6 +218,43 @@ fn poll_engine_load_task(shared: Arc<SharedState>) -> Task<Message> {
         },
         Message::LoadProgress,
     )
+}
+
+fn start_engine_load(state: &mut State, xml_path: String) -> Task<Message> {
+    *state.shared.kit_path.write() = xml_path.clone();
+    *state.shared.last_error.write() = None;
+    state.shared.active_channels.store(0, Ordering::Release);
+    state.shared.loading_progress.store(0, Ordering::Release);
+    state.shared.mark_dirty();
+    state.shared.latency_changed();
+
+    Arc::clone(&state.engine).load_kit_async(xml_path.clone());
+
+    let mut variation = state.selected_variation.clone().unwrap_or_default();
+    if variation.is_empty()
+        && let Some(inferred) = download::kit_variation_from_path(&xml_path)
+    {
+        variation = inferred;
+        state.selected_variation = Some(variation.clone());
+        *state.shared.variation.write() = variation.clone();
+        state.shared.mark_dirty();
+    }
+    if let Some(kit_name) = download::kit_display_name_from_path(&xml_path)
+        && let Some(midimap_path) = download::resolve_midimap_xml(&kit_name, &variation)
+    {
+        match state.engine.load_midimap(&midimap_path.to_string_lossy()) {
+            Ok(()) => {
+                *state.shared.midimap_path.write() = midimap_path.to_string_lossy().into_owned();
+                state.shared.mark_dirty();
+                state.shared.note_names_changed();
+            }
+            Err(err) => {
+                *state.shared.last_error.write() = Some(format!("Failed to load midimap: {err}"));
+            }
+        }
+    }
+
+    poll_engine_load_task(Arc::clone(&state.shared), Arc::clone(&state.engine))
 }
 
 fn update(state: &mut State, message: Message) -> Task<Message> {
@@ -234,11 +295,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 });
 
                 if let Some(xml_path) = download::resolve_kit_xml(&kit, &variation) {
-                    *state.shared.pending_kit_path.write() =
-                        Some(xml_path.to_string_lossy().into_owned());
                     state.load_progress = Some(0.0);
-                    state.shared.loading_progress.store(0, Ordering::Release);
-                    return poll_engine_load_task(Arc::clone(&state.shared));
+                    state.load_poll_count = 0;
+                    return start_engine_load(state, xml_path.to_string_lossy().into_owned());
                 }
                 let progress = Arc::new(AtomicU32::new(0));
                 let result = Arc::new(std::sync::Mutex::new(None));
@@ -272,19 +331,26 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     {
                         match result {
                             Ok(xml_path) => {
-                                *state.shared.pending_kit_path.write() = Some(xml_path);
+                                return start_engine_load(state, xml_path);
                             }
                             Err(e) => {
                                 *state.shared.last_error.write() = Some(e);
                             }
                         }
                     }
-                    return poll_engine_load_task(Arc::clone(&state.shared));
+                    return poll_engine_load_task(
+                        Arc::clone(&state.shared),
+                        Arc::clone(&state.engine),
+                    );
                 } else {
                     return poll_download_task(progress_arc);
                 }
             } else if p < 1.0 {
-                state.load_poll_count += 1;
+                if state.engine.is_loading.load(Ordering::Acquire) {
+                    state.load_poll_count = 0;
+                } else {
+                    state.load_poll_count += 1;
+                }
                 if state.load_poll_count > MAX_ENGINE_LOAD_POLLS {
                     state.load_progress = None;
                     state.load_result_arc = None;
@@ -292,13 +358,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     *state.shared.last_error.write() = Some("Engine load timed out.".to_string());
                     return Task::none();
                 }
-                return poll_engine_load_task(Arc::clone(&state.shared));
+                return poll_engine_load_task(Arc::clone(&state.shared), Arc::clone(&state.engine));
             } else {
                 state.load_progress = None;
                 state.load_result_arc = None;
                 state.load_poll_count = 0;
-                state.loaded_kit = state.selected_kit.clone();
-                state.loaded_variation = state.selected_variation.clone();
+                if state.shared.last_error.read().is_none() {
+                    state.loaded_kit = state.selected_kit.clone();
+                    state.loaded_variation = state.selected_variation.clone();
+                }
             }
             Task::none()
         }
@@ -603,8 +671,11 @@ fn theme(_state: &State) -> Theme {
     Theme::TokyoNight
 }
 
-fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {
-    maolan_baseview::iced::application(move || init(shared.clone()), update, view)
+fn build_app(
+    shared: Arc<SharedState>,
+    engine: Arc<DrumGizmoEngine>,
+) -> impl maolan_baseview::iced::Program {
+    maolan_baseview::iced::application(move || init(shared.clone(), engine.clone()), update, view)
         .font(iced_fonts::LUCIDE_FONT_BYTES)
         .theme(theme)
         .run()
@@ -620,6 +691,7 @@ pub struct GuiBridge {
     created: bool,
     floating: bool,
     shared: Option<Arc<SharedState>>,
+    engine: Option<Arc<DrumGizmoEngine>>,
     floating_open: Arc<AtomicBool>,
     window_handle: Option<AnyWindowHandle>,
 }
@@ -630,6 +702,7 @@ impl Default for GuiBridge {
             created: false,
             floating: false,
             shared: None,
+            engine: None,
             floating_open: Arc::new(AtomicBool::new(false)),
             window_handle: None,
         }
@@ -637,29 +710,43 @@ impl Default for GuiBridge {
 }
 
 impl GuiBridge {
-    pub fn create(&mut self, shared: Arc<SharedState>, api: &CStr, is_floating: bool) -> bool {
+    pub fn create(
+        &mut self,
+        shared: Arc<SharedState>,
+        engine: Arc<DrumGizmoEngine>,
+        api: &CStr,
+        is_floating: bool,
+    ) -> bool {
         if !is_api_supported(api, is_floating) {
             return false;
         }
         self.created = true;
         self.floating = is_floating;
         self.shared = Some(shared);
+        self.engine = Some(engine);
         true
     }
 
     pub fn destroy(&mut self) {
         self.window_handle = None;
         self.shared = None;
+        self.engine = None;
         self.floating = false;
         self.created = false;
     }
 
-    pub fn set_parent(&mut self, shared: Arc<SharedState>, parent: ParentWindowHandle) -> bool {
+    pub fn set_parent(
+        &mut self,
+        shared: Arc<SharedState>,
+        engine: Arc<DrumGizmoEngine>,
+        parent: ParentWindowHandle,
+    ) -> bool {
         if !self.created {
             return false;
         }
         if self.floating {
             self.shared = Some(shared);
+            self.engine = Some(engine);
             return true;
         }
 
@@ -680,7 +767,7 @@ impl GuiBridge {
             &parent,
             settings,
             maolan_baseview::iced::PollSubNotifier::new(),
-            move || build_app(shared),
+            move || build_app(shared, engine),
         );
 
         self.window_handle = Some(AnyWindowHandle {
@@ -698,6 +785,9 @@ impl GuiBridge {
                 return true;
             }
             let Some(shared) = self.shared.clone() else {
+                return false;
+            };
+            let Some(engine) = self.engine.clone() else {
                 return false;
             };
             let floating_open = self.floating_open.clone();
@@ -720,7 +810,7 @@ impl GuiBridge {
                     maolan_baseview::iced::open_blocking(
                         settings,
                         maolan_baseview::iced::PollSubNotifier::new(),
-                        move || build_app(shared),
+                        move || build_app(shared, engine),
                     );
                     floating_open.store(false, Ordering::Release);
                 });
