@@ -3,9 +3,10 @@ use std::{
     io::{Read, Write},
     ptr::{NonNull, null, null_mut},
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicPtr, Ordering},
     },
+    time::Instant,
 };
 
 use clap_clap::{
@@ -53,6 +54,7 @@ const PLUGIN_VENDOR: &[u8] = b"Maolan\0";
 const PLUGIN_URL: &[u8] = b"\0";
 const PLUGIN_VERSION: &[u8] = b"0.1.0\0";
 const PLUGIN_DESCRIPTION: &[u8] = b"Polyphonic synthesizer inspired by Surge XT\0";
+const GUI_AUDIO_PARAM_INTERVAL_NS: u64 = 16_666_667;
 
 const FEATURE_INSTRUMENT: *const c_char = CLAP_PLUGIN_FEATURE_INSTRUMENT.as_ptr();
 const FEATURE_MONO: *const c_char = CLAP_PLUGIN_FEATURE_MONO.as_ptr();
@@ -85,6 +87,8 @@ pub struct SharedState {
     pub params: ParamStore,
     sample_rate_bits: std::sync::atomic::AtomicU64,
     params_version: std::sync::atomic::AtomicU64,
+    pending_audio_param_changes: Vec<std::sync::atomic::AtomicBool>,
+    last_audio_param_change_ns: Vec<std::sync::atomic::AtomicU64>,
     pending_param_notifications: Vec<std::sync::atomic::AtomicBool>,
     pending_gesture_begin: Vec<std::sync::atomic::AtomicBool>,
     pending_gesture_end: Vec<std::sync::atomic::AtomicBool>,
@@ -98,6 +102,12 @@ impl Default for SharedState {
             params: ParamStore::default(),
             sample_rate_bits: std::sync::atomic::AtomicU64::new(48_000.0f64.to_bits()),
             params_version: std::sync::atomic::AtomicU64::new(1),
+            pending_audio_param_changes: (0..ParamId::COUNT)
+                .map(|_| std::sync::atomic::AtomicBool::new(false))
+                .collect(),
+            last_audio_param_change_ns: (0..ParamId::COUNT)
+                .map(|_| std::sync::atomic::AtomicU64::new(0))
+                .collect(),
             pending_param_notifications: (0..ParamId::COUNT)
                 .map(|_| std::sync::atomic::AtomicBool::new(false))
                 .collect(),
@@ -137,13 +147,34 @@ impl SharedState {
         self.params_version.fetch_add(1, Ordering::Release);
     }
 
-    fn set_param_internal(&self, id: ParamId, value: f64, notify_host: bool) {
-        self.params.set(id, sanitize_param_value(id, value));
+    fn mark_audio_param_change_pending(&self, id: ParamId) {
+        self.pending_audio_param_changes[id.as_index()].store(true, Ordering::Release);
+        self.last_audio_param_change_ns[id.as_index()].store(control_time_ns(), Ordering::Release);
         self.bump_params_version();
+    }
+
+    fn mark_audio_param_change_pending_if_due(&self, id: ParamId) {
+        let idx = id.as_index();
+        let now = control_time_ns();
+        let last = self.last_audio_param_change_ns[idx].load(Ordering::Acquire);
+        if now.saturating_sub(last) >= GUI_AUDIO_PARAM_INTERVAL_NS {
+            self.pending_audio_param_changes[idx].store(true, Ordering::Release);
+            self.last_audio_param_change_ns[idx].store(now, Ordering::Release);
+            self.bump_params_version();
+        }
+    }
+
+    fn set_param_internal(&self, id: ParamId, value: f64, notify_host: bool) {
+        let value = sanitize_param_value(id, value);
+        if self.params.get(id) == value {
+            return;
+        }
+        self.params.set(id, value);
         if notify_host {
+            self.mark_audio_param_change_pending_if_due(id);
             self.mark_param_notification_pending(id);
-            self.request_flush();
-            self.mark_dirty();
+        } else {
+            self.bump_params_version();
         }
     }
 
@@ -158,12 +189,14 @@ impl SharedState {
     pub fn mark_gesture_begin_pending(&self, id: ParamId) {
         self.pending_gesture_begin[id.as_index()].store(true, Ordering::Release);
         self.active_local_gestures[id.as_index()].store(true, Ordering::Release);
-        self.mark_dirty();
+        self.request_flush();
     }
 
     pub fn mark_gesture_end_pending(&self, id: ParamId) {
+        self.mark_audio_param_change_pending(id);
         self.pending_gesture_end[id.as_index()].store(true, Ordering::Release);
         self.active_local_gestures[id.as_index()].store(false, Ordering::Release);
+        self.request_flush();
         self.mark_dirty();
     }
 
@@ -242,6 +275,11 @@ impl SharedState {
     pub fn is_gesture_active(&self, id: ParamId) -> bool {
         self.active_local_gestures[id.as_index()].load(Ordering::Acquire)
     }
+}
+
+fn control_time_ns() -> u64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_nanos() as u64
 }
 
 fn apply_param_events_synth(
@@ -338,6 +376,33 @@ fn emit_pending_param_events_to_host_synth(
             }
         }
     }
+}
+
+fn collect_pending_audio_param_changes_synth(
+    shared: &SharedState,
+    changed: &mut [Option<(ParamId, f64)>; 32],
+) -> bool {
+    let mut overflow = false;
+    let mut next_idx = changed
+        .iter()
+        .position(Option::is_none)
+        .unwrap_or(changed.len());
+
+    for id in (0..ParamId::COUNT).filter_map(|i| ParamId::from_raw(i as u32)) {
+        let idx = id.as_index();
+        if !shared.pending_audio_param_changes[idx].swap(false, Ordering::AcqRel) {
+            continue;
+        }
+        if next_idx < changed.len() {
+            changed[next_idx] = Some((id, shared.params_get(id)));
+            next_idx += 1;
+        } else {
+            shared.pending_audio_param_changes[idx].store(true, Ordering::Release);
+            overflow = true;
+        }
+    }
+
+    overflow
 }
 
 fn build_voice_params(params: &ParamStore) -> VoiceParams {
@@ -2501,12 +2566,13 @@ impl AudioProcessor {
 
     fn process(&mut self, shared: &SharedState, process: &mut Process) -> clap_process_status {
         let mut changed_params: [Option<(ParamId, f64)>; 32] = [None; 32];
-        let overflow = apply_param_events_synth(
+        let mut overflow = apply_param_events_synth(
             shared,
             &process.in_events(),
             sanitize_param_value,
             &mut changed_params,
         );
+        overflow |= collect_pending_audio_param_changes_synth(shared, &mut changed_params);
         {
             let mut out_events = process.out_events();
             emit_pending_param_events_to_host_synth(shared, &mut out_events);
@@ -2561,8 +2627,18 @@ impl AudioProcessor {
                     dirty.tuning = true;
                 }
 
-                if dirty.filter1 || dirty.filter2 || dirty.filters_routing_balance {
+                if dirty.filter1 && dirty.filter2 && dirty.filters_routing_balance {
                     self.engine.update_filter_params();
+                } else {
+                    if dirty.filter1 {
+                        self.engine.update_filter1_params();
+                    }
+                    if dirty.filter2 {
+                        self.engine.update_filter2_params();
+                    }
+                    if dirty.filters_routing_balance {
+                        self.engine.update_filter_routing_params();
+                    }
                 }
                 if dirty.oscs || dirty.osc_globals {
                     self.engine.update_osc_params();

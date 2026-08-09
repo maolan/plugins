@@ -1616,42 +1616,61 @@ impl Voice {
     }
 
     pub fn update_filter_params(&mut self, params: &VoiceParams) {
+        self.update_filter1_params(params);
+        self.update_filter2_params(params);
+        self.update_filter_routing_params(params);
+    }
+
+    pub fn update_filter1_params(&mut self, params: &VoiceParams) {
         self.params.filter1 = params.filter1.clone();
-        self.params.filter2 = params.filter2.clone();
-        self.params.lowcut_hz = params.lowcut_hz;
-        self.params.lowcut_slope = params.lowcut_slope;
 
         self.filter1_l
             .set_params(params.filter1.cutoff_hz, params.filter1.resonance);
         self.filter1_r
             .set_params(params.filter1.cutoff_hz, params.filter1.resonance);
-        self.filter2_l
-            .set_params(params.filter2.cutoff_hz, params.filter2.resonance);
-        self.filter2_r
-            .set_params(params.filter2.cutoff_hz, params.filter2.resonance);
         self.filter1_l.set_filter_type(params.filter1.filter_type);
         self.filter1_r.set_filter_type(params.filter1.filter_type);
-        self.filter2_l.set_filter_type(params.filter2.filter_type);
-        self.filter2_r.set_filter_type(params.filter2.filter_type);
         self.filter1_l.set_drive(params.filter1.drive);
         self.filter1_r.set_drive(params.filter1.drive);
-        self.filter2_l.set_drive(params.filter2.drive);
-        self.filter2_r.set_drive(params.filter2.drive);
         self.filter1_l
             .set_feedback_drive(params.filter1.feedback_drive);
         self.filter1_r
             .set_feedback_drive(params.filter1.feedback_drive);
+        self.filter1_l.set_subtype(params.filter1.subtype);
+        self.filter1_r.set_subtype(params.filter1.subtype);
+    }
+
+    pub fn update_filter2_params(&mut self, params: &VoiceParams) {
+        self.params.filter2 = params.filter2.clone();
+
+        self.filter2_l
+            .set_params(params.filter2.cutoff_hz, params.filter2.resonance);
+        self.filter2_r
+            .set_params(params.filter2.cutoff_hz, params.filter2.resonance);
+        self.filter2_l.set_filter_type(params.filter2.filter_type);
+        self.filter2_r.set_filter_type(params.filter2.filter_type);
+        self.filter2_l.set_drive(params.filter2.drive);
+        self.filter2_r.set_drive(params.filter2.drive);
         self.filter2_l
             .set_feedback_drive(params.filter2.feedback_drive);
         self.filter2_r
             .set_feedback_drive(params.filter2.feedback_drive);
-        self.filter1_l.set_subtype(params.filter1.subtype);
-        self.filter1_r.set_subtype(params.filter1.subtype);
         self.filter2_l.set_subtype(params.filter2.subtype);
         self.filter2_r.set_subtype(params.filter2.subtype);
     }
 
+    pub fn update_filter_routing_params(&mut self, params: &VoiceParams) {
+        self.params.filter_routing = params.filter_routing;
+        self.params.filter_balance = params.filter_balance;
+        self.params.f2_cutoff_offset = params.f2_cutoff_offset;
+        self.params.f2_res_link = params.f2_res_link;
+        self.params.lowcut_hz = params.lowcut_hz;
+        self.params.lowcut_slope = params.lowcut_slope;
+        self.params.filter_feedback = params.filter_feedback;
+    }
+
     pub fn update_osc_params(&mut self, params: &VoiceParams) {
+        let old_oscs = self.params.oscs.clone();
         self.params.oscs = params.oscs.clone();
         self.params.string_stereo_spread = params.string_stereo_spread;
         self.params.wavetable_keytrack = params.wavetable_keytrack;
@@ -1664,15 +1683,32 @@ impl Voice {
 
         for (idx, osc) in self.oscillators.iter_mut().enumerate() {
             let settings = &params.oscs[idx];
-            if osc.osc_type() != settings.osc_type {
+            let old_settings = &old_oscs[idx];
+            let osc_type_changed = osc.osc_type() != settings.osc_type;
+            if osc_type_changed {
                 *osc = Oscillator::new(settings.osc_type, self.sample_rate);
             }
-            osc.set_shape(settings.shape);
-            osc.set_skew(settings.skew);
-            osc.set_formant(settings.formant);
-            osc.set_sync_amount(settings.sync);
-            osc.set_unison(settings.unison_voices as usize, settings.unison_detune);
-            osc.set_unison_spread(settings.unison_spread);
+            if osc_type_changed || old_settings.shape != settings.shape {
+                osc.set_shape(settings.shape);
+            }
+            if osc_type_changed || old_settings.skew != settings.skew {
+                osc.set_skew(settings.skew);
+            }
+            if osc_type_changed || old_settings.formant != settings.formant {
+                osc.set_formant(settings.formant);
+            }
+            if osc_type_changed || old_settings.sync != settings.sync {
+                osc.set_sync_amount(settings.sync);
+            }
+            if osc_type_changed
+                || old_settings.unison_voices != settings.unison_voices
+                || old_settings.unison_detune != settings.unison_detune
+            {
+                osc.set_unison(settings.unison_voices as usize, settings.unison_detune);
+            }
+            if osc_type_changed || old_settings.unison_spread != settings.unison_spread {
+                osc.set_unison_spread(settings.unison_spread);
+            }
             if let Oscillator::Classic(o) = osc {
                 o.set_waveform(ClassicWaveform::from_u8(settings.waveform));
                 o.set_sub_level(settings.sub_level);

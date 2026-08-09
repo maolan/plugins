@@ -119,6 +119,24 @@ impl SynthEngine {
         }
     }
 
+    pub fn update_filter1_params(&mut self) {
+        for voice in &mut self.voices {
+            voice.update_filter1_params(&self.params);
+        }
+    }
+
+    pub fn update_filter2_params(&mut self) {
+        for voice in &mut self.voices {
+            voice.update_filter2_params(&self.params);
+        }
+    }
+
+    pub fn update_filter_routing_params(&mut self) {
+        for voice in &mut self.voices {
+            voice.update_filter_routing_params(&self.params);
+        }
+    }
+
     pub fn update_osc_params(&mut self) {
         for voice in &mut self.voices {
             voice.update_osc_params(&self.params);
@@ -672,14 +690,21 @@ impl SynthEngine {
             self.scene_lfo6.next(),
         ];
 
-        let all_notes: Vec<u8> = self
-            .held_notes
-            .iter()
-            .chain(self.sustained_notes.iter())
-            .copied()
-            .collect();
-        let lowest_key = all_notes.iter().min().copied().unwrap_or(60) as f32;
-        let highest_key = all_notes.iter().max().copied().unwrap_or(60) as f32;
+        let mut lowest_key = 60;
+        let mut highest_key = 60;
+        let mut have_notes = false;
+        for note in self.held_notes.iter().chain(self.sustained_notes.iter()) {
+            if !have_notes {
+                lowest_key = *note;
+                highest_key = *note;
+                have_notes = true;
+            } else {
+                lowest_key = lowest_key.min(*note);
+                highest_key = highest_key.max(*note);
+            }
+        }
+        let lowest_key = lowest_key as f32;
+        let highest_key = highest_key as f32;
         let latest_key = self.last_note as f32;
         let lowest_key_norm = (lowest_key - 60.0) / 60.0;
         let highest_key_norm = (highest_key - 60.0) / 60.0;
