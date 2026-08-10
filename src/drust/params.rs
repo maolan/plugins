@@ -1,4 +1,6 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
+
+use portable_atomic::AtomicF64;
 
 use clap_clap::ffi::{
     CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_IS_BYPASS, CLAP_PARAM_IS_HIDDEN, CLAP_PARAM_IS_STEPPED,
@@ -29,6 +31,10 @@ pub enum ParamId {
     Balance6 = 19,
     Balance7 = 20,
     Balance8 = 21,
+    TomPan1 = 22,
+    TomPan2 = 23,
+    TomPan3 = 24,
+    TomPan4 = 25,
 }
 
 impl ParamId {
@@ -64,6 +70,10 @@ impl ParamId {
             19 => Some(ParamId::Balance6),
             20 => Some(ParamId::Balance7),
             21 => Some(ParamId::Balance8),
+            22 => Some(ParamId::TomPan1),
+            23 => Some(ParamId::TomPan2),
+            24 => Some(ParamId::TomPan3),
+            25 => Some(ParamId::TomPan4),
             _ => None,
         }
     }
@@ -278,6 +288,42 @@ pub const PARAMS: &[ParamDef] = &[
         max: 1.0,
         default: 0.0,
     },
+    ParamDef {
+        id: ParamId::TomPan1,
+        name: "Tom 1 Pan",
+        module: "Toms",
+        flags: CLAP_PARAM_IS_AUTOMATABLE,
+        min: -1.0,
+        max: 1.0,
+        default: 0.0,
+    },
+    ParamDef {
+        id: ParamId::TomPan2,
+        name: "Tom 2 Pan",
+        module: "Toms",
+        flags: CLAP_PARAM_IS_AUTOMATABLE,
+        min: -1.0,
+        max: 1.0,
+        default: 0.0,
+    },
+    ParamDef {
+        id: ParamId::TomPan3,
+        name: "Tom 3 Pan",
+        module: "Toms",
+        flags: CLAP_PARAM_IS_AUTOMATABLE,
+        min: -1.0,
+        max: 1.0,
+        default: 0.0,
+    },
+    ParamDef {
+        id: ParamId::TomPan4,
+        name: "Tom 4 Pan",
+        module: "Toms",
+        flags: CLAP_PARAM_IS_AUTOMATABLE,
+        min: -1.0,
+        max: 1.0,
+        default: 0.0,
+    },
 ];
 
 pub fn param_def(id: ParamId) -> Option<&'static ParamDef> {
@@ -296,19 +342,19 @@ pub fn sanitize_param_value(id: ParamId, value: f64) -> f64 {
     }
 }
 
-const MAX_PARAM_ID: usize = ParamId::Balance8 as usize;
+const MAX_PARAM_ID: usize = ParamId::TomPan4 as usize;
 
 #[derive(Debug)]
 pub struct ParamStore {
-    values: Vec<AtomicU64>,
+    values: Vec<AtomicF64>,
 }
 
 impl Default for ParamStore {
     fn default() -> Self {
-        let values: Vec<AtomicU64> = (0..=MAX_PARAM_ID).map(|_| AtomicU64::new(0)).collect();
+        let values: Vec<AtomicF64> = (0..=MAX_PARAM_ID).map(|_| AtomicF64::new(0.0)).collect();
         let store = Self { values };
         for def in PARAMS.iter() {
-            store.values[def.id.as_index()].store(def.default.to_bits(), Ordering::Release);
+            store.values[def.id.as_index()].store(def.default, Ordering::Release);
         }
         store
     }
@@ -316,10 +362,10 @@ impl Default for ParamStore {
 
 impl ParamStore {
     pub fn get(&self, id: ParamId) -> f64 {
-        f64::from_bits(self.values[id.as_index()].load(Ordering::Acquire))
+        self.values[id.as_index()].load(Ordering::Acquire)
     }
 
     pub fn set(&self, id: ParamId, value: f64) {
-        self.values[id.as_index()].store(value.to_bits(), Ordering::Release);
+        self.values[id.as_index()].store(value, Ordering::Release);
     }
 }

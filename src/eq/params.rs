@@ -4,7 +4,9 @@ use clap_clap::ffi::{
 };
 use std::ffi::c_char;
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use portable_atomic::AtomicF64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u16)]
@@ -1099,7 +1101,7 @@ pub fn sanitize_param_value<T: ParamIdExt>(id: T, value: f64, params: &[ParamDef
 
 #[derive(Debug)]
 pub struct ParamStore<T: ParamIdExt> {
-    pub values: Vec<AtomicU64>,
+    pub values: Vec<AtomicF64>,
     pub dirty: AtomicBool,
     _marker: std::marker::PhantomData<T>,
 }
@@ -1109,7 +1111,7 @@ impl<T: ParamIdExt> ParamStore<T> {
         Self {
             values: defs
                 .iter()
-                .map(|param| AtomicU64::new(param.default.to_bits()))
+                .map(|param| AtomicF64::new(param.default))
                 .collect(),
             dirty: AtomicBool::new(false),
             _marker: std::marker::PhantomData,
@@ -1117,11 +1119,11 @@ impl<T: ParamIdExt> ParamStore<T> {
     }
 
     pub fn get(&self, id: T) -> f64 {
-        f64::from_bits(self.values[id.as_index()].load(Ordering::Acquire))
+        self.values[id.as_index()].load(Ordering::Acquire)
     }
 
     pub fn set(&self, id: T, value: f64) {
-        self.values[id.as_index()].store(value.to_bits(), Ordering::Release);
+        self.values[id.as_index()].store(value, Ordering::Release);
         self.dirty.store(true, Ordering::Release);
     }
 

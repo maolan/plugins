@@ -31,6 +31,7 @@ use clap_clap::{
     stream::{IStream, OStream},
 };
 use parking_lot::Mutex;
+use portable_atomic::AtomicF64;
 
 use crate::common::param_store::ParamStore;
 use crate::common::state::PluginState;
@@ -78,7 +79,7 @@ static DESCRIPTOR: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor {
 
 #[derive(Debug)]
 pub struct SharedState {
-    sample_rate_bits: AtomicU64,
+    sample_rate: AtomicF64,
     host: AtomicPtr<clap_host>,
     pub params: ParamStore<ParamId>,
     params_version: AtomicU64,
@@ -91,7 +92,7 @@ pub struct SharedState {
 impl Default for SharedState {
     fn default() -> Self {
         Self {
-            sample_rate_bits: AtomicU64::new(48_000.0f64.to_bits()),
+            sample_rate: AtomicF64::new(48_000.0),
             host: AtomicPtr::new(null_mut()),
             params: ParamStore::default(),
             params_version: AtomicU64::new(1),
@@ -106,7 +107,7 @@ impl Default for SharedState {
 impl SharedState {
     #[allow(dead_code)]
     fn sample_rate(&self) -> f32 {
-        f64::from_bits(self.sample_rate_bits.load(Ordering::Acquire)) as f32
+        self.sample_rate.load(Ordering::Acquire) as f32
     }
 
     fn set_host(&self, host: *const clap_host) {
@@ -114,8 +115,7 @@ impl SharedState {
     }
 
     fn set_sample_rate(&self, sample_rate: f64) {
-        self.sample_rate_bits
-            .store(sample_rate.to_bits(), Ordering::Release);
+        self.sample_rate.store(sample_rate, Ordering::Release);
     }
 
     pub fn set_param_outbound_only(&self, id: ParamId, value: f64) {

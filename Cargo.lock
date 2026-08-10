@@ -2424,6 +2424,7 @@ dependencies = [
  "oxideav-mp3",
  "oxideav-ogg",
  "parking_lot",
+ "portable-atomic",
  "quick-xml",
  "rand 0.10.2",
  "raw-window-handle",

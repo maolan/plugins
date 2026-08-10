@@ -1,4 +1,6 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use portable_atomic::AtomicF64;
 
 use clap_clap::ffi::{
     CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_IS_ENUM, CLAP_PARAM_IS_STEPPED,
@@ -271,14 +273,14 @@ mod tests {
 
 #[derive(Debug)]
 pub struct ParamStore {
-    values: [AtomicU64; ParamId::COUNT],
+    values: [AtomicF64; ParamId::COUNT],
     dirty: AtomicBool,
 }
 
 impl Default for ParamStore {
     fn default() -> Self {
         Self {
-            values: PARAMS.map(|param| AtomicU64::new(param.default.to_bits())),
+            values: PARAMS.map(|param| AtomicF64::new(param.default)),
             dirty: AtomicBool::new(false),
         }
     }
@@ -286,11 +288,11 @@ impl Default for ParamStore {
 
 impl ParamStore {
     pub fn get(&self, id: ParamId) -> f64 {
-        f64::from_bits(self.values[id.as_index()].load(Ordering::Acquire))
+        self.values[id.as_index()].load(Ordering::Acquire)
     }
 
     pub fn set(&self, id: ParamId, value: f64) {
-        self.values[id.as_index()].store(value.to_bits(), Ordering::Release);
+        self.values[id.as_index()].store(value, Ordering::Release);
         self.dirty.store(true, Ordering::Release);
     }
 

@@ -3,7 +3,7 @@ use std::{
     ptr::{NonNull, null, null_mut},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicPtr, Ordering},
     },
 };
 
@@ -20,6 +20,7 @@ use clap_clap::{
 };
 use maolan_baseview::iced::PollSubNotifier;
 use parking_lot::Mutex;
+use portable_atomic::AtomicF64;
 
 use crate::common::copy_str_to_array;
 use crate::vumeter::gui::GuiBridge;
@@ -56,24 +57,24 @@ static DESCRIPTOR: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor {
 
 #[derive(Debug)]
 pub struct SharedState {
-    sample_rate_bits: AtomicU64,
+    sample_rate: AtomicF64,
     host: AtomicPtr<clap_host>,
-    pub in_l_rms: AtomicU64,
-    pub in_r_rms: AtomicU64,
-    pub out_l_rms: AtomicU64,
-    pub out_r_rms: AtomicU64,
+    pub in_l_rms: AtomicF64,
+    pub in_r_rms: AtomicF64,
+    pub out_l_rms: AtomicF64,
+    pub out_r_rms: AtomicF64,
     pub poll_notifier: Mutex<Option<PollSubNotifier>>,
 }
 
 impl Default for SharedState {
     fn default() -> Self {
         Self {
-            sample_rate_bits: AtomicU64::new(48_000.0f64.to_bits()),
+            sample_rate: AtomicF64::new(48_000.0),
             host: AtomicPtr::new(null_mut()),
-            in_l_rms: AtomicU64::new(0),
-            in_r_rms: AtomicU64::new(0),
-            out_l_rms: AtomicU64::new(0),
-            out_r_rms: AtomicU64::new(0),
+            in_l_rms: AtomicF64::new(0.0),
+            in_r_rms: AtomicF64::new(0.0),
+            out_l_rms: AtomicF64::new(0.0),
+            out_r_rms: AtomicF64::new(0.0),
             poll_notifier: Mutex::new(None),
         }
     }
@@ -81,7 +82,7 @@ impl Default for SharedState {
 
 impl SharedState {
     fn _sample_rate(&self) -> f32 {
-        f64::from_bits(self.sample_rate_bits.load(Ordering::Acquire)) as f32
+        self.sample_rate.load(Ordering::Acquire) as f32
     }
 
     fn set_host(&self, host: *const clap_host) {
@@ -89,8 +90,7 @@ impl SharedState {
     }
 
     fn set_sample_rate(&self, sample_rate: f64) {
-        self.sample_rate_bits
-            .store(sample_rate.to_bits(), Ordering::Release);
+        self.sample_rate.store(sample_rate, Ordering::Release);
     }
 }
 
@@ -147,12 +147,8 @@ impl AudioProcessor {
 
             let (_, _, irms) = Self::buf_stats(&self.temp_left[..frames]);
             let (_, _, irms_r) = Self::buf_stats(&self.temp_right[..frames]);
-            shared
-                .in_l_rms
-                .store((irms as f64).to_bits(), Ordering::Relaxed);
-            shared
-                .in_r_rms
-                .store((irms_r as f64).to_bits(), Ordering::Relaxed);
+            shared.in_l_rms.store(irms as f64, Ordering::Relaxed);
+            shared.in_r_rms.store(irms_r as f64, Ordering::Relaxed);
 
             {
                 let mut output_l = process.audio_outputs(0);
@@ -165,12 +161,8 @@ impl AudioProcessor {
 
             let (_, _, orms) = Self::buf_stats(&self.temp_left[..frames]);
             let (_, _, orms_r) = Self::buf_stats(&self.temp_right[..frames]);
-            shared
-                .out_l_rms
-                .store((orms as f64).to_bits(), Ordering::Relaxed);
-            shared
-                .out_r_rms
-                .store((orms_r as f64).to_bits(), Ordering::Relaxed);
+            shared.out_l_rms.store(orms as f64, Ordering::Relaxed);
+            shared.out_r_rms.store(orms_r as f64, Ordering::Relaxed);
 
             if log_this_cycle {}
         } else if inputs_count >= 1 && outputs_count >= 1 {
@@ -185,12 +177,8 @@ impl AudioProcessor {
 
             let (_, _, irms) = Self::buf_stats(&self.temp_left[..frames]);
             let (_, _, irms_r) = Self::buf_stats(&self.temp_right[..frames]);
-            shared
-                .in_l_rms
-                .store((irms as f64).to_bits(), Ordering::Relaxed);
-            shared
-                .in_r_rms
-                .store((irms_r as f64).to_bits(), Ordering::Relaxed);
+            shared.in_l_rms.store(irms as f64, Ordering::Relaxed);
+            shared.in_r_rms.store(irms_r as f64, Ordering::Relaxed);
 
             let mut output_port = process.audio_outputs(0);
             output_port.data32(0)[..frames].copy_from_slice(&self.temp_left[..frames]);
@@ -200,12 +188,8 @@ impl AudioProcessor {
 
             let (_, _, orms) = Self::buf_stats(&self.temp_left[..frames]);
             let (_, _, orms_r) = Self::buf_stats(&self.temp_right[..frames]);
-            shared
-                .out_l_rms
-                .store((orms as f64).to_bits(), Ordering::Relaxed);
-            shared
-                .out_r_rms
-                .store((orms_r as f64).to_bits(), Ordering::Relaxed);
+            shared.out_l_rms.store(orms as f64, Ordering::Relaxed);
+            shared.out_r_rms.store(orms_r as f64, Ordering::Relaxed);
 
             if log_this_cycle {}
         }

@@ -29,6 +29,7 @@ use clap_clap::{
     stream::{IStream, OStream},
 };
 use parking_lot::Mutex;
+use portable_atomic::{AtomicF32, AtomicF64};
 use std::mem::size_of;
 
 use crate::common::bus;
@@ -1245,8 +1246,8 @@ unsafe extern "C-unwind" fn plugin_activate(
     let instance = unsafe { instance(plugin) };
     instance
         .shared
-        .sample_rate_bits
-        .store(sample_rate.to_bits(), Ordering::Release);
+        .sample_rate
+        .store(sample_rate, Ordering::Release);
     let bus_data = Some(instance.bus_data);
     let next = Box::into_raw(Box::new(AudioProcessor::new(
         sample_rate,
@@ -1848,27 +1849,27 @@ pub const SPECTRUM_BINS: usize = 192;
 
 pub struct SharedState<T: ParamIdExt> {
     pub params: ParamStore<T>,
-    pub sample_rate_bits: AtomicU64,
+    pub sample_rate: AtomicF64,
     pub pending_param_notifications: Vec<AtomicU32>,
     pub pending_gesture_begin: Vec<AtomicU32>,
     pub pending_gesture_end: Vec<AtomicU32>,
-    pub pending_param_values_bits: Vec<AtomicU64>,
+    pub pending_param_values: Vec<AtomicF64>,
     pub active_gesture_bits: Vec<AtomicU32>,
     pub active_gesture_count: AtomicU32,
     pub local_param_overrides: Vec<AtomicU32>,
     pub params_version: AtomicU64,
     pub host: AtomicPtr<clap_host>,
-    pub input_level_left_db_bits: AtomicU32,
-    pub input_level_right_db_bits: AtomicU32,
-    pub output_level_left_db_bits: AtomicU32,
-    pub output_level_right_db_bits: AtomicU32,
-    pub output_spectrum_left_db_bits: [AtomicU32; SPECTRUM_BINS],
-    pub output_spectrum_right_db_bits: [AtomicU32; SPECTRUM_BINS],
-    pub input_spectrum_left_db_bits: [AtomicU32; SPECTRUM_BINS],
-    pub input_spectrum_right_db_bits: [AtomicU32; SPECTRUM_BINS],
-    pub band_dyn_gain_db_bits: [AtomicU32; 32],
+    pub input_level_left_db: AtomicF32,
+    pub input_level_right_db: AtomicF32,
+    pub output_level_left_db: AtomicF32,
+    pub output_level_right_db: AtomicF32,
+    pub output_spectrum_left_db: [AtomicF32; SPECTRUM_BINS],
+    pub output_spectrum_right_db: [AtomicF32; SPECTRUM_BINS],
+    pub input_spectrum_left_db: [AtomicF32; SPECTRUM_BINS],
+    pub input_spectrum_right_db: [AtomicF32; SPECTRUM_BINS],
+    pub band_dyn_gain_db: [AtomicF32; 32],
     pub dyn_visual_band: AtomicU32,
-    pub dyn_visual_gain_db_bits: [AtomicU32; SPECTRUM_BINS],
+    pub dyn_visual_gain_db: [AtomicF32; SPECTRUM_BINS],
     pub ui_visible: AtomicU32,
     pub channels: AtomicU32,
     pub listen_band: AtomicU32,
@@ -1908,39 +1909,31 @@ impl<T: ParamIdExt> SharedState<T> {
             local.push(AtomicU32::new(0));
         }
         for _ in 0..count {
-            pending_values.push(AtomicU64::new(f64::NAN.to_bits()));
+            pending_values.push(AtomicF64::new(f64::NAN));
         }
         Self {
             params,
-            sample_rate_bits: AtomicU64::new(48_000.0f64.to_bits()),
+            sample_rate: AtomicF64::new(48_000.0),
             pending_param_notifications: pending,
             pending_gesture_begin: pending_begin,
             pending_gesture_end: pending_end,
-            pending_param_values_bits: pending_values,
+            pending_param_values: pending_values,
             active_gesture_bits: active,
             active_gesture_count: AtomicU32::new(0),
             local_param_overrides: local,
             params_version: AtomicU64::new(1),
             host: AtomicPtr::new(host.cast_mut()),
-            input_level_left_db_bits: AtomicU32::new(FADER_MIN_DB.to_bits()),
-            input_level_right_db_bits: AtomicU32::new(FADER_MIN_DB.to_bits()),
-            output_level_left_db_bits: AtomicU32::new(FADER_MIN_DB.to_bits()),
-            output_level_right_db_bits: AtomicU32::new(FADER_MIN_DB.to_bits()),
-            output_spectrum_left_db_bits: std::array::from_fn(|_| {
-                AtomicU32::new(FADER_MIN_DB.to_bits())
-            }),
-            output_spectrum_right_db_bits: std::array::from_fn(|_| {
-                AtomicU32::new(FADER_MIN_DB.to_bits())
-            }),
-            input_spectrum_left_db_bits: std::array::from_fn(|_| {
-                AtomicU32::new(FADER_MIN_DB.to_bits())
-            }),
-            input_spectrum_right_db_bits: std::array::from_fn(|_| {
-                AtomicU32::new(FADER_MIN_DB.to_bits())
-            }),
-            band_dyn_gain_db_bits: std::array::from_fn(|_| AtomicU32::new(0.0_f32.to_bits())),
+            input_level_left_db: AtomicF32::new(FADER_MIN_DB),
+            input_level_right_db: AtomicF32::new(FADER_MIN_DB),
+            output_level_left_db: AtomicF32::new(FADER_MIN_DB),
+            output_level_right_db: AtomicF32::new(FADER_MIN_DB),
+            output_spectrum_left_db: std::array::from_fn(|_| AtomicF32::new(FADER_MIN_DB)),
+            output_spectrum_right_db: std::array::from_fn(|_| AtomicF32::new(FADER_MIN_DB)),
+            input_spectrum_left_db: std::array::from_fn(|_| AtomicF32::new(FADER_MIN_DB)),
+            input_spectrum_right_db: std::array::from_fn(|_| AtomicF32::new(FADER_MIN_DB)),
+            band_dyn_gain_db: std::array::from_fn(|_| AtomicF32::new(0.0)),
             dyn_visual_band: AtomicU32::new(32),
-            dyn_visual_gain_db_bits: std::array::from_fn(|_| AtomicU32::new(0.0_f32.to_bits())),
+            dyn_visual_gain_db: std::array::from_fn(|_| AtomicF32::new(0.0)),
             ui_visible: AtomicU32::new(0),
             channels: AtomicU32::new(channels),
             listen_band: AtomicU32::new(32),
@@ -1957,7 +1950,7 @@ impl<T: ParamIdExt> SharedState<T> {
     }
 
     pub fn sample_rate(&self) -> f32 {
-        f64::from_bits(self.sample_rate_bits.load(Ordering::Acquire)) as f32
+        self.sample_rate.load(Ordering::Acquire) as f32
     }
 
     pub fn params_version(&self) -> u64 {
@@ -2088,39 +2081,35 @@ impl<T: ParamIdExt> SharedState<T> {
     }
 
     pub fn set_input_level_left_db(&self, db: f32) {
-        self.input_level_left_db_bits
-            .store(db.to_bits(), Ordering::Relaxed);
+        self.input_level_left_db.store(db, Ordering::Relaxed);
     }
 
     pub fn set_input_level_right_db(&self, db: f32) {
-        self.input_level_right_db_bits
-            .store(db.to_bits(), Ordering::Relaxed);
+        self.input_level_right_db.store(db, Ordering::Relaxed);
     }
 
     pub fn input_level_left_db(&self) -> f32 {
-        f32::from_bits(self.input_level_left_db_bits.load(Ordering::Relaxed))
+        self.input_level_left_db.load(Ordering::Relaxed)
     }
 
     pub fn input_level_right_db(&self) -> f32 {
-        f32::from_bits(self.input_level_right_db_bits.load(Ordering::Relaxed))
+        self.input_level_right_db.load(Ordering::Relaxed)
     }
 
     pub fn set_output_level_left_db(&self, db: f32) {
-        self.output_level_left_db_bits
-            .store(db.to_bits(), Ordering::Relaxed);
+        self.output_level_left_db.store(db, Ordering::Relaxed);
     }
 
     pub fn set_output_level_right_db(&self, db: f32) {
-        self.output_level_right_db_bits
-            .store(db.to_bits(), Ordering::Relaxed);
+        self.output_level_right_db.store(db, Ordering::Relaxed);
     }
 
     pub fn output_level_left_db(&self) -> f32 {
-        f32::from_bits(self.output_level_left_db_bits.load(Ordering::Relaxed))
+        self.output_level_left_db.load(Ordering::Relaxed)
     }
 
     pub fn output_level_right_db(&self) -> f32 {
-        f32::from_bits(self.output_level_right_db_bits.load(Ordering::Relaxed))
+        self.output_level_right_db.load(Ordering::Relaxed)
     }
 
     pub fn set_output_spectrum_db(
@@ -2129,19 +2118,15 @@ impl<T: ParamIdExt> SharedState<T> {
         right_db: &[f32; SPECTRUM_BINS],
     ) {
         for i in 0..SPECTRUM_BINS {
-            self.output_spectrum_left_db_bits[i].store(left_db[i].to_bits(), Ordering::Relaxed);
-            self.output_spectrum_right_db_bits[i].store(right_db[i].to_bits(), Ordering::Relaxed);
+            self.output_spectrum_left_db[i].store(left_db[i], Ordering::Relaxed);
+            self.output_spectrum_right_db[i].store(right_db[i], Ordering::Relaxed);
         }
     }
 
     pub fn output_spectrum_db(&self) -> [[f32; SPECTRUM_BINS]; 2] {
         [
-            std::array::from_fn(|i| {
-                f32::from_bits(self.output_spectrum_left_db_bits[i].load(Ordering::Relaxed))
-            }),
-            std::array::from_fn(|i| {
-                f32::from_bits(self.output_spectrum_right_db_bits[i].load(Ordering::Relaxed))
-            }),
+            std::array::from_fn(|i| self.output_spectrum_left_db[i].load(Ordering::Relaxed)),
+            std::array::from_fn(|i| self.output_spectrum_right_db[i].load(Ordering::Relaxed)),
         ]
     }
 
@@ -2151,32 +2136,28 @@ impl<T: ParamIdExt> SharedState<T> {
         right_db: &[f32; SPECTRUM_BINS],
     ) {
         for i in 0..SPECTRUM_BINS {
-            self.input_spectrum_left_db_bits[i].store(left_db[i].to_bits(), Ordering::Relaxed);
-            self.input_spectrum_right_db_bits[i].store(right_db[i].to_bits(), Ordering::Relaxed);
+            self.input_spectrum_left_db[i].store(left_db[i], Ordering::Relaxed);
+            self.input_spectrum_right_db[i].store(right_db[i], Ordering::Relaxed);
         }
     }
 
     pub fn input_spectrum_db(&self) -> [[f32; SPECTRUM_BINS]; 2] {
         [
-            std::array::from_fn(|i| {
-                f32::from_bits(self.input_spectrum_left_db_bits[i].load(Ordering::Relaxed))
-            }),
-            std::array::from_fn(|i| {
-                f32::from_bits(self.input_spectrum_right_db_bits[i].load(Ordering::Relaxed))
-            }),
+            std::array::from_fn(|i| self.input_spectrum_left_db[i].load(Ordering::Relaxed)),
+            std::array::from_fn(|i| self.input_spectrum_right_db[i].load(Ordering::Relaxed)),
         ]
     }
 
     pub fn set_band_dyn_gain_db(&self, band: usize, db: f32) {
-        if let Some(slot) = self.band_dyn_gain_db_bits.get(band) {
-            slot.store(db.to_bits(), Ordering::Relaxed);
+        if let Some(slot) = self.band_dyn_gain_db.get(band) {
+            slot.store(db, Ordering::Relaxed);
         }
     }
 
     pub fn band_dyn_gain_db(&self, band: usize) -> f32 {
-        self.band_dyn_gain_db_bits
+        self.band_dyn_gain_db
             .get(band)
-            .map(|slot| f32::from_bits(slot.load(Ordering::Relaxed)))
+            .map(|slot| slot.load(Ordering::Relaxed))
             .unwrap_or(0.0)
     }
 
@@ -2191,15 +2172,13 @@ impl<T: ParamIdExt> SharedState<T> {
     }
 
     pub fn set_dyn_visual_gain_db(&self, bins_db: &[f32; SPECTRUM_BINS]) {
-        for (slot, db) in self.dyn_visual_gain_db_bits.iter().zip(bins_db.iter()) {
-            slot.store(db.to_bits(), Ordering::Relaxed);
+        for (slot, db) in self.dyn_visual_gain_db.iter().zip(bins_db.iter()) {
+            slot.store(*db, Ordering::Relaxed);
         }
     }
 
     pub fn dyn_visual_gain_db(&self) -> [f32; SPECTRUM_BINS] {
-        std::array::from_fn(|i| {
-            f32::from_bits(self.dyn_visual_gain_db_bits[i].load(Ordering::Relaxed))
-        })
+        std::array::from_fn(|i| self.dyn_visual_gain_db[i].load(Ordering::Relaxed))
     }
 
     pub fn set_ui_visible(&self, visible: bool) {
@@ -2274,7 +2253,7 @@ impl<T: ParamIdExt> SharedState<T> {
     pub fn set_param(&self, id: T, value: f64) {
         self.params.set(id, value);
         self.bump_params_version();
-        self.pending_param_values_bits[id.as_index()].store(value.to_bits(), Ordering::Release);
+        self.pending_param_values[id.as_index()].store(value, Ordering::Release);
         self.mark_local_param_override(id);
         self.mark_param_notification_pending(id);
         self.request_flush();
@@ -2287,9 +2266,7 @@ impl<T: ParamIdExt> SharedState<T> {
     }
 
     pub fn take_pending_param_value_or_current(&self, id: T) -> f64 {
-        let bits = self.pending_param_values_bits[id.as_index()]
-            .swap(f64::NAN.to_bits(), Ordering::AcqRel);
-        let value = f64::from_bits(bits);
+        let value = self.pending_param_values[id.as_index()].swap(f64::NAN, Ordering::AcqRel);
         if value.is_nan() {
             self.params.get(id)
         } else {

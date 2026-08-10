@@ -1,11 +1,13 @@
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
+
+use portable_atomic::AtomicF64;
 
 use crate::common::ClapParamId;
 
 #[derive(Debug)]
 pub struct ParamStore<P: ClapParamId> {
-    values: Vec<AtomicU64>,
+    values: Vec<AtomicF64>,
     _phantom: PhantomData<P>,
 }
 
@@ -13,7 +15,7 @@ impl<P: ClapParamId> ParamStore<P> {
     pub fn new() -> Self {
         let mut values = Vec::with_capacity(P::COUNT);
         for _ in 0..P::COUNT {
-            values.push(AtomicU64::new(0.0_f64.to_bits()));
+            values.push(AtomicF64::new(0.0_f64));
         }
         Self {
             values,
@@ -22,11 +24,11 @@ impl<P: ClapParamId> ParamStore<P> {
     }
 
     pub fn get(&self, id: P) -> f64 {
-        f64::from_bits(self.values[id.as_index()].load(Ordering::Acquire))
+        self.values[id.as_index()].load(Ordering::Acquire)
     }
 
     pub fn set(&self, id: P, value: f64) {
-        self.values[id.as_index()].store(value.to_bits(), Ordering::Release);
+        self.values[id.as_index()].store(value, Ordering::Release);
     }
 
     pub fn get_bool(&self, id: P) -> bool {

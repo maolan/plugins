@@ -96,10 +96,10 @@ fn db_str(level: f64) -> String {
 }
 
 fn view(state: &State) -> Element<'_, ()> {
-    let in_l = f64::from_bits(state.shared.in_l_rms.load(Ordering::Relaxed));
-    let in_r = f64::from_bits(state.shared.in_r_rms.load(Ordering::Relaxed));
-    let out_l = f64::from_bits(state.shared.out_l_rms.load(Ordering::Relaxed));
-    let out_r = f64::from_bits(state.shared.out_r_rms.load(Ordering::Relaxed));
+    let in_l = state.shared.in_l_rms.load(Ordering::Relaxed);
+    let in_r = state.shared.in_r_rms.load(Ordering::Relaxed);
+    let out_l = state.shared.out_l_rms.load(Ordering::Relaxed);
+    let out_r = state.shared.out_r_rms.load(Ordering::Relaxed);
 
     let in_levels = [db(in_l), db(in_r)];
     let out_levels = [db(out_l), db(out_r)];

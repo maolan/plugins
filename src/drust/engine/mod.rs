@@ -11,6 +11,7 @@ use std::{
 use crate::drust::drumkit::{DrumKit, Midimap, loader};
 use crate::drust::utils::random::LockFreeRandom;
 use parking_lot::{Mutex, RwLock};
+use portable_atomic::AtomicF32;
 use rayon::prelude::*;
 
 pub mod audio_file;
@@ -24,6 +25,8 @@ pub use voice::{ChannelSide, EventType, Voice, VoiceEvent};
 
 pub const MAX_CHANNELS: usize = 16;
 pub const MAX_VOICES: usize = 128;
+const TOM_OUT_INDEX: usize = 3;
+const TOM_PAN_COUNT: usize = 4;
 
 pub(crate) fn load_pool() -> &'static rayon::ThreadPool {
     use std::sync::OnceLock;
@@ -79,6 +82,7 @@ pub struct ChannelPlayback {
     pub rampdown_total: usize,
     pub delay_remaining: usize,
     pub out_index: usize,
+    pub pan: f32,
     pub side: crate::drust::engine::voice::ChannelSide,
 
     pub cached_buffer: *const f32,
@@ -98,6 +102,7 @@ impl Default for ChannelPlayback {
             rampdown_total: 0,
             delay_remaining: 0,
             out_index: 0,
+            pan: 0.0,
             side: ChannelSide::Both,
             cached_buffer: null_mut(),
             cached_buffer_len: 0,
@@ -164,7 +169,7 @@ pub struct DrumGizmoEngine {
     pub audio_state: Mutex<AudioState>,
     pub audio_data: AtomicPtr<Arc<AudioData>>,
     pub kit_dir: RwLock<String>,
-    pub sample_rate: AtomicU32,
+    pub sample_rate: AtomicF32,
     pub kit_sample_rate: AtomicU32,
     pub enable_resampling: RwLock<bool>,
     pub humanize_amount: RwLock<f32>,
@@ -178,6 +183,8 @@ pub struct DrumGizmoEngine {
     pub current_seed: std::sync::atomic::AtomicU64,
     pub retired: Mutex<Vec<RetiredData>>,
     pub out_map: RwLock<HashMap<String, usize>>,
+    pub tom_map: RwLock<HashMap<String, usize>>,
+    pub tom_pans: [AtomicF32; TOM_PAN_COUNT],
     pub kit_ready: AtomicBool,
     pub is_loading: AtomicBool,
     pub loading_progress: AtomicU8,
@@ -196,7 +203,7 @@ impl Default for DrumGizmoEngine {
             audio_state: Mutex::new(AudioState::default()),
             audio_data: AtomicPtr::new(null_mut()),
             kit_dir: RwLock::new(String::new()),
-            sample_rate: AtomicU32::new(44100.0f32.to_bits()),
+            sample_rate: AtomicF32::new(44100.0),
             kit_sample_rate: AtomicU32::new(44100),
             enable_resampling: RwLock::new(true),
             humanize_amount: RwLock::new(0.0),
@@ -210,6 +217,8 @@ impl Default for DrumGizmoEngine {
             current_seed: std::sync::atomic::AtomicU64::new(0),
             retired: Mutex::new(Vec::new()),
             out_map: RwLock::new(HashMap::new()),
+            tom_map: RwLock::new(HashMap::new()),
+            tom_pans: std::array::from_fn(|_| AtomicF32::new(0.0)),
             kit_ready: AtomicBool::new(false),
             is_loading: AtomicBool::new(false),
             loading_progress: AtomicU8::new(0),
@@ -383,7 +392,7 @@ impl DrumGizmoEngine {
         let kit_sample_rate = kit.samplerate;
         let instr_count = kit.instruments.len();
 
-        let host_sr = f32::from_bits(self.sample_rate.load(Ordering::Acquire));
+        let host_sr = self.sample_rate.load(Ordering::Acquire);
         let audio_map = load_kit_audio(kit_dir, &kit, host_sr)
             .map_err(|e| loader::LoadError::Invalid(format!("Failed to load audio: {e}")))?;
 
@@ -401,13 +410,9 @@ impl DrumGizmoEngine {
             index.insert(path, idx);
         }
 
-        {
-            let mut map = HashMap::new();
-            for instr in &kit.instruments {
-                map.insert(instr.name.clone(), instrument_to_out(&instr.name));
-            }
-            *self.out_map.write() = map;
-        }
+        let (out_map, tom_map) = build_output_maps(&kit);
+        *self.out_map.write() = out_map;
+        *self.tom_map.write() = tom_map;
 
         let new_kit = Arc::new(kit);
         let new_kit_ptr = Box::into_raw(Box::new(new_kit));
@@ -482,13 +487,9 @@ impl DrumGizmoEngine {
             let kit_sample_rate = kit.samplerate;
             let instr_count = kit.instruments.len();
 
-            {
-                let mut map = HashMap::new();
-                for instr in &kit.instruments {
-                    map.insert(instr.name.clone(), instrument_to_out(&instr.name));
-                }
-                *self.out_map.write() = map;
-            }
+            let (out_map, tom_map) = build_output_maps(&kit);
+            *self.out_map.write() = out_map;
+            *self.tom_map.write() = tom_map;
 
             let new_kit = Arc::new(kit);
             let new_kit_ptr = Box::into_raw(Box::new(new_kit.clone()));
@@ -537,7 +538,7 @@ impl DrumGizmoEngine {
                 channels.dedup();
             }
 
-            let host_sr = f32::from_bits(self.sample_rate.load(Ordering::Acquire));
+            let host_sr = self.sample_rate.load(Ordering::Acquire);
             let files_vec: Vec<(String, Vec<usize>)> = files.into_iter().collect();
             let expected_count = files_vec.len();
 
@@ -653,8 +654,7 @@ impl DrumGizmoEngine {
     }
 
     pub fn set_sample_rate(&self, sr: f32) {
-        let old_bits = self.sample_rate.swap(sr.to_bits(), Ordering::AcqRel);
-        let old_sr = f32::from_bits(old_bits);
+        let old_sr = self.sample_rate.swap(sr, Ordering::AcqRel);
         if sr > 0.0 && (sr - old_sr).abs() > 0.1 {
             self.resample_all(sr);
         }
@@ -727,6 +727,18 @@ impl DrumGizmoEngine {
             .store(new_seed, std::sync::atomic::Ordering::Release);
         *self.voice_limit_max.write() = params.get(ParamId::VoiceLimitMax) as usize;
         *self.voice_limit_rampdown.write() = params.get(ParamId::VoiceLimitRampdown) as f32;
+        self.tom_pans[0].store(params.get(ParamId::TomPan1) as f32, Ordering::Release);
+        self.tom_pans[1].store(params.get(ParamId::TomPan2) as f32, Ordering::Release);
+        self.tom_pans[2].store(params.get(ParamId::TomPan3) as f32, Ordering::Release);
+        self.tom_pans[3].store(params.get(ParamId::TomPan4) as f32, Ordering::Release);
+    }
+
+    fn tom_pan(&self, index: usize) -> f32 {
+        self.tom_pans
+            .get(index)
+            .map(|slot| slot.load(Ordering::Acquire))
+            .unwrap_or(0.0)
+            .clamp(-1.0, 1.0)
     }
 
     pub fn trigger(&self, event: VoiceEvent) {
@@ -744,7 +756,7 @@ impl DrumGizmoEngine {
         let audio_index = &audio_data.index;
         let lock_free_entries = &audio_data.lock_free_entries;
 
-        let sr = f32::from_bits(self.sample_rate.load(Ordering::Acquire));
+        let sr = self.sample_rate.load(Ordering::Acquire);
         let humanize_amount = *self.humanize_amount.read();
         let round_robin_mix = *self.round_robin_mix.read();
         let voice_limit_max = *self.voice_limit_max.read();
@@ -777,6 +789,10 @@ impl DrumGizmoEngine {
                     let out_map = self.out_map.read();
                     let out_index = out_map.get(&instr.name).copied().unwrap_or(0);
                     drop(out_map);
+                    let tom_map = self.tom_map.read();
+                    let tom_index = tom_map.get(&instr.name).copied();
+                    drop(tom_map);
+                    let pan = tom_index.map(|index| self.tom_pan(index)).unwrap_or(0.0);
 
                     let mut velocity = event.velocity;
 
@@ -852,6 +868,7 @@ impl DrumGizmoEngine {
                                     rampdown_total: 0,
                                     delay_remaining: delay_samples,
                                     out_index,
+                                    pan,
                                     side: channel_name_to_side(&instr.name, &af.channel),
                                     cached_buffer: buffer.as_ptr(),
                                     cached_buffer_len: buffer.len(),
@@ -1004,36 +1021,18 @@ impl DrumGizmoEngine {
                 let left_idx = playback.out_index * 2;
                 let right_idx = left_idx + 1;
 
-                let (mut out_left, mut out_right) = match playback.side {
-                    crate::drust::engine::voice::ChannelSide::Left => {
-                        let buf = if left_idx < outputs.len() {
-                            outputs[left_idx].take()
-                        } else {
-                            None
-                        };
-                        (buf, None)
-                    }
-                    crate::drust::engine::voice::ChannelSide::Right => {
-                        let buf = if right_idx < outputs.len() {
-                            outputs[right_idx].take()
-                        } else {
-                            None
-                        };
-                        (None, buf)
-                    }
-                    crate::drust::engine::voice::ChannelSide::Both => {
-                        let l = if left_idx < outputs.len() {
-                            outputs[left_idx].take()
-                        } else {
-                            None
-                        };
-                        let r = if right_idx < outputs.len() {
-                            outputs[right_idx].take()
-                        } else {
-                            None
-                        };
-                        (l, r)
-                    }
+                let (mut out_left, mut out_right) = {
+                    let l = if left_idx < outputs.len() {
+                        outputs[left_idx].take()
+                    } else {
+                        None
+                    };
+                    let r = if right_idx < outputs.len() {
+                        outputs[right_idx].take()
+                    } else {
+                        None
+                    };
+                    (l, r)
                 };
                 if out_left.is_none() && out_right.is_none() {
                     continue;
@@ -1065,15 +1064,17 @@ impl DrumGizmoEngine {
                         };
 
                         let out_idx = i + delay_skip;
+                        let (left_gain, right_gain) =
+                            pan_gains(playback.side, playback.pan.clamp(-1.0, 1.0));
                         if let Some(out) = out_left.as_mut()
                             && out_idx < out.len()
                         {
-                            out[out_idx] += sample * gain;
+                            out[out_idx] += sample * gain * left_gain;
                         }
                         if let Some(out) = out_right.as_mut()
                             && out_idx < out.len()
                         {
-                            out[out_idx] += sample * gain;
+                            out[out_idx] += sample * gain * right_gain;
                         }
                     }
                 }
@@ -1195,23 +1196,31 @@ impl DrumGizmoEngine {
                         playback.gain
                     };
 
+                    let (left_gain, right_gain) =
+                        pan_gains(playback.side, playback.pan.clamp(-1.0, 1.0));
                     match playback.side {
                         ChannelSide::Left => {
                             if out_l < outputs.len() {
-                                outputs[out_l][i] += sample * gain;
+                                outputs[out_l][i] += sample * gain * left_gain;
+                            }
+                            if out_r < outputs.len() {
+                                outputs[out_r][i] += sample * gain * right_gain;
                             }
                         }
                         ChannelSide::Right => {
+                            if out_l < outputs.len() {
+                                outputs[out_l][i] += sample * gain * left_gain;
+                            }
                             if out_r < outputs.len() {
-                                outputs[out_r][i] += sample * gain;
+                                outputs[out_r][i] += sample * gain * right_gain;
                             }
                         }
                         ChannelSide::Both => {
                             if out_l < outputs.len() {
-                                outputs[out_l][i] += sample * gain;
+                                outputs[out_l][i] += sample * gain * left_gain;
                             }
                             if out_r < outputs.len() {
-                                outputs[out_r][i] += sample * gain;
+                                outputs[out_r][i] += sample * gain * right_gain;
                             }
                         }
                     }
@@ -1239,6 +1248,23 @@ fn playback_position_max(playbacks: &[ChannelPlayback]) -> usize {
         .unwrap_or(0)
 }
 
+fn build_output_maps(kit: &DrumKit) -> (HashMap<String, usize>, HashMap<String, usize>) {
+    let mut out_map = HashMap::new();
+    let mut tom_map = HashMap::new();
+    let mut tom_count = 0;
+
+    for instr in &kit.instruments {
+        let out_index = instrument_to_out(&instr.name);
+        out_map.insert(instr.name.clone(), out_index);
+        if out_index == TOM_OUT_INDEX && tom_count < TOM_PAN_COUNT {
+            tom_map.insert(instr.name.clone(), tom_count);
+            tom_count += 1;
+        }
+    }
+
+    (out_map, tom_map)
+}
+
 fn instrument_to_out(name: &str) -> usize {
     let n = name.to_lowercase();
     if n.contains("kick") || n.contains("kdrum") {
@@ -1250,8 +1276,8 @@ fn instrument_to_out(name: &str) -> usize {
     if n.contains("hihat") || n.contains("hh") {
         return 2;
     }
-    if n.contains("tom") || n.contains("floor") {
-        return 3;
+    if is_tom_name(&n) {
+        return TOM_OUT_INDEX;
     }
     if n.contains("ride") {
         return 4;
@@ -1266,6 +1292,30 @@ fn instrument_to_out(name: &str) -> usize {
         return 7;
     }
     0
+}
+
+fn is_tom_name(lower_name: &str) -> bool {
+    lower_name.contains("tom") || lower_name.contains("floor")
+}
+
+fn pan_gains(side: ChannelSide, pan: f32) -> (f32, f32) {
+    match side {
+        ChannelSide::Left => {
+            if pan > 0.0 {
+                (1.0 - pan, pan)
+            } else {
+                (1.0, 0.0)
+            }
+        }
+        ChannelSide::Right => {
+            if pan < 0.0 {
+                (-pan, 1.0 + pan)
+            } else {
+                (0.0, 1.0)
+            }
+        }
+        ChannelSide::Both => (1.0 - pan.max(0.0), 1.0 + pan.min(0.0)),
+    }
 }
 
 fn channel_name_to_side(instr_name: &str, channel_name: &str) -> ChannelSide {
@@ -1322,4 +1372,54 @@ fn cubic_interpolate(y0: f32, y1: f32, y2: f32, y3: f32, t: f32) -> f32 {
     let c = (-y0 + y2) * 0.5;
     let d = y1;
     a * t * t * t + b * t * t + c * t + d
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::drust::drumkit::Instrument;
+
+    fn kit_with_instruments(names: &[&str]) -> DrumKit {
+        let mut kit = DrumKit::new();
+        kit.instruments = names
+            .iter()
+            .map(|name| Instrument {
+                name: (*name).to_string(),
+                ..Instrument::default()
+            })
+            .collect();
+        kit
+    }
+
+    #[test]
+    fn tom_pan_slots_keep_single_toms_output() {
+        let kit = kit_with_instruments(&["Kick", "Rack Tom 1", "Rack Tom 2", "Floor Tom", "Snare"]);
+        let (out_map, tom_map) = build_output_maps(&kit);
+
+        assert_eq!(out_map.get("Rack Tom 1"), Some(&TOM_OUT_INDEX));
+        assert_eq!(out_map.get("Rack Tom 2"), Some(&TOM_OUT_INDEX));
+        assert_eq!(out_map.get("Floor Tom"), Some(&TOM_OUT_INDEX));
+        assert_eq!(tom_map.get("Rack Tom 1"), Some(&0));
+        assert_eq!(tom_map.get("Rack Tom 2"), Some(&1));
+        assert_eq!(tom_map.get("Floor Tom"), Some(&2));
+        assert_eq!(tom_map.len(), 3);
+    }
+
+    #[test]
+    fn extra_tom_pan_slots_are_unassigned() {
+        let kit = kit_with_instruments(&["Kick", "Tom Low"]);
+        let (_, tom_map) = build_output_maps(&kit);
+
+        assert_eq!(tom_map.get("Tom Low"), Some(&0));
+        assert!(!tom_map.values().any(|slot| *slot >= 1));
+    }
+
+    #[test]
+    fn pan_gains_preserve_centered_side_channels() {
+        assert_eq!(pan_gains(ChannelSide::Left, 0.0), (1.0, 0.0));
+        assert_eq!(pan_gains(ChannelSide::Right, 0.0), (0.0, 1.0));
+        assert_eq!(pan_gains(ChannelSide::Both, 0.0), (1.0, 1.0));
+        assert_eq!(pan_gains(ChannelSide::Left, 1.0), (0.0, 1.0));
+        assert_eq!(pan_gains(ChannelSide::Right, -1.0), (1.0, 0.0));
+    }
 }

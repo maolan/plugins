@@ -1,4 +1,6 @@
-use std::sync::atomic::{AtomicBool, AtomicF32, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+
+use portable_atomic::AtomicF32;
 
 #[derive(Debug, Default)]
 pub struct Settings {

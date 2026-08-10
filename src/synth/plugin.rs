@@ -29,6 +29,7 @@ use clap_clap::{
     stream::{IStream, OStream},
 };
 use parking_lot::Mutex;
+use portable_atomic::AtomicF64;
 
 use crate::common::copy_str_to_array;
 use crate::common::param_events::ParamGesture;
@@ -85,7 +86,7 @@ static DESCRIPTOR: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor {
 #[derive(Debug)]
 pub struct SharedState {
     pub params: ParamStore,
-    sample_rate_bits: std::sync::atomic::AtomicU64,
+    sample_rate: AtomicF64,
     params_version: std::sync::atomic::AtomicU64,
     pending_audio_param_changes: Vec<std::sync::atomic::AtomicBool>,
     last_audio_param_change_ns: Vec<std::sync::atomic::AtomicU64>,
@@ -100,7 +101,7 @@ impl Default for SharedState {
     fn default() -> Self {
         Self {
             params: ParamStore::default(),
-            sample_rate_bits: std::sync::atomic::AtomicU64::new(48_000.0f64.to_bits()),
+            sample_rate: AtomicF64::new(48_000.0),
             params_version: std::sync::atomic::AtomicU64::new(1),
             pending_audio_param_changes: (0..ParamId::COUNT)
                 .map(|_| std::sync::atomic::AtomicBool::new(false))
@@ -131,12 +132,11 @@ impl SharedState {
     }
 
     fn set_sample_rate(&self, sample_rate: f64) {
-        self.sample_rate_bits
-            .store(sample_rate.to_bits(), Ordering::Release);
+        self.sample_rate.store(sample_rate, Ordering::Release);
     }
 
     pub fn sample_rate(&self) -> f64 {
-        f64::from_bits(self.sample_rate_bits.load(Ordering::Acquire))
+        self.sample_rate.load(Ordering::Acquire)
     }
 
     pub fn params_version(&self) -> u64 {

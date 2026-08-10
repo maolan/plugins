@@ -1,4 +1,6 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
+
+use portable_atomic::AtomicF64;
 
 use clap_clap::ffi::{
     CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_IS_ENUM, CLAP_PARAM_IS_STEPPED,
@@ -1928,7 +1930,7 @@ pub fn sanitize_param_value(id: ParamId, value: f64) -> f64 {
 
 #[derive(Debug)]
 pub struct ParamStore {
-    values: Vec<AtomicU64>,
+    values: Vec<AtomicF64>,
 }
 
 impl Default for ParamStore {
@@ -1940,7 +1942,7 @@ impl Default for ParamStore {
             let def = &PARAM_TYPE_DEFS[ty_idx];
 
             let _ = inst;
-            values.push(AtomicU64::new(def.default.to_bits()));
+            values.push(AtomicF64::new(def.default));
         }
         Self { values }
     }
@@ -1948,11 +1950,11 @@ impl Default for ParamStore {
 
 impl ParamStore {
     pub fn get(&self, id: ParamId) -> f64 {
-        f64::from_bits(self.values[id.as_index()].load(Ordering::Acquire))
+        self.values[id.as_index()].load(Ordering::Acquire)
     }
 
     pub fn set(&self, id: ParamId, value: f64) {
-        self.values[id.as_index()].store(value.to_bits(), Ordering::Release);
+        self.values[id.as_index()].store(value, Ordering::Release);
     }
 
     pub fn get_bool(&self, id: ParamId) -> bool {

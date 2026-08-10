@@ -416,6 +416,16 @@ fn balance_label(pair: usize) -> &'static str {
     }
 }
 
+fn tom_pan_param_id(tom: usize) -> ParamId {
+    match tom {
+        0 => ParamId::TomPan1,
+        1 => ParamId::TomPan2,
+        2 => ParamId::TomPan3,
+        3 => ParamId::TomPan4,
+        _ => ParamId::TomPan1,
+    }
+}
+
 fn view(state: &State) -> Element<'_, Message> {
     let kit_options: Vec<String> = KIT_NAMES.iter().map(|s| s.to_string()).collect();
     let kit_selected = state.selected_kit.clone();
@@ -521,6 +531,60 @@ fn view(state: &State) -> Element<'_, Message> {
     let balance_section = maolan_baseview::iced::widget::column(balance_rows)
         .spacing(6)
         .align_x(Alignment::Center);
+
+    let mut tom_pan_rows = Vec::new();
+    for row in 0..2 {
+        let left_tom = row * 2;
+        let right_tom = left_tom + 1;
+        let left_id = tom_pan_param_id(left_tom);
+        let right_id = tom_pan_param_id(right_tom);
+        let left_value = state.shared.params.get(left_id) as f32;
+        let right_value = state.shared.params.get(right_id) as f32;
+
+        let left_slider = horizontal_slider(-1.0..=1.0, left_value, move |v| {
+            Message::ParamChanged(left_id, v as f64)
+        })
+        .step(0.01)
+        .double_click_reset(0.0)
+        .width(Length::Fixed(140.0))
+        .height(Length::Fixed(12.0));
+
+        let right_slider = horizontal_slider(-1.0..=1.0, right_value, move |v| {
+            Message::ParamChanged(right_id, v as f64)
+        })
+        .step(0.01)
+        .double_click_reset(0.0)
+        .width(Length::Fixed(140.0))
+        .height(Length::Fixed(12.0));
+
+        let left_col = column![text(format!("Tom {}", left_tom + 1)).size(11), left_slider]
+            .spacing(2)
+            .align_x(Alignment::Center)
+            .width(Length::Fixed(160.0));
+        let right_col = column![
+            text(format!("Tom {}", right_tom + 1)).size(11),
+            right_slider
+        ]
+        .spacing(2)
+        .align_x(Alignment::Center)
+        .width(Length::Fixed(160.0));
+
+        tom_pan_rows.push(
+            maolan_baseview::iced::widget::row![left_col, right_col]
+                .spacing(8)
+                .align_y(Alignment::Center)
+                .into(),
+        );
+    }
+
+    let tom_pan_section = column![
+        text("Tom Pan").size(14),
+        maolan_baseview::iced::widget::column(tom_pan_rows)
+            .spacing(6)
+            .align_x(Alignment::Center),
+    ]
+    .spacing(6)
+    .align_x(Alignment::Center);
 
     fn param_slider<'a>(
         label: &'static str,
@@ -653,6 +717,7 @@ fn view(state: &State) -> Element<'_, Message> {
         progress_widget,
         error_widget,
         balance_section,
+        tom_pan_section,
         params_section,
     ]
     .spacing(10)

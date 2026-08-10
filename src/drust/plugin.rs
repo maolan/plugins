@@ -855,7 +855,7 @@ unsafe extern "C-unwind" fn ext_latency_get(plugin: *const clap_plugin) -> u32 {
         return 0;
     }
     let inst = unsafe { instance(plugin) };
-    let sr = f32::from_bits(inst.engine.sample_rate.load(Ordering::Acquire));
+    let sr = inst.engine.sample_rate.load(Ordering::Acquire);
     let state = inst.engine.audio_state.lock();
     let max_ms = state.latency_filter.max_ms;
     drop(state);

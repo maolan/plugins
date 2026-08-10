@@ -28,6 +28,7 @@ use clap_clap::{
     stream::{IStream, OStream},
 };
 use parking_lot::Mutex;
+use portable_atomic::{AtomicF32, AtomicF64};
 
 use crate::common::copy_str_to_array;
 use crate::common::{bus, fft};
@@ -76,13 +77,13 @@ pub struct SharedState {
     pub kit_version: AtomicU64,
     pub params_version: AtomicU64,
     pub instrument_clipboard: Mutex<Option<crate::kick::dsp::Instrument>>,
-    sample_rate_bits: AtomicU64,
+    sample_rate: AtomicF64,
     pending_param_notifications: Vec<AtomicU32>,
     pending_gesture_begin: Vec<AtomicU32>,
     pending_gesture_end: Vec<AtomicU32>,
     active_local_gestures: Vec<AtomicU32>,
-    output_peak_db_l_bits: AtomicU32,
-    output_peak_db_r_bits: AtomicU32,
+    output_peak_db_l: AtomicF32,
+    output_peak_db_r: AtomicF32,
     pub waveform_display: Mutex<(Vec<f32>, Vec<f32>)>,
     host: AtomicPtr<clap_host>,
 }
@@ -96,25 +97,24 @@ impl SharedState {
             kit_version: AtomicU64::new(0),
             params_version: AtomicU64::new(1),
             instrument_clipboard: Mutex::new(None),
-            sample_rate_bits: AtomicU64::new(48_000.0f64.to_bits()),
+            sample_rate: AtomicF64::new(48_000.0),
             pending_param_notifications: (0..words).map(|_| AtomicU32::new(0)).collect(),
             pending_gesture_begin: (0..words).map(|_| AtomicU32::new(0)).collect(),
             pending_gesture_end: (0..words).map(|_| AtomicU32::new(0)).collect(),
             active_local_gestures: (0..words).map(|_| AtomicU32::new(0)).collect(),
-            output_peak_db_l_bits: AtomicU32::new((-60.0f32).to_bits()),
-            output_peak_db_r_bits: AtomicU32::new((-60.0f32).to_bits()),
+            output_peak_db_l: AtomicF32::new(-60.0),
+            output_peak_db_r: AtomicF32::new(-60.0),
             waveform_display: Mutex::new((Vec::new(), Vec::new())),
             host: AtomicPtr::new(host.cast_mut()),
         }
     }
 
     pub fn sample_rate(&self) -> f32 {
-        f64::from_bits(self.sample_rate_bits.load(Ordering::Acquire)) as f32
+        self.sample_rate.load(Ordering::Acquire) as f32
     }
 
     pub fn set_sample_rate(&self, sample_rate: f64) {
-        self.sample_rate_bits
-            .store(sample_rate.to_bits(), Ordering::Release);
+        self.sample_rate.store(sample_rate, Ordering::Release);
     }
 
     pub fn set_param_internal(&self, id: ParamId, value: f64, notify_host: bool) {
@@ -257,15 +257,13 @@ impl SharedState {
     }
 
     pub fn set_output_peak_db(&self, l: f32, r: f32) {
-        self.output_peak_db_l_bits
-            .store(l.to_bits(), Ordering::Relaxed);
-        self.output_peak_db_r_bits
-            .store(r.to_bits(), Ordering::Relaxed);
+        self.output_peak_db_l.store(l, Ordering::Relaxed);
+        self.output_peak_db_r.store(r, Ordering::Relaxed);
     }
 
     pub fn output_peak_db(&self) -> (f32, f32) {
-        let l = f32::from_bits(self.output_peak_db_l_bits.load(Ordering::Relaxed));
-        let r = f32::from_bits(self.output_peak_db_r_bits.load(Ordering::Relaxed));
+        let l = self.output_peak_db_l.load(Ordering::Relaxed);
+        let r = self.output_peak_db_r.load(Ordering::Relaxed);
         (l, r)
     }
 
