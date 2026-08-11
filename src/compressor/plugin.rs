@@ -1694,7 +1694,11 @@ unsafe extern "C-unwind" fn ext_gui_hide(plugin: *const clap_plugin) -> bool {
         return false;
     }
     let instance = unsafe { instance(plugin) };
-    instance.gui_bridge.lock().hide(instance.shared.clone())
+    let (hidden, notify_closed) = instance.gui_bridge.lock().hide();
+    if notify_closed {
+        instance.shared.request_gui_closed();
+    }
+    hidden
 }
 
 static GUI_EXT: clap_plugin_gui = clap_plugin_gui {
@@ -1850,5 +1854,15 @@ mod tests {
         shared.set_param_outbound_only(ParamId::Channels, 2.0);
 
         assert_eq!(shared.channels.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn threshold_params_allow_positive_display_range() {
+        let shared = SharedState::default();
+        shared.set_param_outbound_only(ParamId::B1Threshold, 12.0);
+        shared.set_param_outbound_only(ParamId::B6Threshold, 30.0);
+
+        assert_eq!(shared.params.get(ParamId::B1Threshold), 12.0);
+        assert_eq!(shared.params.get(ParamId::B6Threshold), 30.0);
     }
 }

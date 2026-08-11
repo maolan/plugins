@@ -77,9 +77,20 @@ impl<Message> SpectrumMarker<Message> {
 pub struct SpectrumThresholdCurve<Message> {
     pub points: Vec<(f32, f32)>,
     pub selected: bool,
+    pub color: Option<Color>,
+    pub selected_color: Option<Color>,
+    pub width: f32,
+    pub selected_width: f32,
     pub on_select: Option<Message>,
+    pub on_select_at: Option<Arc<dyn Fn(f32) -> Message + Send + Sync>>,
     pub on_drag_db: Option<Arc<dyn Fn(f32) -> Message + Send + Sync>>,
+    pub on_drag_db_at: Option<Arc<dyn Fn(f32, f32) -> Message + Send + Sync>>,
+    pub on_double_click_at: Option<Arc<dyn Fn(f32) -> Message + Send + Sync>>,
     pub on_release: Option<Message>,
+    pub on_release_at: Option<Arc<dyn Fn(f32) -> Message + Send + Sync>>,
+    pub on_middle_select_at: Option<Arc<dyn Fn(f32) -> Message + Send + Sync>>,
+    pub on_middle_drag_db_at: Option<Arc<dyn Fn(f32, f32) -> Message + Send + Sync>>,
+    pub on_middle_release_at: Option<Arc<dyn Fn(f32) -> Message + Send + Sync>>,
 }
 
 impl<Message: Clone> Clone for SpectrumThresholdCurve<Message> {
@@ -87,9 +98,20 @@ impl<Message: Clone> Clone for SpectrumThresholdCurve<Message> {
         Self {
             points: self.points.clone(),
             selected: self.selected,
+            color: self.color,
+            selected_color: self.selected_color,
+            width: self.width,
+            selected_width: self.selected_width,
             on_select: self.on_select.clone(),
+            on_select_at: self.on_select_at.clone(),
             on_drag_db: self.on_drag_db.clone(),
+            on_drag_db_at: self.on_drag_db_at.clone(),
+            on_double_click_at: self.on_double_click_at.clone(),
             on_release: self.on_release.clone(),
+            on_release_at: self.on_release_at.clone(),
+            on_middle_select_at: self.on_middle_select_at.clone(),
+            on_middle_drag_db_at: self.on_middle_drag_db_at.clone(),
+            on_middle_release_at: self.on_middle_release_at.clone(),
         }
     }
 }
@@ -98,6 +120,7 @@ impl<Message: Clone> Clone for SpectrumThresholdCurve<Message> {
 pub struct SpectralAnalyzerWidget<Message, const BINS: usize> {
     pub bins_db: [[f32; BINS]; 2],
     pub stereo: bool,
+    pub display_range_db: f32,
     pub markers: Vec<SpectrumMarker<Message>>,
     pub threshold_curves: Vec<SpectrumThresholdCurve<Message>>,
     pub gain_reduction_db: Vec<f32>,
@@ -107,13 +130,13 @@ pub struct SpectralAnalyzerWidget<Message, const BINS: usize> {
 impl<Message: Clone + 'static, const BINS: usize> SpectralAnalyzerWidget<Message, BINS> {
     const F_MIN: f32 = 20.0;
     const F_MAX: f32 = 20_000.0;
-    const MIN_DB: f32 = -60.0;
-    const MAX_DB: f32 = 0.0;
+    const DEFAULT_DISPLAY_RANGE_DB: f32 = 0.0;
 
     pub fn new(bins_db: [[f32; BINS]; 2], stereo: bool) -> Self {
         Self {
             bins_db,
             stereo,
+            display_range_db: Self::DEFAULT_DISPLAY_RANGE_DB,
             markers: Vec::new(),
             threshold_curves: Vec::new(),
             gain_reduction_db: Vec::new(),
@@ -126,6 +149,11 @@ impl<Message: Clone + 'static, const BINS: usize> SpectralAnalyzerWidget<Message
             .into_iter()
             .map(SpectrumMarker::passive)
             .collect();
+        self
+    }
+
+    pub fn with_display_range(mut self, range_db: f32) -> Self {
+        self.display_range_db = range_db.clamp(1.5, 90.0);
         self
     }
 
@@ -153,10 +181,15 @@ impl<Message: Clone + 'static, const BINS: usize> SpectralAnalyzerWidget<Message
     }
 
     pub fn view(self) -> Element<'static, Message> {
-        canvas(self)
-            .width(Length::Fill)
-            .height(Length::Fixed(300.0))
-            .into()
+        self.view_with_height(Length::Fixed(300.0))
+    }
+
+    pub fn view_fill(self) -> Element<'static, Message> {
+        self.view_with_height(Length::Fill)
+    }
+
+    pub fn view_with_height(self, height: Length) -> Element<'static, Message> {
+        canvas(self).width(Length::Fill).height(height).into()
     }
 
     fn freq_to_x(freq: f32, bounds: Rectangle) -> f32 {
@@ -170,15 +203,35 @@ impl<Message: Clone + 'static, const BINS: usize> SpectralAnalyzerWidget<Message
         Self::F_MIN * (Self::F_MAX / Self::F_MIN).powf(t)
     }
 
-    fn spectrum_to_y(db: f32, bounds: Rectangle) -> f32 {
-        let db = db.clamp(Self::MIN_DB, Self::MAX_DB);
-        let t = (db - Self::MIN_DB) / (Self::MAX_DB - Self::MIN_DB);
+    fn min_db(&self) -> f32 {
+        if self.display_range_db > 0.0 {
+            -self.display_range_db.clamp(1.5, 30.0) * 1.75
+        } else {
+            -60.0
+        }
+    }
+
+    fn max_db(&self) -> f32 {
+        if self.display_range_db > 0.0 {
+            self.display_range_db.clamp(1.5, 30.0)
+        } else {
+            0.0
+        }
+    }
+
+    fn spectrum_to_y(&self, db: f32, bounds: Rectangle) -> f32 {
+        let min = self.min_db();
+        let max = self.max_db();
+        let db = db.clamp(min, max);
+        let t = (db - min) / (max - min);
         bounds.y + (1.0 - t) * bounds.height
     }
 
-    fn y_to_spectrum_db(y: f32, bounds: Rectangle) -> f32 {
+    fn y_to_spectrum_db(&self, y: f32, bounds: Rectangle) -> f32 {
+        let min = self.min_db();
+        let max = self.max_db();
         let t = (1.0 - ((y - bounds.y) / bounds.height)).clamp(0.0, 1.0);
-        Self::MIN_DB + t * (Self::MAX_DB - Self::MIN_DB)
+        min + t * (max - min)
     }
 
     fn smoothed_points(&self, bins_db: &[f32; BINS], bounds: Rectangle) -> Vec<Point> {
@@ -187,7 +240,7 @@ impl<Message: Clone + 'static, const BINS: usize> SpectralAnalyzerWidget<Message
             .enumerate()
             .map(|(i, &db)| {
                 let t = i as f32 / (BINS.saturating_sub(1).max(1) as f32);
-                Point::new(t * bounds.width, Self::spectrum_to_y(db, bounds))
+                Point::new(t * bounds.width, self.spectrum_to_y(db, bounds))
             })
             .collect()
     }
@@ -238,6 +291,7 @@ impl<Message: Clone + 'static, const BINS: usize> SpectralAnalyzerWidget<Message
     }
 
     fn threshold_curve_points(
+        &self,
         curve: &SpectrumThresholdCurve<Message>,
         bounds: Rectangle,
     ) -> Vec<Point> {
@@ -247,7 +301,7 @@ impl<Message: Clone + 'static, const BINS: usize> SpectralAnalyzerWidget<Message
             .map(|&(freq, db)| {
                 Point::new(
                     Self::freq_to_x(freq, bounds),
-                    Self::spectrum_to_y(db, bounds),
+                    self.spectrum_to_y(db, bounds),
                 )
             })
             .collect()
@@ -258,7 +312,7 @@ impl<Message: Clone + 'static, const BINS: usize> SpectralAnalyzerWidget<Message
         curve: &SpectrumThresholdCurve<Message>,
         bounds: Rectangle,
     ) -> Path {
-        let points = Self::threshold_curve_points(curve, bounds);
+        let points = self.threshold_curve_points(curve, bounds);
         Path::new(|b| {
             Self::draw_smooth_points(&points, b);
         })
@@ -268,10 +322,17 @@ impl<Message: Clone + 'static, const BINS: usize> SpectralAnalyzerWidget<Message
         let mut closest = None;
         let mut closest_distance = 8.0_f32;
         for (index, curve) in self.threshold_curves.iter().enumerate() {
-            if curve.on_drag_db.is_none() && curve.on_select.is_none() {
+            if curve.on_drag_db.is_none()
+                && curve.on_drag_db_at.is_none()
+                && curve.on_select.is_none()
+                && curve.on_select_at.is_none()
+                && curve.on_double_click_at.is_none()
+                && curve.on_middle_select_at.is_none()
+                && curve.on_middle_drag_db_at.is_none()
+            {
                 continue;
             }
-            let distance = Self::curve_distance(pos, &Self::threshold_curve_points(curve, bounds));
+            let distance = Self::curve_distance(pos, &self.threshold_curve_points(curve, bounds));
             if distance < closest_distance {
                 closest = Some(index);
                 closest_distance = distance;
@@ -303,7 +364,7 @@ impl<Message: Clone + 'static, const BINS: usize> SpectralAnalyzerWidget<Message
 #[derive(Default)]
 pub struct SpectralAnalyzerState {
     dragging_marker: Option<usize>,
-    dragging_curve: Option<(usize, f32)>,
+    dragging_curve: Option<(usize, f32, f32, mouse::Button)>,
     last_click: Option<(Instant, Point)>,
 }
 
@@ -349,19 +410,6 @@ impl<Message: Clone + 'static, const BINS: usize> Program<Message>
                     return Some(CanvasAction::capture());
                 }
 
-                if let Some(curve_index) = self.closest_curve(pos, local_bounds) {
-                    state.last_click = None;
-                    state.dragging_curve = Some((curve_index, pos.y));
-                    let action = self
-                        .threshold_curves
-                        .get(curve_index)
-                        .and_then(|curve| curve.on_select.clone())
-                        .map(CanvasAction::publish)
-                        .unwrap_or_else(CanvasAction::capture)
-                        .and_capture();
-                    return Some(action);
-                }
-
                 let is_double = state
                     .last_click
                     .take()
@@ -371,16 +419,74 @@ impl<Message: Clone + 'static, const BINS: usize> Program<Message>
                                 <= 6.0
                     })
                     .unwrap_or(false);
+
+                let freq = Self::x_to_freq(pos.x, local_bounds);
+                if let Some(curve_index) = self.closest_curve(pos, local_bounds) {
+                    if is_double
+                        && let Some(message) = self
+                            .threshold_curves
+                            .get(curve_index)
+                            .and_then(|curve| curve.on_double_click_at.as_ref())
+                            .map(|on_double_click| on_double_click(freq))
+                    {
+                        state.dragging_curve = None;
+                        state.last_click = None;
+                        return Some(CanvasAction::publish(message).and_capture());
+                    }
+                    state.last_click = Some((now, pos));
+                    state.dragging_curve = Some((curve_index, pos.y, freq, mouse::Button::Left));
+                    let action = self
+                        .threshold_curves
+                        .get(curve_index)
+                        .and_then(|curve| {
+                            curve
+                                .on_select_at
+                                .as_ref()
+                                .map(|on_select| on_select(freq))
+                                .or_else(|| curve.on_select.clone())
+                        })
+                        .map(CanvasAction::publish)
+                        .unwrap_or_else(CanvasAction::capture)
+                        .and_capture();
+                    return Some(action);
+                }
+
                 if is_double && let Some(on_double_click) = &self.on_double_click {
                     return Some(
                         CanvasAction::publish(on_double_click(
-                            Self::x_to_freq(pos.x, local_bounds),
-                            Self::y_to_spectrum_db(pos.y, local_bounds),
+                            freq,
+                            self.y_to_spectrum_db(pos.y, local_bounds),
                         ))
                         .and_capture(),
                     );
                 }
                 state.last_click = Some((now, pos));
+                None
+            }
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Middle)) => {
+                let pos = cursor.position_in(bounds)?;
+                if let Some(curve_index) = self.closest_curve(pos, local_bounds) {
+                    state.last_click = None;
+                    let freq = Self::x_to_freq(pos.x, local_bounds);
+                    state.dragging_curve = Some((curve_index, pos.y, freq, mouse::Button::Middle));
+                    let action = self
+                        .threshold_curves
+                        .get(curve_index)
+                        .and_then(|curve| {
+                            curve
+                                .on_middle_select_at
+                                .as_ref()
+                                .map(|on_select| on_select(freq))
+                                .or_else(|| {
+                                    curve.on_select_at.as_ref().map(|on_select| on_select(freq))
+                                })
+                                .or_else(|| curve.on_select.clone())
+                        })
+                        .map(CanvasAction::publish)
+                        .unwrap_or_else(CanvasAction::capture)
+                        .and_capture();
+                    return Some(action);
+                }
                 None
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
@@ -394,18 +500,43 @@ impl<Message: Clone + 'static, const BINS: usize> Program<Message>
                     );
                 }
 
-                if let Some((curve_index, last_y)) = state.dragging_curve {
+                if let Some((curve_index, last_y, drag_freq, button)) = state.dragging_curve {
                     let curve = self.threshold_curves.get(curve_index)?;
-                    let on_drag = curve.on_drag_db.as_ref()?;
-                    let last_db = Self::y_to_spectrum_db(last_y, local_bounds);
-                    let next_db = Self::y_to_spectrum_db(pos.y, local_bounds);
-                    state.dragging_curve = Some((curve_index, pos.y));
-                    return Some(CanvasAction::publish(on_drag(next_db - last_db)).and_capture());
+                    let last_db = self.y_to_spectrum_db(last_y, local_bounds);
+                    let next_db = self.y_to_spectrum_db(pos.y, local_bounds);
+                    state.last_click = None;
+                    state.dragging_curve = Some((curve_index, pos.y, drag_freq, button));
+                    let message = if button == mouse::Button::Middle {
+                        curve
+                            .on_middle_drag_db_at
+                            .as_ref()
+                            .map(|on_drag| on_drag(drag_freq, next_db - last_db))
+                            .or_else(|| {
+                                curve
+                                    .on_drag_db_at
+                                    .as_ref()
+                                    .map(|on_drag| on_drag(drag_freq, next_db - last_db))
+                            })
+                    } else {
+                        curve
+                            .on_drag_db_at
+                            .as_ref()
+                            .map(|on_drag| on_drag(drag_freq, next_db - last_db))
+                            .or_else(|| {
+                                curve
+                                    .on_drag_db
+                                    .as_ref()
+                                    .map(|on_drag| on_drag(next_db - last_db))
+                            })
+                    }?;
+                    return Some(CanvasAction::publish(message).and_capture());
                 }
 
                 None
             }
-            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+            Event::Mouse(mouse::Event::ButtonReleased(
+                mouse::Button::Left | mouse::Button::Middle,
+            )) => {
                 if let Some(marker_index) = state.dragging_marker.take() {
                     return self
                         .markers
@@ -415,11 +546,31 @@ impl<Message: Clone + 'static, const BINS: usize> Program<Message>
                         .or_else(|| Some(CanvasAction::capture()));
                 }
 
-                if let Some((curve_index, _)) = state.dragging_curve.take() {
+                if let Some((curve_index, _, drag_freq, button)) = state.dragging_curve.take() {
                     return self
                         .threshold_curves
                         .get(curve_index)
-                        .and_then(|curve| curve.on_release.clone())
+                        .and_then(|curve| {
+                            if button == mouse::Button::Middle {
+                                curve
+                                    .on_middle_release_at
+                                    .as_ref()
+                                    .map(|on_release| on_release(drag_freq))
+                                    .or_else(|| {
+                                        curve
+                                            .on_release_at
+                                            .as_ref()
+                                            .map(|on_release| on_release(drag_freq))
+                                    })
+                                    .or_else(|| curve.on_release.clone())
+                            } else {
+                                curve
+                                    .on_release_at
+                                    .as_ref()
+                                    .map(|on_release| on_release(drag_freq))
+                                    .or_else(|| curve.on_release.clone())
+                            }
+                        })
                         .map(|message| CanvasAction::publish(message).and_capture())
                         .or_else(|| Some(CanvasAction::capture()));
                 }
@@ -450,8 +601,10 @@ impl<Message: Clone + 'static, const BINS: usize> Program<Message>
             Color::from_rgb(0.098, 0.098, 0.106),
         );
 
-        for db in [-60.0_f32, -45.0, -30.0, -15.0, 0.0] {
-            let y = Self::spectrum_to_y(db, local_bounds);
+        let min = self.min_db();
+        let max = self.max_db();
+        for db in [min, min * 0.5, 0.0, max * 0.5, max] {
+            let y = self.spectrum_to_y(db, local_bounds);
             let path = Path::line(Point::new(0.0, y), Point::new(bounds.width, y));
             let c = if db == 0.0 {
                 Color::from_rgba(0.85, 0.87, 0.90, 0.28)
@@ -465,7 +618,13 @@ impl<Message: Clone + 'static, const BINS: usize> Program<Message>
                     .with_width(1.0),
             );
             frame.fill_text(Text {
-                content: format!("{db:.0}"),
+                content: if db == 0.0 {
+                    "0".to_string()
+                } else if db.fract().abs() < 0.01 {
+                    format!("{db:+.0}")
+                } else {
+                    format!("{db:+.1}")
+                },
                 position: Point::new(4.0, y + 2.0),
                 color: Color::from_rgba(0.72, 0.76, 0.82, 0.45),
                 size: 9.0.into(),
@@ -527,15 +686,25 @@ impl<Message: Clone + 'static, const BINS: usize> Program<Message>
 
         for curve in &self.threshold_curves {
             let path = self.threshold_curve_path(curve, local_bounds);
+            let color = if curve.selected {
+                curve
+                    .selected_color
+                    .unwrap_or_else(|| Color::from_rgba(1.0, 0.86, 0.22, 0.96))
+            } else {
+                curve
+                    .color
+                    .unwrap_or_else(|| Color::from_rgba(1.0, 0.48, 0.25, 0.72))
+            };
+            let width = if curve.selected {
+                curve.selected_width
+            } else {
+                curve.width
+            };
             frame.stroke(
                 &path,
                 canvas_module::Stroke::default()
-                    .with_color(if curve.selected {
-                        Color::from_rgba(1.0, 0.86, 0.22, 0.96)
-                    } else {
-                        Color::from_rgba(1.0, 0.48, 0.25, 0.72)
-                    })
-                    .with_width(if curve.selected { 2.4 } else { 1.4 }),
+                    .with_color(color)
+                    .with_width(width),
             );
         }
 

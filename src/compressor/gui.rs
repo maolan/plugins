@@ -21,9 +21,9 @@ use clap_clap::ffi::CLAP_WINDOW_API_WIN32;
 #[cfg(unix)]
 use clap_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::{
-    Alignment, Element, Length, Task, Theme,
+    Alignment, Color, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{checkbox, column, container, row, scrollable, text},
+    widget::{checkbox, column, container, row, text},
 };
 use maolan_widgets::arch_slider::arch_slider;
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
@@ -122,9 +122,14 @@ pub enum Message {
     SetScBoost(u8),
     SetTopology(u8),
     SetChannels(ChannelMode),
+    SetDisplayRange(f32),
     SelectThresholdBand(usize),
+    ResetThresholdBand(usize),
     DragThresholdBand(usize, f32),
     ReleaseThresholdBand(usize),
+    StartRangeBand(usize),
+    DragRangeBand(usize, f32),
+    ReleaseRangeBand(usize),
     CreateBand(f32),
     ReleaseParam(ParamId),
     UiTick,
@@ -141,6 +146,7 @@ struct State {
     spectrum_db: [[f32; DEFAULT_SPECTRUM_BINS]; 2],
     gain_reduction_db: Vec<f32>,
     selected_band: Option<usize>,
+    display_range_db: f32,
 
     last_registry_version: u64,
 }
@@ -164,6 +170,7 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             spectrum_db: [[SPECTRUM_FLOOR_DB; DEFAULT_SPECTRUM_BINS]; 2],
             gain_reduction_db: vec![0.0; band_count],
             selected_band: Some(0),
+            display_range_db: 12.0,
             last_registry_version: 0,
         },
         next_ui_tick_task(),
@@ -237,9 +244,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .set_param_outbound_only(ParamId::Channels, u32::from(mode) as f64);
             state.shared.request_audio_ports_rescan();
         }
+        Message::SetDisplayRange(range) => {
+            state.display_range_db = range;
+        }
         Message::SelectThresholdBand(band) => {
             state.selected_band =
                 Some(band.min(active_band_count(&state.shared).saturating_sub(1)));
+        }
+        Message::ResetThresholdBand(band) => {
+            let band = band.min(active_band_count(&state.shared).saturating_sub(1));
+            state.selected_band = Some(band);
+            let id = threshold_param_for_band(band);
+            state.shared.mark_gesture_begin_pending(id);
+            state.shared.set_param_outbound_only(id, 0.0);
+            state.shared.mark_gesture_end_pending(id);
         }
         Message::DragThresholdBand(band, delta_db) => {
             let id = threshold_param_for_band(band);
@@ -248,11 +266,43 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.active_gestures[idx] = true;
                 state.shared.mark_gesture_begin_pending(id);
             }
-            let value = state.shared.params.get(id) + f64::from(delta_db);
+            let (min, max) = display_range_bounds(state.display_range_db);
+            let value = (state.shared.params.get(id) + f64::from(delta_db))
+                .clamp(f64::from(min), f64::from(max));
             state.shared.set_param_outbound_only(id, value);
         }
         Message::ReleaseThresholdBand(band) => {
             let id = threshold_param_for_band(band);
+            let idx = id.as_index();
+            if state.active_gestures[idx] {
+                state.active_gestures[idx] = false;
+                state.shared.mark_gesture_end_pending(id);
+            }
+        }
+        Message::StartRangeBand(band) => {
+            state.selected_band =
+                Some(band.min(active_band_count(&state.shared).saturating_sub(1)));
+            let id = range_param_for_band(band);
+            let idx = id.as_index();
+            if !state.active_gestures[idx] {
+                state.active_gestures[idx] = true;
+                state.shared.mark_gesture_begin_pending(id);
+            }
+            state.shared.set_param_outbound_only(id, 0.0);
+        }
+        Message::DragRangeBand(band, delta_db) => {
+            let id = range_param_for_band(band);
+            let idx = id.as_index();
+            if !state.active_gestures[idx] {
+                state.active_gestures[idx] = true;
+                state.shared.mark_gesture_begin_pending(id);
+            }
+            let def = PARAMS[idx];
+            let value = (state.shared.params.get(id) + f64::from(delta_db)).clamp(def.min, def.max);
+            state.shared.set_param_outbound_only(id, value);
+        }
+        Message::ReleaseRangeBand(band) => {
+            let id = range_param_for_band(band);
             let idx = id.as_index();
             if state.active_gestures[idx] {
                 state.active_gestures[idx] = false;
@@ -353,7 +403,6 @@ fn view(state: &State) -> Element<'_, Message> {
     let band_count = active_band_count(&state.shared);
     let splits = active_splits(&state.shared);
 
-    let mut content = column![].spacing(12).align_x(Alignment::Start);
     let analyzer = SpectralAnalyzerWidget::new(
         state.spectrum_db,
         state.shared.channels.load(Ordering::Acquire) >= 2,
@@ -378,13 +427,16 @@ fn view(state: &State) -> Element<'_, Message> {
         sc_boost: state.shared.params.get_enum(ParamId::ScBoost),
         sample_rate: state.shared.sample_rate(),
         thresholds: threshold_param_ids().map(&p),
+        ranges: range_param_ids().map(&p),
+        gain_reduction_db: std::array::from_fn(|i| {
+            state.gain_reduction_db.get(i).copied().unwrap_or(0.0)
+        }),
         selected_band: state.selected_band,
     }))
+    .with_display_range(state.display_range_db)
     .with_gain_reduction(state.gain_reduction_db.clone())
     .on_double_click(|freq, _db| Message::CreateBand(freq))
-    .view();
-
-    content = content.push(analyzer);
+    .view_fill();
 
     let channels = p(ParamId::Channels).round() as u32;
     let channels_dropdown = maolan_baseview::iced::widget::pick_list(
@@ -401,140 +453,131 @@ fn view(state: &State) -> Element<'_, Message> {
             .map(|f| format!("{f:.0} Hz"))
             .collect::<Vec<_>>()
             .join(", ");
-        content = content.push(row![text(format!("EQ bands: {freq_text}")).size(12)].spacing(4));
+        let _ = freq_text;
     }
-
-    content = content.push(band_strip(state));
 
     let sc_mode = state.shared.params.get_enum(ParamId::ScMode).min(1);
     let mode = state.shared.params.get_enum(ParamId::Mode).min(1);
     let sc_boost = state.shared.params.get_enum(ParamId::ScBoost).min(4);
     let topology = state.shared.params.get_enum(ParamId::Topology).min(1);
-    content = content.push(
-        row![
-            text("Sidechain").size(16),
-            maolan_baseview::iced::widget::radio(
-                "Peak",
-                0u8,
-                Some(sc_mode as u8),
-                Message::SetScMode
-            ),
-            maolan_baseview::iced::widget::radio(
-                "RMS",
-                1u8,
-                Some(sc_mode as u8),
-                Message::SetScMode
-            ),
-            checkbox(b(ParamId::Bypass))
-                .label("Bypass")
-                .on_toggle(|v| Message::SetBoolParam(ParamId::Bypass, v)),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center),
-    );
-    content = content.push(
-        row![
-            text("Mode").size(16),
-            maolan_baseview::iced::widget::radio(
-                "Compress",
-                0u8,
-                Some(mode as u8),
-                Message::SetMode
-            ),
-            maolan_baseview::iced::widget::radio("Expand", 1u8, Some(mode as u8), Message::SetMode),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center),
-    );
-    content = content.push(
-        row![
-            text("SC Boost").size(16),
-            maolan_baseview::iced::widget::radio(
-                "Off",
-                0u8,
-                Some(sc_boost as u8),
-                Message::SetScBoost
-            ),
-            maolan_baseview::iced::widget::radio(
-                "BT+3",
-                1u8,
-                Some(sc_boost as u8),
-                Message::SetScBoost
-            ),
-            maolan_baseview::iced::widget::radio(
-                "MT+3",
-                2u8,
-                Some(sc_boost as u8),
-                Message::SetScBoost
-            ),
-            maolan_baseview::iced::widget::radio(
-                "BT+6",
-                3u8,
-                Some(sc_boost as u8),
-                Message::SetScBoost
-            ),
-            maolan_baseview::iced::widget::radio(
-                "MT+6",
-                4u8,
-                Some(sc_boost as u8),
-                Message::SetScBoost
-            ),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center),
-    );
-    content = content.push(
-        row![
-            text("Topology").size(16),
-            maolan_baseview::iced::widget::radio(
-                "Classic",
-                0u8,
-                Some(topology as u8),
-                Message::SetTopology
-            ),
-            maolan_baseview::iced::widget::radio(
-                "Modern",
-                1u8,
-                Some(topology as u8),
-                Message::SetTopology
-            ),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center),
-    );
 
-    content = content.push(
-        row![
-            channels_dropdown,
-            knob(
-                "Input",
-                ParamId::InputGain,
-                p(ParamId::InputGain),
-                "dB",
-                0.1
-            ),
-            knob(
-                "Output",
-                ParamId::OutputGain,
-                p(ParamId::OutputGain),
-                "dB",
-                0.1
-            ),
-            knob("Dry", ParamId::DryGain, p(ParamId::DryGain), "", 0.01),
-            knob("Wet", ParamId::WetGain, p(ParamId::WetGain), "", 0.01),
-            knob(
-                "Lookahead",
-                ParamId::Lookahead,
-                p(ParamId::Lookahead),
-                "ms",
-                0.01
-            ),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center),
-    );
+    let sidechain_controls = row![
+        text("Sidechain").size(16),
+        maolan_baseview::iced::widget::radio("Peak", 0u8, Some(sc_mode as u8), Message::SetScMode),
+        maolan_baseview::iced::widget::radio("RMS", 1u8, Some(sc_mode as u8), Message::SetScMode),
+        checkbox(b(ParamId::Bypass))
+            .label("Bypass")
+            .on_toggle(|v| Message::SetBoolParam(ParamId::Bypass, v)),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
 
-    container(scrollable(content))
+    let mode_controls = row![
+        text("Mode").size(16),
+        maolan_baseview::iced::widget::radio("Compress", 0u8, Some(mode as u8), Message::SetMode),
+        maolan_baseview::iced::widget::radio("Expand", 1u8, Some(mode as u8), Message::SetMode),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+
+    let boost_controls = row![
+        text("SC Boost").size(16),
+        maolan_baseview::iced::widget::radio("Off", 0u8, Some(sc_boost as u8), Message::SetScBoost),
+        maolan_baseview::iced::widget::radio(
+            "BT+3",
+            1u8,
+            Some(sc_boost as u8),
+            Message::SetScBoost
+        ),
+        maolan_baseview::iced::widget::radio(
+            "MT+3",
+            2u8,
+            Some(sc_boost as u8),
+            Message::SetScBoost
+        ),
+        maolan_baseview::iced::widget::radio(
+            "BT+6",
+            3u8,
+            Some(sc_boost as u8),
+            Message::SetScBoost
+        ),
+        maolan_baseview::iced::widget::radio(
+            "MT+6",
+            4u8,
+            Some(sc_boost as u8),
+            Message::SetScBoost
+        ),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+
+    let topology_controls = row![
+        text("Topology").size(16),
+        maolan_baseview::iced::widget::radio(
+            "Classic",
+            0u8,
+            Some(topology as u8),
+            Message::SetTopology
+        ),
+        maolan_baseview::iced::widget::radio(
+            "Modern",
+            1u8,
+            Some(topology as u8),
+            Message::SetTopology
+        ),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+
+    let bottom_controls = row![
+        channels_dropdown,
+        text("Range").size(11),
+        maolan_baseview::iced::widget::pick_list(
+            vec![3.0_f32, 6.0, 12.0, 30.0],
+            Some(state.display_range_db),
+            Message::SetDisplayRange,
+        )
+        .width(Length::Fixed(70.0)),
+        knob(
+            "Input",
+            ParamId::InputGain,
+            p(ParamId::InputGain),
+            "dB",
+            0.1
+        ),
+        knob(
+            "Output",
+            ParamId::OutputGain,
+            p(ParamId::OutputGain),
+            "dB",
+            0.1
+        ),
+        knob("Dry", ParamId::DryGain, p(ParamId::DryGain), "", 0.01),
+        knob("Wet", ParamId::WetGain, p(ParamId::WetGain), "", 0.01),
+        knob(
+            "Lookahead",
+            ParamId::Lookahead,
+            p(ParamId::Lookahead),
+            "ms",
+            0.01
+        ),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+
+    let content = column![
+        analyzer,
+        band_strip(state),
+        sidechain_controls,
+        mode_controls,
+        boost_controls,
+        topology_controls,
+        bottom_controls,
+    ]
+    .spacing(12)
+    .align_x(Alignment::Start);
+
+    container(content)
         .padding(16)
         .width(Length::Fill)
         .height(Length::Fill)
@@ -564,34 +607,30 @@ fn band_strip(state: &State) -> Element<'_, Message> {
     band_section(selected, state, ids[selected])
 }
 
-fn band_section<'a>(band: usize, state: &'a State, ids: BandIds) -> Element<'a, Message> {
+fn band_section<'a>(_band: usize, state: &'a State, ids: BandIds) -> Element<'a, Message> {
     let p = |id: ParamId| state.shared.params.get(id) as f32;
+    let threshold_range = display_range_bounds(state.display_range_db);
     container(
-        column![
-            text(format!("Band {}", band + 1)).size(16),
-            row![
-                knob("Th", ids.th, p(ids.th), "dB", 0.1),
-                knob("Range", ids.range, p(ids.range), "dB", 0.1),
-            ]
-            .spacing(4),
-            row![
-                knob("Ratio", ids.ratio, p(ids.ratio), "", 0.1),
-                knob("Knee", ids.knee, p(ids.knee), "dB", 0.1),
-            ]
-            .spacing(4),
-            row![
-                knob("Atk", ids.att, p(ids.att), "ms", 0.1),
-                knob("Rel", ids.rel, p(ids.rel), "ms", 0.1),
-            ]
-            .spacing(4),
+        row![
+            knob_with_range("Th", ids.th, p(ids.th), "dB", 0.1, Some(threshold_range)),
+            knob("Range", ids.range, p(ids.range), "dB", 0.1),
+            knob("Ratio", ids.ratio, p(ids.ratio), "", 0.1),
+            knob("Knee", ids.knee, p(ids.knee), "dB", 0.1),
+            knob("Atk", ids.att, p(ids.att), "ms", 0.1),
+            knob("Rel", ids.rel, p(ids.rel), "ms", 0.1),
             knob("Makeup", ids.makeup, p(ids.makeup), "dB", 0.1),
         ]
-        .spacing(6)
-        .align_x(Alignment::Center),
+        .spacing(8)
+        .align_y(Alignment::Center),
     )
     .padding(4)
     .width(Length::Fill)
     .into()
+}
+
+fn display_range_bounds(range_db: f32) -> (f32, f32) {
+    let max = range_db.clamp(1.5, 30.0);
+    (-max * 1.75, max)
 }
 
 fn active_band_count(shared: &SharedState) -> usize {
@@ -620,6 +659,17 @@ fn threshold_param_ids() -> [ParamId; MAX_COMPRESSOR_BANDS] {
         ParamId::B4Threshold,
         ParamId::B5Threshold,
         ParamId::B6Threshold,
+    ]
+}
+
+fn range_param_ids() -> [ParamId; MAX_COMPRESSOR_BANDS] {
+    [
+        ParamId::B1Range,
+        ParamId::B2Range,
+        ParamId::B3Range,
+        ParamId::B4Range,
+        ParamId::B5Range,
+        ParamId::B6Range,
     ]
 }
 
@@ -700,6 +750,10 @@ fn threshold_param_for_band(band: usize) -> ParamId {
     threshold_param_ids()[band.min(MAX_COMPRESSOR_BANDS - 1)]
 }
 
+fn range_param_for_band(band: usize) -> ParamId {
+    range_param_ids()[band.min(MAX_COMPRESSOR_BANDS - 1)]
+}
+
 struct ThresholdCurveParams {
     splits: Vec<f32>,
     band_count: usize,
@@ -707,6 +761,8 @@ struct ThresholdCurveParams {
     sc_boost: u32,
     sample_rate: f32,
     thresholds: [f32; MAX_COMPRESSOR_BANDS],
+    ranges: [f32; MAX_COMPRESSOR_BANDS],
+    gain_reduction_db: [f32; MAX_COMPRESSOR_BANDS],
     selected_band: Option<usize>,
 }
 
@@ -717,31 +773,120 @@ fn threshold_curves(params: ThresholdCurveParams) -> Vec<SpectrumThresholdCurve<
 
     let band_count = params.band_count.clamp(1, MAX_COMPRESSOR_BANDS);
     let splits = sorted_splits(&params.splits, band_count);
-    (0..band_count)
-        .map(|band| {
-            let mut points = Vec::with_capacity(POINTS);
-            let boost_db = sidechain_boost_db(params.sc_boost, band);
-            for point in 0..POINTS {
-                let t = point as f32 / (POINTS - 1) as f32;
-                let freq = F_MIN * (F_MAX / F_MIN).powf(t);
-                let response_db =
-                    detector_band_response_db(band, freq, &splits, params.sample_rate);
-                points.push((
-                    freq,
-                    params.thresholds[band] - params.input_gain_db - boost_db - response_db,
-                ));
-            }
-            SpectrumThresholdCurve {
-                points,
-                selected: params.selected_band == Some(band),
-                on_select: Some(Message::SelectThresholdBand(band)),
-                on_drag_db: Some(Arc::new(move |delta_db| {
-                    Message::DragThresholdBand(band, delta_db)
-                })),
-                on_release: Some(Message::ReleaseThresholdBand(band)),
-            }
-        })
-        .collect()
+    let mut points = Vec::with_capacity(POINTS);
+    let threshold_values: [f32; MAX_COMPRESSOR_BANDS] = std::array::from_fn(|band| {
+        params.thresholds[band] - params.input_gain_db - sidechain_boost_db(params.sc_boost, band)
+    });
+    let range_values: [f32; MAX_COMPRESSOR_BANDS] =
+        std::array::from_fn(|band| threshold_values[band] + params.ranges[band]);
+    let live_values: [f32; MAX_COMPRESSOR_BANDS] = std::array::from_fn(|band| {
+        threshold_values[band]
+            + live_range_offset_db(params.ranges[band], params.gain_reduction_db[band])
+    });
+    let mut range_points = Vec::with_capacity(POINTS);
+    for point in 0..POINTS {
+        let t = point as f32 / (POINTS - 1) as f32;
+        let freq = F_MIN * (F_MAX / F_MIN).powf(t);
+        points.push((
+            freq,
+            blended_threshold_db(freq, &splits, band_count, params.sample_rate, &live_values),
+        ));
+        range_points.push((
+            freq,
+            blended_threshold_db(freq, &splits, band_count, params.sample_rate, &range_values),
+        ));
+    }
+
+    let select_splits = splits.clone();
+    let drag_splits = splits.clone();
+    let reset_splits = splits.clone();
+    let release_splits = splits.clone();
+    let threshold_middle_select_splits = splits.clone();
+    let threshold_middle_drag_splits = splits.clone();
+    let threshold_middle_release_splits = splits.clone();
+    let range_select_splits = splits.clone();
+    let range_drag_splits = splits.clone();
+    let range_release_splits = splits;
+    let selected = params.selected_band.is_some();
+    vec![
+        SpectrumThresholdCurve {
+            points,
+            selected,
+            color: Some(Color::from_rgba(0.90, 0.93, 0.96, 0.90)),
+            selected_color: Some(Color::from_rgba(0.90, 0.93, 0.96, 0.96)),
+            width: 1.5,
+            selected_width: 1.5,
+            on_select: None,
+            on_select_at: Some(Arc::new(move |freq| {
+                Message::SelectThresholdBand(
+                    band_for_freq(freq, &select_splits).min(band_count - 1),
+                )
+            })),
+            on_drag_db: None,
+            on_drag_db_at: Some(Arc::new(move |freq, delta_db| {
+                Message::DragThresholdBand(
+                    band_for_freq(freq, &drag_splits).min(band_count - 1),
+                    delta_db,
+                )
+            })),
+            on_double_click_at: Some(Arc::new(move |freq| {
+                Message::ResetThresholdBand(band_for_freq(freq, &reset_splits).min(band_count - 1))
+            })),
+            on_release: None,
+            on_release_at: Some(Arc::new(move |freq| {
+                Message::ReleaseThresholdBand(
+                    band_for_freq(freq, &release_splits).min(band_count - 1),
+                )
+            })),
+            on_middle_select_at: Some(Arc::new(move |freq| {
+                Message::StartRangeBand(
+                    band_for_freq(freq, &threshold_middle_select_splits).min(band_count - 1),
+                )
+            })),
+            on_middle_drag_db_at: Some(Arc::new(move |freq, delta_db| {
+                Message::DragRangeBand(
+                    band_for_freq(freq, &threshold_middle_drag_splits).min(band_count - 1),
+                    delta_db,
+                )
+            })),
+            on_middle_release_at: Some(Arc::new(move |freq| {
+                Message::ReleaseRangeBand(
+                    band_for_freq(freq, &threshold_middle_release_splits).min(band_count - 1),
+                )
+            })),
+        },
+        SpectrumThresholdCurve {
+            points: range_points,
+            selected,
+            color: Some(Color::from_rgba(1.0, 0.83, 0.10, 0.30)),
+            selected_color: Some(Color::from_rgba(1.0, 0.83, 0.10, 0.44)),
+            width: 1.0,
+            selected_width: 1.5,
+            on_select: None,
+            on_select_at: Some(Arc::new(move |freq| {
+                Message::SelectThresholdBand(
+                    band_for_freq(freq, &range_select_splits).min(band_count - 1),
+                )
+            })),
+            on_drag_db: None,
+            on_drag_db_at: Some(Arc::new(move |freq, delta_db| {
+                Message::DragRangeBand(
+                    band_for_freq(freq, &range_drag_splits).min(band_count - 1),
+                    delta_db,
+                )
+            })),
+            on_double_click_at: None,
+            on_release: None,
+            on_release_at: Some(Arc::new(move |freq| {
+                Message::ReleaseRangeBand(
+                    band_for_freq(freq, &range_release_splits).min(band_count - 1),
+                )
+            })),
+            on_middle_select_at: None,
+            on_middle_drag_db_at: None,
+            on_middle_release_at: None,
+        },
+    ]
 }
 
 fn sorted_splits(splits: &[f32], band_count: usize) -> Vec<f32> {
@@ -756,6 +901,42 @@ fn sorted_splits(splits: &[f32], band_count: usize) -> Vec<f32> {
     splits
 }
 
+fn band_for_freq(freq: f32, splits: &[f32]) -> usize {
+    splits.iter().take_while(|split| freq >= **split).count()
+}
+
+fn blended_threshold_db(
+    freq: f32,
+    splits: &[f32],
+    band_count: usize,
+    sample_rate: f32,
+    thresholds: &[f32; MAX_COMPRESSOR_BANDS],
+) -> f32 {
+    let mut weighted_sum = 0.0;
+    let mut total_weight = 0.0;
+    for (band, threshold) in thresholds.iter().copied().enumerate().take(band_count) {
+        let weight = detector_band_magnitude(band, freq, splits, sample_rate).powi(2);
+        weighted_sum += threshold * weight;
+        total_weight += weight;
+    }
+    if total_weight > 1.0e-9 {
+        weighted_sum / total_weight
+    } else {
+        thresholds[band_for_freq(freq, splits).min(band_count.saturating_sub(1))]
+    }
+}
+
+fn live_range_offset_db(range_db: f32, gain_reduction_db: f32) -> f32 {
+    let live_gain_db = -gain_reduction_db;
+    if range_db > 0.0 {
+        live_gain_db.clamp(0.0, range_db)
+    } else if range_db < 0.0 {
+        live_gain_db.clamp(range_db, 0.0)
+    } else {
+        0.0
+    }
+}
+
 fn sidechain_boost_db(sc_boost: u32, band: usize) -> f32 {
     match sc_boost {
         1 if band == 0 => 3.0,
@@ -766,7 +947,7 @@ fn sidechain_boost_db(sc_boost: u32, band: usize) -> f32 {
     }
 }
 
-fn detector_band_response_db(band: usize, freq: f32, splits: &[f32], sample_rate: f32) -> f32 {
+fn detector_band_magnitude(band: usize, freq: f32, splits: &[f32], sample_rate: f32) -> f32 {
     let mut response = 1.0;
     for split in splits.iter().take(band) {
         response *= lr4_highpass_magnitude(freq, *split, sample_rate);
@@ -774,7 +955,7 @@ fn detector_band_response_db(band: usize, freq: f32, splits: &[f32], sample_rate
     if let Some(split) = splits.get(band) {
         response *= lr4_lowpass_magnitude(freq, *split, sample_rate);
     }
-    20.0 * response.max(1.0e-6).log10()
+    response
 }
 
 fn lr4_lowpass_magnitude(freq: f32, cutoff: f32, sample_rate: f32) -> f32 {
@@ -867,9 +1048,22 @@ fn knob(
     units: &'static str,
     step: f32,
 ) -> Element<'static, Message> {
+    knob_with_range(label, id, value, units, step, None)
+}
+
+fn knob_with_range(
+    label: &'static str,
+    id: ParamId,
+    value: f32,
+    units: &'static str,
+    step: f32,
+    range: Option<(f32, f32)>,
+) -> Element<'static, Message> {
     let def = PARAMS[id.as_index()];
-    let slider = arch_slider(def.min as f32..=def.max as f32, value, move |v| {
-        Message::SetParam(id, v)
+    let min = range.map(|(min, _)| min).unwrap_or(def.min as f32);
+    let max = range.map(|(_, max)| max).unwrap_or(def.max as f32);
+    let slider = arch_slider(min..=max, value.clamp(min, max), move |v| {
+        Message::SetParam(id, v.clamp(min, max))
     })
     .step(step)
     .double_click_reset(def.default as f32)
@@ -1019,13 +1213,238 @@ impl GuiBridge {
         true
     }
 
-    pub fn hide(&mut self, shared: Arc<SharedState>) -> bool {
+    pub fn hide(&mut self) -> (bool, bool) {
         if self.floating {
             self.floating_open.store(false, Ordering::Release);
-            shared.request_gui_closed();
-            return true;
+            return (true, true);
         }
         self.window_handle = None;
-        true
+        (true, false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn curve_for_thresholds(thresholds: [f32; MAX_COMPRESSOR_BANDS]) -> Vec<(f32, f32)> {
+        let curves = threshold_curves(ThresholdCurveParams {
+            splits: vec![200.0, 2000.0, 8000.0],
+            band_count: 4,
+            input_gain_db: 0.0,
+            sc_boost: 0,
+            sample_rate: 48_000.0,
+            thresholds,
+            ranges: [-6.0; MAX_COMPRESSOR_BANDS],
+            gain_reduction_db: [0.0; MAX_COMPRESSOR_BANDS],
+            selected_band: Some(0),
+        });
+        assert_eq!(curves.len(), 2);
+        curves[0].points.clone()
+    }
+
+    fn range_curve_for_values(
+        thresholds: [f32; MAX_COMPRESSOR_BANDS],
+        ranges: [f32; MAX_COMPRESSOR_BANDS],
+    ) -> Vec<(f32, f32)> {
+        let curves = threshold_curves(ThresholdCurveParams {
+            splits: vec![200.0, 2000.0, 8000.0],
+            band_count: 4,
+            input_gain_db: 0.0,
+            sc_boost: 0,
+            sample_rate: 48_000.0,
+            thresholds,
+            ranges,
+            gain_reduction_db: [0.0; MAX_COMPRESSOR_BANDS],
+            selected_band: Some(0),
+        });
+        assert_eq!(curves.len(), 2);
+        curves[1].points.clone()
+    }
+
+    #[test]
+    fn equal_thresholds_draw_flat_contour() {
+        let points = curve_for_thresholds([-10.5; MAX_COMPRESSOR_BANDS]);
+        for &(_, db) in &points {
+            assert!(
+                (db + 10.5).abs() < 1.0e-4,
+                "expected flat -10.5 dB contour, got {db}"
+            );
+        }
+    }
+
+    #[test]
+    fn threshold_ui_range_matches_analyzer_range() {
+        assert_eq!(display_range_bounds(12.0), (-21.0, 12.0));
+        assert_eq!(display_range_bounds(30.0), (-52.5, 30.0));
+    }
+
+    #[test]
+    fn middle_drag_range_starts_from_threshold() {
+        let shared = Arc::new(SharedState::default());
+        shared.set_param_outbound_only(ParamId::B1Range, -30.0);
+        let (mut state, _task) = init(shared.clone());
+
+        let _ = update(&mut state, Message::StartRangeBand(0));
+        assert_eq!(state.selected_band, Some(0));
+        assert_eq!(shared.params.get(ParamId::B1Range), 0.0);
+
+        let _ = update(&mut state, Message::DragRangeBand(0, 4.0));
+        assert_eq!(shared.params.get(ParamId::B1Range), 4.0);
+    }
+
+    #[test]
+    fn reset_threshold_band_sets_threshold_to_zero() {
+        let shared = Arc::new(SharedState::default());
+        shared.set_param_outbound_only(ParamId::B2Threshold, -18.0);
+        let (mut state, _task) = init(shared.clone());
+
+        let _ = update(&mut state, Message::ResetThresholdBand(1));
+
+        assert_eq!(state.selected_band, Some(1));
+        assert_eq!(shared.params.get(ParamId::B2Threshold), 0.0);
+    }
+
+    #[test]
+    fn threshold_curve_double_click_resets_clicked_band() {
+        let curves = threshold_curves(ThresholdCurveParams {
+            splits: vec![200.0, 2000.0, 8000.0],
+            band_count: 4,
+            input_gain_db: 0.0,
+            sc_boost: 0,
+            sample_rate: 48_000.0,
+            thresholds: [-10.0; MAX_COMPRESSOR_BANDS],
+            ranges: [-6.0; MAX_COMPRESSOR_BANDS],
+            gain_reduction_db: [0.0; MAX_COMPRESSOR_BANDS],
+            selected_band: Some(0),
+        });
+
+        let reset = curves[0].on_double_click_at.as_ref().unwrap()(500.0);
+        match reset {
+            Message::ResetThresholdBand(band) => assert_eq!(band, 1),
+            other => panic!("expected reset message, got {other:?}"),
+        }
+        assert!(curves[1].on_double_click_at.is_none());
+    }
+
+    #[test]
+    fn live_threshold_contour_ducks_whole_band_toward_negative_range() {
+        let curves = threshold_curves(ThresholdCurveParams {
+            splits: vec![200.0, 2000.0, 8000.0],
+            band_count: 4,
+            input_gain_db: 0.0,
+            sc_boost: 0,
+            sample_rate: 48_000.0,
+            thresholds: [-10.0; MAX_COMPRESSOR_BANDS],
+            ranges: [-6.0; MAX_COMPRESSOR_BANDS],
+            gain_reduction_db: [3.0; MAX_COMPRESSOR_BANDS],
+            selected_band: Some(0),
+        });
+
+        for &(_, db) in &curves[0].points {
+            assert!(
+                (db + 13.0).abs() < 1.0e-4,
+                "expected live contour to duck to -13 dB, got {db}"
+            );
+        }
+    }
+
+    #[test]
+    fn live_threshold_contour_expands_whole_band_toward_positive_range() {
+        let curves = threshold_curves(ThresholdCurveParams {
+            splits: vec![200.0, 2000.0, 8000.0],
+            band_count: 4,
+            input_gain_db: 0.0,
+            sc_boost: 0,
+            sample_rate: 48_000.0,
+            thresholds: [-10.0; MAX_COMPRESSOR_BANDS],
+            ranges: [6.0; MAX_COMPRESSOR_BANDS],
+            gain_reduction_db: [-4.0; MAX_COMPRESSOR_BANDS],
+            selected_band: Some(0),
+        });
+
+        for &(_, db) in &curves[0].points {
+            assert!(
+                (db + 6.0).abs() < 1.0e-4,
+                "expected live contour to expand to -6 dB, got {db}"
+            );
+        }
+    }
+
+    #[test]
+    fn live_threshold_contour_clamps_to_configured_range() {
+        let curves = threshold_curves(ThresholdCurveParams {
+            splits: vec![200.0, 2000.0, 8000.0],
+            band_count: 4,
+            input_gain_db: 0.0,
+            sc_boost: 0,
+            sample_rate: 48_000.0,
+            thresholds: [-10.0; MAX_COMPRESSOR_BANDS],
+            ranges: [-6.0; MAX_COMPRESSOR_BANDS],
+            gain_reduction_db: [24.0; MAX_COMPRESSOR_BANDS],
+            selected_band: Some(0),
+        });
+
+        for &(_, db) in &curves[0].points {
+            assert!(
+                (db + 16.0).abs() < 1.0e-4,
+                "expected live contour to clamp at -16 dB, got {db}"
+            );
+        }
+    }
+
+    #[test]
+    fn range_contour_draws_threshold_plus_range() {
+        let points =
+            range_curve_for_values([-10.0; MAX_COMPRESSOR_BANDS], [-6.0; MAX_COMPRESSOR_BANDS]);
+        for &(_, db) in &points {
+            assert!(
+                (db + 16.0).abs() < 1.0e-4,
+                "expected flat -16 dB range contour, got {db}"
+            );
+        }
+
+        let points =
+            range_curve_for_values([-10.0; MAX_COMPRESSOR_BANDS], [4.0; MAX_COMPRESSOR_BANDS]);
+        for &(_, db) in &points {
+            assert!(
+                (db + 6.0).abs() < 1.0e-4,
+                "expected flat -6 dB range contour, got {db}"
+            );
+        }
+    }
+
+    #[test]
+    fn different_thresholds_ease_across_split() {
+        let points = curve_for_thresholds([-20.0, -8.0, -8.0, -8.0, 0.0, 0.0]);
+        let low = points
+            .iter()
+            .find(|(freq, _)| *freq > 90.0)
+            .map(|(_, db)| *db)
+            .unwrap();
+        let split = points
+            .iter()
+            .find(|(freq, _)| *freq > 200.0)
+            .map(|(_, db)| *db)
+            .unwrap();
+        let high = points
+            .iter()
+            .find(|(freq, _)| *freq > 500.0)
+            .map(|(_, db)| *db)
+            .unwrap();
+
+        assert!(low < split && split < high);
+        assert!(
+            low < -14.0,
+            "low band should stay near its threshold: {low}"
+        );
+        assert!(
+            (-18.0..=-10.0).contains(&split),
+            "split should be an eased blend, got {split}"
+        );
+        assert!(
+            high > -10.0,
+            "next band should ease toward its threshold: {high}"
+        );
     }
 }

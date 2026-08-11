@@ -3250,15 +3250,14 @@ impl GuiBridge {
         true
     }
 
-    pub fn hide(&mut self, shared: Arc<SharedState<ParamId>>) -> bool {
+    pub fn hide(&mut self, shared: Arc<SharedState<ParamId>>) -> (bool, bool) {
         shared.set_ui_visible(false);
         if self.floating {
             self.floating_open.store(false, Ordering::Release);
-            shared.request_gui_closed();
-            return true;
+            return (true, true);
         }
         self.window_handle = None;
-        true
+        (true, false)
     }
 }
 #[cfg(target_os = "windows")]

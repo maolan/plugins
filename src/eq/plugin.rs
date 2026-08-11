@@ -1715,7 +1715,11 @@ unsafe extern "C-unwind" fn ext_gui_show(plugin: *const clap_plugin) -> bool {
 
 unsafe extern "C-unwind" fn ext_gui_hide(plugin: *const clap_plugin) -> bool {
     let instance = unsafe { instance(plugin) };
-    instance.gui_bridge.lock().hide(instance.shared.clone())
+    let (hidden, notify_closed) = instance.gui_bridge.lock().hide(instance.shared.clone());
+    if notify_closed {
+        instance.shared.request_gui_closed();
+    }
+    hidden
 }
 
 static GUI_EXT: clap_plugin_gui = clap_plugin_gui {
