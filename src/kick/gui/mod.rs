@@ -629,10 +629,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let mut kit = state.shared.kit.lock();
             if let Some(ref inst) = *state.shared.instrument_clipboard.lock() {
                 kit.instruments[active_inst] = inst.clone();
-                state
-                    .shared
-                    .kit_version
-                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                state.shared.mark_kit_changed();
             }
         }
         Message::DuplicateInstrument => {
@@ -658,10 +655,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .params
                         .set(dst_id, state.shared.params.get(src));
                 }
-                state
-                    .shared
-                    .kit_version
-                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                state.shared.mark_kit_changed();
             }
         }
         Message::ClearInstrument => {
@@ -680,10 +674,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     let def = param_type_def(ty);
                     state.shared.params.set(id, def.default);
                 }
-                state
-                    .shared
-                    .kit_version
-                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                state.shared.mark_kit_changed();
             }
         }
         Message::EnvelopeEdit(msg) => {
@@ -732,10 +723,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                 }
             }
-            state
-                .shared
-                .kit_version
-                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            state.shared.mark_kit_changed();
         }
         Message::PresetNameChanged(name) => {
             state.preset_name_input = name;
@@ -768,10 +756,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     kit_state.apply_params(&state.shared.params);
                     let mut kit = state.shared.kit.lock();
                     *kit = crate::kick::plugin::config_to_kit(&kit_cfg, state.shared.sample_rate());
-                    state
-                        .shared
-                        .kit_version
-                        .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                    state.shared.mark_kit_changed();
                 }
             }
         }
@@ -906,10 +891,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     samples, sr as f32,
                 ));
                 osc.waveform = crate::kick::dsp::oscillator::Waveform::Sample;
-                state
-                    .shared
-                    .kit_version
-                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                state.shared.mark_kit_changed();
             }
         }
         Message::InstrumentNameChanged(name) => {
@@ -922,10 +904,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let mut kit = state.shared.kit.lock();
             if active_inst < kit.instruments.len() {
                 kit.instruments[active_inst].name = name;
-                state
-                    .shared
-                    .kit_version
-                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                state.shared.mark_kit_changed();
             }
         }
         Message::MainTabChanged(tab) => {

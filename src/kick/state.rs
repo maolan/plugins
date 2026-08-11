@@ -20,13 +20,16 @@ pub struct KitState {
     pub params: BTreeMap<String, f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct KitConfig {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub humanizer_velocity: f32,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub humanizer_timing_ms: f32,
-    #[serde(default = "default_instruments")]
+    #[serde(
+        default = "default_instruments",
+        skip_serializing_if = "is_default_instruments"
+    )]
     pub instruments: Vec<InstrumentConfig>,
 }
 
@@ -36,53 +39,68 @@ fn default_instruments() -> Vec<InstrumentConfig> {
         .collect()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InstrumentConfig {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
-    #[serde(default = "default_layers")]
+    #[serde(default = "default_layers", skip_serializing_if = "is_default_layers")]
     pub layers: Vec<LayerConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub master_filter_type: u8,
-    #[serde(default = "default_cutoff")]
+    #[serde(default = "default_cutoff", skip_serializing_if = "is_default_cutoff")]
     pub master_filter_cutoff_hz: f32,
-    #[serde(default = "default_q")]
+    #[serde(default = "default_q", skip_serializing_if = "is_default_q")]
     pub master_filter_q: f32,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub master_distortion_type: u8,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub master_distortion_drive: f32,
-    #[serde(default = "default_limit")]
+    #[serde(default = "default_limit", skip_serializing_if = "is_default_limit")]
     pub master_distortion_input_limit: f32,
-    #[serde(default = "default_limit")]
+    #[serde(default = "default_limit", skip_serializing_if = "is_default_limit")]
     pub master_distortion_output_limit: f32,
-    #[serde(default = "default_flat_env")]
+    #[serde(
+        default = "default_flat_env",
+        skip_serializing_if = "is_default_flat_env"
+    )]
     pub master_distortion_volume_env: SerdeEnvelope,
-    #[serde(default = "default_limiter_threshold")]
+    #[serde(
+        default = "default_limiter_threshold",
+        skip_serializing_if = "is_default"
+    )]
     pub master_limiter_threshold_db: f32,
-    #[serde(default = "default_limiter_release")]
+    #[serde(
+        default = "default_limiter_release",
+        skip_serializing_if = "is_default_limiter_release"
+    )]
     pub master_limiter_release_ms: f32,
-    #[serde(default = "default_length")]
+    #[serde(default = "default_length", skip_serializing_if = "is_default_length")]
     pub length_ms: f32,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub output_gain_db: f32,
-    #[serde(default = "default_note_off")]
+    #[serde(
+        default = "default_note_off",
+        skip_serializing_if = "is_default_note_off"
+    )]
     pub note_off_decay_ms: f32,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", skip_serializing_if = "is_default_true")]
     pub note_off_enabled: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub pitch_to_note: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub key_min: u8,
-    #[serde(default = "default_key_max")]
+    #[serde(
+        default = "default_key_max",
+        skip_serializing_if = "is_default_key_max"
+    )]
     pub key_max: u8,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub midi_channel: u8,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub muted: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub soloed: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default_amp_env")]
     pub global_amp_env: SerdeEnvelope,
 }
 
@@ -116,29 +134,35 @@ impl Default for InstrumentConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LayerConfig {
-    #[serde(default = "default_oscillators")]
+    #[serde(
+        default = "default_oscillators",
+        skip_serializing_if = "is_default_oscillators"
+    )]
     pub oscillators: Vec<OscillatorConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub noise: NoiseConfig,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", skip_serializing_if = "is_default_true")]
     pub enabled: bool,
-    #[serde(default = "default_one")]
+    #[serde(default = "default_one", skip_serializing_if = "is_default_one")]
     pub amplitude: f32,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub filter_type: u8,
-    #[serde(default = "default_cutoff")]
+    #[serde(default = "default_cutoff", skip_serializing_if = "is_default_cutoff")]
     pub filter_cutoff_hz: f32,
-    #[serde(default = "default_q")]
+    #[serde(default = "default_q", skip_serializing_if = "is_default_q")]
     pub filter_q: f32,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub distortion_type: u8,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub distortion_drive: f32,
-    #[serde(default = "default_flat_env")]
+    #[serde(
+        default = "default_flat_env",
+        skip_serializing_if = "is_default_flat_env"
+    )]
     pub distortion_volume_env: SerdeEnvelope,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub fm_routing: Vec<u8>,
 }
 
@@ -160,51 +184,75 @@ impl Default for LayerConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OscillatorConfig {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub waveform: u8,
-    #[serde(default = "default_freq")]
+    #[serde(default = "default_freq", skip_serializing_if = "is_default_freq")]
     pub base_freq_hz: f32,
-    #[serde(default = "default_osc_amp")]
+    #[serde(
+        default = "default_osc_amp",
+        skip_serializing_if = "is_default_osc_amp"
+    )]
     pub amplitude: f32,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub initial_phase: f32,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub fm_amount: f32,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub pitch_to_note: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub filter_type: u8,
-    #[serde(default = "default_cutoff")]
+    #[serde(default = "default_cutoff", skip_serializing_if = "is_default_cutoff")]
     pub filter_cutoff_hz: f32,
-    #[serde(default = "default_q")]
+    #[serde(default = "default_q", skip_serializing_if = "is_default_q")]
     pub filter_q: f32,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub distortion_type: u8,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub distortion_drive: f32,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sample_data: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default_sample_rate")]
     pub sample_rate: f32,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default_pitch_env")]
     pub pitch_env: SerdeEnvelope,
-    #[serde(default = "default_amp_env")]
+    #[serde(
+        default = "default_amp_env",
+        skip_serializing_if = "is_default_amp_env"
+    )]
     pub amp_env: SerdeEnvelope,
-    #[serde(default = "default_flat_env")]
+    #[serde(
+        default = "default_flat_env",
+        skip_serializing_if = "is_default_flat_env"
+    )]
     pub filter_cutoff_env: SerdeEnvelope,
-    #[serde(default = "default_flat_env")]
+    #[serde(
+        default = "default_flat_env",
+        skip_serializing_if = "is_default_flat_env"
+    )]
     pub filter_q_env: SerdeEnvelope,
-    #[serde(default = "default_flat_env")]
+    #[serde(
+        default = "default_flat_env",
+        skip_serializing_if = "is_default_flat_env"
+    )]
     pub distortion_drive_env: SerdeEnvelope,
-    #[serde(default = "default_flat_env")]
+    #[serde(
+        default = "default_flat_env",
+        skip_serializing_if = "is_default_flat_env"
+    )]
     pub distortion_volume_env: SerdeEnvelope,
-    #[serde(default = "default_flat_env")]
+    #[serde(
+        default = "default_flat_env",
+        skip_serializing_if = "is_default_flat_env"
+    )]
     pub pitch_shift_env: SerdeEnvelope,
-    #[serde(default = "default_flat_env")]
+    #[serde(
+        default = "default_flat_env",
+        skip_serializing_if = "is_default_flat_env"
+    )]
     pub freq_env: SerdeEnvelope,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub freq_env_mode: u8,
 }
 
@@ -237,23 +285,35 @@ impl Default for OscillatorConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NoiseConfig {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub noise_type: u8,
-    #[serde(default = "default_noise_amp")]
+    #[serde(
+        default = "default_noise_amp",
+        skip_serializing_if = "is_default_noise_amp"
+    )]
     pub amplitude: f32,
-    #[serde(default = "default_density")]
+    #[serde(
+        default = "default_density",
+        skip_serializing_if = "is_default_density"
+    )]
     pub density: f32,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub filter_type: u8,
-    #[serde(default = "default_cutoff")]
+    #[serde(default = "default_cutoff", skip_serializing_if = "is_default_cutoff")]
     pub filter_cutoff_hz: f32,
-    #[serde(default = "default_q")]
+    #[serde(default = "default_q", skip_serializing_if = "is_default_q")]
     pub filter_q: f32,
-    #[serde(default = "default_amp_env")]
+    #[serde(
+        default = "default_amp_env",
+        skip_serializing_if = "is_default_amp_env"
+    )]
     pub amp_env: SerdeEnvelope,
-    #[serde(default = "default_flat_env")]
+    #[serde(
+        default = "default_flat_env",
+        skip_serializing_if = "is_default_flat_env"
+    )]
     pub density_env: SerdeEnvelope,
 }
 
@@ -272,19 +332,21 @@ impl Default for NoiseConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct SerdeEnvelope {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub points: Vec<SerdeEnvPoint>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct SerdeEnvPoint {
+    #[serde(default, skip_serializing_if = "is_default")]
     pub t: f32,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub v: f32,
-    #[serde(default = "default_cp")]
+    #[serde(default = "default_cp", skip_serializing_if = "is_default_cp")]
     pub cp_t: f32,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub cp_v: f32,
 }
 
@@ -335,6 +397,76 @@ fn default_density() -> f32 {
 }
 fn default_cp() -> f32 {
     0.33
+}
+
+fn is_default<T>(value: &T) -> bool
+where
+    T: Default + PartialEq,
+{
+    value == &T::default()
+}
+fn is_default_instruments(value: &[InstrumentConfig]) -> bool {
+    value == default_instruments().as_slice()
+}
+fn is_default_layers(value: &[LayerConfig]) -> bool {
+    value == default_layers().as_slice()
+}
+fn is_default_oscillators(value: &[OscillatorConfig]) -> bool {
+    value == default_oscillators().as_slice()
+}
+fn is_default_true(value: &bool) -> bool {
+    *value == default_true()
+}
+fn is_default_one(value: &f32) -> bool {
+    *value == default_one()
+}
+fn is_default_cutoff(value: &f32) -> bool {
+    *value == default_cutoff()
+}
+fn is_default_q(value: &f32) -> bool {
+    *value == default_q()
+}
+fn is_default_limit(value: &f32) -> bool {
+    *value == default_limit()
+}
+fn is_default_limiter_release(value: &f32) -> bool {
+    *value == default_limiter_release()
+}
+fn is_default_length(value: &f32) -> bool {
+    *value == default_length()
+}
+fn is_default_note_off(value: &f32) -> bool {
+    *value == default_note_off()
+}
+fn is_default_key_max(value: &u8) -> bool {
+    *value == default_key_max()
+}
+fn is_default_freq(value: &f32) -> bool {
+    *value == default_freq()
+}
+fn is_default_osc_amp(value: &f32) -> bool {
+    *value == default_osc_amp()
+}
+fn is_default_noise_amp(value: &f32) -> bool {
+    *value == default_noise_amp()
+}
+fn is_default_density(value: &f32) -> bool {
+    *value == default_density()
+}
+fn is_default_cp(value: &f32) -> bool {
+    *value == default_cp()
+}
+fn is_default_sample_rate(value: &f32) -> bool {
+    *value == 48000.0
+}
+fn is_default_pitch_env(value: &SerdeEnvelope) -> bool {
+    *value == default_pitch_env()
+}
+fn is_default_amp_env(value: &SerdeEnvelope) -> bool {
+    *value == default_amp_env()
+}
+fn is_default_flat_env(value: &SerdeEnvelope) -> bool {
+    *value == default_flat_env()
 }
 
 fn default_layers() -> Vec<LayerConfig> {
@@ -421,7 +553,11 @@ impl KitState {
     pub fn from_runtime(params: &ParamStore, kit: &KitConfig) -> Self {
         let mut params_map = BTreeMap::new();
         for id in ParamId::all() {
-            params_map.insert(state_key(id), params.get(id));
+            let value = params.get(id);
+            let default = param_type_def(id.param_type()).default;
+            if (value - default).abs() > f64::EPSILON {
+                params_map.insert(state_key(id), value);
+            }
         }
         Self {
             version: CURRENT_STATE_VERSION.to_string(),

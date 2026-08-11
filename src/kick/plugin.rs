@@ -13,15 +13,16 @@ use clap_clap::{
     ffi::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON,
         CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END, CLAP_EVENT_PARAM_VALUE,
-        CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI, CLAP_EXT_NOTE_PORTS, CLAP_EXT_PARAMS, CLAP_EXT_STATE,
-        CLAP_EXT_TAIL, CLAP_INVALID_ID, CLAP_NOTE_DIALECT_MIDI, CLAP_PLUGIN_FEATURE_INSTRUMENT,
-        CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_WIN32,
-        CLAP_WINDOW_API_X11, clap_audio_port_info, clap_event_header, clap_event_param_gesture,
-        clap_gui_resize_hints, clap_host, clap_host_gui, clap_host_params, clap_host_state,
-        clap_id, clap_istream, clap_note_port_info, clap_ostream, clap_param_info, clap_plugin,
-        clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_gui, clap_plugin_note_ports,
-        clap_plugin_params, clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status,
-        clap_window,
+        CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI, CLAP_EXT_NOTE_NAME, CLAP_EXT_NOTE_PORTS,
+        CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL, CLAP_INVALID_ID, CLAP_NOTE_DIALECT_MIDI,
+        CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION,
+        CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info, clap_event_header,
+        clap_event_param_gesture, clap_gui_resize_hints, clap_host, clap_host_gui,
+        clap_host_note_name, clap_host_params, clap_host_state, clap_id, clap_istream,
+        clap_note_name, clap_note_port_info, clap_ostream, clap_param_info, clap_plugin,
+        clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_gui, clap_plugin_note_name,
+        clap_plugin_note_ports, clap_plugin_params, clap_plugin_state, clap_plugin_tail,
+        clap_process, clap_process_status, clap_window,
     },
     id::ClapId,
     process::Process,
@@ -120,6 +121,12 @@ impl SharedState {
     pub fn set_param_internal(&self, id: ParamId, value: f64, notify_host: bool) {
         self.params.set(id, sanitize_param_value(id, value));
         self.bump_params_version();
+        if matches!(
+            id.param_type(),
+            ParamType::MasterKeyMin | ParamType::MasterKeyMax | ParamType::MasterMidiChannel
+        ) {
+            self.note_names_changed();
+        }
         if notify_host {
             self.mark_param_notification_pending(id);
             self.request_flush();
@@ -133,6 +140,12 @@ impl SharedState {
 
     pub fn bump_params_version(&self) {
         self.params_version.fetch_add(1, Ordering::Release);
+    }
+
+    pub fn mark_kit_changed(&self) {
+        self.kit_version.fetch_add(1, Ordering::AcqRel);
+        self.note_names_changed();
+        self.mark_dirty();
     }
 
     fn mark_param_notification_pending(&self, id: ParamId) {
@@ -323,6 +336,26 @@ impl SharedState {
             let state = &*(ext as *const clap_host_state);
             if let Some(mark_dirty) = state.mark_dirty {
                 mark_dirty(host);
+            }
+        }
+    }
+
+    fn note_names_changed(&self) {
+        let host = self.host.load(Ordering::Acquire);
+        if host.is_null() {
+            return;
+        }
+        unsafe {
+            let Some(get_extension) = (*host).get_extension else {
+                return;
+            };
+            let ext = get_extension(host, c"clap.note-name".as_ptr());
+            if ext.is_null() {
+                return;
+            }
+            let note_name = &*(ext as *const clap_host_note_name);
+            if let Some(changed) = note_name.changed {
+                changed(host);
             }
         }
     }
@@ -1913,6 +1946,82 @@ static NOTE_PORTS_EXT: clap_plugin_note_ports = clap_plugin_note_ports {
     get: Some(ext_note_ports_get),
 };
 
+fn build_note_names(shared: &SharedState) -> Vec<(u8, String)> {
+    let kit = shared.kit.lock();
+    let mut names_by_note: Vec<Vec<String>> = vec![Vec::new(); 128];
+    for (idx, inst) in kit.instruments.iter().enumerate() {
+        let name = inst.name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let key_min = shared
+            .params
+            .get(ParamId::new(idx as u8, ParamType::MasterKeyMin))
+            .round()
+            .clamp(0.0, 127.0) as u8;
+        let key_max = shared
+            .params
+            .get(ParamId::new(idx as u8, ParamType::MasterKeyMax))
+            .round()
+            .clamp(0.0, 127.0) as u8;
+        for note in key_min.min(key_max)..=key_min.max(key_max) {
+            names_by_note[note as usize].push(name.to_string());
+        }
+    }
+
+    names_by_note
+        .into_iter()
+        .enumerate()
+        .filter_map(|(note, names)| {
+            if names.is_empty() {
+                None
+            } else {
+                Some((note as u8, names.join(" / ")))
+            }
+        })
+        .collect()
+}
+
+unsafe extern "C-unwind" fn ext_note_name_count(plugin: *const clap_plugin) -> u32 {
+    if plugin.is_null() {
+        return 0;
+    }
+    let inst = unsafe { instance(plugin) };
+    build_note_names(&inst.shared).len() as u32
+}
+
+unsafe extern "C-unwind" fn ext_note_name_get(
+    plugin: *const clap_plugin,
+    index: u32,
+    note_name: *mut clap_note_name,
+) -> bool {
+    if plugin.is_null() || note_name.is_null() {
+        return false;
+    }
+    let inst = unsafe { instance(plugin) };
+    let names = build_note_names(&inst.shared);
+    let Some((note, name)) = names.get(index as usize) else {
+        return false;
+    };
+
+    let out = unsafe { &mut *note_name };
+    out.name.fill(0);
+    let bytes = name.as_bytes();
+    let len = bytes.len().min(out.name.len() - 1);
+    for (i, &b) in bytes.iter().enumerate().take(len) {
+        out.name[i] = b as c_char;
+    }
+    out.port = -1;
+    out.key = *note as i16;
+    out.channel = -1;
+    true
+}
+
+static NOTE_NAME_EXT: clap_plugin_note_name = clap_plugin_note_name {
+    count: Some(ext_note_name_count),
+    get: Some(ext_note_name_get),
+};
+
 unsafe extern "C-unwind" fn ext_params_count(_plugin: *const clap_plugin) -> u32 {
     ParamId::COUNT as u32
 }
@@ -2048,6 +2157,7 @@ unsafe extern "C-unwind" fn ext_state_load(
             let mut kit = inst.shared.kit.lock();
             *kit = config_to_kit(&kit_cfg, inst.shared.sample_rate());
             inst.shared.kit_version.fetch_add(1, Ordering::AcqRel);
+            inst.shared.note_names_changed();
             true
         }
         Err(_) => false,
@@ -2511,6 +2621,9 @@ unsafe extern "C-unwind" fn plugin_get_extension(
     if id == CLAP_EXT_NOTE_PORTS {
         return &NOTE_PORTS_EXT as *const _ as *const c_void;
     }
+    if id == CLAP_EXT_NOTE_NAME {
+        return &NOTE_NAME_EXT as *const _ as *const c_void;
+    }
     if id == CLAP_EXT_PARAMS {
         return &PARAMS_EXT as *const _ as *const c_void;
     }
@@ -2559,4 +2672,92 @@ pub unsafe fn create_plugin(
 /// a static CLAP plugin descriptor.
 pub const unsafe fn descriptor_ptr() -> *const clap_plugin_descriptor {
     &DESCRIPTOR.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SharedState, build_note_names, config_to_kit, kit_to_config};
+    use crate::kick::{
+        dsp::Kit,
+        params::{ParamId, ParamStore, ParamType},
+        state::{KitConfig, KitState},
+    };
+
+    const CLAP_IPC_SCRATCH_SIZE: usize = 65_536;
+
+    #[test]
+    fn kit_state_roundtrip_preserves_instrument_names() {
+        let mut kit = Kit::new(48_000.0);
+        kit.instruments[0].name = "Sub Thump".to_string();
+        kit.instruments[1].name = "Click Layer".to_string();
+
+        let state = KitState::from_runtime(&ParamStore::default(), &kit_to_config(&kit));
+        let bytes = state.to_bytes().expect("serialize state");
+        assert!(bytes.len() < CLAP_IPC_SCRATCH_SIZE);
+        let restored = KitState::from_bytes(&bytes).expect("deserialize state");
+        let restored_kit = config_to_kit(&restored.kit, 48_000.0);
+
+        assert_eq!(restored_kit.instruments[0].name, "Sub Thump");
+        assert_eq!(restored_kit.instruments[1].name, "Click Layer");
+    }
+
+    #[test]
+    fn config_to_kit_defaults_missing_instruments_without_shifting_names() {
+        let config = KitConfig {
+            instruments: vec![crate::kick::state::InstrumentConfig {
+                name: "Only One".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let kit = config_to_kit(&config, 48_000.0);
+
+        assert_eq!(kit.instruments[0].name, "Only One");
+        assert!(kit.instruments[1].name.is_empty());
+    }
+
+    #[test]
+    fn kit_state_omits_default_params_but_preserves_non_default_params() {
+        let params = ParamStore::default();
+        let gain = ParamId::new(0, ParamType::MasterOutputGain);
+        params.set(gain, 3.0);
+
+        let state = KitState::from_runtime(&params, &kit_to_config(&Kit::new(48_000.0)));
+        assert_eq!(state.params.len(), 1);
+
+        let restored_params = ParamStore::default();
+        state.apply_params(&restored_params);
+
+        assert_eq!(restored_params.get(gain), 3.0);
+    }
+
+    #[test]
+    fn note_names_follow_named_instrument_key_ranges() {
+        let shared = SharedState::new(std::ptr::null());
+        {
+            let mut kit = shared.kit.lock();
+            kit.instruments[0].name = "Sub".to_string();
+            kit.instruments[1].name = "Click".to_string();
+        }
+        shared
+            .params
+            .set(ParamId::new(0, ParamType::MasterKeyMin), 36.0);
+        shared
+            .params
+            .set(ParamId::new(0, ParamType::MasterKeyMax), 36.0);
+        shared
+            .params
+            .set(ParamId::new(1, ParamType::MasterKeyMin), 36.0);
+        shared
+            .params
+            .set(ParamId::new(1, ParamType::MasterKeyMax), 38.0);
+
+        let names = build_note_names(&shared);
+
+        assert!(names.contains(&(36, "Sub / Click".to_string())));
+        assert!(names.contains(&(37, "Click".to_string())));
+        assert!(names.contains(&(38, "Click".to_string())));
+        assert!(!names.iter().any(|(note, _)| *note == 35));
+    }
 }

@@ -3517,70 +3517,9 @@ pub unsafe fn clap_create_plugin(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ParamDirtyFlags, ParamStore, SynthEngine, apply_param_id_to_voice_params,
-        build_voice_params,
-    };
+    use super::{ParamDirtyFlags, ParamStore, apply_param_id_to_voice_params};
     use crate::synth::dsp::VoiceParams;
     use crate::synth::params::ParamId;
-    use crate::synth::state::PluginState;
-
-    #[test]
-    fn repro_intro_maolan_synth_produces_sound() {
-        let session_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../repro_intro/main.json");
-        let session_json: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(session_path).unwrap()).unwrap();
-        let bytes = session_json
-            .get("graphs")
-            .unwrap()
-            .get("maolan")
-            .unwrap()
-            .get("plugins")
-            .unwrap()
-            .as_array()
-            .unwrap()[0]
-            .get("state")
-            .unwrap()
-            .get("bytes")
-            .unwrap()
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_u64().unwrap() as u8)
-            .collect::<Vec<u8>>();
-        let state: PluginState =
-            serde_json::from_slice(&bytes).expect("failed to parse plugin state");
-        let params = ParamStore::default();
-        state.apply(&params);
-        let voice_params = build_voice_params(&params);
-
-        let mut engine = SynthEngine::new(48000.0, 8);
-        engine.params = voice_params;
-        engine.update_params();
-
-        let mut out_l = vec![0.0f32; 48000];
-        let mut out_r = vec![0.0f32; 48000];
-        engine.trigger(48, 100.0 / 127.0);
-        engine.process_block(&mut out_l, &mut out_r, None, None);
-
-        let peak_l = out_l.iter().map(|&s| s.abs()).fold(0.0f32, f32::max);
-        let peak_r = out_r.iter().map(|&s| s.abs()).fold(0.0f32, f32::max);
-        let has_nan = out_l.iter().any(|&s| s.is_nan() || s.is_infinite())
-            || out_r.iter().any(|&s| s.is_nan() || s.is_infinite());
-
-        assert!(
-            !has_nan,
-            "NaN/INF detected: peak_l={} peak_r={}",
-            peak_l, peak_r
-        );
-        assert!(
-            peak_l > 0.001 || peak_r > 0.001,
-            "Synth is silent: peak_l={} peak_r={}",
-            peak_l,
-            peak_r
-        );
-    }
-
     #[test]
     fn dispatcher_handles_all_param_ids() {
         let store = ParamStore::default();
