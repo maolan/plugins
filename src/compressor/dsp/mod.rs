@@ -1,6 +1,10 @@
+pub const MAX_BANDS: usize = 6;
+const MAX_SPLITS: usize = MAX_BANDS - 1;
+
 #[derive(Debug, Clone, Copy)]
 struct BandCompressor {
     threshold_db: f32,
+    range_db: f32,
     ratio: f32,
     attack_s: f32,
     release_s: f32,
@@ -17,6 +21,7 @@ impl Default for BandCompressor {
     fn default() -> Self {
         Self {
             threshold_db: -12.0,
+            range_db: -30.0,
             ratio: 4.0,
             attack_s: 0.020,
             release_s: 0.100,
@@ -63,7 +68,14 @@ impl BandCompressor {
             gain_to_db(self.peak_env.max(1.0e-10))
         };
 
-        let target_gr_db = compute_gr_db(env_db, self.threshold_db, self.ratio, self.knee_db, mode);
+        let target_gr_db = compute_gr_db(
+            env_db,
+            self.threshold_db,
+            self.range_db,
+            self.ratio,
+            self.knee_db,
+            mode,
+        );
         if target_gr_db < self.smooth_env_db {
             self.smooth_env_db =
                 self.attack_coef * target_gr_db + (1.0 - self.attack_coef) * self.smooth_env_db;
@@ -206,12 +218,12 @@ impl LR4Split {
 
 #[derive(Debug, Clone, Default)]
 struct StereoSplitBank {
-    l: [LR4Split; 3],
-    r: [LR4Split; 3],
+    l: [LR4Split; MAX_SPLITS],
+    r: [LR4Split; MAX_SPLITS],
 }
 
 impl StereoSplitBank {
-    fn set_cutoffs(&mut self, split_hz: [f32; 3], sample_rate: f32) {
+    fn set_cutoffs(&mut self, split_hz: [f32; MAX_SPLITS], sample_rate: f32) {
         for (i, cutoff) in split_hz.iter().copied().enumerate() {
             self.l[i].set_cutoff(cutoff, sample_rate);
             self.r[i].set_cutoff(cutoff, sample_rate);
@@ -219,20 +231,34 @@ impl StereoSplitBank {
     }
 
     fn reset(&mut self) {
-        for i in 0..3 {
+        for i in 0..MAX_SPLITS {
             self.l[i].reset();
             self.r[i].reset();
         }
     }
 
-    fn split4(&mut self, in_l: f32, in_r: f32) -> ([f32; 4], [f32; 4]) {
-        let (b1l, h1l) = self.l[0].process(in_l);
-        let (b1r, h1r) = self.r[0].process(in_r);
-        let (b2l, h2l) = self.l[1].process(h1l);
-        let (b2r, h2r) = self.r[1].process(h1r);
-        let (b3l, b4l) = self.l[2].process(h2l);
-        let (b3r, b4r) = self.r[2].process(h2r);
-        ([b1l, b2l, b3l, b4l], [b1r, b2r, b3r, b4r])
+    fn split(
+        &mut self,
+        in_l: f32,
+        in_r: f32,
+        bands: usize,
+    ) -> ([f32; MAX_BANDS], [f32; MAX_BANDS]) {
+        let bands = bands.clamp(1, MAX_BANDS);
+        let mut out_l = [0.0; MAX_BANDS];
+        let mut out_r = [0.0; MAX_BANDS];
+        let mut rem_l = in_l;
+        let mut rem_r = in_r;
+        for split in 0..bands.saturating_sub(1) {
+            let (low_l, high_l) = self.l[split].process(rem_l);
+            let (low_r, high_r) = self.r[split].process(rem_r);
+            out_l[split] = low_l;
+            out_r[split] = low_r;
+            rem_l = high_l;
+            rem_r = high_r;
+        }
+        out_l[bands - 1] = rem_l;
+        out_r[bands - 1] = rem_r;
+        (out_l, out_r)
     }
 }
 
@@ -296,22 +322,22 @@ impl AP4 {
 
 #[derive(Debug, Clone, Default)]
 struct DryPhaseEq {
-    l: [AP4; 3],
-    r: [AP4; 3],
+    l: [AP4; MAX_SPLITS],
+    r: [AP4; MAX_SPLITS],
 }
 
 impl DryPhaseEq {
-    fn set_cutoffs(&mut self, split_hz: [f32; 3], sample_rate: f32) {
+    fn set_cutoffs(&mut self, split_hz: [f32; MAX_SPLITS], sample_rate: f32) {
         for (i, cutoff) in split_hz.iter().copied().enumerate() {
             self.l[i].set_cutoff(cutoff, sample_rate);
             self.r[i].set_cutoff(cutoff, sample_rate);
         }
     }
 
-    fn process_stereo(&mut self, l: f32, r: f32) -> (f32, f32) {
+    fn process_stereo(&mut self, l: f32, r: f32, splits: usize) -> (f32, f32) {
         let mut lo = l;
         let mut ro = r;
-        for i in 0..3 {
+        for i in 0..splits.min(MAX_SPLITS) {
             lo = self.l[i].process(lo);
             ro = self.r[i].process(ro);
         }
@@ -319,7 +345,7 @@ impl DryPhaseEq {
     }
 
     fn reset(&mut self) {
-        for i in 0..3 {
+        for i in 0..MAX_SPLITS {
             self.l[i].reset();
             self.r[i].reset();
         }
@@ -397,15 +423,16 @@ pub struct Compressor {
     dry_gain: f32,
     wet_gain: f32,
     bypass: bool,
-    split_hz: [f32; 3],
-    bands: [BandCompressor; 4],
+    band_count: usize,
+    split_hz: [f32; MAX_SPLITS],
+    bands: [BandCompressor; MAX_BANDS],
     detector_split: StereoSplitBank,
     audio_split: StereoSplitBank,
     classic_audio: StereoClassicBank,
     dry_phase_eq: DryPhaseEq,
     lookahead_l: DelayLine,
     lookahead_r: DelayLine,
-    gr_db_accum: [f32; 4],
+    gr_db_accum: [f32; MAX_BANDS],
     gr_db_count: usize,
 }
 
@@ -423,15 +450,16 @@ impl Default for Compressor {
             dry_gain: 0.0,
             wet_gain: 1.0,
             bypass: false,
-            split_hz: [120.0, 1000.0, 6000.0],
-            bands: [BandCompressor::default(); 4],
+            band_count: 4,
+            split_hz: [120.0, 1000.0, 6000.0, 10_000.0, 14_000.0],
+            bands: [BandCompressor::default(); MAX_BANDS],
             detector_split: StereoSplitBank::default(),
             audio_split: StereoSplitBank::default(),
             classic_audio: StereoClassicBank::default(),
             dry_phase_eq: DryPhaseEq::default(),
             lookahead_l: DelayLine::new(max_delay_samples),
             lookahead_r: DelayLine::new(max_delay_samples),
-            gr_db_accum: [0.0; 4],
+            gr_db_accum: [0.0; MAX_BANDS],
             gr_db_count: 0,
         }
     }
@@ -465,21 +493,21 @@ impl Compressor {
         self.dry_phase_eq.reset();
         self.lookahead_l.reset();
         self.lookahead_r.reset();
-        self.gr_db_accum = [0.0; 4];
+        self.gr_db_accum = [0.0; MAX_BANDS];
         self.gr_db_count = 0;
     }
 
-    pub fn take_gr_db(&mut self) -> [f32; 4] {
-        let mut out = [0.0f32; 4];
+    pub fn take_gr_db(&mut self) -> ([f32; MAX_BANDS], usize) {
+        let mut out = [0.0f32; MAX_BANDS];
         if self.gr_db_count > 0 {
             let inv = 1.0 / self.gr_db_count as f32;
             for (o, &a) in out.iter_mut().zip(self.gr_db_accum.iter()) {
                 *o = a * inv;
             }
         }
-        self.gr_db_accum = [0.0; 4];
+        self.gr_db_accum = [0.0; MAX_BANDS];
         self.gr_db_count = 0;
-        out
+        (out, self.band_count)
     }
 
     pub fn set_sc_mode(&mut self, mode: u32) {
@@ -487,7 +515,7 @@ impl Compressor {
     }
 
     pub fn set_mode(&mut self, mode: u32) {
-        self.mode = mode.min(2);
+        self.mode = mode.min(1);
     }
 
     pub fn set_topology_mode(&mut self, mode: u32) {
@@ -524,8 +552,12 @@ impl Compressor {
         self.bypass = bypass;
     }
 
+    pub fn set_band_count(&mut self, count: usize) {
+        self.band_count = count.clamp(1, MAX_BANDS);
+    }
+
     pub fn set_split_hz(&mut self, idx: usize, hz: f32) {
-        if idx < 3 {
+        if idx < MAX_SPLITS {
             self.split_hz[idx] = hz.max(10.0).min(self.sample_rate * 0.45);
             self.sort_splits();
             self.sync_split_filters();
@@ -535,6 +567,12 @@ impl Compressor {
     pub fn set_band_threshold_db(&mut self, band: usize, db: f32) {
         if let Some(b) = self.bands.get_mut(band) {
             b.threshold_db = db;
+        }
+    }
+
+    pub fn set_band_range_db(&mut self, band: usize, db: f32) {
+        if let Some(b) = self.bands.get_mut(band) {
+            b.range_db = db.clamp(-30.0, 30.0);
         }
     }
 
@@ -579,8 +617,10 @@ impl Compressor {
             .set_cutoffs(self.split_hz, self.sample_rate);
         self.audio_split
             .set_cutoffs(self.split_hz, self.sample_rate);
-        self.classic_audio
-            .set_cutoffs(self.split_hz, self.sample_rate);
+        self.classic_audio.set_cutoffs(
+            [self.split_hz[0], self.split_hz[1], self.split_hz[2]],
+            self.sample_rate,
+        );
         self.dry_phase_eq
             .set_cutoffs(self.split_hz, self.sample_rate);
     }
@@ -606,19 +646,25 @@ impl Compressor {
             let in_l = left[i] * self.input_gain_lin;
             let in_r = right[i] * self.input_gain_lin;
 
-            let (det_l, det_r) = self.detector_split.split4(in_l, in_r);
+            let (det_l, det_r) = self.detector_split.split(in_l, in_r, self.band_count);
 
             let delayed_l = self.lookahead_l.process(in_l);
             let delayed_r = self.lookahead_r.process(in_r);
-            let (aud_l, aud_r) = if self.topology_mode == 0 {
-                self.classic_audio.split4(delayed_l, delayed_r)
+            let (aud_l, aud_r) = if self.topology_mode == 0 && self.band_count == 4 {
+                let (classic_l, classic_r) = self.classic_audio.split4(delayed_l, delayed_r);
+                let mut aud_l = [0.0; MAX_BANDS];
+                let mut aud_r = [0.0; MAX_BANDS];
+                aud_l[..4].copy_from_slice(&classic_l);
+                aud_r[..4].copy_from_slice(&classic_r);
+                (aud_l, aud_r)
             } else {
-                self.audio_split.split4(delayed_l, delayed_r)
+                self.audio_split
+                    .split(delayed_l, delayed_r, self.band_count)
             };
 
             let mut wet_l = 0.0f32;
             let mut wet_r = 0.0f32;
-            for band in 0..4 {
+            for band in 0..self.band_count {
                 let mut sc = det_l[band].abs().max(det_r[band].abs());
                 sc = self.sidechain_boost(band, sc);
                 let gain_db = self.bands[band].gain_db(sc, self.sc_mode, self.mode);
@@ -629,7 +675,11 @@ impl Compressor {
             }
             self.gr_db_count += 1;
 
-            let (dry_l, dry_r) = self.dry_phase_eq.process_stereo(delayed_l, delayed_r);
+            let (dry_l, dry_r) = self.dry_phase_eq.process_stereo(
+                delayed_l,
+                delayed_r,
+                self.band_count.saturating_sub(1),
+            );
             left[i] = (wet_l * self.wet_gain + dry_l * self.dry_gain) * self.output_gain_lin;
             right[i] = (wet_r * self.wet_gain + dry_r * self.dry_gain) * self.output_gain_lin;
         }
@@ -649,44 +699,50 @@ impl Compressor {
     }
 }
 
-fn compute_gr_db(env_db: f32, threshold_db: f32, ratio: f32, knee_db: f32, mode: u32) -> f32 {
+fn compute_gr_db(
+    env_db: f32,
+    threshold_db: f32,
+    range_db: f32,
+    ratio: f32,
+    knee_db: f32,
+    mode: u32,
+) -> f32 {
     let overshoot = env_db - threshold_db;
-    match mode {
-        1 => {
-            if overshoot >= 0.0 {
-                0.0
-            } else {
-                let under = -overshoot;
-                under * (1.0 / ratio - 1.0)
-            }
-        }
-        2 => {
-            if overshoot >= 0.0 {
-                overshoot * (1.0 - 1.0 / ratio)
-            } else {
-                0.0
-            }
-        }
-        _ => {
-            if knee_db <= 1.0e-6 {
-                return if overshoot > 0.0 {
-                    overshoot * (1.0 / ratio - 1.0)
-                } else {
-                    0.0
-                };
-            }
+    if range_db.abs() <= 1.0e-6 {
+        return 0.0;
+    }
 
-            let knee_half = knee_db * 0.5;
-            if overshoot <= -knee_half {
-                0.0
-            } else if overshoot >= knee_half {
-                overshoot * (1.0 / ratio - 1.0)
-            } else {
-                let x = overshoot + knee_half;
-                let y = x * x / (2.0 * knee_db);
-                y * (1.0 / ratio - 1.0)
-            }
-        }
+    let ratio = ratio.max(1.0);
+    let compression_scale = 1.0 - 1.0 / ratio;
+    let expansion_scale = ratio - 1.0;
+    let target = match (mode.min(1), range_db.is_sign_positive()) {
+        (0, false) => -knee_amount_above(overshoot, knee_db) * compression_scale,
+        (0, true) => knee_amount_above(-overshoot, knee_db) * compression_scale,
+        (1, false) => -knee_amount_above(-overshoot, knee_db) * expansion_scale,
+        (1, true) => knee_amount_above(overshoot, knee_db) * expansion_scale,
+        _ => 0.0,
+    };
+
+    if range_db.is_sign_positive() {
+        target.clamp(0.0, range_db)
+    } else {
+        target.clamp(range_db, 0.0)
+    }
+}
+
+fn knee_amount_above(overshoot: f32, knee_db: f32) -> f32 {
+    if knee_db <= 1.0e-6 {
+        return overshoot.max(0.0);
+    }
+
+    let knee_half = knee_db * 0.5;
+    if overshoot <= -knee_half {
+        0.0
+    } else if overshoot >= knee_half {
+        overshoot
+    } else {
+        let x = overshoot + knee_half;
+        x * x / (2.0 * knee_db)
     }
 }
 
@@ -706,4 +762,40 @@ fn db_to_gain(db: f32) -> f32 {
 
 fn gain_to_db(gain: f32) -> f32 {
     20.0 * gain.log10()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compute_gr_db;
+
+    fn close(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() < 1.0e-4,
+            "actual {actual}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn compress_negative_range_ducks_above_threshold() {
+        close(compute_gr_db(-6.0, -12.0, -3.0, 4.0, 0.0, 0), -3.0);
+        close(compute_gr_db(-18.0, -12.0, -3.0, 4.0, 0.0, 0), 0.0);
+    }
+
+    #[test]
+    fn compress_positive_range_boosts_below_threshold() {
+        close(compute_gr_db(-18.0, -12.0, 3.0, 4.0, 0.0, 0), 3.0);
+        close(compute_gr_db(-6.0, -12.0, 3.0, 4.0, 0.0, 0), 0.0);
+    }
+
+    #[test]
+    fn expand_negative_range_ducks_below_threshold() {
+        close(compute_gr_db(-18.0, -12.0, -6.0, 2.0, 0.0, 1), -6.0);
+        close(compute_gr_db(-6.0, -12.0, -6.0, 2.0, 0.0, 1), 0.0);
+    }
+
+    #[test]
+    fn expand_positive_range_boosts_above_threshold() {
+        close(compute_gr_db(-6.0, -12.0, 6.0, 2.0, 0.0, 1), 6.0);
+        close(compute_gr_db(-18.0, -12.0, 6.0, 2.0, 0.0, 1), 0.0);
+    }
 }

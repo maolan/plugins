@@ -383,8 +383,8 @@ fn dsp_module_constants_match_gui_expectations() {
 
 // ---- Spectral dynamics (Soothe / Pro-Q 4 spectral mode) ----
 
+use maolan_plugins::common::spectrum::LogSpectrumAnalyzer;
 use maolan_plugins::eq::spectral::{SPECTRAL_FFT_SIZE, SpectralBandConfig, SpectralDynamics};
-use maolan_plugins::eq::spectrum::LogSpectrumAnalyzer;
 
 fn spectral_bell(freq: f32, threshold: f32) -> SpectralBandConfig {
     SpectralBandConfig {

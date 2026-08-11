@@ -21,6 +21,7 @@ pub mod random_eval;
 pub mod settings;
 pub mod shm;
 pub mod slot;
+pub mod spectrum;
 pub mod state;
 pub mod tuning;
 pub mod voice;

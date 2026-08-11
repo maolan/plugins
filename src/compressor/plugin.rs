@@ -31,7 +31,10 @@ use portable_atomic::AtomicF64;
 use crate::common::{
     SharedStateExt, apply_param_events, copy_str_to_array, emit_pending_param_events_to_host,
 };
-use crate::common::{bus, fft};
+use crate::common::{
+    bus,
+    spectrum::{DEFAULT_SPECTRUM_BINS, LogSpectrumAnalyzer, SPECTRUM_FLOOR_DB},
+};
 use crate::compressor::{
     dsp::Compressor,
     gui::GuiBridge,
@@ -88,6 +91,7 @@ pub struct SharedState {
     active_local_gestures: std::sync::atomic::AtomicU64,
     host: AtomicPtr<clap_host>,
     pub channels: AtomicU32,
+    own_slot: AtomicU32,
 }
 
 impl Default for SharedState {
@@ -102,12 +106,13 @@ impl Default for SharedState {
             active_local_gestures: std::sync::atomic::AtomicU64::new(0),
             host: AtomicPtr::new(null_mut()),
             channels: AtomicU32::new(1),
+            own_slot: AtomicU32::new(u32::MAX),
         }
     }
 }
 
 impl SharedState {
-    fn sample_rate(&self) -> f32 {
+    pub fn sample_rate(&self) -> f32 {
         self.sample_rate.load(Ordering::Acquire) as f32
     }
 
@@ -130,6 +135,10 @@ impl SharedState {
     fn set_param_internal(&self, id: ParamId, value: f64, notify_host: bool) {
         self.params.set(id, sanitize_param_value(id, value));
         self.bump_params_version();
+        if id == ParamId::Channels {
+            self.sync_channels_from_params();
+            self.request_audio_ports_rescan();
+        }
         if notify_host {
             self.mark_param_notification_pending(id);
             self.request_flush();
@@ -254,6 +263,19 @@ impl SharedState {
                 rescan(host, CLAP_AUDIO_PORTS_RESCAN_LIST);
             }
         }
+    }
+
+    pub fn sync_channels_from_params(&self) {
+        let channels = channel_count_from_value(self.params.get(ParamId::Channels));
+        self.channels.store(channels, Ordering::Release);
+    }
+
+    pub fn set_own_slot(&self, slot: u32) {
+        self.own_slot.store(slot, Ordering::Release);
+    }
+
+    pub fn own_slot(&self) -> u32 {
+        self.own_slot.load(Ordering::Acquire)
     }
 }
 
@@ -413,6 +435,21 @@ fn apply_param_id(
             dirty.splits = true;
             true
         }
+        ParamId::Split4 => {
+            compressor.set_split_hz(3, value as f32);
+            dirty.splits = true;
+            true
+        }
+        ParamId::Split5 => {
+            compressor.set_split_hz(4, value as f32);
+            dirty.splits = true;
+            true
+        }
+        ParamId::BandCount => {
+            compressor.set_band_count(value.round() as usize);
+            dirty.splits = true;
+            true
+        }
         ParamId::B1Threshold => {
             compressor.set_band_threshold_db(0, value as f32);
             dirty.bands = true;
@@ -420,6 +457,11 @@ fn apply_param_id(
         }
         ParamId::B1Ratio => {
             compressor.set_band_ratio(0, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B1Range => {
+            compressor.set_band_range_db(0, value as f32);
             dirty.bands = true;
             true
         }
@@ -453,6 +495,11 @@ fn apply_param_id(
             dirty.bands = true;
             true
         }
+        ParamId::B2Range => {
+            compressor.set_band_range_db(1, value as f32);
+            dirty.bands = true;
+            true
+        }
         ParamId::B2Attack => {
             compressor.set_band_attack_ms(1, value as f32);
             dirty.bands = true;
@@ -480,6 +527,11 @@ fn apply_param_id(
         }
         ParamId::B3Ratio => {
             compressor.set_band_ratio(2, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B3Range => {
+            compressor.set_band_range_db(2, value as f32);
             dirty.bands = true;
             true
         }
@@ -513,6 +565,11 @@ fn apply_param_id(
             dirty.bands = true;
             true
         }
+        ParamId::B4Range => {
+            compressor.set_band_range_db(3, value as f32);
+            dirty.bands = true;
+            true
+        }
         ParamId::B4Attack => {
             compressor.set_band_attack_ms(3, value as f32);
             dirty.bands = true;
@@ -533,13 +590,83 @@ fn apply_param_id(
             dirty.bands = true;
             true
         }
+        ParamId::B5Threshold => {
+            compressor.set_band_threshold_db(4, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B5Ratio => {
+            compressor.set_band_ratio(4, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B5Range => {
+            compressor.set_band_range_db(4, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B5Attack => {
+            compressor.set_band_attack_ms(4, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B5Release => {
+            compressor.set_band_release_ms(4, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B5Knee => {
+            compressor.set_band_knee_db(4, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B5Makeup => {
+            compressor.set_band_makeup_db(4, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B6Threshold => {
+            compressor.set_band_threshold_db(5, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B6Ratio => {
+            compressor.set_band_ratio(5, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B6Range => {
+            compressor.set_band_range_db(5, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B6Attack => {
+            compressor.set_band_attack_ms(5, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B6Release => {
+            compressor.set_band_release_ms(5, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B6Knee => {
+            compressor.set_band_knee_db(5, value as f32);
+            dirty.bands = true;
+            true
+        }
+        ParamId::B6Makeup => {
+            compressor.set_band_makeup_db(5, value as f32);
+            dirty.bands = true;
+            true
+        }
         ParamId::ScMode => {
             compressor.set_sc_mode(value.round().clamp(0.0, 1.0) as u32);
             dirty.global = true;
             true
         }
         ParamId::Mode => {
-            compressor.set_mode(value.round().clamp(0.0, 2.0) as u32);
+            compressor.set_mode(value.round().clamp(0.0, 1.0) as u32);
             dirty.global = true;
             true
         }
@@ -573,8 +700,8 @@ struct AudioProcessor {
     temp_right: Vec<f32>,
     bus_data: Option<bus::PluginSharedData>,
     fft_scratch: Vec<f32>,
-    fft_mag: Vec<f32>,
-    fft_analyzer: fft::SpectrumAnalyzer,
+    fft_db: [f32; DEFAULT_SPECTRUM_BINS],
+    fft_analyzer: LogSpectrumAnalyzer,
     last_params_version: u64,
 }
 
@@ -588,8 +715,8 @@ impl AudioProcessor {
             temp_right: vec![0.0; max_frames as usize],
             bus_data,
             fft_scratch: vec![0.0; max_frames as usize],
-            fft_mag: vec![0.0; 1024],
-            fft_analyzer: fft::SpectrumAnalyzer::new(max_frames as usize),
+            fft_db: [SPECTRUM_FLOOR_DB; DEFAULT_SPECTRUM_BINS],
+            fft_analyzer: LogSpectrumAnalyzer::new(DEFAULT_SPECTRUM_BINS),
             last_params_version: 0,
         }
     }
@@ -614,7 +741,15 @@ impl AudioProcessor {
         self.compressor
             .set_split_hz(2, shared.params.get(ParamId::Split3) as f32);
         self.compressor
+            .set_split_hz(3, shared.params.get(ParamId::Split4) as f32);
+        self.compressor
+            .set_split_hz(4, shared.params.get(ParamId::Split5) as f32);
+        self.compressor
+            .set_band_count(shared.params.get(ParamId::BandCount).round() as usize);
+        self.compressor
             .set_band_threshold_db(0, shared.params.get(ParamId::B1Threshold) as f32);
+        self.compressor
+            .set_band_range_db(0, shared.params.get(ParamId::B1Range) as f32);
         self.compressor
             .set_band_ratio(0, shared.params.get(ParamId::B1Ratio) as f32);
         self.compressor
@@ -628,6 +763,8 @@ impl AudioProcessor {
         self.compressor
             .set_band_threshold_db(1, shared.params.get(ParamId::B2Threshold) as f32);
         self.compressor
+            .set_band_range_db(1, shared.params.get(ParamId::B2Range) as f32);
+        self.compressor
             .set_band_ratio(1, shared.params.get(ParamId::B2Ratio) as f32);
         self.compressor
             .set_band_attack_ms(1, shared.params.get(ParamId::B2Attack) as f32);
@@ -639,6 +776,8 @@ impl AudioProcessor {
             .set_band_makeup_db(1, shared.params.get(ParamId::B2Makeup) as f32);
         self.compressor
             .set_band_threshold_db(2, shared.params.get(ParamId::B3Threshold) as f32);
+        self.compressor
+            .set_band_range_db(2, shared.params.get(ParamId::B3Range) as f32);
         self.compressor
             .set_band_ratio(2, shared.params.get(ParamId::B3Ratio) as f32);
         self.compressor
@@ -652,6 +791,8 @@ impl AudioProcessor {
         self.compressor
             .set_band_threshold_db(3, shared.params.get(ParamId::B4Threshold) as f32);
         self.compressor
+            .set_band_range_db(3, shared.params.get(ParamId::B4Range) as f32);
+        self.compressor
             .set_band_ratio(3, shared.params.get(ParamId::B4Ratio) as f32);
         self.compressor
             .set_band_attack_ms(3, shared.params.get(ParamId::B4Attack) as f32);
@@ -661,6 +802,34 @@ impl AudioProcessor {
             .set_band_knee_db(3, shared.params.get(ParamId::B4Knee) as f32);
         self.compressor
             .set_band_makeup_db(3, shared.params.get(ParamId::B4Makeup) as f32);
+        self.compressor
+            .set_band_threshold_db(4, shared.params.get(ParamId::B5Threshold) as f32);
+        self.compressor
+            .set_band_range_db(4, shared.params.get(ParamId::B5Range) as f32);
+        self.compressor
+            .set_band_ratio(4, shared.params.get(ParamId::B5Ratio) as f32);
+        self.compressor
+            .set_band_attack_ms(4, shared.params.get(ParamId::B5Attack) as f32);
+        self.compressor
+            .set_band_release_ms(4, shared.params.get(ParamId::B5Release) as f32);
+        self.compressor
+            .set_band_knee_db(4, shared.params.get(ParamId::B5Knee) as f32);
+        self.compressor
+            .set_band_makeup_db(4, shared.params.get(ParamId::B5Makeup) as f32);
+        self.compressor
+            .set_band_threshold_db(5, shared.params.get(ParamId::B6Threshold) as f32);
+        self.compressor
+            .set_band_range_db(5, shared.params.get(ParamId::B6Range) as f32);
+        self.compressor
+            .set_band_ratio(5, shared.params.get(ParamId::B6Ratio) as f32);
+        self.compressor
+            .set_band_attack_ms(5, shared.params.get(ParamId::B6Attack) as f32);
+        self.compressor
+            .set_band_release_ms(5, shared.params.get(ParamId::B6Release) as f32);
+        self.compressor
+            .set_band_knee_db(5, shared.params.get(ParamId::B6Knee) as f32);
+        self.compressor
+            .set_band_makeup_db(5, shared.params.get(ParamId::B6Makeup) as f32);
         self.compressor
             .set_sc_mode(shared.params.get_enum(ParamId::ScMode));
         self.compressor
@@ -757,22 +926,23 @@ impl AudioProcessor {
                     self.fft_scratch[i] = (self.temp_left[i] + self.temp_right[i]) * 0.5;
                 }
                 if let Some(slot) = bus.fft_slot() {
-                    let n = frames.min(1024);
+                    self.fft_analyzer.push_block(&self.fft_scratch[..frames]);
                     self.fft_analyzer
-                        .process(&self.fft_scratch[..frames], &mut self.fft_mag[..n]);
+                        .compute(shared.sample_rate(), &mut self.fft_db);
                     slot.write(|fft| {
-                        fft::magnitude_to_db(&self.fft_mag[..n], &mut fft.bins[..n], -90.0);
-                        fft.valid_bins = n;
+                        fft.bins[..DEFAULT_SPECTRUM_BINS].copy_from_slice(&self.fft_db);
+                        fft.valid_bins = DEFAULT_SPECTRUM_BINS;
                     });
                 }
             }
             if bus::needs(bus::NEED_GR)
                 && let Some(slot) = bus.gr_slot()
             {
-                let gr = self.compressor.take_gr_db();
+                let (gr, band_count) = self.compressor.take_gr_db();
                 slot.write(|data| {
-                    data.valid_bands = 4;
-                    data.gr_db[..4].copy_from_slice(&gr);
+                    let valid_bands = band_count.min(data.gr_db.len());
+                    data.valid_bands = valid_bands;
+                    data.gr_db[..valid_bands].copy_from_slice(&gr[..valid_bands]);
                 });
             }
         }
@@ -787,7 +957,6 @@ struct PluginInstance {
     processor: AtomicPtr<AudioProcessor>,
     retired_processors: Mutex<Vec<*mut AudioProcessor>>,
     gui_bridge: Mutex<GuiBridge>,
-    channels: AtomicU32,
     bus_id: bus::InstanceId,
     bus_data: bus::PluginSharedData,
 }
@@ -796,18 +965,21 @@ impl PluginInstance {
     fn new(host: *const clap_host, channels: u32) -> Self {
         let shared = Arc::new(SharedState::default());
         shared.set_host(host);
+        shared
+            .channels
+            .store(channels.clamp(1, 2), Ordering::Release);
         let bus_id = bus::next_instance_id();
         let mut bus_data = bus::PluginSharedData::new(bus::PluginType::Compressor)
             .with_fft(bus::FftData::default())
             .with_gr(bus::CompressorGrData::default());
         bus_data = bus::register(bus_id, bus_data);
+        shared.set_own_slot(bus_data.slot_index());
         Self {
             shared,
             active: AtomicBool::new(false),
             processor: AtomicPtr::new(null_mut()),
             retired_processors: Mutex::new(Vec::new()),
             gui_bridge: Mutex::new(GuiBridge::default()),
-            channels: AtomicU32::new(channels),
             bus_id,
             bus_data,
         }
@@ -840,15 +1012,15 @@ fn param_text(id: ParamId, value: f64) -> String {
             2 => "Stereo".into(),
             _ => format!("{value:.0}"),
         },
+        ParamId::BandCount => format!("{value:.0}"),
         ParamId::ScMode => match value.round() as i32 {
             0 => "Peak".into(),
             1 => "RMS".into(),
             _ => format!("{value:.0}"),
         },
         ParamId::Mode => match value.round() as i32 {
-            0 => "Downward".into(),
-            1 => "Upward".into(),
-            2 => "Boosting".into(),
+            0 => "Compress".into(),
+            1 => "Expand".into(),
             _ => format!("{value:.0}"),
         },
         ParamId::ScBoost => match value.round() as i32 {
@@ -878,26 +1050,47 @@ fn param_text(id: ParamId, value: f64) -> String {
         | ParamId::B3Attack
         | ParamId::B3Release
         | ParamId::B4Attack
-        | ParamId::B4Release => format!("{value:.1} ms"),
+        | ParamId::B4Release
+        | ParamId::B5Attack
+        | ParamId::B5Release
+        | ParamId::B6Attack
+        | ParamId::B6Release => format!("{value:.1} ms"),
         ParamId::InputGain
         | ParamId::OutputGain
         | ParamId::B1Threshold
+        | ParamId::B1Range
         | ParamId::B1Knee
         | ParamId::B1Makeup
         | ParamId::B2Threshold
+        | ParamId::B2Range
         | ParamId::B2Knee
         | ParamId::B2Makeup
         | ParamId::B3Threshold
+        | ParamId::B3Range
         | ParamId::B3Knee
         | ParamId::B3Makeup
         | ParamId::B4Threshold
+        | ParamId::B4Range
         | ParamId::B4Knee
-        | ParamId::B4Makeup => format!("{value:.1} dB"),
-        ParamId::Split1 | ParamId::Split2 | ParamId::Split3 => format!("{value:.0} Hz"),
-        ParamId::Lookahead => format!("{value:.2} ms"),
-        ParamId::B1Ratio | ParamId::B2Ratio | ParamId::B3Ratio | ParamId::B4Ratio => {
-            format!("{value:.1}:1")
+        | ParamId::B4Makeup
+        | ParamId::B5Threshold
+        | ParamId::B5Range
+        | ParamId::B5Knee
+        | ParamId::B5Makeup
+        | ParamId::B6Threshold
+        | ParamId::B6Range
+        | ParamId::B6Knee
+        | ParamId::B6Makeup => format!("{value:.1} dB"),
+        ParamId::Split1 | ParamId::Split2 | ParamId::Split3 | ParamId::Split4 | ParamId::Split5 => {
+            format!("{value:.0} Hz")
         }
+        ParamId::Lookahead => format!("{value:.2} ms"),
+        ParamId::B1Ratio
+        | ParamId::B2Ratio
+        | ParamId::B3Ratio
+        | ParamId::B4Ratio
+        | ParamId::B5Ratio
+        | ParamId::B6Ratio => format!("{value:.1}:1"),
         _ => format!("{value:.2}"),
     }
 }
@@ -911,9 +1104,8 @@ fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
             _ => text.parse().ok(),
         },
         ParamId::Mode => match text.to_ascii_lowercase().as_str() {
-            "downward" => Some(0.0),
-            "upward" => Some(1.0),
-            "boosting" => Some(2.0),
+            "compress" | "downward" => Some(0.0),
+            "expand" | "upward" | "boosting" => Some(1.0),
             _ => text.parse().ok(),
         },
         ParamId::ScBoost => match text.to_ascii_lowercase().as_str() {
@@ -939,6 +1131,7 @@ fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
             "stereo" | "2" => Some(2.0),
             _ => text.parse().ok(),
         },
+        ParamId::BandCount => text.parse().ok(),
         ParamId::B1Attack
         | ParamId::B1Release
         | ParamId::B2Attack
@@ -946,38 +1139,62 @@ fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
         | ParamId::B3Attack
         | ParamId::B3Release
         | ParamId::B4Attack
-        | ParamId::B4Release => text.trim_end_matches("ms").trim().parse().ok(),
+        | ParamId::B4Release
+        | ParamId::B5Attack
+        | ParamId::B5Release
+        | ParamId::B6Attack
+        | ParamId::B6Release => text.trim_end_matches("ms").trim().parse().ok(),
         ParamId::InputGain
         | ParamId::OutputGain
         | ParamId::B1Threshold
+        | ParamId::B1Range
         | ParamId::B1Knee
         | ParamId::B1Makeup
         | ParamId::B2Threshold
+        | ParamId::B2Range
         | ParamId::B2Knee
         | ParamId::B2Makeup
         | ParamId::B3Threshold
+        | ParamId::B3Range
         | ParamId::B3Knee
         | ParamId::B3Makeup
         | ParamId::B4Threshold
+        | ParamId::B4Range
         | ParamId::B4Knee
-        | ParamId::B4Makeup => text
+        | ParamId::B4Makeup
+        | ParamId::B5Threshold
+        | ParamId::B5Range
+        | ParamId::B5Knee
+        | ParamId::B5Makeup
+        | ParamId::B6Threshold
+        | ParamId::B6Range
+        | ParamId::B6Knee
+        | ParamId::B6Makeup => text
             .trim_end_matches("db")
             .trim_end_matches("dB")
             .trim()
             .parse()
             .ok(),
-        ParamId::Split1 | ParamId::Split2 | ParamId::Split3 => text
-            .trim_end_matches("hz")
-            .trim_end_matches("Hz")
-            .trim()
-            .parse()
-            .ok(),
-        ParamId::Lookahead => text.trim_end_matches("ms").trim().parse().ok(),
-        ParamId::B1Ratio | ParamId::B2Ratio | ParamId::B3Ratio | ParamId::B4Ratio => {
-            text.trim_end_matches(":1").trim().parse().ok()
+        ParamId::Split1 | ParamId::Split2 | ParamId::Split3 | ParamId::Split4 | ParamId::Split5 => {
+            text.trim_end_matches("hz")
+                .trim_end_matches("Hz")
+                .trim()
+                .parse()
+                .ok()
         }
+        ParamId::Lookahead => text.trim_end_matches("ms").trim().parse().ok(),
+        ParamId::B1Ratio
+        | ParamId::B2Ratio
+        | ParamId::B3Ratio
+        | ParamId::B4Ratio
+        | ParamId::B5Ratio
+        | ParamId::B6Ratio => text.trim_end_matches(":1").trim().parse().ok(),
         _ => text.parse().ok(),
     }
+}
+
+fn channel_count_from_value(value: f64) -> u32 {
+    (value.round() as u32).clamp(1, 2)
 }
 
 unsafe extern "C-unwind" fn plugin_init(plugin: *const clap_plugin) -> bool {
@@ -1028,13 +1245,7 @@ unsafe extern "C-unwind" fn plugin_deactivate(plugin: *const clap_plugin) {
         instance.retired_processors.lock().push(old);
     }
     instance.active.store(false, Ordering::Release);
-    let channels_param = instance.shared.params.get(ParamId::Channels).round() as u32;
-    let new_channels = channels_param.clamp(1, 2);
-    instance.channels.store(new_channels, Ordering::Release);
-    instance
-        .shared
-        .channels
-        .store(new_channels, Ordering::Release);
+    instance.shared.sync_channels_from_params();
 }
 
 unsafe extern "C-unwind" fn plugin_start_processing(_plugin: *const clap_plugin) -> bool {
@@ -1079,7 +1290,7 @@ unsafe extern "C-unwind" fn ext_audio_ports_count(
     _is_input: bool,
 ) -> u32 {
     let instance = unsafe { instance(plugin) };
-    instance.channels.load(Ordering::Acquire)
+    instance.shared.channels.load(Ordering::Acquire)
 }
 
 unsafe extern "C-unwind" fn ext_audio_ports_get(
@@ -1089,7 +1300,7 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
     info: *mut clap_audio_port_info,
 ) -> bool {
     let instance = unsafe { instance(plugin) };
-    let channels = instance.channels.load(Ordering::Acquire);
+    let channels = instance.shared.channels.load(Ordering::Acquire);
     if index >= channels || info.is_null() {
         return false;
     }
@@ -1268,6 +1479,8 @@ unsafe extern "C-unwind" fn ext_state_load(
     };
     state.apply(&instance.shared.params);
     instance.shared.bump_params_version();
+    instance.shared.sync_channels_from_params();
+    instance.shared.request_audio_ports_rescan();
     true
 }
 
@@ -1627,5 +1840,15 @@ mod tests {
                 "apply_param_id returned false for {id:?}"
             );
         }
+    }
+
+    #[test]
+    fn channels_param_updates_audio_port_count() {
+        let shared = SharedState::default();
+
+        assert_eq!(shared.channels.load(Ordering::Acquire), 1);
+        shared.set_param_outbound_only(ParamId::Channels, 2.0);
+
+        assert_eq!(shared.channels.load(Ordering::Acquire), 2);
     }
 }

@@ -47,7 +47,7 @@ use crate::eq::spectral::{SPECTRAL_LATENCY, SpectralBandConfig, SpectralDynamics
 pub const MODE_ZERO_LATENCY: u32 = 0;
 pub const MODE_NATURAL_PHASE: u32 = 1;
 pub const MODE_LINEAR_PHASE: u32 = 2;
-use crate::eq::spectrum::LogSpectrumAnalyzer;
+use crate::common::spectrum::LogSpectrumAnalyzer;
 
 const PLUGIN_ID: &[u8] = b"rs.maolan.equalizer\0";
 const PLUGIN_NAME: &[u8] = b"Maolan EQ\0";

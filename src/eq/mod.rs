@@ -5,6 +5,5 @@ pub mod linear_phase;
 pub mod params;
 pub mod plugin;
 pub mod spectral;
-pub mod spectrum;
 
 pub use plugin::{create_plugin as clap_create_plugin, descriptor_ptr as clap_descriptor_ptr};
