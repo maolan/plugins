@@ -124,12 +124,17 @@ pub enum Message {
     SetChannels(ChannelMode),
     SetDisplayRange(f32),
     SelectThresholdBand(usize),
+    ResetGainBand(usize),
+    StartThresholdBand(usize),
     ResetThresholdBand(usize),
     DragThresholdBand(usize, f32),
     ReleaseThresholdBand(usize),
     StartRangeBand(usize),
     DragRangeBand(usize, f32),
     ReleaseRangeBand(usize),
+    StartGainBand(usize),
+    DragGainBand(usize, f32),
+    ReleaseGainBand(usize),
     CreateBand(f32),
     ReleaseParam(ParamId),
     UiTick,
@@ -251,12 +256,35 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.selected_band =
                 Some(band.min(active_band_count(&state.shared).saturating_sub(1)));
         }
+        Message::ResetGainBand(band) => {
+            let band = band.min(active_band_count(&state.shared).saturating_sub(1));
+            state.selected_band = Some(band);
+            let id = makeup_param_for_band(band);
+            state.shared.mark_gesture_begin_pending(id);
+            state.shared.set_param_outbound_only(id, 0.0);
+            state.shared.mark_gesture_end_pending(id);
+        }
+        Message::StartThresholdBand(band) => {
+            state.selected_band =
+                Some(band.min(active_band_count(&state.shared).saturating_sub(1)));
+            let id = threshold_param_for_band(band);
+            let idx = id.as_index();
+            if !state.active_gestures[idx] {
+                state.active_gestures[idx] = true;
+                state.shared.mark_gesture_begin_pending(id);
+            }
+            state
+                .shared
+                .set_param_outbound_only(id, PARAMS[idx].default);
+        }
         Message::ResetThresholdBand(band) => {
             let band = band.min(active_band_count(&state.shared).saturating_sub(1));
             state.selected_band = Some(band);
             let id = threshold_param_for_band(band);
             state.shared.mark_gesture_begin_pending(id);
-            state.shared.set_param_outbound_only(id, 0.0);
+            state
+                .shared
+                .set_param_outbound_only(id, PARAMS[id.as_index()].default);
             state.shared.mark_gesture_end_pending(id);
         }
         Message::DragThresholdBand(band, delta_db) => {
@@ -303,6 +331,36 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ReleaseRangeBand(band) => {
             let id = range_param_for_band(band);
+            let idx = id.as_index();
+            if state.active_gestures[idx] {
+                state.active_gestures[idx] = false;
+                state.shared.mark_gesture_end_pending(id);
+            }
+        }
+        Message::StartGainBand(band) => {
+            state.selected_band =
+                Some(band.min(active_band_count(&state.shared).saturating_sub(1)));
+            let id = makeup_param_for_band(band);
+            let idx = id.as_index();
+            if !state.active_gestures[idx] {
+                state.active_gestures[idx] = true;
+                state.shared.mark_gesture_begin_pending(id);
+            }
+            state.shared.set_param_outbound_only(id, 0.0);
+        }
+        Message::DragGainBand(band, delta_db) => {
+            let id = makeup_param_for_band(band);
+            let idx = id.as_index();
+            if !state.active_gestures[idx] {
+                state.active_gestures[idx] = true;
+                state.shared.mark_gesture_begin_pending(id);
+            }
+            let def = PARAMS[idx];
+            let value = (state.shared.params.get(id) + f64::from(delta_db)).clamp(def.min, def.max);
+            state.shared.set_param_outbound_only(id, value);
+        }
+        Message::ReleaseGainBand(band) => {
+            let id = makeup_param_for_band(band);
             let idx = id.as_index();
             if state.active_gestures[idx] {
                 state.active_gestures[idx] = false;
@@ -428,6 +486,7 @@ fn view(state: &State) -> Element<'_, Message> {
         sample_rate: state.shared.sample_rate(),
         thresholds: threshold_param_ids().map(&p),
         ranges: range_param_ids().map(&p),
+        gains: makeup_param_ids().map(&p),
         gain_reduction_db: std::array::from_fn(|i| {
             state.gain_reduction_db.get(i).copied().unwrap_or(0.0)
         }),
@@ -673,6 +732,17 @@ fn range_param_ids() -> [ParamId; MAX_COMPRESSOR_BANDS] {
     ]
 }
 
+fn makeup_param_ids() -> [ParamId; MAX_COMPRESSOR_BANDS] {
+    [
+        ParamId::B1Makeup,
+        ParamId::B2Makeup,
+        ParamId::B3Makeup,
+        ParamId::B4Makeup,
+        ParamId::B5Makeup,
+        ParamId::B6Makeup,
+    ]
+}
+
 fn split_param_for_index(index: usize) -> ParamId {
     split_param_ids()[index.min(MAX_COMPRESSOR_BANDS - 2)]
 }
@@ -754,6 +824,10 @@ fn range_param_for_band(band: usize) -> ParamId {
     range_param_ids()[band.min(MAX_COMPRESSOR_BANDS - 1)]
 }
 
+fn makeup_param_for_band(band: usize) -> ParamId {
+    makeup_param_ids()[band.min(MAX_COMPRESSOR_BANDS - 1)]
+}
+
 struct ThresholdCurveParams {
     splits: Vec<f32>,
     band_count: usize,
@@ -762,6 +836,7 @@ struct ThresholdCurveParams {
     sample_rate: f32,
     thresholds: [f32; MAX_COMPRESSOR_BANDS],
     ranges: [f32; MAX_COMPRESSOR_BANDS],
+    gains: [f32; MAX_COMPRESSOR_BANDS],
     gain_reduction_db: [f32; MAX_COMPRESSOR_BANDS],
     selected_band: Option<usize>,
 }
@@ -773,27 +848,44 @@ fn threshold_curves(params: ThresholdCurveParams) -> Vec<SpectrumThresholdCurve<
 
     let band_count = params.band_count.clamp(1, MAX_COMPRESSOR_BANDS);
     let splits = sorted_splits(&params.splits, band_count);
-    let mut points = Vec::with_capacity(POINTS);
     let threshold_values: [f32; MAX_COMPRESSOR_BANDS] = std::array::from_fn(|band| {
         params.thresholds[band] - params.input_gain_db - sidechain_boost_db(params.sc_boost, band)
     });
     let range_values: [f32; MAX_COMPRESSOR_BANDS] =
-        std::array::from_fn(|band| threshold_values[band] + params.ranges[band]);
-    let live_values: [f32; MAX_COMPRESSOR_BANDS] = std::array::from_fn(|band| {
-        threshold_values[band]
+        std::array::from_fn(|band| params.gains[band] + params.ranges[band]);
+    let live_gain_values: [f32; MAX_COMPRESSOR_BANDS] = std::array::from_fn(|band| {
+        params.gains[band]
             + live_range_offset_db(params.ranges[band], params.gain_reduction_db[band])
     });
+    let mut gain_points = Vec::with_capacity(POINTS);
     let mut range_points = Vec::with_capacity(POINTS);
+    let mut threshold_points = Vec::with_capacity(POINTS);
     for point in 0..POINTS {
         let t = point as f32 / (POINTS - 1) as f32;
         let freq = F_MIN * (F_MAX / F_MIN).powf(t);
-        points.push((
+        gain_points.push((
             freq,
-            blended_threshold_db(freq, &splits, band_count, params.sample_rate, &live_values),
+            blended_threshold_db(
+                freq,
+                &splits,
+                band_count,
+                params.sample_rate,
+                &live_gain_values,
+            ),
         ));
         range_points.push((
             freq,
             blended_threshold_db(freq, &splits, band_count, params.sample_rate, &range_values),
+        ));
+        threshold_points.push((
+            freq,
+            blended_threshold_db(
+                freq,
+                &splits,
+                band_count,
+                params.sample_rate,
+                &threshold_values,
+            ),
         ));
     }
 
@@ -804,13 +896,19 @@ fn threshold_curves(params: ThresholdCurveParams) -> Vec<SpectrumThresholdCurve<
     let threshold_middle_select_splits = splits.clone();
     let threshold_middle_drag_splits = splits.clone();
     let threshold_middle_release_splits = splits.clone();
+    let threshold_right_select_splits = splits.clone();
+    let threshold_right_drag_splits = splits.clone();
+    let threshold_right_release_splits = splits.clone();
     let range_select_splits = splits.clone();
     let range_drag_splits = splits.clone();
-    let range_release_splits = splits;
+    let range_release_splits = splits.clone();
+    let gain_select_splits = splits.clone();
+    let gain_drag_splits = splits.clone();
+    let gain_release_splits = splits;
     let selected = params.selected_band.is_some();
     vec![
         SpectrumThresholdCurve {
-            points,
+            points: gain_points,
             selected,
             color: Some(Color::from_rgba(0.90, 0.93, 0.96, 0.90)),
             selected_color: Some(Color::from_rgba(0.90, 0.93, 0.96, 0.96)),
@@ -824,19 +922,17 @@ fn threshold_curves(params: ThresholdCurveParams) -> Vec<SpectrumThresholdCurve<
             })),
             on_drag_db: None,
             on_drag_db_at: Some(Arc::new(move |freq, delta_db| {
-                Message::DragThresholdBand(
+                Message::DragGainBand(
                     band_for_freq(freq, &drag_splits).min(band_count - 1),
                     delta_db,
                 )
             })),
             on_double_click_at: Some(Arc::new(move |freq| {
-                Message::ResetThresholdBand(band_for_freq(freq, &reset_splits).min(band_count - 1))
+                Message::ResetGainBand(band_for_freq(freq, &reset_splits).min(band_count - 1))
             })),
             on_release: None,
             on_release_at: Some(Arc::new(move |freq| {
-                Message::ReleaseThresholdBand(
-                    band_for_freq(freq, &release_splits).min(band_count - 1),
-                )
+                Message::ReleaseGainBand(band_for_freq(freq, &release_splits).min(band_count - 1))
             })),
             on_middle_select_at: Some(Arc::new(move |freq| {
                 Message::StartRangeBand(
@@ -852,6 +948,22 @@ fn threshold_curves(params: ThresholdCurveParams) -> Vec<SpectrumThresholdCurve<
             on_middle_release_at: Some(Arc::new(move |freq| {
                 Message::ReleaseRangeBand(
                     band_for_freq(freq, &threshold_middle_release_splits).min(band_count - 1),
+                )
+            })),
+            on_right_select_at: Some(Arc::new(move |freq| {
+                Message::StartThresholdBand(
+                    band_for_freq(freq, &threshold_right_select_splits).min(band_count - 1),
+                )
+            })),
+            on_right_drag_db_at: Some(Arc::new(move |freq, delta_db| {
+                Message::DragThresholdBand(
+                    band_for_freq(freq, &threshold_right_drag_splits).min(band_count - 1),
+                    delta_db,
+                )
+            })),
+            on_right_release_at: Some(Arc::new(move |freq| {
+                Message::ReleaseThresholdBand(
+                    band_for_freq(freq, &threshold_right_release_splits).min(band_count - 1),
                 )
             })),
         },
@@ -885,6 +997,43 @@ fn threshold_curves(params: ThresholdCurveParams) -> Vec<SpectrumThresholdCurve<
             on_middle_select_at: None,
             on_middle_drag_db_at: None,
             on_middle_release_at: None,
+            on_right_select_at: None,
+            on_right_drag_db_at: None,
+            on_right_release_at: None,
+        },
+        SpectrumThresholdCurve {
+            points: threshold_points,
+            selected,
+            color: Some(Color::from_rgba(0.18, 0.76, 0.95, 0.34)),
+            selected_color: Some(Color::from_rgba(0.18, 0.76, 0.95, 0.52)),
+            width: 1.0,
+            selected_width: 1.5,
+            on_select: None,
+            on_select_at: Some(Arc::new(move |freq| {
+                Message::SelectThresholdBand(
+                    band_for_freq(freq, &gain_select_splits).min(band_count - 1),
+                )
+            })),
+            on_drag_db: None,
+            on_drag_db_at: Some(Arc::new(move |freq, delta_db| {
+                Message::DragThresholdBand(
+                    band_for_freq(freq, &gain_drag_splits).min(band_count - 1),
+                    delta_db,
+                )
+            })),
+            on_double_click_at: None,
+            on_release: None,
+            on_release_at: Some(Arc::new(move |freq| {
+                Message::ReleaseThresholdBand(
+                    band_for_freq(freq, &gain_release_splits).min(band_count - 1),
+                )
+            })),
+            on_middle_select_at: None,
+            on_middle_drag_db_at: None,
+            on_middle_release_at: None,
+            on_right_select_at: None,
+            on_right_drag_db_at: None,
+            on_right_release_at: None,
         },
     ]
 }
@@ -1236,11 +1385,12 @@ mod tests {
             sample_rate: 48_000.0,
             thresholds,
             ranges: [-6.0; MAX_COMPRESSOR_BANDS],
+            gains: [0.0; MAX_COMPRESSOR_BANDS],
             gain_reduction_db: [0.0; MAX_COMPRESSOR_BANDS],
             selected_band: Some(0),
         });
-        assert_eq!(curves.len(), 2);
-        curves[0].points.clone()
+        assert_eq!(curves.len(), 3);
+        curves[2].points.clone()
     }
 
     fn range_curve_for_values(
@@ -1255,11 +1405,29 @@ mod tests {
             sample_rate: 48_000.0,
             thresholds,
             ranges,
+            gains: [0.0; MAX_COMPRESSOR_BANDS],
             gain_reduction_db: [0.0; MAX_COMPRESSOR_BANDS],
             selected_band: Some(0),
         });
-        assert_eq!(curves.len(), 2);
+        assert_eq!(curves.len(), 3);
         curves[1].points.clone()
+    }
+
+    fn gain_curve_for_values(gains: [f32; MAX_COMPRESSOR_BANDS]) -> Vec<(f32, f32)> {
+        let curves = threshold_curves(ThresholdCurveParams {
+            splits: vec![200.0, 2000.0, 8000.0],
+            band_count: 4,
+            input_gain_db: 0.0,
+            sc_boost: 0,
+            sample_rate: 48_000.0,
+            thresholds: [-10.0; MAX_COMPRESSOR_BANDS],
+            ranges: [-6.0; MAX_COMPRESSOR_BANDS],
+            gains,
+            gain_reduction_db: [0.0; MAX_COMPRESSOR_BANDS],
+            selected_band: Some(0),
+        });
+        assert_eq!(curves.len(), 3);
+        curves[0].points.clone()
     }
 
     #[test]
@@ -1280,6 +1448,20 @@ mod tests {
     }
 
     #[test]
+    fn compressor_defaults_are_gain_threshold_range() {
+        assert_eq!(PARAMS[ParamId::BandCount.as_index()].default, 1.0);
+        for id in makeup_param_ids() {
+            assert_eq!(PARAMS[id.as_index()].default, 0.0);
+        }
+        for id in threshold_param_ids() {
+            assert_eq!(PARAMS[id.as_index()].default, -3.0);
+        }
+        for id in range_param_ids() {
+            assert_eq!(PARAMS[id.as_index()].default, -12.0);
+        }
+    }
+
+    #[test]
     fn middle_drag_range_starts_from_threshold() {
         let shared = Arc::new(SharedState::default());
         shared.set_param_outbound_only(ParamId::B1Range, -30.0);
@@ -1294,19 +1476,47 @@ mod tests {
     }
 
     #[test]
-    fn reset_threshold_band_sets_threshold_to_zero() {
+    fn right_drag_threshold_starts_from_default() {
         let shared = Arc::new(SharedState::default());
+        shared.set_param_outbound_only(ParamId::B1Threshold, -18.0);
+        let (mut state, _task) = init(shared.clone());
+
+        let _ = update(&mut state, Message::StartThresholdBand(0));
+        assert_eq!(state.selected_band, Some(0));
+        assert_eq!(shared.params.get(ParamId::B1Threshold), -3.0);
+
+        let _ = update(&mut state, Message::DragThresholdBand(0, -3.5));
+        assert_eq!(shared.params.get(ParamId::B1Threshold), -6.5);
+    }
+
+    #[test]
+    fn reset_gain_band_sets_makeup_to_zero() {
+        let shared = Arc::new(SharedState::default());
+        shared.set_param_outbound_only(ParamId::BandCount, 2.0);
+        shared.set_param_outbound_only(ParamId::B2Makeup, 7.0);
+        let (mut state, _task) = init(shared.clone());
+
+        let _ = update(&mut state, Message::ResetGainBand(1));
+
+        assert_eq!(state.selected_band, Some(1));
+        assert_eq!(shared.params.get(ParamId::B2Makeup), 0.0);
+    }
+
+    #[test]
+    fn reset_threshold_band_sets_threshold_to_default() {
+        let shared = Arc::new(SharedState::default());
+        shared.set_param_outbound_only(ParamId::BandCount, 2.0);
         shared.set_param_outbound_only(ParamId::B2Threshold, -18.0);
         let (mut state, _task) = init(shared.clone());
 
         let _ = update(&mut state, Message::ResetThresholdBand(1));
 
         assert_eq!(state.selected_band, Some(1));
-        assert_eq!(shared.params.get(ParamId::B2Threshold), 0.0);
+        assert_eq!(shared.params.get(ParamId::B2Threshold), -3.0);
     }
 
     #[test]
-    fn threshold_curve_double_click_resets_clicked_band() {
+    fn gain_curve_double_click_resets_clicked_band() {
         let curves = threshold_curves(ThresholdCurveParams {
             splits: vec![200.0, 2000.0, 8000.0],
             band_count: 4,
@@ -1315,20 +1525,27 @@ mod tests {
             sample_rate: 48_000.0,
             thresholds: [-10.0; MAX_COMPRESSOR_BANDS],
             ranges: [-6.0; MAX_COMPRESSOR_BANDS],
+            gains: [0.0; MAX_COMPRESSOR_BANDS],
             gain_reduction_db: [0.0; MAX_COMPRESSOR_BANDS],
             selected_band: Some(0),
         });
 
         let reset = curves[0].on_double_click_at.as_ref().unwrap()(500.0);
         match reset {
-            Message::ResetThresholdBand(band) => assert_eq!(band, 1),
+            Message::ResetGainBand(band) => assert_eq!(band, 1),
             other => panic!("expected reset message, got {other:?}"),
         }
         assert!(curves[1].on_double_click_at.is_none());
+        assert!(curves[2].on_double_click_at.is_none());
+        let start_threshold = curves[0].on_right_select_at.as_ref().unwrap()(500.0);
+        match start_threshold {
+            Message::StartThresholdBand(band) => assert_eq!(band, 1),
+            other => panic!("expected start threshold message, got {other:?}"),
+        }
     }
 
     #[test]
-    fn live_threshold_contour_ducks_whole_band_toward_negative_range() {
+    fn live_gain_contour_ducks_whole_band_toward_negative_range() {
         let curves = threshold_curves(ThresholdCurveParams {
             splits: vec![200.0, 2000.0, 8000.0],
             band_count: 4,
@@ -1337,20 +1554,21 @@ mod tests {
             sample_rate: 48_000.0,
             thresholds: [-10.0; MAX_COMPRESSOR_BANDS],
             ranges: [-6.0; MAX_COMPRESSOR_BANDS],
+            gains: [0.0; MAX_COMPRESSOR_BANDS],
             gain_reduction_db: [3.0; MAX_COMPRESSOR_BANDS],
             selected_band: Some(0),
         });
 
         for &(_, db) in &curves[0].points {
             assert!(
-                (db + 13.0).abs() < 1.0e-4,
-                "expected live contour to duck to -13 dB, got {db}"
+                (db + 3.0).abs() < 1.0e-4,
+                "expected live contour to duck to -3 dB, got {db}"
             );
         }
     }
 
     #[test]
-    fn live_threshold_contour_expands_whole_band_toward_positive_range() {
+    fn live_gain_contour_expands_whole_band_toward_positive_range() {
         let curves = threshold_curves(ThresholdCurveParams {
             splits: vec![200.0, 2000.0, 8000.0],
             band_count: 4,
@@ -1359,20 +1577,21 @@ mod tests {
             sample_rate: 48_000.0,
             thresholds: [-10.0; MAX_COMPRESSOR_BANDS],
             ranges: [6.0; MAX_COMPRESSOR_BANDS],
+            gains: [0.0; MAX_COMPRESSOR_BANDS],
             gain_reduction_db: [-4.0; MAX_COMPRESSOR_BANDS],
             selected_band: Some(0),
         });
 
         for &(_, db) in &curves[0].points {
             assert!(
-                (db + 6.0).abs() < 1.0e-4,
-                "expected live contour to expand to -6 dB, got {db}"
+                (db - 4.0).abs() < 1.0e-4,
+                "expected live contour to expand to +4 dB, got {db}"
             );
         }
     }
 
     #[test]
-    fn live_threshold_contour_clamps_to_configured_range() {
+    fn live_gain_contour_clamps_to_configured_range() {
         let curves = threshold_curves(ThresholdCurveParams {
             splits: vec![200.0, 2000.0, 8000.0],
             band_count: 4,
@@ -1381,26 +1600,27 @@ mod tests {
             sample_rate: 48_000.0,
             thresholds: [-10.0; MAX_COMPRESSOR_BANDS],
             ranges: [-6.0; MAX_COMPRESSOR_BANDS],
+            gains: [0.0; MAX_COMPRESSOR_BANDS],
             gain_reduction_db: [24.0; MAX_COMPRESSOR_BANDS],
             selected_band: Some(0),
         });
 
         for &(_, db) in &curves[0].points {
             assert!(
-                (db + 16.0).abs() < 1.0e-4,
-                "expected live contour to clamp at -16 dB, got {db}"
+                (db + 6.0).abs() < 1.0e-4,
+                "expected live contour to clamp at -6 dB, got {db}"
             );
         }
     }
 
     #[test]
-    fn range_contour_draws_threshold_plus_range() {
+    fn range_contour_draws_gain_plus_range() {
         let points =
             range_curve_for_values([-10.0; MAX_COMPRESSOR_BANDS], [-6.0; MAX_COMPRESSOR_BANDS]);
         for &(_, db) in &points {
             assert!(
-                (db + 16.0).abs() < 1.0e-4,
-                "expected flat -16 dB range contour, got {db}"
+                (db + 6.0).abs() < 1.0e-4,
+                "expected flat -6 dB range contour, got {db}"
             );
         }
 
@@ -1408,8 +1628,27 @@ mod tests {
             range_curve_for_values([-10.0; MAX_COMPRESSOR_BANDS], [4.0; MAX_COMPRESSOR_BANDS]);
         for &(_, db) in &points {
             assert!(
-                (db + 6.0).abs() < 1.0e-4,
-                "expected flat -6 dB range contour, got {db}"
+                (db - 4.0).abs() < 1.0e-4,
+                "expected flat +4 dB range contour, got {db}"
+            );
+        }
+    }
+
+    #[test]
+    fn gain_contour_draws_makeup_gain() {
+        let points = gain_curve_for_values([3.0; MAX_COMPRESSOR_BANDS]);
+        for &(_, db) in &points {
+            assert!(
+                (db - 3.0).abs() < 1.0e-4,
+                "expected flat +3 dB gain contour, got {db}"
+            );
+        }
+
+        let points = gain_curve_for_values([-5.5; MAX_COMPRESSOR_BANDS]);
+        for &(_, db) in &points {
+            assert!(
+                (db + 5.5).abs() < 1.0e-4,
+                "expected flat -5.5 dB gain contour, got {db}"
             );
         }
     }

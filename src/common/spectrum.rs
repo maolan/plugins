@@ -91,6 +91,9 @@ pub struct SpectrumThresholdCurve<Message> {
     pub on_middle_select_at: Option<Arc<dyn Fn(f32) -> Message + Send + Sync>>,
     pub on_middle_drag_db_at: Option<Arc<dyn Fn(f32, f32) -> Message + Send + Sync>>,
     pub on_middle_release_at: Option<Arc<dyn Fn(f32) -> Message + Send + Sync>>,
+    pub on_right_select_at: Option<Arc<dyn Fn(f32) -> Message + Send + Sync>>,
+    pub on_right_drag_db_at: Option<Arc<dyn Fn(f32, f32) -> Message + Send + Sync>>,
+    pub on_right_release_at: Option<Arc<dyn Fn(f32) -> Message + Send + Sync>>,
 }
 
 impl<Message: Clone> Clone for SpectrumThresholdCurve<Message> {
@@ -112,6 +115,9 @@ impl<Message: Clone> Clone for SpectrumThresholdCurve<Message> {
             on_middle_select_at: self.on_middle_select_at.clone(),
             on_middle_drag_db_at: self.on_middle_drag_db_at.clone(),
             on_middle_release_at: self.on_middle_release_at.clone(),
+            on_right_select_at: self.on_right_select_at.clone(),
+            on_right_drag_db_at: self.on_right_drag_db_at.clone(),
+            on_right_release_at: self.on_right_release_at.clone(),
         }
     }
 }
@@ -329,6 +335,8 @@ impl<Message: Clone + 'static, const BINS: usize> SpectralAnalyzerWidget<Message
                 && curve.on_double_click_at.is_none()
                 && curve.on_middle_select_at.is_none()
                 && curve.on_middle_drag_db_at.is_none()
+                && curve.on_right_select_at.is_none()
+                && curve.on_right_drag_db_at.is_none()
             {
                 continue;
             }
@@ -489,6 +497,32 @@ impl<Message: Clone + 'static, const BINS: usize> Program<Message>
                 }
                 None
             }
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
+                let pos = cursor.position_in(bounds)?;
+                if let Some(curve_index) = self.closest_curve(pos, local_bounds) {
+                    state.last_click = None;
+                    let freq = Self::x_to_freq(pos.x, local_bounds);
+                    state.dragging_curve = Some((curve_index, pos.y, freq, mouse::Button::Right));
+                    let action = self
+                        .threshold_curves
+                        .get(curve_index)
+                        .and_then(|curve| {
+                            curve
+                                .on_right_select_at
+                                .as_ref()
+                                .map(|on_select| on_select(freq))
+                                .or_else(|| {
+                                    curve.on_select_at.as_ref().map(|on_select| on_select(freq))
+                                })
+                                .or_else(|| curve.on_select.clone())
+                        })
+                        .map(CanvasAction::publish)
+                        .unwrap_or_else(CanvasAction::capture)
+                        .and_capture();
+                    return Some(action);
+                }
+                None
+            }
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 let pos = cursor.position_in(bounds)?;
                 if let Some(marker_index) = state.dragging_marker {
@@ -517,6 +551,17 @@ impl<Message: Clone + 'static, const BINS: usize> Program<Message>
                                     .as_ref()
                                     .map(|on_drag| on_drag(drag_freq, next_db - last_db))
                             })
+                    } else if button == mouse::Button::Right {
+                        curve
+                            .on_right_drag_db_at
+                            .as_ref()
+                            .map(|on_drag| on_drag(drag_freq, next_db - last_db))
+                            .or_else(|| {
+                                curve
+                                    .on_drag_db_at
+                                    .as_ref()
+                                    .map(|on_drag| on_drag(drag_freq, next_db - last_db))
+                            })
                     } else {
                         curve
                             .on_drag_db_at
@@ -535,7 +580,7 @@ impl<Message: Clone + 'static, const BINS: usize> Program<Message>
                 None
             }
             Event::Mouse(mouse::Event::ButtonReleased(
-                mouse::Button::Left | mouse::Button::Middle,
+                mouse::Button::Left | mouse::Button::Middle | mouse::Button::Right,
             )) => {
                 if let Some(marker_index) = state.dragging_marker.take() {
                     return self
@@ -554,6 +599,18 @@ impl<Message: Clone + 'static, const BINS: usize> Program<Message>
                             if button == mouse::Button::Middle {
                                 curve
                                     .on_middle_release_at
+                                    .as_ref()
+                                    .map(|on_release| on_release(drag_freq))
+                                    .or_else(|| {
+                                        curve
+                                            .on_release_at
+                                            .as_ref()
+                                            .map(|on_release| on_release(drag_freq))
+                                    })
+                                    .or_else(|| curve.on_release.clone())
+                            } else if button == mouse::Button::Right {
+                                curve
+                                    .on_right_release_at
                                     .as_ref()
                                     .map(|on_release| on_release(drag_freq))
                                     .or_else(|| {

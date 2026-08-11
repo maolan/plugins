@@ -20,8 +20,8 @@ struct BandCompressor {
 impl Default for BandCompressor {
     fn default() -> Self {
         Self {
-            threshold_db: -12.0,
-            range_db: -30.0,
+            threshold_db: -3.0,
+            range_db: -12.0,
             ratio: 4.0,
             attack_s: 0.020,
             release_s: 0.100,
@@ -450,7 +450,7 @@ impl Default for Compressor {
             dry_gain: 0.0,
             wet_gain: 1.0,
             bypass: false,
-            band_count: 4,
+            band_count: 1,
             split_hz: [120.0, 1000.0, 6000.0, 10_000.0, 14_000.0],
             bands: [BandCompressor::default(); MAX_BANDS],
             detector_split: StereoSplitBank::default(),
@@ -766,13 +766,20 @@ fn gain_to_db(gain: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::compute_gr_db;
+    use super::{Compressor, compute_gr_db};
 
     fn close(actual: f32, expected: f32) {
         assert!(
             (actual - expected).abs() < 1.0e-4,
             "actual {actual}, expected {expected}"
         );
+    }
+
+    #[test]
+    fn compressor_defaults_to_one_band() {
+        let mut compressor = Compressor::default();
+        let (_, band_count) = compressor.take_gr_db();
+        assert_eq!(band_count, 1);
     }
 
     #[test]
