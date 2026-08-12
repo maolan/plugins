@@ -14,7 +14,7 @@ use clap_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{column, container, row, text},
+    widget::{column, container, row, text, toggler},
 };
 use maolan_widgets::arch_slider::arch_slider;
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
@@ -107,6 +107,7 @@ impl From<ChannelMode> for u32 {
 pub enum Message {
     SetParam(ParamId, f32),
     ReleaseParam(ParamId),
+    SetBoolParam(ParamId, bool),
     SetChannels(ChannelMode),
 }
 
@@ -142,11 +143,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.shared.mark_gesture_end_pending(id);
             }
         }
+        Message::SetBoolParam(id, value) => {
+            state.shared.mark_gesture_begin_pending(id);
+            state
+                .shared
+                .set_param_outbound_only(id, if value { 1.0 } else { 0.0 });
+            state.shared.mark_gesture_end_pending(id);
+            state.shared.mark_dirty();
+        }
         Message::SetChannels(mode) => {
             state
                 .shared
                 .set_param_outbound_only(ParamId::Channels, u32::from(mode) as f64);
-            state.shared.request_audio_ports_rescan();
+            if state.shared.sync_channels_from_params() {
+                state.shared.request_audio_ports_rescan();
+            }
+            state.shared.mark_dirty();
         }
     }
     Task::none()
@@ -166,22 +178,44 @@ fn view(state: &State) -> Element<'_, Message> {
         .width(Length::Fixed(86.0))
         .height(Length::Fixed(86.0));
 
-        let value_text = if id == ParamId::TimeMode {
-            if value >= 0.5 {
-                "Note".to_string()
-            } else {
-                "ms".to_string()
-            }
-        } else if id == ParamId::TimeNote {
+        let value_text = format!("{value:.2}");
+
+        container(
+            column![text(label).size(14), slider, text(value_text).size(13)]
+                .spacing(4)
+                .align_x(Alignment::Center),
+        )
+        .width(Length::Fixed(96.0))
+        .into()
+    }
+
+    fn time_knob<'a>(state: &'a State) -> Element<'a, Message> {
+        let time_mode = state.shared.params.get(ParamId::TimeMode);
+        let (id, label) = if time_mode >= 0.5 {
+            (ParamId::TimeNote, "Time (note)")
+        } else {
+            (ParamId::TimeMs, "Time (ms)")
+        };
+        let value = state.shared.params.get(id) as f32;
+        let def = &PARAMS[id.as_index()];
+        let slider = arch_slider(def.min as f32..=def.max as f32, value, move |v| {
+            Message::SetParam(id, v)
+        })
+        .step(def.step as f32)
+        .double_click_reset(def.default as f32)
+        .on_release(Message::ReleaseParam(id))
+        .fill_from_start()
+        .width(Length::Fixed(86.0))
+        .height(Length::Fixed(86.0));
+
+        let value_text = if id == ParamId::TimeNote {
             let idx = ((value as f64).clamp(0.0, 1.0) * (NOTE_DIVISIONS.len() - 1) as f64).round()
                 as usize;
             NOTE_DIVISIONS[idx.min(NOTE_DIVISIONS.len() - 1)]
                 .0
                 .to_string()
-        } else if id == ParamId::TimeMs {
-            format!("{value:.0} ms")
         } else {
-            format!("{value:.2}")
+            format!("{value:.0} ms")
         };
 
         container(
@@ -201,12 +235,21 @@ fn view(state: &State) -> Element<'_, Message> {
     )
     .placeholder("Channels");
 
+    let time_mode_value = state.shared.params.get(ParamId::TimeMode) as f32;
+    let time_mode_switch = row![
+        text("Mode").size(14),
+        text("ms").size(13),
+        toggler(time_mode_value >= 0.5).on_toggle(|v| Message::SetBoolParam(ParamId::TimeMode, v)),
+        text("Note").size(13),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+
     let content = column![
         row![
             channels_dropdown,
-            knob(ParamId::TimeMode, "Mode", state),
-            knob(ParamId::TimeMs, "Time (ms)", state),
-            knob(ParamId::TimeNote, "Time (note)", state),
+            time_mode_switch,
+            time_knob(state),
             knob(ParamId::Feedback, "Feedback", state),
             knob(ParamId::DryWet, "Dry/Wet", state),
         ]
