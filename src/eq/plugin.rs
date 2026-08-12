@@ -47,7 +47,7 @@ use crate::eq::spectral::{SPECTRAL_LATENCY, SpectralBandConfig, SpectralDynamics
 pub const MODE_ZERO_LATENCY: u32 = 0;
 pub const MODE_NATURAL_PHASE: u32 = 1;
 pub const MODE_LINEAR_PHASE: u32 = 2;
-use crate::common::spectrum::LogSpectrumAnalyzer;
+use crate::common::spectrum::{SharedSpectrum, StereoSpectrumAnalyzer};
 
 const PLUGIN_ID: &[u8] = b"rs.maolan.equalizer\0";
 const PLUGIN_NAME: &[u8] = b"Maolan EQ\0";
@@ -108,10 +108,8 @@ struct AudioProcessor {
     delta_left: Vec<f32>,
     delta_right: Vec<f32>,
     spectrum_samples_since_update: usize,
-    pre_spectrum_left: LogSpectrumAnalyzer,
-    pre_spectrum_right: LogSpectrumAnalyzer,
-    post_spectrum_left: LogSpectrumAnalyzer,
-    post_spectrum_right: LogSpectrumAnalyzer,
+    pre_spectrum: StereoSpectrumAnalyzer<SPECTRUM_BINS>,
+    post_spectrum: StereoSpectrumAnalyzer<SPECTRUM_BINS>,
     bus_data: Option<bus::PluginSharedData>,
     last_params_version: u64,
 }
@@ -364,10 +362,8 @@ impl AudioProcessor {
             delta_left: vec![0.0; max_frames as usize],
             delta_right: vec![0.0; max_frames as usize],
             spectrum_samples_since_update: 0,
-            pre_spectrum_left: LogSpectrumAnalyzer::new(SPECTRUM_BINS),
-            pre_spectrum_right: LogSpectrumAnalyzer::new(SPECTRUM_BINS),
-            post_spectrum_left: LogSpectrumAnalyzer::new(SPECTRUM_BINS),
-            post_spectrum_right: LogSpectrumAnalyzer::new(SPECTRUM_BINS),
+            pre_spectrum: StereoSpectrumAnalyzer::new(),
+            post_spectrum: StereoSpectrumAnalyzer::new(),
             bus_data,
             last_params_version: 0,
         }
@@ -388,10 +384,8 @@ impl AudioProcessor {
         self.linear.reset();
         self.spectral.reset();
         self.spectrum_samples_since_update = 0;
-        self.pre_spectrum_left.reset();
-        self.pre_spectrum_right.reset();
-        self.post_spectrum_left.reset();
-        self.post_spectrum_right.reset();
+        self.pre_spectrum.reset();
+        self.post_spectrum.reset();
     }
 
     fn publish_dyn_visual_gain(&self, shared: &SharedState<ParamId>) {
@@ -527,9 +521,8 @@ impl AudioProcessor {
             };
 
             if ui_visible {
-                self.pre_spectrum_left.push_block(&self.temp_left[..frames]);
-                self.pre_spectrum_right
-                    .push_block(&self.temp_right[..frames]);
+                self.pre_spectrum
+                    .push_stereo(&self.temp_left[..frames], &self.temp_right[..frames]);
                 let in_peak_l = crate::simd::peak_abs(&self.temp_left[..frames]);
                 let in_peak_r = crate::simd::peak_abs(&self.temp_right[..frames]);
                 let in_db_l = if in_peak_l > 0.0 {
@@ -686,10 +679,8 @@ impl AudioProcessor {
             }
 
             if ui_visible {
-                self.post_spectrum_left
-                    .push_block(&self.temp_left[..frames]);
-                self.post_spectrum_right
-                    .push_block(&self.temp_right[..frames]);
+                self.post_spectrum
+                    .push_stereo(&self.temp_left[..frames], &self.temp_right[..frames]);
                 let out_peak_l = crate::simd::peak_abs(&self.temp_left[..frames]);
                 let out_peak_r = crate::simd::peak_abs(&self.temp_right[..frames]);
                 let out_db_l = if out_peak_l > 0.0 {
@@ -708,27 +699,22 @@ impl AudioProcessor {
                     shared.set_band_dyn_gain_db(band, self.equalizer.band_dyn_gain_db(band));
                 }
                 if self.spectrum_samples_since_update >= spectrum_update_interval_samples {
-                    let mut pre_left = [FADER_MIN_DB; SPECTRUM_BINS];
-                    let mut pre_right = [FADER_MIN_DB; SPECTRUM_BINS];
-                    let mut post_left = [FADER_MIN_DB; SPECTRUM_BINS];
-                    let mut post_right = [FADER_MIN_DB; SPECTRUM_BINS];
                     let sample_rate = self.equalizer.sample_rate();
-                    self.pre_spectrum_left.compute(sample_rate, &mut pre_left);
-                    self.pre_spectrum_right.compute(sample_rate, &mut pre_right);
-                    self.post_spectrum_left.compute(sample_rate, &mut post_left);
-                    self.post_spectrum_right
-                        .compute(sample_rate, &mut post_right);
-                    shared.set_input_spectrum_db(&pre_left, &pre_right);
-                    shared.set_output_spectrum_db(&post_left, &post_right);
+                    let pre = self.pre_spectrum.compute(sample_rate);
+                    let post = self.post_spectrum.compute(sample_rate);
+                    shared.set_input_spectrum_db(&pre[0], &pre[1]);
+                    shared.set_output_spectrum_db(&post[0], &post[1]);
 
                     if let Some(ref bus) = self.bus_data
                         && bus::needs(bus::NEED_FFT)
                         && let Some(slot) = bus.fft_slot()
                     {
                         slot.write(|fft| {
-                            let n = post_left.len().min(fft.bins.len());
-                            for i in 0..n {
-                                fft.bins[i] = post_left[i].max(post_right[i]);
+                            let n = post[0].len().min(fft.bins.len());
+                            for (i, (left, right)) in
+                                post[0].iter().zip(post[1].iter()).take(n).enumerate()
+                            {
+                                fft.bins[i] = (*left).max(*right);
                             }
                             fft.valid_bins = n;
                         });
@@ -753,9 +739,7 @@ impl AudioProcessor {
             };
 
             if ui_visible {
-                self.pre_spectrum_left.push_block(&self.temp_left[..frames]);
-                self.pre_spectrum_right
-                    .push_block(&self.temp_left[..frames]);
+                self.pre_spectrum.push_mono(&self.temp_left[..frames]);
                 let in_peak_l = crate::simd::peak_abs(&self.temp_left[..frames]);
                 let in_db_l = if in_peak_l > 0.0 {
                     20.0 * in_peak_l.log10()
@@ -859,10 +843,7 @@ impl AudioProcessor {
             output_port.data32(0)[..frames].copy_from_slice(&self.temp_left[..frames]);
 
             if ui_visible {
-                self.post_spectrum_left
-                    .push_block(&self.temp_left[..frames]);
-                self.post_spectrum_right
-                    .push_block(&self.temp_left[..frames]);
+                self.post_spectrum.push_mono(&self.temp_left[..frames]);
                 let out_peak_l = crate::simd::peak_abs(&self.temp_left[..frames]);
                 let out_db_l = if out_peak_l > 0.0 {
                     20.0 * out_peak_l.log10()
@@ -875,26 +856,19 @@ impl AudioProcessor {
                     shared.set_band_dyn_gain_db(band, self.equalizer.band_dyn_gain_db(band));
                 }
                 if self.spectrum_samples_since_update >= spectrum_update_interval_samples {
-                    let mut pre_left = [FADER_MIN_DB; SPECTRUM_BINS];
-                    let mut pre_right = [FADER_MIN_DB; SPECTRUM_BINS];
-                    let mut post_left = [FADER_MIN_DB; SPECTRUM_BINS];
-                    let mut post_right = [FADER_MIN_DB; SPECTRUM_BINS];
                     let sample_rate = self.equalizer.sample_rate();
-                    self.pre_spectrum_left.compute(sample_rate, &mut pre_left);
-                    self.pre_spectrum_right.compute(sample_rate, &mut pre_right);
-                    self.post_spectrum_left.compute(sample_rate, &mut post_left);
-                    self.post_spectrum_right
-                        .compute(sample_rate, &mut post_right);
-                    shared.set_input_spectrum_db(&pre_left, &pre_right);
-                    shared.set_output_spectrum_db(&post_left, &post_right);
+                    let pre = self.pre_spectrum.compute(sample_rate);
+                    let post = self.post_spectrum.compute(sample_rate);
+                    shared.set_input_spectrum_db(&pre[0], &pre[1]);
+                    shared.set_output_spectrum_db(&post[0], &post[1]);
 
                     if let Some(ref bus) = self.bus_data
                         && bus::needs(bus::NEED_FFT)
                         && let Some(slot) = bus.fft_slot()
                     {
                         slot.write(|fft| {
-                            let n = post_left.len().min(fft.bins.len());
-                            fft.bins[..n].copy_from_slice(&post_left[..n]);
+                            let n = post[0].len().min(fft.bins.len());
+                            fft.bins[..n].copy_from_slice(&post[0][..n]);
                             fft.valid_bins = n;
                         });
                     }
@@ -1867,10 +1841,8 @@ pub struct SharedState<T: ParamIdExt> {
     pub input_level_right_db: AtomicF32,
     pub output_level_left_db: AtomicF32,
     pub output_level_right_db: AtomicF32,
-    pub output_spectrum_left_db: [AtomicF32; SPECTRUM_BINS],
-    pub output_spectrum_right_db: [AtomicF32; SPECTRUM_BINS],
-    pub input_spectrum_left_db: [AtomicF32; SPECTRUM_BINS],
-    pub input_spectrum_right_db: [AtomicF32; SPECTRUM_BINS],
+    pub output_spectrum_db: SharedSpectrum<SPECTRUM_BINS>,
+    pub input_spectrum_db: SharedSpectrum<SPECTRUM_BINS>,
     pub band_dyn_gain_db: [AtomicF32; 32],
     pub dyn_visual_band: AtomicU32,
     pub dyn_visual_gain_db: [AtomicF32; SPECTRUM_BINS],
@@ -1931,10 +1903,8 @@ impl<T: ParamIdExt> SharedState<T> {
             input_level_right_db: AtomicF32::new(FADER_MIN_DB),
             output_level_left_db: AtomicF32::new(FADER_MIN_DB),
             output_level_right_db: AtomicF32::new(FADER_MIN_DB),
-            output_spectrum_left_db: std::array::from_fn(|_| AtomicF32::new(FADER_MIN_DB)),
-            output_spectrum_right_db: std::array::from_fn(|_| AtomicF32::new(FADER_MIN_DB)),
-            input_spectrum_left_db: std::array::from_fn(|_| AtomicF32::new(FADER_MIN_DB)),
-            input_spectrum_right_db: std::array::from_fn(|_| AtomicF32::new(FADER_MIN_DB)),
+            output_spectrum_db: SharedSpectrum::new(FADER_MIN_DB),
+            input_spectrum_db: SharedSpectrum::new(FADER_MIN_DB),
             band_dyn_gain_db: std::array::from_fn(|_| AtomicF32::new(0.0)),
             dyn_visual_band: AtomicU32::new(32),
             dyn_visual_gain_db: std::array::from_fn(|_| AtomicF32::new(0.0)),
@@ -2100,6 +2070,10 @@ impl<T: ParamIdExt> SharedState<T> {
         self.input_level_right_db.load(Ordering::Relaxed)
     }
 
+    pub fn input_levels_db(&self) -> [f32; 2] {
+        [self.input_level_left_db(), self.input_level_right_db()]
+    }
+
     pub fn set_output_level_left_db(&self, db: f32) {
         self.output_level_left_db.store(db, Ordering::Relaxed);
     }
@@ -2116,22 +2090,20 @@ impl<T: ParamIdExt> SharedState<T> {
         self.output_level_right_db.load(Ordering::Relaxed)
     }
 
+    pub fn output_levels_db(&self) -> [f32; 2] {
+        [self.output_level_left_db(), self.output_level_right_db()]
+    }
+
     pub fn set_output_spectrum_db(
         &self,
         left_db: &[f32; SPECTRUM_BINS],
         right_db: &[f32; SPECTRUM_BINS],
     ) {
-        for i in 0..SPECTRUM_BINS {
-            self.output_spectrum_left_db[i].store(left_db[i], Ordering::Relaxed);
-            self.output_spectrum_right_db[i].store(right_db[i], Ordering::Relaxed);
-        }
+        self.output_spectrum_db.set(left_db, right_db);
     }
 
     pub fn output_spectrum_db(&self) -> [[f32; SPECTRUM_BINS]; 2] {
-        [
-            std::array::from_fn(|i| self.output_spectrum_left_db[i].load(Ordering::Relaxed)),
-            std::array::from_fn(|i| self.output_spectrum_right_db[i].load(Ordering::Relaxed)),
-        ]
+        self.output_spectrum_db.get()
     }
 
     pub fn set_input_spectrum_db(
@@ -2139,17 +2111,11 @@ impl<T: ParamIdExt> SharedState<T> {
         left_db: &[f32; SPECTRUM_BINS],
         right_db: &[f32; SPECTRUM_BINS],
     ) {
-        for i in 0..SPECTRUM_BINS {
-            self.input_spectrum_left_db[i].store(left_db[i], Ordering::Relaxed);
-            self.input_spectrum_right_db[i].store(right_db[i], Ordering::Relaxed);
-        }
+        self.input_spectrum_db.set(left_db, right_db);
     }
 
     pub fn input_spectrum_db(&self) -> [[f32; SPECTRUM_BINS]; 2] {
-        [
-            std::array::from_fn(|i| self.input_spectrum_left_db[i].load(Ordering::Relaxed)),
-            std::array::from_fn(|i| self.input_spectrum_right_db[i].load(Ordering::Relaxed)),
-        ]
+        self.input_spectrum_db.get()
     }
 
     pub fn set_band_dyn_gain_db(&self, band: usize, db: f32) {

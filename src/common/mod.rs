@@ -24,7 +24,9 @@ pub mod slot;
 pub mod spectrum;
 pub mod state;
 pub mod tuning;
+pub mod ui;
 pub mod voice;
+pub mod waveform;
 pub mod waveshaper;
 pub mod wavetable;
 

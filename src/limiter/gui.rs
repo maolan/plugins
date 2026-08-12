@@ -5,6 +5,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread,
+    time::Duration,
 };
 
 #[cfg(target_os = "windows")]
@@ -14,18 +15,57 @@ use clap_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{column, container, row, scrollable, text},
+    widget::{column, container, row, text},
 };
-use maolan_widgets::arch_slider::arch_slider;
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 
-use crate::limiter::{
-    params::{PARAMS, ParamId},
-    plugin::SharedState,
+use crate::{
+    common::{
+        ui::{SmallKnob, VerticalSlider, small_knob, vertical_slider, vertical_ticks, vu_meter},
+        waveform::ScrollingWaveformWidget,
+    },
+    limiter::{
+        params::{PARAMS, ParamId},
+        plugin::{SharedState, WAVEFORM_POINTS},
+    },
 };
 
-pub const EDITOR_WIDTH: u32 = 640;
+pub const EDITOR_WIDTH: u32 = 900;
 pub const EDITOR_HEIGHT: u32 = 520;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelMode {
+    Mono,
+    Stereo,
+}
+
+impl std::fmt::Display for ChannelMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChannelMode::Mono => write!(f, "Mono"),
+            ChannelMode::Stereo => write!(f, "Stereo"),
+        }
+    }
+}
+
+impl From<u32> for ChannelMode {
+    fn from(v: u32) -> Self {
+        if v >= 2 {
+            ChannelMode::Stereo
+        } else {
+            ChannelMode::Mono
+        }
+    }
+}
+
+impl From<ChannelMode> for u32 {
+    fn from(mode: ChannelMode) -> Self {
+        match mode {
+            ChannelMode::Mono => 1,
+            ChannelMode::Stereo => 2,
+        }
+    }
+}
 
 pub fn preferred_api() -> &'static CStr {
     #[cfg(target_os = "windows")]
@@ -74,12 +114,15 @@ pub enum Message {
     SetParam(ParamId, f32),
     SetMode(u8),
     SetVariant(u8),
+    SetChannels(ChannelMode),
     ReleaseParam(ParamId),
+    UiTick,
 }
 
 struct State {
     shared: Arc<SharedState>,
     active_gestures: Vec<bool>,
+    waveform_samples: [f32; WAVEFORM_POINTS],
 }
 
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
@@ -87,8 +130,18 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
         State {
             shared,
             active_gestures: vec![false; ParamId::COUNT],
+            waveform_samples: [0.0; WAVEFORM_POINTS],
         },
-        Task::none(),
+        next_ui_tick_task(),
+    )
+}
+
+fn next_ui_tick_task() -> Task<Message> {
+    Task::perform(
+        async move {
+            thread::sleep(Duration::from_millis(33));
+        },
+        |_| Message::UiTick,
     )
 }
 
@@ -123,6 +176,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .set_param_outbound_only(ParamId::Variant, variant as f64);
             state.shared.mark_gesture_end_pending(ParamId::Variant);
         }
+        Message::SetChannels(mode) => {
+            state
+                .shared
+                .set_param_outbound_only(ParamId::Channels, u32::from(mode) as f64);
+            state.shared.request_audio_ports_rescan();
+        }
+        Message::UiTick => {
+            state.waveform_samples = state.shared.waveform_snapshot();
+            return next_ui_tick_task();
+        }
     }
     Task::none()
 }
@@ -130,11 +193,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
 fn view(state: &State) -> Element<'_, Message> {
     let p = |id: ParamId| state.shared.params.get(id) as f32;
 
-    let mut content = column![].spacing(12).align_x(Alignment::Start);
+    let waveform = ScrollingWaveformWidget::new(state.waveform_samples).view();
+
+    let mut controls = column![].spacing(10).align_x(Alignment::Start);
+    let channels = state.shared.params.get_enum(ParamId::Channels).clamp(1, 2);
+    let channels_dropdown = maolan_baseview::iced::widget::pick_list(
+        vec![ChannelMode::Mono, ChannelMode::Stereo],
+        Some(ChannelMode::from(channels)),
+        Message::SetChannels,
+    )
+    .placeholder("Channels");
 
     let variant = state.shared.params.get_enum(ParamId::Variant).min(1);
-    content = content.push(
+    controls = controls.push(
         row![
+            channels_dropdown,
             text("Variant").size(16),
             maolan_baseview::iced::widget::radio(
                 "Vintage",
@@ -154,26 +227,28 @@ fn view(state: &State) -> Element<'_, Message> {
     );
 
     if variant == 0 {
-        content = content.push(
+        controls = controls.push(
             row![
-                knob("Boost", ParamId::Boost, p(ParamId::Boost), "dB", 0.01),
                 knob("Soften", ParamId::Soften, p(ParamId::Soften), "", 0.01),
                 knob("Enhance", ParamId::Enhance, p(ParamId::Enhance), "", 0.01),
             ]
             .spacing(16),
         );
     } else {
-        content = content.push(
-            row![
-                knob("Boost", ParamId::Boost, p(ParamId::Boost), "dB", 0.01),
-                knob("Ceiling", ParamId::Ceiling, p(ParamId::Ceiling), "", 0.01),
-            ]
+        controls = controls.push(
+            row![knob(
+                "Ceiling",
+                ParamId::Ceiling,
+                p(ParamId::Ceiling),
+                "dB",
+                0.1
+            )]
             .spacing(16),
         );
     }
 
     let mode = state.shared.params.get_enum(ParamId::Mode).min(7);
-    content = content.push(
+    controls = controls.push(
         row![
             text("Mode").size(16),
             maolan_baseview::iced::widget::radio("Normal", 0u8, Some(mode as u8), Message::SetMode),
@@ -189,7 +264,7 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(8)
         .align_y(Alignment::Center),
     );
-    content = content.push(
+    controls = controls.push(
         row![
             maolan_baseview::iced::widget::radio(
                 "Explode",
@@ -215,12 +290,33 @@ fn view(state: &State) -> Element<'_, Message> {
         .align_y(Alignment::Center),
     );
 
-    container(scrollable(content))
-        .padding(24)
+    let output_control: Element<'_, Message> = row![
+        vertical_ticks(),
+        gain_slider(ParamId::OutputGain, p(ParamId::OutputGain), "dB", 0.1),
+    ]
+    .spacing(8)
+    .height(Length::Fill)
+    .align_y(Alignment::Center)
+    .into();
+
+    let display_row = row![
+        gain_slider(ParamId::Boost, p(ParamId::Boost), "dB", 0.1),
+        vertical_ticks(),
+        vu_meter(channels as usize, state.shared.input_levels_db()),
+        waveform,
+        vu_meter(channels as usize, state.shared.output_levels_db()),
+        output_control,
+    ]
+    .spacing(8)
+    .height(Length::Fill)
+    .align_y(Alignment::Center);
+
+    container(column![display_row, controls].spacing(14))
+        .padding(16)
         .width(Length::Fill)
         .height(Length::Fill)
         .align_x(Horizontal::Left)
-        .align_y(Vertical::Top)
+        .align_y(Vertical::Center)
         .into()
 }
 
@@ -236,18 +332,10 @@ fn knob(
     step: f32,
 ) -> Element<'static, Message> {
     let def = PARAMS[id.as_index()];
-    let slider = arch_slider(def.min as f32..=def.max as f32, value, move |v| {
-        Message::SetParam(id, v)
-    })
-    .step(step)
-    .double_click_reset(def.default as f32)
-    .on_release(Message::ReleaseParam(id))
-    .fill_from_start()
-    .width(Length::Fixed(86.0))
-    .height(Length::Fixed(86.0));
-
     let value_text = match id {
-        ParamId::Boost => format!("{:.1} {}", value * 18.0, units),
+        ParamId::Boost | ParamId::Ceiling | ParamId::OutputGain if units == "dB" => {
+            format!("{value:.1} {units}")
+        }
         _ => {
             if units.is_empty() {
                 format!("{value:.2}")
@@ -257,13 +345,51 @@ fn knob(
         }
     };
 
-    container(
-        column![text(label).size(14), slider, text(value_text).size(13)]
-            .spacing(4)
-            .align_x(Alignment::Center),
+    small_knob(
+        SmallKnob {
+            label: label.to_string(),
+            value,
+            range: def.min as f32..=def.max as f32,
+            default: def.default as f32,
+            step,
+            value_text,
+        },
+        move |v| Message::SetParam(id, v),
+        Message::ReleaseParam(id),
     )
-    .width(Length::Fixed(96.0))
-    .into()
+}
+
+fn gain_slider(
+    id: ParamId,
+    value: f32,
+    units: &'static str,
+    step: f32,
+) -> Element<'static, Message> {
+    let def = PARAMS[id.as_index()];
+    let value_text = match id {
+        ParamId::Boost | ParamId::Ceiling | ParamId::OutputGain if units == "dB" => {
+            format!("{value:.1} {units}")
+        }
+        _ => {
+            if units.is_empty() {
+                format!("{value:.2}")
+            } else {
+                format!("{value:.1} {units}")
+            }
+        }
+    };
+
+    vertical_slider(
+        VerticalSlider {
+            value,
+            range: def.min as f32..=def.max as f32,
+            default: def.default as f32,
+            step,
+            value_text,
+        },
+        move |v| Message::SetParam(id, v),
+        Message::ReleaseParam(id),
+    )
 }
 
 fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {

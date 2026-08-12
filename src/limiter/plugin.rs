@@ -4,33 +4,33 @@ use std::{
     ptr::{NonNull, null, null_mut},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicPtr, Ordering},
+        atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering},
     },
 };
 
 use clap_clap::{
     events::{InputEvents, OutputEvents},
     ffi::{
-        CLAP_AUDIO_PORT_IS_MAIN, CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI, CLAP_EXT_PARAMS,
-        CLAP_EXT_STATE, CLAP_EXT_TAIL, CLAP_INVALID_ID, CLAP_PARAM_REQUIRES_PROCESS,
-        CLAP_PLUGIN_FEATURE_AUDIO_EFFECT, CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_MONO,
-        CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11,
-        clap_audio_port_info, clap_gui_resize_hints, clap_host, clap_host_gui, clap_host_params,
-        clap_host_state, clap_id, clap_istream, clap_ostream, clap_param_info, clap_plugin,
-        clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_factory, clap_plugin_gui,
-        clap_plugin_params, clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status,
-        clap_window,
+        CLAP_AUDIO_PORT_IS_MAIN, CLAP_AUDIO_PORTS_RESCAN_LIST, CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI,
+        CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL, CLAP_INVALID_ID,
+        CLAP_PARAM_REQUIRES_PROCESS, CLAP_PLUGIN_FEATURE_AUDIO_EFFECT, CLAP_PLUGIN_FEATURE_STEREO,
+        CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_WIN32,
+        CLAP_WINDOW_API_X11, clap_audio_port_info, clap_gui_resize_hints, clap_host,
+        clap_host_audio_ports, clap_host_gui, clap_host_params, clap_host_state, clap_id,
+        clap_istream, clap_ostream, clap_param_info, clap_plugin, clap_plugin_audio_ports,
+        clap_plugin_descriptor, clap_plugin_factory, clap_plugin_gui, clap_plugin_params,
+        clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status, clap_window,
     },
     process::Process,
     stream::{IStream, OStream},
 };
 use parking_lot::Mutex;
-use portable_atomic::AtomicF64;
+use portable_atomic::{AtomicF32, AtomicF64};
 
+use crate::common::bus;
 use crate::common::{
     SharedStateExt, apply_param_events, copy_str_to_array, emit_pending_param_events_to_host,
 };
-use crate::common::{bus, fft};
 use crate::limiter::{
     dsp::Limiter,
     gui::GuiBridge,
@@ -46,6 +46,8 @@ const PLUGIN_VERSION: &[u8] = b"0.1.0\0";
 const PLUGIN_DESCRIPTION: &[u8] = b"Rust CLAP Limiter based on MaximizerVintage\0";
 const FEATURE_AUDIO_EFFECT: *const c_char = CLAP_PLUGIN_FEATURE_AUDIO_EFFECT.as_ptr();
 const FEATURE_STEREO: *const c_char = CLAP_PLUGIN_FEATURE_STEREO.as_ptr();
+pub const WAVEFORM_POINTS: usize = 512;
+const WAVEFORM_DECIMATION: usize = 64;
 
 struct SyncFeatureList([*const c_char; 3]);
 unsafe impl Sync for SyncFeatureList {}
@@ -72,6 +74,13 @@ static DESCRIPTOR: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor {
 pub struct SharedState {
     pub params: ParamStore,
     sample_rate: AtomicF64,
+    waveform_write_index: std::sync::atomic::AtomicU64,
+    waveform_samples: [AtomicF32; WAVEFORM_POINTS],
+    input_level_left_db: AtomicF32,
+    input_level_right_db: AtomicF32,
+    output_level_left_db: AtomicF32,
+    output_level_right_db: AtomicF32,
+    pub channels: AtomicU32,
     pending_param_notifications: std::sync::atomic::AtomicU32,
     pending_gesture_begin: std::sync::atomic::AtomicU32,
     pending_gesture_end: std::sync::atomic::AtomicU32,
@@ -84,6 +93,13 @@ impl Default for SharedState {
         Self {
             params: ParamStore::default(),
             sample_rate: AtomicF64::new(48_000.0),
+            waveform_write_index: std::sync::atomic::AtomicU64::new(0),
+            waveform_samples: std::array::from_fn(|_| AtomicF32::new(0.0)),
+            input_level_left_db: AtomicF32::new(-90.0),
+            input_level_right_db: AtomicF32::new(-90.0),
+            output_level_left_db: AtomicF32::new(-90.0),
+            output_level_right_db: AtomicF32::new(-90.0),
+            channels: AtomicU32::new(2),
             pending_param_notifications: std::sync::atomic::AtomicU32::new(0),
             pending_gesture_begin: std::sync::atomic::AtomicU32::new(0),
             pending_gesture_end: std::sync::atomic::AtomicU32::new(0),
@@ -94,10 +110,6 @@ impl Default for SharedState {
 }
 
 impl SharedState {
-    fn _sample_rate(&self) -> f32 {
-        self.sample_rate.load(Ordering::Acquire) as f32
-    }
-
     fn set_host(&self, host: *const clap_host) {
         self.host.store(host.cast_mut(), Ordering::Release);
     }
@@ -108,6 +120,10 @@ impl SharedState {
 
     fn set_param_internal(&self, id: ParamId, value: f64, notify_host: bool) {
         self.params.set(id, sanitize_param_value(id, value));
+        if id == ParamId::Channels {
+            self.sync_channels_from_params();
+            self.request_audio_ports_rescan();
+        }
         if notify_host {
             self.mark_param_notification_pending(id);
             self.request_flush();
@@ -213,6 +229,73 @@ impl SharedState {
             }
         }
     }
+
+    pub fn request_audio_ports_rescan(&self) {
+        let host = self.host.load(Ordering::Acquire);
+        if host.is_null() {
+            return;
+        }
+        unsafe {
+            let Some(get_extension) = (*host).get_extension else {
+                return;
+            };
+            let ext = get_extension(host, c"clap.audio-ports".as_ptr());
+            if ext.is_null() {
+                return;
+            }
+            let audio_ports = &*(ext as *const clap_host_audio_ports);
+            if let Some(rescan) = audio_ports.rescan {
+                rescan(host, CLAP_AUDIO_PORTS_RESCAN_LIST);
+            }
+        }
+    }
+
+    pub fn sync_channels_from_params(&self) {
+        let channels = channel_count_from_value(self.params.get(ParamId::Channels));
+        self.channels.store(channels, Ordering::Release);
+    }
+
+    pub fn waveform_snapshot(&self) -> [f32; WAVEFORM_POINTS] {
+        let write = self.waveform_write_index.load(Ordering::Acquire) as usize;
+        std::array::from_fn(|i| {
+            let source = write.wrapping_add(i) % WAVEFORM_POINTS;
+            self.waveform_samples[source].load(Ordering::Acquire)
+        })
+    }
+
+    fn push_waveform_sample(&self, sample: f32) {
+        let index = self.waveform_write_index.fetch_add(1, Ordering::AcqRel) as usize;
+        self.waveform_samples[index % WAVEFORM_POINTS]
+            .store(sample.clamp(-1.2, 1.2), Ordering::Release);
+    }
+
+    pub fn input_levels_db(&self) -> [f32; 2] {
+        [
+            self.input_level_left_db.load(Ordering::Relaxed),
+            self.input_level_right_db.load(Ordering::Relaxed),
+        ]
+    }
+
+    pub fn output_levels_db(&self) -> [f32; 2] {
+        [
+            self.output_level_left_db.load(Ordering::Relaxed),
+            self.output_level_right_db.load(Ordering::Relaxed),
+        ]
+    }
+
+    fn set_input_levels_db(&self, left: f32, right: f32) {
+        self.input_level_left_db
+            .store(left.clamp(-90.0, 20.0), Ordering::Relaxed);
+        self.input_level_right_db
+            .store(right.clamp(-90.0, 20.0), Ordering::Relaxed);
+    }
+
+    fn set_output_levels_db(&self, left: f32, right: f32) {
+        self.output_level_left_db
+            .store(left.clamp(-90.0, 20.0), Ordering::Relaxed);
+        self.output_level_right_db
+            .store(right.clamp(-90.0, 20.0), Ordering::Relaxed);
+    }
 }
 
 impl SharedStateExt<ParamId> for SharedState {
@@ -264,24 +347,31 @@ struct AudioProcessor {
     dsp: Limiter,
     temp_left: Vec<f32>,
     temp_right: Vec<f32>,
-    bus_data: Option<bus::PluginSharedData>,
-    fft_scratch: Vec<f32>,
-    fft_mag: Vec<f32>,
-    fft_analyzer: fft::SpectrumAnalyzer,
+    waveform_counter: usize,
+}
+
+fn peak_db(samples: &[f32]) -> f32 {
+    let peak = crate::simd::peak_abs(samples);
+    if peak > 0.0 {
+        20.0 * peak.log10()
+    } else {
+        -90.0
+    }
+}
+
+fn channel_count_from_value(value: f64) -> u32 {
+    (value.round() as u32).clamp(1, 2)
 }
 
 impl AudioProcessor {
-    fn new(sample_rate: f64, max_frames: u32, bus_data: Option<bus::PluginSharedData>) -> Self {
+    fn new(sample_rate: f64, max_frames: u32) -> Self {
         let mut dsp = Limiter::default();
         dsp.set_sample_rate(sample_rate);
         Self {
             dsp,
             temp_left: vec![0.0; max_frames as usize],
             temp_right: vec![0.0; max_frames as usize],
-            bus_data,
-            fft_scratch: vec![0.0; max_frames as usize],
-            fft_mag: vec![0.0; 1024],
-            fft_analyzer: fft::SpectrumAnalyzer::new(max_frames as usize),
+            waveform_counter: 0,
         }
     }
 
@@ -312,6 +402,10 @@ impl AudioProcessor {
             let input_r = process.audio_inputs(1);
             self.temp_left[..frames].copy_from_slice(input_l.data32(0));
             self.temp_right[..frames].copy_from_slice(input_r.data32(0));
+            shared.set_input_levels_db(
+                peak_db(&self.temp_left[..frames]),
+                peak_db(&self.temp_right[..frames]),
+            );
 
             let params = crate::limiter::dsp::LimiterParams {
                 variant: shared.params.get_enum(ParamId::Variant),
@@ -319,12 +413,17 @@ impl AudioProcessor {
                 soften: shared.params.get(ParamId::Soften),
                 enhance: shared.params.get(ParamId::Enhance),
                 ceiling: shared.params.get(ParamId::Ceiling),
+                output_gain: shared.params.get(ParamId::OutputGain),
                 mode: shared.params.get_enum(ParamId::Mode),
             };
             self.dsp.process_stereo(
                 &mut self.temp_left[..frames],
                 &mut self.temp_right[..frames],
                 &params,
+            );
+            shared.set_output_levels_db(
+                peak_db(&self.temp_left[..frames]),
+                peak_db(&self.temp_right[..frames]),
             );
 
             {
@@ -338,6 +437,8 @@ impl AudioProcessor {
         } else if inputs_count >= 1 && outputs_count >= 1 {
             let input_port = process.audio_inputs(0);
             self.temp_left[..frames].copy_from_slice(input_port.data32(0));
+            self.temp_right[..frames].copy_from_slice(&self.temp_left[..frames]);
+            shared.set_input_levels_db(peak_db(&self.temp_left[..frames]), -90.0);
 
             let params = crate::limiter::dsp::LimiterParams {
                 variant: shared.params.get_enum(ParamId::Variant),
@@ -345,6 +446,7 @@ impl AudioProcessor {
                 soften: shared.params.get(ParamId::Soften),
                 enhance: shared.params.get(ParamId::Enhance),
                 ceiling: shared.params.get(ParamId::Ceiling),
+                output_gain: shared.params.get(ParamId::OutputGain),
                 mode: shared.params.get_enum(ParamId::Mode),
             };
             self.dsp.process_stereo(
@@ -352,27 +454,17 @@ impl AudioProcessor {
                 &mut self.temp_right[..frames],
                 &params,
             );
+            shared.set_output_levels_db(peak_db(&self.temp_left[..frames]), -90.0);
 
             let mut output_port = process.audio_outputs(0);
             output_port.data32(0)[..frames].copy_from_slice(&self.temp_left[..frames]);
         }
 
-        if let Some(ref bus) = self.bus_data
-            && bus::needs(bus::NEED_FFT)
-        {
-            self.fft_scratch[..frames].fill(0.0);
-            for i in 0..frames {
-                self.fft_scratch[i] = (self.temp_left[i] + self.temp_right[i]) * 0.5;
+        for i in 0..frames {
+            if self.waveform_counter == 0 {
+                shared.push_waveform_sample((self.temp_left[i] + self.temp_right[i]) * 0.5);
             }
-            if let Some(slot) = bus.fft_slot() {
-                let n = frames.min(1024);
-                self.fft_analyzer
-                    .process(&self.fft_scratch[..frames], &mut self.fft_mag[..n]);
-                slot.write(|fft| {
-                    fft::magnitude_to_db(&self.fft_mag[..n], &mut fft.bins[..n], -90.0);
-                    fft.valid_bins = n;
-                });
-            }
+            self.waveform_counter = (self.waveform_counter + 1) % WAVEFORM_DECIMATION;
         }
 
         CLAP_PROCESS_CONTINUE
@@ -386,7 +478,6 @@ struct PluginInstance {
     retired_processors: Mutex<Vec<*mut AudioProcessor>>,
     gui_bridge: Mutex<GuiBridge>,
     bus_id: bus::InstanceId,
-    bus_data: bus::PluginSharedData,
 }
 
 impl PluginInstance {
@@ -394,9 +485,7 @@ impl PluginInstance {
         let shared = Arc::new(SharedState::default());
         shared.set_host(host);
         let bus_id = bus::next_instance_id();
-        let mut bus_data =
-            bus::PluginSharedData::new(bus::PluginType::Limiter).with_fft(bus::FftData::default());
-        bus_data = bus::register(bus_id, bus_data);
+        let _ = bus::register(bus_id, bus::PluginSharedData::new(bus::PluginType::Limiter));
         Self {
             shared,
             active: AtomicBool::new(false),
@@ -404,7 +493,6 @@ impl PluginInstance {
             retired_processors: Mutex::new(Vec::new()),
             gui_bridge: Mutex::new(GuiBridge::default()),
             bus_id,
-            bus_data,
         }
     }
 }
@@ -430,7 +518,12 @@ unsafe fn instance<'a>(plugin: *const clap_plugin) -> &'a mut PluginInstance {
 
 fn param_text(id: ParamId, value: f64) -> String {
     match id {
-        ParamId::Boost => format!("{:.1} dB", value * 18.0),
+        ParamId::Channels => match value.round() as i32 {
+            1 => "Mono".into(),
+            2 => "Stereo".into(),
+            _ => format!("{value:.0}"),
+        },
+        ParamId::Boost | ParamId::Ceiling | ParamId::OutputGain => format!("{value:.1} dB"),
         ParamId::Variant => match value.round() as i32 {
             0 => "Vintage".into(),
             1 => "Modern".into(),
@@ -470,13 +563,17 @@ fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
             "apothes" => Some(7.0),
             _ => text.parse().ok(),
         },
-        ParamId::Boost => text
+        ParamId::Channels => match text.to_ascii_lowercase().as_str() {
+            "mono" | "1" => Some(1.0),
+            "stereo" | "2" => Some(2.0),
+            _ => text.parse().ok(),
+        },
+        ParamId::Boost | ParamId::Ceiling | ParamId::OutputGain => text
             .trim_end_matches("db")
             .trim_end_matches("dB")
             .trim()
             .parse::<f64>()
-            .ok()
-            .map(|v| v / 18.0),
+            .ok(),
         _ => text.parse().ok(),
     }
 }
@@ -505,12 +602,9 @@ unsafe extern "C-unwind" fn plugin_activate(
         return false;
     }
     let instance = unsafe { instance(plugin) };
+    instance.shared.sync_channels_from_params();
     instance.shared.set_sample_rate(sample_rate);
-    let next = Box::into_raw(Box::new(AudioProcessor::new(
-        sample_rate,
-        max_frames,
-        Some(instance.bus_data),
-    )));
+    let next = Box::into_raw(Box::new(AudioProcessor::new(sample_rate, max_frames)));
     let old = instance.processor.swap(next, Ordering::AcqRel);
     if !old.is_null() {
         instance.retired_processors.lock().push(old);
@@ -529,6 +623,7 @@ unsafe extern "C-unwind" fn plugin_deactivate(plugin: *const clap_plugin) {
         instance.retired_processors.lock().push(old);
     }
     instance.active.store(false, Ordering::Release);
+    instance.shared.sync_channels_from_params();
 }
 
 unsafe extern "C-unwind" fn plugin_start_processing(_plugin: *const clap_plugin) -> bool {
@@ -569,19 +664,28 @@ unsafe extern "C-unwind" fn plugin_process(
 unsafe extern "C-unwind" fn plugin_on_main_thread(_plugin: *const clap_plugin) {}
 
 unsafe extern "C-unwind" fn ext_audio_ports_count(
-    _plugin: *const clap_plugin,
+    plugin: *const clap_plugin,
     _is_input: bool,
 ) -> u32 {
-    2
+    if plugin.is_null() {
+        return 0;
+    }
+    let instance = unsafe { instance(plugin) };
+    instance.shared.channels.load(Ordering::Acquire)
 }
 
 unsafe extern "C-unwind" fn ext_audio_ports_get(
     plugin: *const clap_plugin,
     index: u32,
-    _is_input: bool,
+    is_input: bool,
     info: *mut clap_audio_port_info,
 ) -> bool {
-    if plugin.is_null() || index >= 2 || info.is_null() {
+    if plugin.is_null() || info.is_null() {
+        return false;
+    }
+    let instance = unsafe { instance(plugin) };
+    let channels = instance.shared.channels.load(Ordering::Acquire);
+    if index >= channels {
         return false;
     }
     let info = unsafe { &mut *info };
@@ -590,7 +694,19 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
     info.channel_count = 1;
     info.port_type = CLAP_PORT_MONO.as_ptr();
     info.in_place_pair = CLAP_INVALID_ID;
-    let name = if index == 0 { "Left" } else { "Right" };
+    let name = if channels == 2 {
+        match (is_input, index) {
+            (true, 0) => "in_l",
+            (true, 1) => "in_r",
+            (false, 0) => "out_l",
+            (false, 1) => "out_r",
+            _ => "",
+        }
+    } else if is_input {
+        "in"
+    } else {
+        "out"
+    };
     copy_str_to_array(name, &mut info.name);
     true
 }
@@ -746,6 +862,8 @@ unsafe extern "C-unwind" fn ext_state_load(
         return false;
     };
     state.apply(&instance.shared.params);
+    instance.shared.sync_channels_from_params();
+    instance.shared.request_audio_ports_rescan();
     true
 }
 

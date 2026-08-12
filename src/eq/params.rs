@@ -658,8 +658,8 @@ pub static PARAMS: LazyLock<Vec<ParamDef<ParamId>>> = LazyLock::new(|| {
             "Input Gain",
             "Global",
             ParamRange {
-                min: -24.0,
-                max: 24.0,
+                min: -90.0,
+                max: 20.0,
                 default: 0.0,
                 step: 0.1,
             },
@@ -673,8 +673,8 @@ pub static PARAMS: LazyLock<Vec<ParamDef<ParamId>>> = LazyLock::new(|| {
         "Input Gain",
         "Global",
         ParamRange {
-            min: -24.0,
-            max: 24.0,
+            min: -90.0,
+            max: 20.0,
             default: 0.0,
             step: 0.1,
         },
@@ -685,8 +685,8 @@ pub static PARAMS: LazyLock<Vec<ParamDef<ParamId>>> = LazyLock::new(|| {
         "Output Gain",
         "Global",
         ParamRange {
-            min: -24.0,
-            max: 24.0,
+            min: -90.0,
+            max: 20.0,
             default: 0.0,
             step: 0.1,
         },

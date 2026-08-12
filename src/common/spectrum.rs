@@ -1,6 +1,7 @@
 use crate::common::fft::SpectrumAnalyzer;
 use std::{
-    sync::Arc,
+    fmt,
+    sync::{Arc, atomic::Ordering},
     time::{Duration, Instant},
 };
 
@@ -13,10 +14,40 @@ use maolan_baseview::iced::{
         },
     },
 };
+use portable_atomic::AtomicF32;
 
 pub const FFT_SIZE: usize = 4096;
 pub const SPECTRUM_FLOOR_DB: f32 = -90.0;
 pub const DEFAULT_SPECTRUM_BINS: usize = 192;
+pub const SPECTRUM_MIN_FREQ_HZ: f32 = 20.0;
+pub const SPECTRUM_MAX_FREQ_HZ: f32 = 20_000.0;
+
+pub fn display_range_bounds(range_db: f32) -> (f32, f32) {
+    let max = range_db.clamp(1.5, 30.0);
+    (-max * 1.75, max)
+}
+
+pub fn freq_to_x(freq: f32, bounds: Rectangle) -> f32 {
+    let f = freq.clamp(SPECTRUM_MIN_FREQ_HZ, SPECTRUM_MAX_FREQ_HZ);
+    let t = (f / SPECTRUM_MIN_FREQ_HZ).ln() / (SPECTRUM_MAX_FREQ_HZ / SPECTRUM_MIN_FREQ_HZ).ln();
+    bounds.x + t * bounds.width
+}
+
+pub fn x_to_freq(x: f32, bounds: Rectangle) -> f32 {
+    let t = ((x - bounds.x) / bounds.width).clamp(0.0, 1.0);
+    SPECTRUM_MIN_FREQ_HZ * (SPECTRUM_MAX_FREQ_HZ / SPECTRUM_MIN_FREQ_HZ).powf(t)
+}
+
+pub fn db_to_y(db: f32, bounds: Rectangle, min_db: f32, max_db: f32) -> f32 {
+    let db = db.clamp(min_db, max_db);
+    let t = (db - min_db) / (max_db - min_db);
+    bounds.y + (1.0 - t) * bounds.height
+}
+
+pub fn y_to_db(y: f32, bounds: Rectangle, min_db: f32, max_db: f32) -> f32 {
+    let t = (1.0 - ((y - bounds.y) / bounds.height)).clamp(0.0, 1.0);
+    min_db + t * (max_db - min_db)
+}
 
 /// Real-time spectrum analyzer feeding the EQ display: single-channel ring
 /// buffer, Hann-windowed 4096-point FFT, power remap onto log-spaced display
@@ -34,6 +65,93 @@ pub struct LogSpectrumAnalyzer {
     /// Geometric edges of the display bins, as FFT bin indices at 48 kHz
     /// reference, recomputed per `compute` call for the actual sample rate.
     bins: usize,
+}
+
+pub struct SharedSpectrum<const BINS: usize> {
+    left_db: [AtomicF32; BINS],
+    right_db: [AtomicF32; BINS],
+}
+
+impl<const BINS: usize> SharedSpectrum<BINS> {
+    pub fn new(floor_db: f32) -> Self {
+        Self {
+            left_db: std::array::from_fn(|_| AtomicF32::new(floor_db)),
+            right_db: std::array::from_fn(|_| AtomicF32::new(floor_db)),
+        }
+    }
+
+    pub fn set(&self, left_db: &[f32; BINS], right_db: &[f32; BINS]) {
+        for i in 0..BINS {
+            self.left_db[i].store(left_db[i], Ordering::Relaxed);
+            self.right_db[i].store(right_db[i], Ordering::Relaxed);
+        }
+    }
+
+    pub fn get(&self) -> [[f32; BINS]; 2] {
+        [
+            std::array::from_fn(|i| self.left_db[i].load(Ordering::Relaxed)),
+            std::array::from_fn(|i| self.right_db[i].load(Ordering::Relaxed)),
+        ]
+    }
+}
+
+impl<const BINS: usize> Default for SharedSpectrum<BINS> {
+    fn default() -> Self {
+        Self::new(SPECTRUM_FLOOR_DB)
+    }
+}
+
+impl<const BINS: usize> fmt::Debug for SharedSpectrum<BINS> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SharedSpectrum").finish_non_exhaustive()
+    }
+}
+
+pub struct StereoSpectrumAnalyzer<const BINS: usize> {
+    left: LogSpectrumAnalyzer,
+    right: LogSpectrumAnalyzer,
+    left_db: [f32; BINS],
+    right_db: [f32; BINS],
+}
+
+impl<const BINS: usize> StereoSpectrumAnalyzer<BINS> {
+    pub fn new() -> Self {
+        Self {
+            left: LogSpectrumAnalyzer::new(BINS),
+            right: LogSpectrumAnalyzer::new(BINS),
+            left_db: [SPECTRUM_FLOOR_DB; BINS],
+            right_db: [SPECTRUM_FLOOR_DB; BINS],
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.left.reset();
+        self.right.reset();
+        self.left_db.fill(SPECTRUM_FLOOR_DB);
+        self.right_db.fill(SPECTRUM_FLOOR_DB);
+    }
+
+    pub fn push_stereo(&mut self, left: &[f32], right: &[f32]) {
+        self.left.push_block(left);
+        self.right.push_block(right);
+    }
+
+    pub fn push_mono(&mut self, samples: &[f32]) {
+        self.left.push_block(samples);
+        self.right.push_block(samples);
+    }
+
+    pub fn compute(&mut self, sample_rate: f32) -> [[f32; BINS]; 2] {
+        self.left.compute(sample_rate, &mut self.left_db);
+        self.right.compute(sample_rate, &mut self.right_db);
+        [self.left_db, self.right_db]
+    }
+}
+
+impl<const BINS: usize> Default for StereoSpectrumAnalyzer<BINS> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub struct SpectrumMarker<Message> {
@@ -134,8 +252,8 @@ pub struct SpectralAnalyzerWidget<Message, const BINS: usize> {
 }
 
 impl<Message: Clone + 'static, const BINS: usize> SpectralAnalyzerWidget<Message, BINS> {
-    const F_MIN: f32 = 20.0;
-    const F_MAX: f32 = 20_000.0;
+    const SPECTRUM_DISPLAY_MIN_DB: f32 = -60.0;
+    const SPECTRUM_DISPLAY_MAX_DB: f32 = 0.0;
     const DEFAULT_DISPLAY_RANGE_DB: f32 = 0.0;
 
     pub fn new(bins_db: [[f32; BINS]; 2], stereo: bool) -> Self {
@@ -199,19 +317,16 @@ impl<Message: Clone + 'static, const BINS: usize> SpectralAnalyzerWidget<Message
     }
 
     fn freq_to_x(freq: f32, bounds: Rectangle) -> f32 {
-        let f = freq.clamp(Self::F_MIN, Self::F_MAX);
-        let t = (f / Self::F_MIN).ln() / (Self::F_MAX / Self::F_MIN).ln();
-        bounds.x + t * bounds.width
+        freq_to_x(freq, bounds)
     }
 
     fn x_to_freq(x: f32, bounds: Rectangle) -> f32 {
-        let t = ((x - bounds.x) / bounds.width).clamp(0.0, 1.0);
-        Self::F_MIN * (Self::F_MAX / Self::F_MIN).powf(t)
+        x_to_freq(x, bounds)
     }
 
     fn min_db(&self) -> f32 {
         if self.display_range_db > 0.0 {
-            -self.display_range_db.clamp(1.5, 30.0) * 1.75
+            display_range_bounds(self.display_range_db).0
         } else {
             -60.0
         }
@@ -219,25 +334,31 @@ impl<Message: Clone + 'static, const BINS: usize> SpectralAnalyzerWidget<Message
 
     fn max_db(&self) -> f32 {
         if self.display_range_db > 0.0 {
-            self.display_range_db.clamp(1.5, 30.0)
+            display_range_bounds(self.display_range_db).1
         } else {
             0.0
         }
     }
 
-    fn spectrum_to_y(&self, db: f32, bounds: Rectangle) -> f32 {
+    fn curve_to_y(&self, db: f32, bounds: Rectangle) -> f32 {
         let min = self.min_db();
         let max = self.max_db();
-        let db = db.clamp(min, max);
-        let t = (db - min) / (max - min);
-        bounds.y + (1.0 - t) * bounds.height
+        db_to_y(db, bounds, min, max)
     }
 
-    fn y_to_spectrum_db(&self, y: f32, bounds: Rectangle) -> f32 {
+    fn y_to_curve_db(&self, y: f32, bounds: Rectangle) -> f32 {
         let min = self.min_db();
         let max = self.max_db();
-        let t = (1.0 - ((y - bounds.y) / bounds.height)).clamp(0.0, 1.0);
-        min + t * (max - min)
+        y_to_db(y, bounds, min, max)
+    }
+
+    fn spectrum_to_y(&self, db: f32, bounds: Rectangle) -> f32 {
+        db_to_y(
+            db,
+            bounds,
+            Self::SPECTRUM_DISPLAY_MIN_DB,
+            Self::SPECTRUM_DISPLAY_MAX_DB,
+        )
     }
 
     fn smoothed_points(&self, bins_db: &[f32; BINS], bounds: Rectangle) -> Vec<Point> {
@@ -305,10 +426,7 @@ impl<Message: Clone + 'static, const BINS: usize> SpectralAnalyzerWidget<Message
             .points
             .iter()
             .map(|&(freq, db)| {
-                Point::new(
-                    Self::freq_to_x(freq, bounds),
-                    self.spectrum_to_y(db, bounds),
-                )
+                Point::new(Self::freq_to_x(freq, bounds), self.curve_to_y(db, bounds))
             })
             .collect()
     }
@@ -463,7 +581,7 @@ impl<Message: Clone + 'static, const BINS: usize> Program<Message>
                     return Some(
                         CanvasAction::publish(on_double_click(
                             freq,
-                            self.y_to_spectrum_db(pos.y, local_bounds),
+                            self.y_to_curve_db(pos.y, local_bounds),
                         ))
                         .and_capture(),
                     );
@@ -536,8 +654,8 @@ impl<Message: Clone + 'static, const BINS: usize> Program<Message>
 
                 if let Some((curve_index, last_y, drag_freq, button)) = state.dragging_curve {
                     let curve = self.threshold_curves.get(curve_index)?;
-                    let last_db = self.y_to_spectrum_db(last_y, local_bounds);
-                    let next_db = self.y_to_spectrum_db(pos.y, local_bounds);
+                    let last_db = self.y_to_curve_db(last_y, local_bounds);
+                    let next_db = self.y_to_curve_db(pos.y, local_bounds);
                     state.last_click = None;
                     state.dragging_curve = Some((curve_index, pos.y, drag_freq, button));
                     let message = if button == mouse::Button::Middle {
@@ -661,7 +779,7 @@ impl<Message: Clone + 'static, const BINS: usize> Program<Message>
         let min = self.min_db();
         let max = self.max_db();
         for db in [min, min * 0.5, 0.0, max * 0.5, max] {
-            let y = self.spectrum_to_y(db, local_bounds);
+            let y = self.curve_to_y(db, local_bounds);
             let path = Path::line(Point::new(0.0, y), Point::new(bounds.width, y));
             let c = if db == 0.0 {
                 Color::from_rgba(0.85, 0.87, 0.90, 0.28)
@@ -910,6 +1028,49 @@ impl LogSpectrumAnalyzer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_range_bounds_match_eq_scale() {
+        assert_eq!(display_range_bounds(12.0), (-21.0, 12.0));
+        assert_eq!(display_range_bounds(30.0), (-52.5, 30.0));
+    }
+
+    #[test]
+    fn frequency_axis_roundtrips_log_scale() {
+        let bounds = Rectangle {
+            x: 10.0,
+            y: 0.0,
+            width: 500.0,
+            height: 200.0,
+        };
+        for freq in [20.0, 100.0, 1000.0, 10_000.0, 20_000.0] {
+            let x = freq_to_x(freq, bounds);
+            let actual = x_to_freq(x, bounds);
+            assert!(
+                (actual / freq - 1.0).abs() < 1.0e-5,
+                "expected {freq} Hz, got {actual} Hz"
+            );
+        }
+    }
+
+    #[test]
+    fn db_axis_roundtrips_display_range() {
+        let bounds = Rectangle {
+            x: 0.0,
+            y: 5.0,
+            width: 500.0,
+            height: 200.0,
+        };
+        let (min, max) = display_range_bounds(12.0);
+        for db in [min, -12.0, 0.0, max] {
+            let y = db_to_y(db, bounds, min, max);
+            let actual = y_to_db(y, bounds, min, max);
+            assert!(
+                (actual - db).abs() < 1.0e-5,
+                "expected {db} dB, got {actual} dB"
+            );
+        }
+    }
 
     #[test]
     fn full_scale_sine_peaks_near_zero_dbfs_at_its_bin() {

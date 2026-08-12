@@ -12,8 +12,9 @@ use crate::common::{
     bus,
     spectrum::{
         DEFAULT_SPECTRUM_BINS, SPECTRUM_FLOOR_DB, SpectralAnalyzerWidget, SpectrumMarker,
-        SpectrumThresholdCurve,
+        SpectrumThresholdCurve, display_range_bounds,
     },
+    ui::{SmallKnob, VerticalSlider, small_knob, vertical_slider, vertical_ticks, vu_meter},
 };
 
 #[cfg(target_os = "windows")]
@@ -25,7 +26,6 @@ use maolan_baseview::iced::{
     alignment::{Horizontal, Vertical},
     widget::{checkbox, column, container, row, text},
 };
-use maolan_widgets::arch_slider::arch_slider;
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 
 use crate::compressor::{
@@ -185,7 +185,7 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
 fn next_ui_tick_task() -> Task<Message> {
     Task::perform(
         async move {
-            thread::sleep(Duration::from_millis(500));
+            thread::sleep(Duration::from_millis(33));
         },
         |_| Message::UiTick,
     )
@@ -400,6 +400,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::UiTick => {
+            state.spectrum_db = state.shared.spectrum_db();
             let version = bus::registry_version();
             if version != state.last_registry_version {
                 state.eq_peers = bus::discover(|p| p.plugin_type == bus::PluginType::Eq);
@@ -429,22 +430,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             freqs.dedup_by(|a, b| (*a - *b).abs() < 5.0);
             state.eq_band_freqs = freqs;
 
-            if let Some(peer) = &state.compressor_peer {
-                if let Some(slot) = peer.fft_slot() {
-                    let mut fft = bus::FftData::default();
-                    if slot.read(&mut fft) && fft.valid_bins > 0 {
-                        let n = fft.valid_bins.min(DEFAULT_SPECTRUM_BINS);
-                        state.spectrum_db[0][..n].copy_from_slice(&fft.bins[..n]);
-                        state.spectrum_db[1][..n].copy_from_slice(&fft.bins[..n]);
-                    }
-                }
-                if let Some(slot) = peer.gr_slot() {
-                    let mut gr = bus::CompressorGrData::default();
-                    if slot.read(&mut gr) {
-                        state.gain_reduction_db.clear();
-                        for i in 0..gr.valid_bands.min(gr.gr_db.len()) {
-                            state.gain_reduction_db.push(gr.gr_db[i]);
-                        }
+            if let Some(peer) = &state.compressor_peer
+                && let Some(slot) = peer.gr_slot()
+            {
+                let mut gr = bus::CompressorGrData::default();
+                if slot.read(&mut gr) {
+                    state.gain_reduction_db.clear();
+                    for i in 0..gr.valid_bands.min(gr.gr_db.len()) {
+                        state.gain_reduction_db.push(gr.gr_db[i]);
                     }
                 }
             }
@@ -597,20 +590,6 @@ fn view(state: &State) -> Element<'_, Message> {
             Message::SetDisplayRange,
         )
         .width(Length::Fixed(70.0)),
-        knob(
-            "Input",
-            ParamId::InputGain,
-            p(ParamId::InputGain),
-            "dB",
-            0.1
-        ),
-        knob(
-            "Output",
-            ParamId::OutputGain,
-            p(ParamId::OutputGain),
-            "dB",
-            0.1
-        ),
         knob("Dry", ParamId::DryGain, p(ParamId::DryGain), "", 0.01),
         knob("Wet", ParamId::WetGain, p(ParamId::WetGain), "", 0.01),
         knob(
@@ -623,9 +602,27 @@ fn view(state: &State) -> Element<'_, Message> {
     ]
     .spacing(12)
     .align_y(Alignment::Center);
+    let meter_channels = if state.shared.channels.load(Ordering::Acquire) >= 2 {
+        2
+    } else {
+        1
+    };
+
+    let display_row = row![
+        gain_slider(ParamId::InputGain, p(ParamId::InputGain), "dB", 0.1),
+        vertical_ticks(),
+        vu_meter(meter_channels, state.shared.input_levels_db()),
+        analyzer,
+        vu_meter(meter_channels, state.shared.output_levels_db()),
+        vertical_ticks(),
+        gain_slider(ParamId::OutputGain, p(ParamId::OutputGain), "dB", 0.1),
+    ]
+    .spacing(8)
+    .height(Length::Fill)
+    .align_y(Alignment::Center);
 
     let content = column![
-        analyzer,
+        display_row,
         band_strip(state),
         sidechain_controls,
         mode_controls,
@@ -685,11 +682,6 @@ fn band_section<'a>(_band: usize, state: &'a State, ids: BandIds) -> Element<'a,
     .padding(4)
     .width(Length::Fill)
     .into()
-}
-
-fn display_range_bounds(range_db: f32) -> (f32, f32) {
-    let max = range_db.clamp(1.5, 30.0);
-    (-max * 1.75, max)
 }
 
 fn active_band_count(shared: &SharedState) -> usize {
@@ -1211,16 +1203,6 @@ fn knob_with_range(
     let def = PARAMS[id.as_index()];
     let min = range.map(|(min, _)| min).unwrap_or(def.min as f32);
     let max = range.map(|(_, max)| max).unwrap_or(def.max as f32);
-    let slider = arch_slider(min..=max, value.clamp(min, max), move |v| {
-        Message::SetParam(id, v.clamp(min, max))
-    })
-    .step(step)
-    .double_click_reset(def.default as f32)
-    .on_release(Message::ReleaseParam(id))
-    .fill_from_start()
-    .width(Length::Fixed(41.0))
-    .height(Length::Fixed(41.0));
-
     let value_text = if units.is_empty() {
         format!("{value:.2}")
     } else if units == "Hz" {
@@ -1229,13 +1211,44 @@ fn knob_with_range(
         format!("{value:.1} {units}")
     };
 
-    container(
-        column![text(label).size(11), slider, text(value_text).size(10)]
-            .spacing(2)
-            .align_x(Alignment::Center),
+    small_knob(
+        SmallKnob {
+            label: label.to_string(),
+            value,
+            range: min..=max,
+            default: def.default as f32,
+            step,
+            value_text,
+        },
+        move |v| Message::SetParam(id, v.clamp(min, max)),
+        Message::ReleaseParam(id),
     )
-    .width(Length::Fixed(50.0))
-    .into()
+}
+
+fn gain_slider(
+    id: ParamId,
+    value: f32,
+    units: &'static str,
+    step: f32,
+) -> Element<'static, Message> {
+    let def = PARAMS[id.as_index()];
+    let value_text = if units.is_empty() {
+        format!("{value:.2}")
+    } else {
+        format!("{value:.1} {units}")
+    };
+
+    vertical_slider(
+        VerticalSlider {
+            value,
+            range: def.min as f32..=def.max as f32,
+            default: def.default as f32,
+            step,
+            value_text,
+        },
+        move |v| Message::SetParam(id, v),
+        Message::ReleaseParam(id),
+    )
 }
 
 fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {

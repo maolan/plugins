@@ -1,4 +1,8 @@
-use crate::common::bus;
+use crate::common::{
+    bus,
+    spectrum::{db_to_y, display_range_bounds, freq_to_x, x_to_freq, y_to_db},
+    ui::{SmallKnob, VerticalSlider, small_knob, vertical_slider, vertical_ticks, vu_meter},
+};
 use crate::eq::dsp::{self, Biquad};
 use crate::eq::params::{PARAMS, ParamId, ParamIdExt};
 use crate::eq::plugin::{SPECTRUM_BINS, SharedState};
@@ -1229,9 +1233,27 @@ fn view(state: &State) -> Element<'_, Message> {
             .align_y(Alignment::Center)
             .into()
     };
+    let meter_channels = if state.shared.channels.load(Ordering::Acquire) >= 2 {
+        2
+    } else {
+        1
+    };
+
+    let display_row = row![
+        gain_slider(ParamId::InputGain, p(ParamId::InputGain), "dB", 0.1,),
+        vertical_ticks(),
+        vu_meter(meter_channels, state.shared.input_levels_db()),
+        response,
+        vu_meter(meter_channels, state.shared.output_levels_db()),
+        vertical_ticks(),
+        gain_slider(ParamId::OutputGain, p(ParamId::OutputGain), "dB", 0.1,),
+    ]
+    .spacing(8)
+    .height(Length::Fill)
+    .align_y(Alignment::Center);
 
     let content = column![
-        response,
+        display_row,
         analyzer_controls,
         instance_row,
         processing_controls,
@@ -1309,22 +1331,19 @@ impl EqResponseCanvas {
     const SPECTRUM_MAX_DB: f32 = 0.0;
 
     fn range_max(&self) -> f32 {
-        self.display_range_db.clamp(1.5, 30.0)
+        display_range_bounds(self.display_range_db).1
     }
 
     fn range_min(&self) -> f32 {
-        -self.range_max() * 1.75
+        display_range_bounds(self.display_range_db).0
     }
 
     fn freq_to_x(freq: f32, bounds: Rectangle) -> f32 {
-        let f = freq.clamp(Self::F_MIN, Self::F_MAX);
-        let t = (f / Self::F_MIN).ln() / (Self::F_MAX / Self::F_MIN).ln();
-        bounds.x + t * bounds.width
+        freq_to_x(freq, bounds)
     }
 
     fn x_to_freq(x: f32, bounds: Rectangle) -> f32 {
-        let t = ((x - bounds.x) / bounds.width).clamp(0.0, 1.0);
-        Self::F_MIN * (Self::F_MAX / Self::F_MIN).powf(t)
+        x_to_freq(x, bounds)
     }
 
     fn bin_freq(&self, bin: usize) -> f32 {
@@ -1342,16 +1361,13 @@ impl EqResponseCanvas {
     fn gain_to_y(&self, gain: f32, bounds: Rectangle) -> f32 {
         let min = self.range_min();
         let max = self.range_max();
-        let g = gain.clamp(min, max);
-        let t = (g - min) / (max - min);
-        bounds.y + (1.0 - t) * bounds.height
+        db_to_y(gain, bounds, min, max)
     }
 
     fn y_to_gain(&self, y: f32, bounds: Rectangle) -> f32 {
         let min = self.range_min();
         let max = self.range_max();
-        let t = (1.0 - ((y - bounds.y) / bounds.height)).clamp(0.0, 1.0);
-        min + t * (max - min)
+        y_to_db(y, bounds, min, max)
     }
 
     fn threshold_to_y(&self, threshold: f32, bounds: Rectangle) -> f32 {
@@ -2642,16 +2658,6 @@ fn knob(
     step: f32,
 ) -> Element<'static, Message> {
     let def = PARAMS[id.as_index()];
-    let slider = arch_slider(def.min as f32..=def.max as f32, value, move |v| {
-        Message::SetParam(id, v)
-    })
-    .step(step)
-    .double_click_reset(def.default as f32)
-    .on_release(Message::ReleaseParam(id))
-    .fill_from_start()
-    .width(Length::Fixed(41.0))
-    .height(Length::Fixed(41.0));
-
     let value_text = if units.is_empty() {
         format!("{value:.2}")
     } else if units == "Hz" {
@@ -2660,13 +2666,44 @@ fn knob(
         format!("{value:.1} {units}")
     };
 
-    container(
-        column![text(label).size(11), slider, text(value_text).size(10)]
-            .spacing(2)
-            .align_x(Alignment::Center),
+    small_knob(
+        SmallKnob {
+            label,
+            value,
+            range: def.min as f32..=def.max as f32,
+            default: def.default as f32,
+            step,
+            value_text,
+        },
+        move |v| Message::SetParam(id, v),
+        Message::ReleaseParam(id),
     )
-    .width(Length::Fixed(50.0))
-    .into()
+}
+
+fn gain_slider(
+    id: ParamId,
+    value: f32,
+    units: &'static str,
+    step: f32,
+) -> Element<'static, Message> {
+    let def = PARAMS[id.as_index()];
+    let value_text = if units.is_empty() {
+        format!("{value:.2}")
+    } else {
+        format!("{value:.1} {units}")
+    };
+
+    vertical_slider(
+        VerticalSlider {
+            value,
+            range: def.min as f32..=def.max as f32,
+            default: def.default as f32,
+            step,
+            value_text,
+        },
+        move |v| Message::SetParam(id, v),
+        Message::ReleaseParam(id),
+    )
 }
 
 fn freq_to_norm(freq_hz: f32) -> f32 {

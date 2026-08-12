@@ -16,10 +16,12 @@ pub enum ParamId {
     Enhance = 3,
     Ceiling = 4,
     Mode = 5,
+    Channels = 6,
+    OutputGain = 7,
 }
 
 impl ParamId {
-    pub const COUNT: usize = 6;
+    pub const COUNT: usize = 8;
 
     pub const fn all() -> [ParamId; Self::COUNT] {
         [
@@ -29,6 +31,8 @@ impl ParamId {
             ParamId::Enhance,
             ParamId::Ceiling,
             ParamId::Mode,
+            ParamId::Channels,
+            ParamId::OutputGain,
         ]
     }
 
@@ -75,10 +79,10 @@ pub const PARAMS: [ParamDef; ParamId::COUNT] = [
         id: ParamId::Boost,
         name: "Boost",
         module: "Clip",
-        min: 0.0,
-        max: 1.0,
+        min: -90.0,
+        max: 20.0,
         default: 0.0,
-        step: 0.01,
+        step: 0.1,
         flags: AUTOMATABLE,
     },
     ParamDef {
@@ -105,10 +109,10 @@ pub const PARAMS: [ParamDef; ParamId::COUNT] = [
         id: ParamId::Ceiling,
         name: "Ceiling",
         module: "Clip",
-        min: 0.0,
-        max: 1.0,
-        default: 0.5,
-        step: 0.01,
+        min: -90.0,
+        max: 20.0,
+        default: 0.0,
+        step: 0.1,
         flags: AUTOMATABLE,
     },
     ParamDef {
@@ -120,6 +124,26 @@ pub const PARAMS: [ParamDef; ParamId::COUNT] = [
         default: 0.0,
         step: 1.0,
         flags: ENUM_FLAGS,
+    },
+    ParamDef {
+        id: ParamId::Channels,
+        name: "Channels",
+        module: "Global",
+        min: 1.0,
+        max: 2.0,
+        default: 2.0,
+        step: 1.0,
+        flags: ENUM_FLAGS,
+    },
+    ParamDef {
+        id: ParamId::OutputGain,
+        name: "Output Volume",
+        module: "Gain",
+        min: -90.0,
+        max: 20.0,
+        default: 0.0,
+        step: 0.1,
+        flags: AUTOMATABLE,
     },
 ];
 

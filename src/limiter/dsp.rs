@@ -78,7 +78,7 @@ impl Vintage {
         mode: u32,
     ) {
         let overallscale = self.sample_rate / 44_100.0;
-        let input_gain = 10.0_f64.powf((boost * 18.0) / 20.0);
+        let input_gain = 10.0_f64.powf(boost / 20.0);
         let softness = soften * FP_NEW;
         let hardness = 1.0 - softness;
         let highslift = 0.307 * enhance;
@@ -588,8 +588,8 @@ impl Modern {
         let overallscale = self.sample_rate / 44_100.0;
         let mut spacing = overallscale.floor() as usize;
         spacing = spacing.clamp(1, 16);
-        let input_gain = 10.0_f64.powf((boost * 18.0) / 20.0);
-        let ceiling_val = (1.0 + ceiling * 0.235_947_33) * 0.5;
+        let input_gain = 10.0_f64.powf(boost / 20.0);
+        let ceiling_val = 10.0_f64.powf(ceiling / 20.0);
         let mode = mode.min(7) + 1;
         let mut stage_setting = mode as i32 - 2;
         if stage_setting < 1 {
@@ -766,6 +766,7 @@ pub struct LimiterParams {
     pub soften: f64,
     pub enhance: f64,
     pub ceiling: f64,
+    pub output_gain: f64,
     pub mode: u32,
 }
 
@@ -794,6 +795,14 @@ impl Limiter {
                 .modern
                 .process_stereo(left, right, params.boost, params.ceiling, params.mode),
             _ => {}
+        }
+
+        let output_gain = 10.0_f64.powf(params.output_gain / 20.0) as f32;
+        if (output_gain - 1.0).abs() > f32::EPSILON {
+            for (left, right) in left.iter_mut().zip(right.iter_mut()) {
+                *left *= output_gain;
+                *right *= output_gain;
+            }
         }
     }
 }

@@ -26,14 +26,14 @@ use clap_clap::{
     stream::{IStream, OStream},
 };
 use parking_lot::Mutex;
-use portable_atomic::AtomicF64;
+use portable_atomic::{AtomicF32, AtomicF64};
 
 use crate::common::{
     SharedStateExt, apply_param_events, copy_str_to_array, emit_pending_param_events_to_host,
 };
 use crate::common::{
     bus,
-    spectrum::{DEFAULT_SPECTRUM_BINS, LogSpectrumAnalyzer, SPECTRUM_FLOOR_DB},
+    spectrum::{DEFAULT_SPECTRUM_BINS, SharedSpectrum, StereoSpectrumAnalyzer},
 };
 use crate::compressor::{
     dsp::Compressor,
@@ -92,6 +92,11 @@ pub struct SharedState {
     host: AtomicPtr<clap_host>,
     pub channels: AtomicU32,
     own_slot: AtomicU32,
+    input_level_left_db: AtomicF32,
+    input_level_right_db: AtomicF32,
+    output_level_left_db: AtomicF32,
+    output_level_right_db: AtomicF32,
+    spectrum_db: SharedSpectrum<DEFAULT_SPECTRUM_BINS>,
 }
 
 impl Default for SharedState {
@@ -107,6 +112,11 @@ impl Default for SharedState {
             host: AtomicPtr::new(null_mut()),
             channels: AtomicU32::new(1),
             own_slot: AtomicU32::new(u32::MAX),
+            input_level_left_db: AtomicF32::new(-90.0),
+            input_level_right_db: AtomicF32::new(-90.0),
+            output_level_left_db: AtomicF32::new(-90.0),
+            output_level_right_db: AtomicF32::new(-90.0),
+            spectrum_db: SharedSpectrum::default(),
         }
     }
 }
@@ -276,6 +286,46 @@ impl SharedState {
 
     pub fn own_slot(&self) -> u32 {
         self.own_slot.load(Ordering::Acquire)
+    }
+
+    pub fn input_levels_db(&self) -> [f32; 2] {
+        [
+            self.input_level_left_db.load(Ordering::Relaxed),
+            self.input_level_right_db.load(Ordering::Relaxed),
+        ]
+    }
+
+    pub fn output_levels_db(&self) -> [f32; 2] {
+        [
+            self.output_level_left_db.load(Ordering::Relaxed),
+            self.output_level_right_db.load(Ordering::Relaxed),
+        ]
+    }
+
+    fn set_input_levels_db(&self, left: f32, right: f32) {
+        self.input_level_left_db
+            .store(left.clamp(-90.0, 20.0), Ordering::Relaxed);
+        self.input_level_right_db
+            .store(right.clamp(-90.0, 20.0), Ordering::Relaxed);
+    }
+
+    fn set_output_levels_db(&self, left: f32, right: f32) {
+        self.output_level_left_db
+            .store(left.clamp(-90.0, 20.0), Ordering::Relaxed);
+        self.output_level_right_db
+            .store(right.clamp(-90.0, 20.0), Ordering::Relaxed);
+    }
+
+    fn set_spectrum_db(
+        &self,
+        left_db: &[f32; DEFAULT_SPECTRUM_BINS],
+        right_db: &[f32; DEFAULT_SPECTRUM_BINS],
+    ) {
+        self.spectrum_db.set(left_db, right_db);
+    }
+
+    pub fn spectrum_db(&self) -> [[f32; DEFAULT_SPECTRUM_BINS]; 2] {
+        self.spectrum_db.get()
     }
 }
 
@@ -694,14 +744,22 @@ fn apply_param_id(
     }
 }
 
+fn peak_db(samples: &[f32]) -> f32 {
+    let peak = crate::simd::peak_abs(samples);
+    if peak > 0.0 {
+        20.0 * peak.log10()
+    } else {
+        -90.0
+    }
+}
+
 struct AudioProcessor {
     compressor: Compressor,
     temp_left: Vec<f32>,
     temp_right: Vec<f32>,
     bus_data: Option<bus::PluginSharedData>,
-    fft_scratch: Vec<f32>,
-    fft_db: [f32; DEFAULT_SPECTRUM_BINS],
-    fft_analyzer: LogSpectrumAnalyzer,
+    spectrum: StereoSpectrumAnalyzer<DEFAULT_SPECTRUM_BINS>,
+    spectrum_samples_since_update: usize,
     last_params_version: u64,
 }
 
@@ -714,15 +772,16 @@ impl AudioProcessor {
             temp_left: vec![0.0; max_frames as usize],
             temp_right: vec![0.0; max_frames as usize],
             bus_data,
-            fft_scratch: vec![0.0; max_frames as usize],
-            fft_db: [SPECTRUM_FLOOR_DB; DEFAULT_SPECTRUM_BINS],
-            fft_analyzer: LogSpectrumAnalyzer::new(DEFAULT_SPECTRUM_BINS),
+            spectrum: StereoSpectrumAnalyzer::new(),
+            spectrum_samples_since_update: 0,
             last_params_version: 0,
         }
     }
 
     fn reset(&mut self) {
         self.compressor.reset();
+        self.spectrum.reset();
+        self.spectrum_samples_since_update = 0;
     }
 
     fn apply_params(&mut self, shared: &SharedState) {
@@ -887,19 +946,32 @@ impl AudioProcessor {
             self.temp_left.resize(frames, 0.0);
             self.temp_right.resize(frames, 0.0);
         }
+        let sample_rate = shared.sample_rate();
+        let spectrum_update_interval_samples = (sample_rate / 10.0).round().max(1.0) as usize;
+        self.spectrum_samples_since_update =
+            self.spectrum_samples_since_update.saturating_add(frames);
 
         let inputs_count = process.audio_inputs_count();
         let outputs_count = process.audio_outputs_count();
+        let mut spectrum_ready = false;
 
         if inputs_count >= 2 && outputs_count >= 2 {
             let input_l = process.audio_inputs(0);
             let input_r = process.audio_inputs(1);
             self.temp_left[..frames].copy_from_slice(input_l.data32(0));
             self.temp_right[..frames].copy_from_slice(input_r.data32(0));
+            shared.set_input_levels_db(
+                peak_db(&self.temp_left[..frames]),
+                peak_db(&self.temp_right[..frames]),
+            );
 
             self.compressor.process_stereo(
                 &mut self.temp_left[..frames],
                 &mut self.temp_right[..frames],
+            );
+            shared.set_output_levels_db(
+                peak_db(&self.temp_left[..frames]),
+                peak_db(&self.temp_right[..frames]),
             );
 
             {
@@ -910,30 +982,50 @@ impl AudioProcessor {
                 let mut output_r = process.audio_outputs(1);
                 output_r.data32(0)[..frames].copy_from_slice(&self.temp_right[..frames]);
             }
+            self.spectrum
+                .push_stereo(&self.temp_left[..frames], &self.temp_right[..frames]);
+            spectrum_ready = true;
         } else if inputs_count >= 1 && outputs_count >= 1 {
             let input_port = process.audio_inputs(0);
             self.temp_left[..frames].copy_from_slice(input_port.data32(0));
+            shared.set_input_levels_db(peak_db(&self.temp_left[..frames]), -90.0);
             self.compressor.process_mono(&mut self.temp_left[..frames]);
+            shared.set_output_levels_db(peak_db(&self.temp_left[..frames]), -90.0);
 
             let mut output_port = process.audio_outputs(0);
             output_port.data32(0)[..frames].copy_from_slice(&self.temp_left[..frames]);
+            self.spectrum.push_mono(&self.temp_left[..frames]);
+            spectrum_ready = true;
         }
 
+        let spectrum = if spectrum_ready
+            && self.spectrum_samples_since_update >= spectrum_update_interval_samples
+        {
+            self.spectrum_samples_since_update = 0;
+            let spectrum = self.spectrum.compute(sample_rate);
+            shared.set_spectrum_db(&spectrum[0], &spectrum[1]);
+            Some(spectrum)
+        } else {
+            None
+        };
+
         if let Some(ref bus) = self.bus_data {
-            if bus::needs(bus::NEED_FFT) {
-                self.fft_scratch[..frames].fill(0.0);
-                for i in 0..frames {
-                    self.fft_scratch[i] = (self.temp_left[i] + self.temp_right[i]) * 0.5;
-                }
-                if let Some(slot) = bus.fft_slot() {
-                    self.fft_analyzer.push_block(&self.fft_scratch[..frames]);
-                    self.fft_analyzer
-                        .compute(shared.sample_rate(), &mut self.fft_db);
-                    slot.write(|fft| {
-                        fft.bins[..DEFAULT_SPECTRUM_BINS].copy_from_slice(&self.fft_db);
-                        fft.valid_bins = DEFAULT_SPECTRUM_BINS;
-                    });
-                }
+            if bus::needs(bus::NEED_FFT)
+                && let Some(slot) = bus.fft_slot()
+                && let Some(spectrum) = &spectrum
+            {
+                slot.write(|fft| {
+                    let n = DEFAULT_SPECTRUM_BINS.min(fft.bins.len());
+                    for (i, (left, right)) in spectrum[0]
+                        .iter()
+                        .zip(spectrum[1].iter())
+                        .take(n)
+                        .enumerate()
+                    {
+                        fft.bins[i] = (*left).max(*right);
+                    }
+                    fft.valid_bins = n;
+                });
             }
             if bus::needs(bus::NEED_GR)
                 && let Some(slot) = bus.gr_slot()
