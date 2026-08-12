@@ -325,6 +325,14 @@ impl PluginInstance {
     }
 
     fn load_kit(&self, path: String) {
+        self.load_kit_internal(path, true, true);
+    }
+
+    fn restore_kit(&self, path: String) {
+        self.load_kit_internal(path, false, false);
+    }
+
+    fn load_kit_internal(&self, path: String, mark_dirty: bool, auto_resolve_midimap: bool) {
         self.engine.kit_ready.store(false, Ordering::Release);
 
         *self.shared.kit_path.write() = path.clone();
@@ -332,26 +340,34 @@ impl PluginInstance {
         self.shared.active_channels.store(0, Ordering::Release);
 
         self.shared.loading_progress.store(0, Ordering::Release);
-        self.shared.mark_dirty();
+        if mark_dirty {
+            self.shared.mark_dirty();
+        }
         self.shared.latency_changed();
 
         let engine = Arc::clone(&self.engine);
         engine.load_kit_async(path.clone());
 
         let mut variation = self.shared.variation.read().clone();
-        if variation.is_empty()
+        if auto_resolve_midimap
+            && variation.is_empty()
             && let Some(inferred) = download::kit_variation_from_path(&path)
         {
             variation = inferred;
             *self.shared.variation.write() = variation.clone();
-            self.shared.mark_dirty();
+            if mark_dirty {
+                self.shared.mark_dirty();
+            }
         }
-        if let Some(kit_name) = download::kit_display_name_from_path(&path)
+        if auto_resolve_midimap
+            && let Some(kit_name) = download::kit_display_name_from_path(&path)
             && let Some(midimap_path) = download::resolve_midimap_xml(&kit_name, &variation)
         {
             let _ = self.engine.load_midimap(&midimap_path.to_string_lossy());
             *self.shared.midimap_path.write() = midimap_path.to_string_lossy().into_owned();
-            self.shared.mark_dirty();
+            if mark_dirty {
+                self.shared.mark_dirty();
+            }
         }
 
         self.rebuild_note_names();
@@ -369,12 +385,18 @@ impl PluginInstance {
         self.shared.note_names_changed();
     }
 
-    fn load_midimap(&self, path: String) {
+    fn restore_midimap(&self, path: String) {
+        self.load_midimap_internal(path, false);
+    }
+
+    fn load_midimap_internal(&self, path: String, mark_dirty: bool) {
         match self.engine.load_midimap(&path) {
             Ok(()) => {
                 *self.shared.midimap_path.write() = path;
                 *self.shared.last_error.write() = None;
-                self.shared.mark_dirty();
+                if mark_dirty {
+                    self.shared.mark_dirty();
+                }
                 self.rebuild_note_names();
             }
             Err(err) => {
@@ -497,9 +519,13 @@ unsafe extern "C-unwind" fn plugin_activate(
     inst.active.store(true, Ordering::Release);
 
     let kit_path = inst.shared.kit_path.read().clone();
+    let midimap_path = inst.shared.midimap_path.read().clone();
     let kit_loaded = !inst.engine.kit.load(Ordering::Acquire).is_null();
     if !kit_path.is_empty() && !kit_loaded {
-        inst.load_kit(kit_path);
+        inst.restore_kit(kit_path);
+        if !midimap_path.is_empty() {
+            inst.restore_midimap(midimap_path);
+        }
     }
     inst.shared.latency_changed();
     true
@@ -835,15 +861,22 @@ unsafe extern "C-unwind" fn ext_state_load(
         .store(active_channels, Ordering::Release);
 
     let current_kit_path = inst.shared.kit_path.read().clone();
+    let current_midimap_path = inst.shared.midimap_path.read().clone();
     let kit_changed = kit_path != current_kit_path;
+    let midimap_changed = midimap_path != current_midimap_path;
+
+    *inst.shared.kit_path.write() = kit_path.clone();
+    *inst.shared.midimap_path.write() = midimap_path.clone();
 
     let is_audio_instance = !inst.processor.load(Ordering::Acquire).is_null();
 
     if !kit_path.is_empty() && kit_changed && is_audio_instance {
-        inst.load_kit(kit_path);
+        inst.restore_kit(kit_path.clone());
         if !midimap_path.is_empty() {
-            inst.load_midimap(midimap_path);
+            inst.restore_midimap(midimap_path.clone());
         }
+    } else if !midimap_path.is_empty() && midimap_changed && is_audio_instance {
+        inst.restore_midimap(midimap_path);
     }
 
     *inst.shared.state_id.write() = saved_state_id;
