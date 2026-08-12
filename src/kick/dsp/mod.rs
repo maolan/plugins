@@ -244,8 +244,13 @@ pub struct Kit {
 
 impl Kit {
     pub fn new(sample_rate: f32) -> Self {
+        Self::with_instruments(sample_rate, INSTRUMENTS_PER_KIT)
+    }
+
+    pub fn with_instruments(sample_rate: f32, count: usize) -> Self {
+        let count = count.min(INSTRUMENTS_PER_KIT);
         let mut instruments = Vec::with_capacity(INSTRUMENTS_PER_KIT);
-        for _ in 0..INSTRUMENTS_PER_KIT {
+        for _ in 0..count {
             instruments.push(Instrument::new(sample_rate));
         }
         Self {
@@ -323,7 +328,7 @@ impl KickSynthesizer {
     }
 
     pub fn trigger(&mut self, instrument_idx: usize, note: u8, velocity: f32) {
-        if instrument_idx >= INSTRUMENTS_PER_KIT {
+        if instrument_idx >= self.kit.instruments.len() {
             return;
         }
         if !self.kit.instrument_active(instrument_idx) {
@@ -370,7 +375,7 @@ impl KickSynthesizer {
     }
 
     pub fn release(&mut self, instrument_idx: usize) {
-        if instrument_idx >= INSTRUMENTS_PER_KIT {
+        if instrument_idx >= self.kit.instruments.len() {
             return;
         }
         let pb = &mut self.playback[instrument_idx];
@@ -393,7 +398,7 @@ impl KickSynthesizer {
         out_l[..frames].fill(0.0);
         out_r[..frames].fill(0.0);
 
-        for inst_idx in 0..INSTRUMENTS_PER_KIT {
+        for inst_idx in 0..self.kit.instruments.len() {
             let pb = &mut self.playback[inst_idx];
             if !pb.is_playing {
                 continue;
@@ -464,7 +469,7 @@ impl KickSynthesizer {
         out_l[..frames].fill(0.0);
         out_r[..frames].fill(0.0);
 
-        if inst_idx >= INSTRUMENTS_PER_KIT {
+        if inst_idx >= self.kit.instruments.len() {
             return false;
         }
 
@@ -529,7 +534,7 @@ impl KickSynthesizer {
     }
 
     pub fn copy_active_buffer(&self, dst_l: &mut [f32], dst_r: &mut [f32]) -> usize {
-        for inst_idx in 0..INSTRUMENTS_PER_KIT {
+        for inst_idx in 0..self.kit.instruments.len() {
             let pb = &self.playback[inst_idx];
             if pb.is_playing || pb.num_samples > 0 {
                 let buf_l = &self.buffers_l[inst_idx][pb.active_buffer];
@@ -544,7 +549,7 @@ impl KickSynthesizer {
     }
 
     pub fn num_samples(&self, instrument_idx: usize) -> usize {
-        if instrument_idx < INSTRUMENTS_PER_KIT {
+        if instrument_idx < self.kit.instruments.len() {
             self.playback[instrument_idx].num_samples
         } else {
             0

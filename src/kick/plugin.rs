@@ -11,18 +11,18 @@ use std::{
 use clap_clap::{
     events::{EventBuilder, InputEvents, OutputEvents, ParamValue},
     ffi::{
-        CLAP_AUDIO_PORT_IS_MAIN, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON,
-        CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END, CLAP_EVENT_PARAM_VALUE,
-        CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI, CLAP_EXT_NOTE_NAME, CLAP_EXT_NOTE_PORTS,
-        CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL, CLAP_INVALID_ID, CLAP_NOTE_DIALECT_MIDI,
-        CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION,
-        CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info, clap_event_header,
-        clap_event_param_gesture, clap_gui_resize_hints, clap_host, clap_host_gui,
-        clap_host_note_name, clap_host_params, clap_host_state, clap_id, clap_istream,
-        clap_note_name, clap_note_port_info, clap_ostream, clap_param_info, clap_plugin,
-        clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_gui, clap_plugin_note_name,
-        clap_plugin_note_ports, clap_plugin_params, clap_plugin_state, clap_plugin_tail,
-        clap_process, clap_process_status, clap_window,
+        CLAP_AUDIO_PORT_IS_MAIN, CLAP_AUDIO_PORTS_RESCAN_LIST, CLAP_CORE_EVENT_SPACE_ID,
+        CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_GESTURE_BEGIN,
+        CLAP_EVENT_PARAM_GESTURE_END, CLAP_EVENT_PARAM_VALUE, CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI,
+        CLAP_EXT_NOTE_NAME, CLAP_EXT_NOTE_PORTS, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL,
+        CLAP_INVALID_ID, CLAP_NOTE_DIALECT_MIDI, CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PORT_MONO,
+        CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11,
+        clap_audio_port_info, clap_event_header, clap_event_param_gesture, clap_gui_resize_hints,
+        clap_host, clap_host_audio_ports, clap_host_gui, clap_host_note_name, clap_host_params,
+        clap_host_state, clap_id, clap_istream, clap_note_name, clap_note_port_info, clap_ostream,
+        clap_param_info, clap_plugin, clap_plugin_audio_ports, clap_plugin_descriptor,
+        clap_plugin_gui, clap_plugin_note_name, clap_plugin_note_ports, clap_plugin_params,
+        clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status, clap_window,
     },
     id::ClapId,
     process::Process,
@@ -87,6 +87,7 @@ pub struct SharedState {
     output_peak_db_r: AtomicF32,
     pub waveform_display: Mutex<(Vec<f32>, Vec<f32>)>,
     host: AtomicPtr<clap_host>,
+    pub output_port_count: AtomicU32,
 }
 
 impl SharedState {
@@ -94,7 +95,7 @@ impl SharedState {
         let words = ParamId::COUNT.div_ceil(32);
         Self {
             params: ParamStore::default(),
-            kit: Mutex::new(crate::kick::dsp::Kit::new(48000.0)),
+            kit: Mutex::new(crate::kick::dsp::Kit::with_instruments(48000.0, 1)),
             kit_version: AtomicU64::new(0),
             params_version: AtomicU64::new(1),
             instrument_clipboard: Mutex::new(None),
@@ -107,6 +108,7 @@ impl SharedState {
             output_peak_db_r: AtomicF32::new(-60.0),
             waveform_display: Mutex::new((Vec::new(), Vec::new())),
             host: AtomicPtr::new(host.cast_mut()),
+            output_port_count: AtomicU32::new(1),
         }
     }
 
@@ -116,6 +118,34 @@ impl SharedState {
 
     pub fn set_sample_rate(&self, sample_rate: f64) {
         self.sample_rate.store(sample_rate, Ordering::Release);
+    }
+
+    pub fn sync_output_port_count(&self) {
+        let count = self.kit.lock().instruments.len();
+        self.output_port_count.store(
+            count.min(crate::kick::dsp::INSTRUMENTS_PER_KIT) as u32,
+            Ordering::Release,
+        );
+    }
+
+    pub fn request_audio_ports_rescan(&self) {
+        let host = self.host.load(Ordering::Acquire);
+        if host.is_null() {
+            return;
+        }
+        unsafe {
+            let Some(get_extension) = (*host).get_extension else {
+                return;
+            };
+            let ext = get_extension(host, CLAP_EXT_AUDIO_PORTS.as_ptr());
+            if ext.is_null() {
+                return;
+            }
+            let audio_ports = &*(ext as *const clap_host_audio_ports);
+            if let Some(rescan) = audio_ports.rescan {
+                rescan(host, CLAP_AUDIO_PORTS_RESCAN_LIST);
+            }
+        }
     }
 
     pub fn set_param_internal(&self, id: ParamId, value: f64, notify_host: bool) {
@@ -1886,19 +1916,27 @@ unsafe extern "C-unwind" fn plugin_process(
 unsafe extern "C-unwind" fn plugin_on_main_thread(_plugin: *const clap_plugin) {}
 
 unsafe extern "C-unwind" fn ext_audio_ports_count(
-    _plugin: *const clap_plugin,
+    plugin: *const clap_plugin,
     is_input: bool,
 ) -> u32 {
-    if is_input { 0 } else { 16 }
+    if is_input {
+        return 0;
+    }
+    let instance = unsafe { instance(plugin) };
+    instance.shared.output_port_count.load(Ordering::Acquire)
 }
 
 unsafe extern "C-unwind" fn ext_audio_ports_get(
-    _plugin: *const clap_plugin,
+    plugin: *const clap_plugin,
     index: u32,
     is_input: bool,
     info: *mut clap_audio_port_info,
 ) -> bool {
     if is_input || info.is_null() {
+        return false;
+    }
+    let instance = unsafe { instance(plugin) };
+    if index >= instance.shared.output_port_count.load(Ordering::Acquire) {
         return false;
     }
     let info = unsafe { &mut *info };
@@ -2157,6 +2195,9 @@ unsafe extern "C-unwind" fn ext_state_load(
             let mut kit = inst.shared.kit.lock();
             *kit = config_to_kit(&kit_cfg, inst.shared.sample_rate());
             inst.shared.kit_version.fetch_add(1, Ordering::AcqRel);
+            drop(kit);
+            inst.shared.sync_output_port_count();
+            inst.shared.request_audio_ports_rescan();
             inst.shared.note_names_changed();
             true
         }
@@ -2280,7 +2321,8 @@ pub fn config_to_kit(config: &KitConfig, sample_rate: f32) -> crate::kick::dsp::
         INSTRUMENTS_PER_KIT, Kit, LAYERS_PER_INSTRUMENT, OSCILLATORS_PER_LAYER,
     };
 
-    let mut kit = Kit::new(sample_rate);
+    let instrument_count = config.instruments.len().clamp(1, INSTRUMENTS_PER_KIT);
+    let mut kit = Kit::with_instruments(sample_rate, instrument_count);
     kit.humanizer_velocity = config.humanizer_velocity;
     kit.humanizer_timing_ms = config.humanizer_timing_ms;
 
@@ -2713,8 +2755,8 @@ mod tests {
 
         let kit = config_to_kit(&config, 48_000.0);
 
+        assert_eq!(kit.instruments.len(), 1);
         assert_eq!(kit.instruments[0].name, "Only One");
-        assert!(kit.instruments[1].name.is_empty());
     }
 
     #[test]
@@ -2737,6 +2779,8 @@ mod tests {
         let shared = SharedState::new(std::ptr::null());
         {
             let mut kit = shared.kit.lock();
+            kit.instruments
+                .push(crate::kick::dsp::Instrument::new(48_000.0));
             kit.instruments[0].name = "Sub".to_string();
             kit.instruments[1].name = "Click".to_string();
         }

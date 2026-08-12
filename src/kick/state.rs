@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::kick::dsp::{
-    INSTRUMENTS_PER_KIT, LAYERS_PER_INSTRUMENT, OSCILLATORS_PER_LAYER,
+    LAYERS_PER_INSTRUMENT, OSCILLATORS_PER_LAYER,
     envelope::{EnvPoint, Envelope},
 };
 use crate::kick::params::{ParamId, ParamStore, param_type_def, sanitize_param_value, state_key};
@@ -34,9 +34,7 @@ pub struct KitConfig {
 }
 
 fn default_instruments() -> Vec<InstrumentConfig> {
-    (0..INSTRUMENTS_PER_KIT)
-        .map(|_| InstrumentConfig::default())
-        .collect()
+    vec![InstrumentConfig::default()]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

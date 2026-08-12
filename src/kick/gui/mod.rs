@@ -23,6 +23,7 @@ use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHan
 
 mod envelope_editor;
 
+use crate::kick::dsp::INSTRUMENTS_PER_KIT;
 use crate::kick::gui::envelope_editor::{EnvelopeEditor, EnvelopeEditorMsg};
 use crate::kick::params::{ParamId, ParamType, param_type_def};
 use crate::kick::plugin::SharedState;
@@ -181,6 +182,8 @@ pub enum Message {
     PasteInstrument,
     DuplicateInstrument,
     ClearInstrument,
+    AddInstrument,
+    RemoveInstrument,
     EnvelopeEdit(EnvelopeEditorMsg),
     PresetNameChanged(String),
     SavePreset,
@@ -639,15 +642,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .get(ParamId::new(0, ParamType::ActiveInstrument))
                 as usize;
             let mut kit = state.shared.kit.lock();
-            if active_inst < kit.instruments.len() {
+            if active_inst < kit.instruments.len() && kit.instruments.len() < INSTRUMENTS_PER_KIT {
                 let clone = kit.instruments[active_inst].clone();
-                let dst = (active_inst + 1).min(kit.instruments.len() - 1);
-                kit.instruments[dst] = clone;
+                let new_idx = kit.instruments.len();
+                kit.instruments.push(clone);
                 for ty_idx in 0..ParamType::COUNT {
                     let src = ParamId::new(active_inst as u8, unsafe {
                         std::mem::transmute::<u8, ParamType>(ty_idx as u8)
                     });
-                    let dst_id = ParamId::new(dst as u8, unsafe {
+                    let dst_id = ParamId::new(new_idx as u8, unsafe {
                         std::mem::transmute::<u8, ParamType>(ty_idx as u8)
                     });
                     state
@@ -655,7 +658,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .params
                         .set(dst_id, state.shared.params.get(src));
                 }
+                drop(kit);
+                state.shared.set_param_outbound_only(
+                    ParamId::new(0, ParamType::ActiveInstrument),
+                    new_idx as f64,
+                );
+                state.instrument_name_input =
+                    state.shared.kit.lock().instruments[new_idx].name.clone();
                 state.shared.mark_kit_changed();
+                state.shared.sync_output_port_count();
+                state.shared.request_audio_ports_rescan();
             }
         }
         Message::ClearInstrument => {
@@ -674,7 +686,75 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     let def = param_type_def(ty);
                     state.shared.params.set(id, def.default);
                 }
+                state.instrument_name_input = String::new();
                 state.shared.mark_kit_changed();
+            }
+        }
+        Message::AddInstrument => {
+            let mut kit = state.shared.kit.lock();
+            if kit.instruments.len() < INSTRUMENTS_PER_KIT {
+                let new_idx = kit.instruments.len();
+                kit.instruments.push(crate::kick::dsp::Instrument::new(
+                    state.shared.sample_rate(),
+                ));
+                for ty_idx in 0..ParamType::COUNT {
+                    let ty = unsafe { std::mem::transmute::<u8, ParamType>(ty_idx as u8) };
+                    let id = ParamId::new(new_idx as u8, ty);
+                    let def = param_type_def(ty);
+                    state.shared.params.set(id, def.default);
+                }
+                drop(kit);
+                state.shared.set_param_outbound_only(
+                    ParamId::new(0, ParamType::ActiveInstrument),
+                    new_idx as f64,
+                );
+                state.instrument_name_input = String::new();
+                state.shared.mark_kit_changed();
+                state.shared.sync_output_port_count();
+                state.shared.request_audio_ports_rescan();
+            }
+        }
+        Message::RemoveInstrument => {
+            let active_inst = state
+                .shared
+                .params
+                .get(ParamId::new(0, ParamType::ActiveInstrument))
+                as usize;
+            let mut kit = state.shared.kit.lock();
+            if active_inst < kit.instruments.len() && kit.instruments.len() > 1 {
+                kit.instruments.remove(active_inst);
+                let count = kit.instruments.len();
+                for src_idx in active_inst + 1..=count {
+                    for ty_idx in 0..ParamType::COUNT {
+                        let ty = unsafe { std::mem::transmute::<u8, ParamType>(ty_idx as u8) };
+                        let src_id = ParamId::new(src_idx as u8, ty);
+                        let dst_id = ParamId::new((src_idx - 1) as u8, ty);
+                        state
+                            .shared
+                            .params
+                            .set(dst_id, state.shared.params.get(src_id));
+                    }
+                }
+                for ty_idx in 0..ParamType::COUNT {
+                    let ty = unsafe { std::mem::transmute::<u8, ParamType>(ty_idx as u8) };
+                    let id = ParamId::new(count as u8, ty);
+                    let def = param_type_def(ty);
+                    state.shared.params.set(id, def.default);
+                }
+                drop(kit);
+                let new_active = active_inst.min(count.saturating_sub(1));
+                state.shared.set_param_outbound_only(
+                    ParamId::new(0, ParamType::ActiveInstrument),
+                    new_active as f64,
+                );
+                state.instrument_name_input = if new_active < count {
+                    state.shared.kit.lock().instruments[new_active].name.clone()
+                } else {
+                    String::new()
+                };
+                state.shared.mark_kit_changed();
+                state.shared.sync_output_port_count();
+                state.shared.request_audio_ports_rescan();
             }
         }
         Message::EnvelopeEdit(msg) => {
@@ -757,6 +837,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     let mut kit = state.shared.kit.lock();
                     *kit = crate::kick::plugin::config_to_kit(&kit_cfg, state.shared.sample_rate());
                     state.shared.mark_kit_changed();
+                    drop(kit);
+                    state.shared.sync_output_port_count();
+                    state.shared.request_audio_ports_rescan();
                 }
             }
         }
@@ -964,10 +1047,14 @@ fn view(state: &State) -> Element<'_, Message> {
     let p = |id: ParamId| state.shared.params.get(id) as f32;
     let (peak_db_l, peak_db_r) = state.shared.output_peak_db();
 
-    let active_inst = state
-        .shared
-        .params
-        .get(ParamId::new(0, ParamType::ActiveInstrument)) as usize;
+    let active_inst = {
+        let kit = state.shared.kit.lock();
+        let active = state
+            .shared
+            .params
+            .get(ParamId::new(0, ParamType::ActiveInstrument)) as usize;
+        active.min(kit.instruments.len().saturating_sub(1))
+    };
     let ap = |ty: ParamType| ParamId::new(active_inst as u8, ty);
 
     let waveform = canvas(WaveformState {
@@ -1058,6 +1145,8 @@ fn view(state: &State) -> Element<'_, Message> {
             maolan_baseview::iced::widget::button("Paste").on_press(Message::PasteInstrument),
             maolan_baseview::iced::widget::button("Dup").on_press(Message::DuplicateInstrument),
             maolan_baseview::iced::widget::button("Clear").on_press(Message::ClearInstrument),
+            maolan_baseview::iced::widget::button("+").on_press(Message::AddInstrument),
+            maolan_baseview::iced::widget::button("-").on_press(Message::RemoveInstrument),
         ]
         .spacing(6),
         row![
