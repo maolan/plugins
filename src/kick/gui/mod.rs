@@ -14,7 +14,7 @@ use clap_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{canvas, checkbox, column, container, pick_list, row, text},
+    widget::{canvas, checkbox, column, container, pick_list, row, slider, text},
 };
 use maolan_widgets::meters::meters;
 
@@ -23,7 +23,9 @@ use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHan
 
 mod envelope_editor;
 
-use crate::kick::dsp::INSTRUMENTS_PER_KIT;
+use crate::common::distortion::DistortionType;
+use crate::common::filter::FilterType;
+use crate::kick::dsp::{INSTRUMENTS_PER_KIT, oscillator::Waveform};
 use crate::kick::gui::envelope_editor::{EnvelopeEditor, EnvelopeEditorMsg};
 use crate::kick::params::{ParamId, ParamType, param_type_def};
 use crate::kick::plugin::SharedState;
@@ -93,9 +95,6 @@ pub enum Message {
     SavePreset,
     LoadPreset(String),
     RefreshPresets,
-    SamplePathChanged(String),
-    SampleTargetLayerChanged(u8),
-    SampleTargetOscChanged(u8),
     EnvelopeKindChanged(u8),
     EnvelopeLayerChanged(u8),
     EnvelopeOscChanged(u8),
@@ -104,8 +103,6 @@ pub enum Message {
     ExportChannelsChanged(u8),
     ExportMidiNoteChanged(u8),
     ExportCurrentInstrument,
-    LoadSample,
-    MainTabChanged(u8),
     LayerTabChanged(u8),
     OscTabChanged(u8),
     InstrumentNameChanged(String),
@@ -151,9 +148,6 @@ struct State {
     active_gestures: Vec<bool>,
     show_envelope_editor: bool,
     preset_name_input: String,
-    sample_path_input: String,
-    sample_target_layer: u8,
-    sample_target_osc: u8,
     envelope_kind: u8,
     envelope_layer: u8,
     envelope_osc: u8,
@@ -163,7 +157,6 @@ struct State {
     export_midi_note: u8,
     export_status: String,
     preset_files: Vec<String>,
-    main_tab: u8,
     active_layer_tab: u8,
     active_osc_tab: u8,
     instrument_name_input: String,
@@ -210,9 +203,6 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             active_gestures: vec![false; ParamId::COUNT],
             show_envelope_editor: true,
             preset_name_input: String::new(),
-            sample_path_input: String::new(),
-            sample_target_layer: 0,
-            sample_target_osc: 0,
             envelope_kind: 0,
             envelope_layer: 0,
             envelope_osc: 0,
@@ -222,7 +212,6 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             export_midi_note: 36,
             export_status: String::new(),
             preset_files: scan_presets(),
-            main_tab: 0,
             active_layer_tab: 0,
             active_osc_tab: 0,
             instrument_name_input,
@@ -550,15 +539,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::RefreshPresets => {
             state.preset_files = scan_presets();
         }
-        Message::SamplePathChanged(path) => {
-            state.sample_path_input = path;
-        }
-        Message::SampleTargetLayerChanged(layer) => {
-            state.sample_target_layer = layer.min(2);
-        }
-        Message::SampleTargetOscChanged(osc) => {
-            state.sample_target_osc = osc.min(2);
-        }
         Message::EnvelopeKindChanged(kind) => {
             state.envelope_kind = kind.min(11);
         }
@@ -654,35 +634,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
             }
         }
-        Message::LoadSample => {
-            let path = std::path::Path::new(&state.sample_path_input);
-            if path.exists()
-                && let Ok((left, right, sr)) = crate::kick::export::decode_audio_to_f32(path)
-            {
-                let active_inst = state
-                    .shared
-                    .params
-                    .get(ParamId::new(0, ParamType::ActiveInstrument))
-                    as usize;
-                let mut kit = state.shared.kit.lock();
-                let layer_idx = state.sample_target_layer.min(2) as usize;
-                let osc_idx = state.sample_target_osc.min(2) as usize;
-                let osc = &mut kit.instruments[active_inst].layers[layer_idx].oscillators[osc_idx];
-
-                let samples: Vec<f32> = left
-                    .iter()
-                    .zip(right.iter())
-                    .map(|(l, r)| (l + r) * 0.5)
-                    .collect();
-                crate::kick::dsp::oscillator::set_sample_buffer(
-                    osc,
-                    Some(crate::kick::dsp::oscillator::SampleBuffer::new(
-                        samples, sr as f32,
-                    )),
-                );
-                state.shared.mark_kit_changed();
-            }
-        }
         Message::InstrumentNameChanged(name) => {
             state.instrument_name_input = name.clone();
             let active_inst = state
@@ -696,14 +647,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.shared.mark_kit_changed();
             }
         }
-        Message::MainTabChanged(tab) => {
-            state.main_tab = tab.min(1);
-        }
         Message::LayerTabChanged(tab) => {
             state.active_layer_tab = tab.min(2);
         }
         Message::OscTabChanged(tab) => {
-            state.active_osc_tab = tab.min(2);
+            state.active_osc_tab = tab.min(3);
         }
     }
     Task::none()
@@ -763,7 +711,7 @@ fn view(state: &State) -> Element<'_, Message> {
     };
     let ap = |ty: ParamType| ParamId::new(active_inst as u8, ty);
 
-    let envelope_editor = if state.show_envelope_editor && state.main_tab == 0 {
+    let envelope_editor = if state.show_envelope_editor {
         let kit = state.shared.kit.lock();
         let env_kind = EnvelopeKind::from_u8(state.envelope_kind);
         let mut inst = kit.instruments[active_inst].clone();
@@ -826,9 +774,71 @@ fn view(state: &State) -> Element<'_, Message> {
             .on_input(Message::InstrumentNameChanged)
             .width(Length::Fixed(160.0));
 
-    let inst_selector = row![inst_dropdown, inst_name_input]
-        .spacing(8)
-        .align_y(Alignment::Center);
+    let layer_tabs = row![
+        tab_button(
+            "L1",
+            state.active_layer_tab == 0,
+            Message::LayerTabChanged(0)
+        ),
+        tab_button(
+            "L2",
+            state.active_layer_tab == 1,
+            Message::LayerTabChanged(1)
+        ),
+        tab_button(
+            "L3",
+            state.active_layer_tab == 2,
+            Message::LayerTabChanged(2)
+        ),
+    ]
+    .spacing(4)
+    .align_y(Alignment::Center);
+
+    let layer0_controls = row![
+        checkbox_param(
+            "Enabled",
+            ap(ParamType::Layer0Enabled),
+            state.shared.params.get_bool(ap(ParamType::Layer0Enabled)),
+        ),
+        amp_slider(ap(ParamType::Layer0Amp), p(ap(ParamType::Layer0Amp))),
+    ]
+    .spacing(6);
+
+    let layer1_controls = row![
+        checkbox_param(
+            "Enabled",
+            ap(ParamType::Layer1Enabled),
+            state.shared.params.get_bool(ap(ParamType::Layer1Enabled)),
+        ),
+        amp_slider(ap(ParamType::Layer1Amp), p(ap(ParamType::Layer1Amp))),
+    ]
+    .spacing(6);
+
+    let layer2_controls = row![
+        checkbox_param(
+            "Enabled",
+            ap(ParamType::Layer2Enabled),
+            state.shared.params.get_bool(ap(ParamType::Layer2Enabled)),
+        ),
+        amp_slider(ap(ParamType::Layer2Amp), p(ap(ParamType::Layer2Amp))),
+    ]
+    .spacing(6);
+
+    let active_layer_controls = match state.active_layer_tab {
+        0 => layer0_controls,
+        1 => layer1_controls,
+        2 => layer2_controls,
+        _ => layer0_controls,
+    };
+
+    let inst_selector = row![
+        inst_dropdown,
+        inst_name_input,
+        layer_tabs,
+        active_layer_controls
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
 
     let kit_section = column![
         section_header("KIT"),
@@ -941,50 +951,6 @@ fn view(state: &State) -> Element<'_, Message> {
                     .params
                     .get_bool(ap(ParamType::MasterNoteOffEnabled)),
             ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "FilterType",
-                ap(ParamType::MasterFilterType),
-                p(ap(ParamType::MasterFilterType)),
-                "",
-                1.0
-            ),
-            knob(
-                "Cutoff",
-                ap(ParamType::MasterFilterCutoff),
-                p(ap(ParamType::MasterFilterCutoff)),
-                "Hz",
-                1.0
-            ),
-            knob(
-                "Q",
-                ap(ParamType::MasterFilterQ),
-                p(ap(ParamType::MasterFilterQ)),
-                "",
-                0.01
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "DistType",
-                ap(ParamType::MasterDistortionType),
-                p(ap(ParamType::MasterDistortionType)),
-                "",
-                1.0
-            ),
-            knob(
-                "DistDrive",
-                ap(ParamType::MasterDistortionDrive),
-                p(ap(ParamType::MasterDistortionDrive)),
-                "",
-                0.01
-            ),
-        ]
-        .spacing(6),
-        row![
             knob(
                 "LimThresh",
                 ap(ParamType::MasterLimiterThreshold),
@@ -1001,61 +967,33 @@ fn view(state: &State) -> Element<'_, Message> {
             ),
         ]
         .spacing(6),
-    ]
-    .spacing(6);
-
-    let layer0_section = column![
-        section_header("LAYER 0"),
         row![
-            checkbox_param(
-                "Enabled",
-                ap(ParamType::Layer0Enabled),
-                state.shared.params.get_bool(ap(ParamType::Layer0Enabled)),
+            filter_type_dropdown(
+                ap(ParamType::MasterFilterType),
+                p(ap(ParamType::MasterFilterType))
             ),
             knob(
-                "Amp",
-                ap(ParamType::Layer0Amp),
-                p(ap(ParamType::Layer0Amp)),
+                "Cutoff",
+                ap(ParamType::MasterFilterCutoff),
+                p(ap(ParamType::MasterFilterCutoff)),
+                "Hz",
+                1.0
+            ),
+            knob(
+                "Q",
+                ap(ParamType::MasterFilterQ),
+                p(ap(ParamType::MasterFilterQ)),
                 "",
                 0.01
             ),
-        ]
-        .spacing(6),
-    ]
-    .spacing(6);
-
-    let layer1_section = column![
-        section_header("LAYER 1"),
-        row![
-            checkbox_param(
-                "Enabled",
-                ap(ParamType::Layer1Enabled),
-                state.shared.params.get_bool(ap(ParamType::Layer1Enabled)),
+            distortion_type_dropdown(
+                ap(ParamType::MasterDistortionType),
+                p(ap(ParamType::MasterDistortionType))
             ),
             knob(
-                "Amp",
-                ap(ParamType::Layer1Amp),
-                p(ap(ParamType::Layer1Amp)),
-                "",
-                0.01
-            ),
-        ]
-        .spacing(6),
-    ]
-    .spacing(6);
-
-    let layer2_section = column![
-        section_header("LAYER 2"),
-        row![
-            checkbox_param(
-                "Enabled",
-                ap(ParamType::Layer2Enabled),
-                state.shared.params.get_bool(ap(ParamType::Layer2Enabled)),
-            ),
-            knob(
-                "Amp",
-                ap(ParamType::Layer2Amp),
-                p(ap(ParamType::Layer2Amp)),
+                "DistDrive",
+                ap(ParamType::MasterDistortionDrive),
+                p(ap(ParamType::MasterDistortionDrive)),
                 "",
                 0.01
             ),
@@ -1088,24 +1026,21 @@ fn view(state: &State) -> Element<'_, Message> {
         column![
             section_header(label),
             row![
-                knob("Wave", w, p(w), "", 1.0),
+                waveform_dropdown(w, p(w)),
                 knob("Freq", f, p(f), "Hz", 1.0),
                 knob("Amp", a, p(a), "", 0.01),
-            ]
-            .spacing(6),
-            row![
                 knob("Phase", ph, p(ph), "", 0.01),
                 knob("FM", fm, p(fm), "", 0.01),
-                knob("FiltType", ft, p(ft), "", 1.0),
             ]
             .spacing(6),
             row![
+                filter_type_dropdown(ft, p(ft)),
                 knob("Cutoff", c, p(c), "Hz", 1.0),
                 knob("Q", qv, p(qv), "", 0.01),
-                knob("DistType", dt, p(dt), "", 1.0),
+                distortion_type_dropdown(dt, p(dt)),
+                knob("DistDrive", dd, p(dd), "", 0.01),
             ]
             .spacing(6),
-            row![knob("DistDrive", dd, p(dd), "", 0.01),].spacing(6),
         ]
         .spacing(6)
     };
@@ -1177,12 +1112,9 @@ fn view(state: &State) -> Element<'_, Message> {
         ]
         .spacing(6),
         row![
-            knob(
-                "FiltType",
+            filter_type_dropdown(
                 ap(ParamType::NoiseFilterType),
-                p(ap(ParamType::NoiseFilterType)),
-                "",
-                1.0
+                p(ap(ParamType::NoiseFilterType))
             ),
             knob(
                 "Cutoff",
@@ -1967,37 +1899,6 @@ fn view(state: &State) -> Element<'_, Message> {
     ]
     .spacing(6);
 
-    let sample_section = column![
-        section_header("SAMPLE"),
-        row![
-            maolan_baseview::iced::widget::text_input("Path to sample", &state.sample_path_input)
-                .on_input(Message::SamplePathChanged)
-                .width(Length::Fixed(200.0)),
-            maolan_baseview::iced::widget::button("Load").on_press(Message::LoadSample),
-        ]
-        .spacing(4),
-        row![
-            maolan_baseview::iced::widget::text("Layer"),
-            maolan_baseview::iced::widget::slider(
-                0.0..=2.0,
-                state.sample_target_layer as f32,
-                |v| { Message::SampleTargetLayerChanged(v.round().clamp(0.0, 2.0) as u8) }
-            )
-            .step(1.0_f32)
-            .width(Length::Fixed(80.0)),
-            maolan_baseview::iced::widget::text(format!("{}", state.sample_target_layer + 1)),
-            maolan_baseview::iced::widget::text("Osc"),
-            maolan_baseview::iced::widget::slider(0.0..=2.0, state.sample_target_osc as f32, |v| {
-                Message::SampleTargetOscChanged(v.round().clamp(0.0, 2.0) as u8)
-            })
-            .step(1.0_f32)
-            .width(Length::Fixed(80.0)),
-            maolan_baseview::iced::widget::text(format!("{}", state.sample_target_osc + 1)),
-        ]
-        .spacing(6),
-    ]
-    .spacing(6);
-
     let export_section = column![
         section_header("EXPORT"),
         row![
@@ -2044,84 +1945,49 @@ fn view(state: &State) -> Element<'_, Message> {
     ]
     .spacing(6);
 
-    let main_tab_bar = row![
-        tab_button("Synth", state.main_tab == 0, Message::MainTabChanged(0)),
-        tab_button("Setup", state.main_tab == 1, Message::MainTabChanged(1)),
+    let osc_tabs = row![
+        tab_button("Osc1", state.active_osc_tab == 0, Message::OscTabChanged(0)),
+        tab_button("Osc2", state.active_osc_tab == 1, Message::OscTabChanged(1)),
+        tab_button("Osc3", state.active_osc_tab == 2, Message::OscTabChanged(2)),
+        tab_button(
+            "Noise",
+            state.active_osc_tab == 3,
+            Message::OscTabChanged(3)
+        ),
     ]
     .spacing(4)
     .align_y(Alignment::Center);
 
-    let controls: Element<'_, Message> = if state.main_tab == 0 {
-        let layer_tabs = row![
-            tab_button(
-                "L1",
-                state.active_layer_tab == 0,
-                Message::LayerTabChanged(0)
-            ),
-            tab_button(
-                "L2",
-                state.active_layer_tab == 1,
-                Message::LayerTabChanged(1)
-            ),
-            tab_button(
-                "L3",
-                state.active_layer_tab == 2,
-                Message::LayerTabChanged(2)
-            ),
-        ]
-        .spacing(4)
-        .align_y(Alignment::Center);
+    let active_osc = match state.active_osc_tab {
+        0 => osc0,
+        1 => osc1,
+        2 => osc2,
+        3 => noise_section,
+        _ => osc0,
+    };
 
-        let osc_tabs = row![
-            tab_button("Osc1", state.active_osc_tab == 0, Message::OscTabChanged(0)),
-            tab_button("Osc2", state.active_osc_tab == 1, Message::OscTabChanged(1)),
-            tab_button("Osc3", state.active_osc_tab == 2, Message::OscTabChanged(2)),
-        ]
-        .spacing(4)
-        .align_y(Alignment::Center);
-
-        let active_layer = match state.active_layer_tab {
-            0 => layer0_section,
-            1 => layer1_section,
-            2 => layer2_section,
-            _ => layer0_section,
-        };
-
-        let active_osc = match state.active_osc_tab {
-            0 => osc0,
-            1 => osc1,
-            2 => osc2,
-            _ => osc0,
-        };
-
-        let synth_left = column![
-            layer_tabs,
-            active_layer,
-            osc_tabs,
-            active_osc,
-            noise_section,
-        ]
+    let synth_left = column![osc_tabs, active_osc,]
         .spacing(8)
         .align_x(Alignment::Start);
 
-        column![synth_left, master_section]
-            .spacing(8)
-            .align_x(Alignment::Start)
-            .into()
-    } else {
-        let setup_left = column![kit_section, sample_section]
-            .spacing(8)
-            .align_x(Alignment::Start);
-        let setup_right = column![preset_section, export_section]
-            .spacing(8)
-            .align_x(Alignment::Start);
-        row![setup_left, setup_right]
-            .spacing(8)
-            .align_y(Alignment::Start)
-            .into()
-    };
+    let setup_left = column![kit_section].spacing(8).align_x(Alignment::Start);
+    let setup_right = column![preset_section, export_section]
+        .spacing(8)
+        .align_x(Alignment::Start);
+    let setup_section = row![setup_left, setup_right]
+        .spacing(8)
+        .align_y(Alignment::Start);
 
-    let content = column![top_row, inst_selector, main_tab_bar, controls]
+    let right_column = column![master_section, setup_section]
+        .spacing(8)
+        .align_x(Alignment::Start);
+
+    let controls: Element<'_, Message> = row![synth_left, right_column]
+        .spacing(8)
+        .align_y(Alignment::Start)
+        .into();
+
+    let content = column![top_row, inst_selector, controls]
         .spacing(8)
         .align_x(Alignment::Start);
 
@@ -2140,6 +2006,143 @@ fn theme(_state: &State) -> Theme {
 
 fn section_header(label: &'static str) -> Element<'static, Message> {
     text(label).size(11).into()
+}
+
+fn waveform_dropdown(id: ParamId, value: f32) -> Element<'static, Message> {
+    let waveform = Waveform::from_u8(value as u8);
+    let options = vec![
+        Waveform::Sine,
+        Waveform::Square,
+        Waveform::Triangle,
+        Waveform::Saw,
+        Waveform::Sample,
+    ];
+    let dropdown = pick_list(options, Some(waveform), move |t| {
+        Message::SetWaveform(id, t as u8)
+    })
+    .placeholder("Wave")
+    .width(Length::Fixed(84.0));
+
+    container(
+        column![text("Wave").size(11), dropdown]
+            .spacing(2)
+            .align_x(Alignment::Center),
+    )
+    .width(Length::Fixed(90.0))
+    .into()
+}
+
+fn filter_type_dropdown(id: ParamId, value: f32) -> Element<'static, Message> {
+    let filter_type = FilterType::from_u8(value as u8);
+    let options = vec![
+        FilterType::Off,
+        FilterType::Lowpass,
+        FilterType::Bandpass,
+        FilterType::Highpass,
+        FilterType::Notch,
+        FilterType::Peak,
+        FilterType::CombPos,
+        FilterType::CombNeg,
+        FilterType::Allpass,
+        FilterType::Ladder,
+        FilterType::K35Lp,
+        FilterType::K35Hp,
+        FilterType::DiodeLadder,
+        FilterType::CutoffWarp,
+        FilterType::ResonanceWarp,
+        FilterType::Lowpass12dB,
+        FilterType::Highpass12dB,
+        FilterType::Bandpass12dB,
+        FilterType::LowShelf,
+        FilterType::HighShelf,
+        FilterType::Bell,
+        FilterType::Notch12dB,
+        FilterType::VintageLadder,
+        FilterType::CytomicLp,
+        FilterType::CytomicHp,
+        FilterType::CytomicBp,
+        FilterType::CytomicNotch,
+        FilterType::CytomicPeak,
+        FilterType::CytomicAp,
+        FilterType::CytomicBell,
+        FilterType::CytomicLs,
+        FilterType::CytomicHs,
+        FilterType::TriPole,
+        FilterType::SampleHold,
+        FilterType::CutoffWarpHp,
+        FilterType::CutoffWarpBp,
+        FilterType::CutoffWarpNotch,
+        FilterType::CutoffWarpAp,
+        FilterType::ResonanceWarpLp,
+        FilterType::ResonanceWarpHp,
+        FilterType::ResonanceWarpNotch,
+        FilterType::ResonanceWarpAp,
+        FilterType::Obxd2PoleLp,
+        FilterType::Obxd2PoleHp,
+        FilterType::Obxd2PoleBp,
+        FilterType::Obxd2PoleNotch,
+        FilterType::Obxd4Pole,
+        FilterType::ObxdXpander,
+        FilterType::Notch24dB,
+    ];
+    let dropdown = pick_list(options, Some(filter_type), move |t| {
+        Message::SetFilterType(id, t as u8)
+    })
+    .placeholder("Filter")
+    .width(Length::Fixed(84.0));
+
+    container(
+        column![text("Filter").size(11), dropdown]
+            .spacing(2)
+            .align_x(Alignment::Center),
+    )
+    .width(Length::Fixed(90.0))
+    .into()
+}
+
+fn distortion_type_dropdown(id: ParamId, value: f32) -> Element<'static, Message> {
+    let distortion_type = DistortionType::from_u8(value as u8);
+    let options = vec![
+        DistortionType::HardClip,
+        DistortionType::SoftClipTanh,
+        DistortionType::Arctangent,
+        DistortionType::Exponential,
+        DistortionType::Polynomial,
+        DistortionType::Logarithmic,
+        DistortionType::Foldback,
+        DistortionType::HalfWaveRect,
+        DistortionType::FullWaveRect,
+    ];
+    let dropdown = pick_list(options, Some(distortion_type), move |t| {
+        Message::SetDistortionType(id, t as u8)
+    })
+    .placeholder("Dist")
+    .width(Length::Fixed(84.0));
+
+    container(
+        column![text("Dist").size(11), dropdown]
+            .spacing(2)
+            .align_x(Alignment::Center),
+    )
+    .width(Length::Fixed(90.0))
+    .into()
+}
+
+fn amp_slider(id: ParamId, value: f32) -> Element<'static, Message> {
+    let def = param_type_def(id.param_type());
+    let slider_widget = slider(def.min as f32..=def.max as f32, value, move |v| {
+        Message::SetParam(id, v)
+    })
+    .step(0.01_f32)
+    .width(Length::Fixed(120.0));
+
+    container(
+        column![text("Amp").size(11), slider_widget]
+            .spacing(2)
+            .align_x(Alignment::Center),
+    )
+    .width(Length::Fixed(126.0))
+    .into()
 }
 
 fn knob(

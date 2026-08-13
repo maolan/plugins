@@ -26,6 +26,26 @@ impl DistortionType {
             _ => DistortionType::HardClip,
         }
     }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            DistortionType::HardClip => "Hard Clip",
+            DistortionType::SoftClipTanh => "Soft Clip",
+            DistortionType::Arctangent => "Arctan",
+            DistortionType::Exponential => "Expo",
+            DistortionType::Polynomial => "Poly",
+            DistortionType::Logarithmic => "Log",
+            DistortionType::Foldback => "Foldback",
+            DistortionType::HalfWaveRect => "Half Rect",
+            DistortionType::FullWaveRect => "Full Rect",
+        }
+    }
+}
+
+impl std::fmt::Display for DistortionType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name())
+    }
 }
 
 use crate::common::envelope::BezierEnvelope;

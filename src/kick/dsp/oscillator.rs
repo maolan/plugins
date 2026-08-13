@@ -25,6 +25,18 @@ impl Waveform {
     }
 }
 
+impl std::fmt::Display for Waveform {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Waveform::Sine => write!(f, "Sine"),
+            Waveform::Square => write!(f, "Square"),
+            Waveform::Triangle => write!(f, "Triangle"),
+            Waveform::Saw => write!(f, "Saw"),
+            Waveform::Sample => write!(f, "Sample"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SampleBuffer {
     pub data: Arc<Vec<f32>>,
