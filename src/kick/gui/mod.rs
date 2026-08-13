@@ -11,14 +11,14 @@ use std::{
 use clap_clap::ffi::CLAP_WINDOW_API_WIN32;
 #[cfg(unix)]
 use clap_clap::ffi::CLAP_WINDOW_API_X11;
-use maolan_baseview::iced::widget::canvas::{Frame, Geometry, Path, Program, Stroke, Text};
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
     widget::{canvas, checkbox, column, container, pick_list, row, text},
 };
-use maolan_widgets::arch_slider::arch_slider;
 use maolan_widgets::meters::meters;
+
+use crate::common::ui::{SmallKnob, small_knob};
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 
 mod envelope_editor;
@@ -69,102 +69,6 @@ impl HasWindowHandle for ParentWindowHandle {
                 Ok(unsafe { WindowHandle::borrow_raw(RawWindowHandle::Win32(handle)) })
             }
         }
-    }
-}
-
-struct WaveformState {
-    shared: Arc<SharedState>,
-}
-
-impl Program<Message> for WaveformState {
-    type State = ();
-
-    fn draw(
-        &self,
-        _state: &Self::State,
-        renderer: &maolan_baseview::iced::Renderer,
-        _theme: &Theme,
-        bounds: maolan_baseview::iced::Rectangle,
-        _cursor: maolan_baseview::iced::mouse::Cursor,
-    ) -> Vec<Geometry> {
-        let mut frame = Frame::new(renderer, bounds.size());
-        let width = bounds.width;
-        let height = bounds.height;
-
-        frame.fill_rectangle(
-            maolan_baseview::iced::Point::new(0.0, 0.0),
-            maolan_baseview::iced::Size::new(width, height),
-            maolan_baseview::iced::Color::from_rgb(0.08, 0.08, 0.10),
-        );
-
-        for i in 1..5 {
-            let y = height * i as f32 / 5.0;
-            let grid_path = Path::line(
-                maolan_baseview::iced::Point::new(0.0, y),
-                maolan_baseview::iced::Point::new(width, y),
-            );
-            frame.stroke(
-                &grid_path,
-                Stroke::default()
-                    .with_color(maolan_baseview::iced::Color::from_rgb(0.15, 0.15, 0.18))
-                    .with_width(0.5),
-            );
-        }
-
-        let waveform = self.shared.waveform_display.lock();
-        if !waveform.0.is_empty() {
-            let center_y = height / 2.0;
-            let samples = waveform.0.len();
-            let peak = waveform
-                .0
-                .iter()
-                .chain(waveform.1.iter())
-                .fold(0.0f32, |a, &b| a.max(b.abs()))
-                .max(1.0e-12);
-            let scale_y = (height * 0.45) / peak;
-
-            let path = Path::new(|builder| {
-                let first_y = center_y - waveform.0[0] * scale_y;
-                builder.move_to(maolan_baseview::iced::Point::new(0.0, first_y));
-                let step = (samples as f32 / width).max(1.0);
-                let mut x = 0.0f32;
-                while x < width {
-                    let idx = ((x / width) * samples as f32) as usize;
-                    let idx = idx.min(samples - 1);
-                    let y = center_y - waveform.0[idx] * scale_y;
-                    builder.line_to(maolan_baseview::iced::Point::new(x, y));
-                    x += step.max(1.0);
-                }
-            });
-            frame.stroke(
-                &path,
-                Stroke::default()
-                    .with_color(maolan_baseview::iced::Color::from_rgb(0.2, 0.85, 0.4))
-                    .with_width(1.5),
-            );
-        } else {
-            let line = Path::line(
-                maolan_baseview::iced::Point::new(0.0, height / 2.0),
-                maolan_baseview::iced::Point::new(width, height / 2.0),
-            );
-            frame.stroke(
-                &line,
-                Stroke::default()
-                    .with_color(maolan_baseview::iced::Color::from_rgb(0.25, 0.25, 0.28))
-                    .with_width(1.0),
-            );
-        }
-
-        frame.fill_text(Text {
-            content: "Maolan Kick".to_string(),
-            position: maolan_baseview::iced::Point::new(8.0, 14.0),
-            color: maolan_baseview::iced::Color::from_rgb(0.7, 0.7, 0.7),
-            size: 14.0.into(),
-            font: maolan_baseview::iced::Font::DEFAULT,
-            ..Text::default()
-        });
-
-        vec![frame.into_geometry()]
     }
 }
 
@@ -238,23 +142,6 @@ impl EnvelopeKind {
             10 => Self::MasterDistVol,
             11 => Self::LayerDistVol,
             _ => Self::GlobalAmp,
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::GlobalAmp => "Global Amp",
-            Self::OscAmp => "Osc Amp",
-            Self::OscPitch => "Osc Pitch",
-            Self::OscFreq => "Osc Freq",
-            Self::OscFilterCutoff => "Osc Filter Cutoff",
-            Self::OscFilterQ => "Osc Filter Q",
-            Self::OscDistDrive => "Osc Dist Drive",
-            Self::OscPitchShift => "Osc Pitch Shift",
-            Self::NoiseAmp => "Noise Amp",
-            Self::NoiseDensity => "Noise Density",
-            Self::MasterDistVol => "Master Dist Vol",
-            Self::LayerDistVol => "Layer Dist Vol",
         }
     }
 }
@@ -354,204 +241,21 @@ fn selected_env(
     let osc = osc.min(2);
     match kind {
         EnvelopeKind::GlobalAmp => &mut inst.global_amp_env,
-        EnvelopeKind::OscAmp => &mut inst.layers[layer].oscillators[osc].amp_env,
-        EnvelopeKind::OscPitch => &mut inst.layers[layer].oscillators[osc].pitch_env,
-        EnvelopeKind::OscFreq => &mut inst.layers[layer].oscillators[osc].freq_env,
-        EnvelopeKind::OscFilterCutoff => &mut inst.layers[layer].oscillators[osc].filter_cutoff_env,
-        EnvelopeKind::OscFilterQ => &mut inst.layers[layer].oscillators[osc].filter_q_env,
-        EnvelopeKind::OscDistDrive => &mut inst.layers[layer].oscillators[osc].distortion_drive_env,
-        EnvelopeKind::OscPitchShift => &mut inst.layers[layer].oscillators[osc].pitch_shift_env,
+        EnvelopeKind::OscAmp => inst.layers[layer].oscillators[osc].amp_env_mut(),
+        EnvelopeKind::OscPitch => inst.layers[layer].oscillators[osc].pitch_env_mut(),
+        EnvelopeKind::OscFreq => inst.layers[layer].oscillators[osc].freq_env_mut(),
+        EnvelopeKind::OscFilterCutoff => {
+            inst.layers[layer].oscillators[osc].filter_cutoff_env_mut()
+        }
+        EnvelopeKind::OscFilterQ => inst.layers[layer].oscillators[osc].filter_q_env_mut(),
+        EnvelopeKind::OscDistDrive => {
+            inst.layers[layer].oscillators[osc].distortion_drive_env_mut()
+        }
+        EnvelopeKind::OscPitchShift => inst.layers[layer].oscillators[osc].pitch_shift_env_mut(),
         EnvelopeKind::NoiseAmp => &mut inst.layers[layer].noise.amp_env,
         EnvelopeKind::NoiseDensity => &mut inst.layers[layer].noise.density_env,
         EnvelopeKind::MasterDistVol => &mut inst.master_distortion.volume_env,
         EnvelopeKind::LayerDistVol => &mut inst.layers[layer].distortion.volume_env,
-    }
-}
-
-fn envelope_param_types(
-    kind: EnvelopeKind,
-    _layer: u8,
-    osc: u8,
-) -> Option<(ParamType, ParamType, ParamType, ParamType)> {
-    let osc = osc.min(2);
-    match kind {
-        EnvelopeKind::GlobalAmp => Some((
-            ParamType::MasterGlobalAmpEnvAttack,
-            ParamType::MasterGlobalAmpEnvDecay,
-            ParamType::MasterGlobalAmpEnvSustain,
-            ParamType::MasterGlobalAmpEnvRelease,
-        )),
-        EnvelopeKind::OscAmp => match osc {
-            0 => Some((
-                ParamType::Osc0AmpEnvAttack,
-                ParamType::Osc0AmpEnvDecay,
-                ParamType::Osc0AmpEnvSustain,
-                ParamType::Osc0AmpEnvRelease,
-            )),
-            1 => Some((
-                ParamType::Osc1AmpEnvAttack,
-                ParamType::Osc1AmpEnvDecay,
-                ParamType::Osc1AmpEnvSustain,
-                ParamType::Osc1AmpEnvRelease,
-            )),
-            2 => Some((
-                ParamType::Osc2AmpEnvAttack,
-                ParamType::Osc2AmpEnvDecay,
-                ParamType::Osc2AmpEnvSustain,
-                ParamType::Osc2AmpEnvRelease,
-            )),
-            _ => None,
-        },
-        EnvelopeKind::OscPitch => match osc {
-            0 => Some((
-                ParamType::Osc0PitchShiftEnvAttack,
-                ParamType::Osc0PitchShiftEnvDecay,
-                ParamType::Osc0PitchShiftEnvSustain,
-                ParamType::Osc0PitchShiftEnvRelease,
-            )),
-            1 => Some((
-                ParamType::Osc1PitchShiftEnvAttack,
-                ParamType::Osc1PitchShiftEnvDecay,
-                ParamType::Osc1PitchShiftEnvSustain,
-                ParamType::Osc1PitchShiftEnvRelease,
-            )),
-            2 => Some((
-                ParamType::Osc2PitchShiftEnvAttack,
-                ParamType::Osc2PitchShiftEnvDecay,
-                ParamType::Osc2PitchShiftEnvSustain,
-                ParamType::Osc2PitchShiftEnvRelease,
-            )),
-            _ => None,
-        },
-        EnvelopeKind::OscFreq => match osc {
-            0 => Some((
-                ParamType::Osc0FreqEnvAttack,
-                ParamType::Osc0FreqEnvDecay,
-                ParamType::Osc0FreqEnvSustain,
-                ParamType::Osc0FreqEnvRelease,
-            )),
-            1 => Some((
-                ParamType::Osc1FreqEnvAttack,
-                ParamType::Osc1FreqEnvDecay,
-                ParamType::Osc1FreqEnvSustain,
-                ParamType::Osc1FreqEnvRelease,
-            )),
-            2 => Some((
-                ParamType::Osc2FreqEnvAttack,
-                ParamType::Osc2FreqEnvDecay,
-                ParamType::Osc2FreqEnvSustain,
-                ParamType::Osc2FreqEnvRelease,
-            )),
-            _ => None,
-        },
-        EnvelopeKind::OscFilterCutoff => match osc {
-            0 => Some((
-                ParamType::Osc0FilterCutoffEnvAttack,
-                ParamType::Osc0FilterCutoffEnvDecay,
-                ParamType::Osc0FilterCutoffEnvSustain,
-                ParamType::Osc0FilterCutoffEnvRelease,
-            )),
-            1 => Some((
-                ParamType::Osc1FilterCutoffEnvAttack,
-                ParamType::Osc1FilterCutoffEnvDecay,
-                ParamType::Osc1FilterCutoffEnvSustain,
-                ParamType::Osc1FilterCutoffEnvRelease,
-            )),
-            2 => Some((
-                ParamType::Osc2FilterCutoffEnvAttack,
-                ParamType::Osc2FilterCutoffEnvDecay,
-                ParamType::Osc2FilterCutoffEnvSustain,
-                ParamType::Osc2FilterCutoffEnvRelease,
-            )),
-            _ => None,
-        },
-        EnvelopeKind::OscFilterQ => match osc {
-            0 => Some((
-                ParamType::Osc0FilterQEnvAttack,
-                ParamType::Osc0FilterQEnvDecay,
-                ParamType::Osc0FilterQEnvSustain,
-                ParamType::Osc0FilterQEnvRelease,
-            )),
-            1 => Some((
-                ParamType::Osc1FilterQEnvAttack,
-                ParamType::Osc1FilterQEnvDecay,
-                ParamType::Osc1FilterQEnvSustain,
-                ParamType::Osc1FilterQEnvRelease,
-            )),
-            2 => Some((
-                ParamType::Osc2FilterQEnvAttack,
-                ParamType::Osc2FilterQEnvDecay,
-                ParamType::Osc2FilterQEnvSustain,
-                ParamType::Osc2FilterQEnvRelease,
-            )),
-            _ => None,
-        },
-        EnvelopeKind::OscDistDrive => match osc {
-            0 => Some((
-                ParamType::Osc0DistortionDriveEnvAttack,
-                ParamType::Osc0DistortionDriveEnvDecay,
-                ParamType::Osc0DistortionDriveEnvSustain,
-                ParamType::Osc0DistortionDriveEnvRelease,
-            )),
-            1 => Some((
-                ParamType::Osc1DistortionDriveEnvAttack,
-                ParamType::Osc1DistortionDriveEnvDecay,
-                ParamType::Osc1DistortionDriveEnvSustain,
-                ParamType::Osc1DistortionDriveEnvRelease,
-            )),
-            2 => Some((
-                ParamType::Osc2DistortionDriveEnvAttack,
-                ParamType::Osc2DistortionDriveEnvDecay,
-                ParamType::Osc2DistortionDriveEnvSustain,
-                ParamType::Osc2DistortionDriveEnvRelease,
-            )),
-            _ => None,
-        },
-        EnvelopeKind::NoiseAmp => Some((
-            ParamType::NoiseAmpEnvAttack,
-            ParamType::NoiseAmpEnvDecay,
-            ParamType::NoiseAmpEnvSustain,
-            ParamType::NoiseAmpEnvRelease,
-        )),
-        EnvelopeKind::NoiseDensity => Some((
-            ParamType::NoiseDensityEnvAttack,
-            ParamType::NoiseDensityEnvDecay,
-            ParamType::NoiseDensityEnvSustain,
-            ParamType::NoiseDensityEnvRelease,
-        )),
-        EnvelopeKind::MasterDistVol => Some((
-            ParamType::MasterDistortionVolEnvAttack,
-            ParamType::MasterDistortionVolEnvDecay,
-            ParamType::MasterDistortionVolEnvSustain,
-            ParamType::MasterDistortionVolEnvRelease,
-        )),
-        EnvelopeKind::OscPitchShift => match osc {
-            0 => Some((
-                ParamType::Osc0PitchShiftEnvAttack,
-                ParamType::Osc0PitchShiftEnvDecay,
-                ParamType::Osc0PitchShiftEnvSustain,
-                ParamType::Osc0PitchShiftEnvRelease,
-            )),
-            1 => Some((
-                ParamType::Osc1PitchShiftEnvAttack,
-                ParamType::Osc1PitchShiftEnvDecay,
-                ParamType::Osc1PitchShiftEnvSustain,
-                ParamType::Osc1PitchShiftEnvRelease,
-            )),
-            2 => Some((
-                ParamType::Osc2PitchShiftEnvAttack,
-                ParamType::Osc2PitchShiftEnvDecay,
-                ParamType::Osc2PitchShiftEnvSustain,
-                ParamType::Osc2PitchShiftEnvRelease,
-            )),
-            _ => None,
-        },
-        EnvelopeKind::LayerDistVol => Some((
-            ParamType::Layer0DistortionVolEnvAttack,
-            ParamType::Layer0DistortionVolEnvDecay,
-            ParamType::Layer0DistortionVolEnvSustain,
-            ParamType::Layer0DistortionVolEnvRelease,
-        )),
     }
 }
 
@@ -970,10 +674,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .zip(right.iter())
                     .map(|(l, r)| (l + r) * 0.5)
                     .collect();
-                osc.sample_buffer = Some(crate::kick::dsp::oscillator::SampleBuffer::new(
-                    samples, sr as f32,
-                ));
-                osc.waveform = crate::kick::dsp::oscillator::Waveform::Sample;
+                crate::kick::dsp::oscillator::set_sample_buffer(
+                    osc,
+                    Some(crate::kick::dsp::oscillator::SampleBuffer::new(
+                        samples, sr as f32,
+                    )),
+                );
                 state.shared.mark_kit_changed();
             }
         }
@@ -1057,13 +763,7 @@ fn view(state: &State) -> Element<'_, Message> {
     };
     let ap = |ty: ParamType| ParamId::new(active_inst as u8, ty);
 
-    let waveform = canvas(WaveformState {
-        shared: state.shared.clone(),
-    })
-    .width(Length::Fill)
-    .height(Length::Fixed(140.0));
-
-    let envelope_editor = if state.show_envelope_editor {
+    let envelope_editor = if state.show_envelope_editor && state.main_tab == 0 {
         let kit = state.shared.kit.lock();
         let env_kind = EnvelopeKind::from_u8(state.envelope_kind);
         let mut inst = kit.instruments[active_inst].clone();
@@ -1088,7 +788,16 @@ fn view(state: &State) -> Element<'_, Message> {
         .height(Length::Fixed(120.0))
         .width(Length::Fixed(48.0));
 
-    let top_row = row![waveform, meter].spacing(8).align_y(Alignment::Center);
+    let top_display: Element<'_, Message> = if let Some(editor) = envelope_editor {
+        let editor_el: Element<'_, EnvelopeEditorMsg> = editor.into();
+        editor_el.map(Message::EnvelopeEdit)
+    } else {
+        column![].spacing(0).into()
+    };
+
+    let top_row = row![top_display, meter]
+        .spacing(8)
+        .align_y(Alignment::Start);
 
     let inst_options: Vec<InstOption> = {
         let kit = state.shared.kit.lock();
@@ -1309,68 +1018,6 @@ fn view(state: &State) -> Element<'_, Message> {
                 p(ap(ParamType::Layer0Amp)),
                 "",
                 0.01
-            ),
-            knob(
-                "FilterType",
-                ap(ParamType::Layer0FilterType),
-                p(ap(ParamType::Layer0FilterType)),
-                "",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "Cutoff",
-                ap(ParamType::Layer0FilterCutoff),
-                p(ap(ParamType::Layer0FilterCutoff)),
-                "Hz",
-                1.0
-            ),
-            knob(
-                "Q",
-                ap(ParamType::Layer0FilterQ),
-                p(ap(ParamType::Layer0FilterQ)),
-                "",
-                0.01
-            ),
-            knob(
-                "DistType",
-                ap(ParamType::Layer0DistortionType),
-                p(ap(ParamType::Layer0DistortionType)),
-                "",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "DistDrive",
-                ap(ParamType::Layer0DistortionDrive),
-                p(ap(ParamType::Layer0DistortionDrive)),
-                "",
-                0.01
-            ),
-            knob(
-                "FM0->0",
-                ap(ParamType::Layer0FmRouting0),
-                p(ap(ParamType::Layer0FmRouting0)),
-                "",
-                1.0
-            ),
-            knob(
-                "FM0->1",
-                ap(ParamType::Layer0FmRouting1),
-                p(ap(ParamType::Layer0FmRouting1)),
-                "",
-                1.0
-            ),
-            knob(
-                "FM0->2",
-                ap(ParamType::Layer0FmRouting2),
-                p(ap(ParamType::Layer0FmRouting2)),
-                "",
-                1.0
             ),
         ]
         .spacing(6),
@@ -2351,38 +1998,6 @@ fn view(state: &State) -> Element<'_, Message> {
     ]
     .spacing(6);
 
-    let env_kind = EnvelopeKind::from_u8(state.envelope_kind);
-    let envelope_target_section = column![
-        section_header("ENVELOPE TARGET"),
-        row![
-            maolan_baseview::iced::widget::text(env_kind.label()),
-            maolan_baseview::iced::widget::slider(0.0..=11.0, state.envelope_kind as f32, |v| {
-                Message::EnvelopeKindChanged(v.round().clamp(0.0, 11.0) as u8)
-            })
-            .step(1.0_f32)
-            .width(Length::Fixed(170.0)),
-        ]
-        .spacing(6),
-        row![
-            maolan_baseview::iced::widget::text("Layer"),
-            maolan_baseview::iced::widget::slider(0.0..=2.0, state.envelope_layer as f32, |v| {
-                Message::EnvelopeLayerChanged(v.round().clamp(0.0, 2.0) as u8)
-            })
-            .step(1.0_f32)
-            .width(Length::Fixed(90.0)),
-            maolan_baseview::iced::widget::text(format!("{}", state.envelope_layer + 1)),
-            maolan_baseview::iced::widget::text("Osc"),
-            maolan_baseview::iced::widget::slider(0.0..=2.0, state.envelope_osc as f32, |v| {
-                Message::EnvelopeOscChanged(v.round().clamp(0.0, 2.0) as u8)
-            })
-            .step(1.0_f32)
-            .width(Length::Fixed(90.0)),
-            maolan_baseview::iced::widget::text(format!("{}", state.envelope_osc + 1)),
-        ]
-        .spacing(6),
-    ]
-    .spacing(6);
-
     let export_section = column![
         section_header("EXPORT"),
         row![
@@ -2479,24 +2094,6 @@ fn view(state: &State) -> Element<'_, Message> {
             _ => osc0,
         };
 
-        let env_adsr: Element<'_, Message> = if let Some((a_ty, d_ty, s_ty, r_ty)) =
-            envelope_param_types(
-                EnvelopeKind::from_u8(state.envelope_kind),
-                state.envelope_layer,
-                state.envelope_osc,
-            ) {
-            row![
-                knob("Attack", ap(a_ty), p(ap(a_ty)), "ms", 0.1),
-                knob("Decay", ap(d_ty), p(ap(d_ty)), "ms", 1.0),
-                knob("Sustain", ap(s_ty), p(ap(s_ty)), "", 0.01),
-                knob("Release", ap(r_ty), p(ap(r_ty)), "ms", 1.0),
-            ]
-            .spacing(6)
-            .into()
-        } else {
-            text("No envelope").size(11).into()
-        };
-
         let synth_left = column![
             layer_tabs,
             active_layer,
@@ -2507,18 +2104,9 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(8)
         .align_x(Alignment::Start);
 
-        let synth_right = column![
-            master_section,
-            envelope_target_section,
-            section_header("ENVELOPE"),
-            env_adsr,
-        ]
-        .spacing(8)
-        .align_x(Alignment::Start);
-
-        row![synth_left, synth_right]
+        column![synth_left, master_section]
             .spacing(8)
-            .align_y(Alignment::Start)
+            .align_x(Alignment::Start)
             .into()
     } else {
         let setup_left = column![kit_section, sample_section]
@@ -2533,20 +2121,9 @@ fn view(state: &State) -> Element<'_, Message> {
             .into()
     };
 
-    let mut content = column![top_row, inst_selector, main_tab_bar, controls]
+    let content = column![top_row, inst_selector, main_tab_bar, controls]
         .spacing(8)
         .align_x(Alignment::Start);
-    if state.main_tab == 0
-        && let Some(editor) = envelope_editor
-    {
-        let editor_el: Element<'_, EnvelopeEditorMsg> = editor.into();
-        let mapped: Element<'_, Message> = editor_el.map(Message::EnvelopeEdit);
-        content = content.push(
-            maolan_baseview::iced::widget::container(mapped)
-                .width(Length::Fill)
-                .height(Length::Fixed(160.0)),
-        );
-    }
 
     container(content)
         .padding(10)
@@ -2573,29 +2150,26 @@ fn knob(
     step: f32,
 ) -> Element<'static, Message> {
     let def = param_type_def(id.param_type());
-    let slider = arch_slider(def.min as f32..=def.max as f32, value, move |v| {
-        Message::SetParam(id, v)
-    })
-    .step(step)
-    .double_click_reset(def.default as f32)
-    .on_release(Message::ReleaseParam(id))
-    .fill_from_start()
-    .width(Length::Fixed(52.0))
-    .height(Length::Fixed(52.0));
-
     let value_text = if units.is_empty() {
         format!("{value:.2}")
+    } else if units == "Hz" {
+        format!("{value:.0} {units}")
     } else {
         format!("{value:.1} {units}")
     };
 
-    container(
-        column![text(label).size(9), slider, text(value_text).size(8)]
-            .spacing(1)
-            .align_x(Alignment::Center),
+    small_knob(
+        SmallKnob {
+            label: label.to_string(),
+            value,
+            range: def.min as f32..=def.max as f32,
+            default: def.default as f32,
+            step,
+            value_text,
+        },
+        move |v| Message::SetParam(id, v),
+        Message::ReleaseParam(id),
     )
-    .width(Length::Fixed(60.0))
-    .into()
 }
 
 fn checkbox_param(label: &'static str, id: ParamId, value: bool) -> Element<'static, Message> {
@@ -2609,7 +2183,7 @@ fn checkbox_param(label: &'static str, id: ParamId, value: bool) -> Element<'sta
         .spacing(1)
         .align_x(Alignment::Center),
     )
-    .width(Length::Fixed(60.0))
+    .width(Length::Fixed(50.0))
     .into()
 }
 

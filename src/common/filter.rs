@@ -256,11 +256,20 @@ pub struct SvfFilter {
 
 impl SvfFilter {
     pub fn new(sample_rate: f32) -> Self {
-        Self {
+        Self::new_with_params(sample_rate, FilterType::Lowpass, 20000.0, 0.7)
+    }
+
+    pub fn new_with_params(
+        sample_rate: f32,
+        filter_type: FilterType,
+        cutoff_hz: f32,
+        resonance: f32,
+    ) -> Self {
+        let mut f = Self {
             sample_rate,
-            filter_type: FilterType::Lowpass,
-            cutoff_hz: 20000.0,
-            resonance: 0.7,
+            filter_type,
+            cutoff_hz,
+            resonance,
             gain_db: 0.0,
             subtype: FilterSubtype::Clean,
             drive: 0.0,
@@ -272,7 +281,9 @@ impl SvfFilter {
             k: 0.0,
             dg: 0.0,
             dk: 0.0,
-        }
+        };
+        f.prepare_block(cutoff_hz, resonance, 1);
+        f
     }
 
     pub fn set_sample_rate(&mut self, sample_rate: f32) {
@@ -354,6 +365,20 @@ impl SvfFilter {
 
     pub fn process_block(&mut self, block: &mut [f32]) {
         for sample in block.iter_mut() {
+            *sample = self.process(*sample);
+        }
+    }
+
+    pub fn process_block_modulated(
+        &mut self,
+        block: &mut [f32],
+        cutoff_env: &[f32],
+        q_env: &[f32],
+    ) {
+        for (i, sample) in block.iter_mut().enumerate() {
+            let cutoff = cutoff_env.get(i).copied().unwrap_or(1.0) * self.cutoff_hz;
+            let resonance = q_env.get(i).copied().unwrap_or(1.0) * self.resonance;
+            self.prepare_block(cutoff, resonance, 1);
             *sample = self.process(*sample);
         }
     }

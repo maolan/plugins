@@ -13,6 +13,7 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 
 const OSC1_ONLY_BYPASS: bool = false;
+const NOTE_ON_DECLICK_SAMPLES: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OscPhaseMode {
@@ -1056,6 +1057,7 @@ pub struct Voice {
     random_value: f32,
     alternate_sign: f32,
     note_counter: usize,
+    note_on_fade_counter: usize,
 
     drift_phase: [f32; 3],
     drift_target: [f32; 3],
@@ -1128,6 +1130,7 @@ impl Voice {
             random_value: random::<f32>() * 2.0 - 1.0,
             alternate_sign: 1.0,
             note_counter: 0,
+            note_on_fade_counter: 0,
             drift_phase: [0.0; 3],
             drift_target: [0.0; 3],
             drift_smooth: [0.0; 3],
@@ -2188,6 +2191,7 @@ impl Voice {
         } else {
             -1.0
         };
+        self.note_on_fade_counter = NOTE_ON_DECLICK_SAMPLES;
     }
 
     pub fn release(&mut self) {
@@ -3505,8 +3509,15 @@ impl Voice {
             let vca_level = self.params.vca_level.clamp(0.0, 2.0);
             let vel_sense = self.params.vca_velsense.clamp(0.0, 1.0);
             let effective_vel = 1.0 - vel_sense + vel_sense * self.velocity;
-            char_l *= self.amp_eg_output * effective_vel * vol * vca_level;
-            char_r *= self.amp_eg_output * effective_vel * vol * vca_level;
+            let note_on_fade = if self.note_on_fade_counter > 0 {
+                let fade = 1.0 - self.note_on_fade_counter as f32 / NOTE_ON_DECLICK_SAMPLES as f32;
+                self.note_on_fade_counter -= 1;
+                fade
+            } else {
+                1.0
+            };
+            char_l *= self.amp_eg_output * effective_vel * vol * vca_level * note_on_fade;
+            char_r *= self.amp_eg_output * effective_vel * vol * vca_level * note_on_fade;
 
             let pan = (self.params.pan + mods.output_pan).clamp(-1.0, 1.0);
             let width = (self.params.width + mods.output_width).clamp(-1.0, 1.0);

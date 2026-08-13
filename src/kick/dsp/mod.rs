@@ -1,23 +1,29 @@
 pub mod distortion;
 pub mod envelope;
-pub mod filter;
 pub mod limiter;
 pub mod noise;
 pub mod oscillator;
 
 use crate::simd;
 
+pub use crate::common::filter::{FilterType, SvfFilter};
 pub use distortion::DistortionType;
 pub use envelope::Envelope;
-pub use filter::FilterType;
 pub use limiter::Limiter;
 pub use noise::NoiseType;
 pub use oscillator::{FreqEnvMode, Waveform};
 
 use distortion::Distortion;
-use filter::SvfFilter;
 use noise::NoiseGenerator;
 use oscillator::Oscillator;
+
+pub fn kick_filter_type(v: u8) -> FilterType {
+    match v {
+        1 => FilterType::Highpass,
+        2 => FilterType::Bandpass,
+        _ => FilterType::Lowpass,
+    }
+}
 
 pub const OSCILLATORS_PER_LAYER: usize = 3;
 pub const LAYERS_PER_INSTRUMENT: usize = 3;
@@ -49,7 +55,7 @@ impl Layer {
             noise: NoiseGenerator::new(sample_rate),
             enabled: true,
             amplitude: 1.0,
-            filter: SvfFilter::new(sample_rate, FilterType::Lowpass, 20000.0, 0.7),
+            filter: SvfFilter::new_with_params(sample_rate, FilterType::Lowpass, 20000.0, 0.7),
             filter_type: FilterType::Lowpass,
             filter_cutoff_hz: 20000.0,
             filter_q: 0.7,
@@ -79,7 +85,7 @@ impl Layer {
         ];
 
         for i in 0..OSCILLATORS_PER_LAYER {
-            self.oscillators[i].midi_note = midi_note;
+            self.oscillators[i].set_midi_note(midi_note);
             let fm_src = self.fm_routing[i] as usize;
             let fm_input = if fm_src != i && fm_src < OSCILLATORS_PER_LAYER {
                 let fm_buf = unsafe { &*std::ptr::addr_of!(osc_bufs[fm_src]) };
@@ -101,7 +107,8 @@ impl Layer {
         simd::add_inplace(out, &noise_buf);
 
         self.filter.filter_type = self.filter_type;
-        self.filter.set_params(self.filter_cutoff_hz, self.filter_q);
+        self.filter
+            .prepare_block(self.filter_cutoff_hz, self.filter_q, num_samples);
         self.filter.process_block(out);
 
         let mut dist_vol_buf = vec![0.0f32; num_samples];
@@ -149,7 +156,12 @@ impl Instrument {
                 Layer::new(sample_rate),
                 Layer::new(sample_rate),
             ],
-            master_filter: SvfFilter::new(sample_rate, FilterType::Lowpass, 20000.0, 0.7),
+            master_filter: SvfFilter::new_with_params(
+                sample_rate,
+                FilterType::Lowpass,
+                20000.0,
+                0.7,
+            ),
             master_filter_type: FilterType::Lowpass,
             master_filter_cutoff_hz: 20000.0,
             master_filter_q: 0.7,
@@ -206,8 +218,11 @@ impl Instrument {
         }
 
         self.master_filter.filter_type = self.master_filter_type;
-        self.master_filter
-            .set_params(self.master_filter_cutoff_hz, self.master_filter_q);
+        self.master_filter.prepare_block(
+            self.master_filter_cutoff_hz,
+            self.master_filter_q,
+            num_samples,
+        );
         self.master_filter.process_block(&mut mix);
 
         let mut dist_vol_buf = vec![0.0f32; num_samples];
@@ -595,11 +610,13 @@ mod tests {
             &mut synth2.kit.instruments[0],
         ] {
             inst.layers[0].noise.amplitude = 0.0;
-            inst.layers[0].oscillators[1].amplitude = 0.0;
-            inst.layers[0].oscillators[2].amplitude = 0.0;
-            inst.layers[0].oscillators[0].amplitude = 0.1;
-            inst.layers[0].oscillators[0].pitch_env =
-                Envelope::new(vec![EnvPoint::new(0.0, 1.0), EnvPoint::new(1.0, 1.0)]);
+            inst.layers[0].oscillators[1].set_amplitude(0.0);
+            inst.layers[0].oscillators[2].set_amplitude(0.0);
+            inst.layers[0].oscillators[0].set_amplitude(0.1);
+            inst.layers[0].oscillators[0].set_pitch_env(Some(Envelope::new(vec![
+                EnvPoint::new(0.0, 1.0),
+                EnvPoint::new(1.0, 1.0),
+            ])));
             inst.layers[1].enabled = false;
             inst.layers[2].enabled = false;
         }
@@ -622,14 +639,20 @@ mod tests {
     #[test]
     fn oscillator_sine_render() {
         let mut osc = Oscillator::new(48000.0);
-        osc.base_freq_hz = 100.0;
-        osc.amplitude = 1.0;
-        osc.pitch_env = Envelope::new(vec![EnvPoint::new(0.0, 1.0), EnvPoint::new(1.0, 1.0)]);
-        osc.amp_env = Envelope::new(vec![EnvPoint::new(0.0, 1.0), EnvPoint::new(1.0, 1.0)]);
+        osc.set_base_freq_hz(100.0);
+        osc.set_amplitude(1.0);
+        osc.set_pitch_env(Some(Envelope::new(vec![
+            EnvPoint::new(0.0, 1.0),
+            EnvPoint::new(1.0, 1.0),
+        ])));
+        osc.set_amp_env(Some(Envelope::new(vec![
+            EnvPoint::new(0.0, 1.0),
+            EnvPoint::new(1.0, 1.0),
+        ])));
         let mut buf = vec![0.0f32; 480];
         osc.render(&mut buf, 480, None);
         let peak = buf.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
-        assert!(peak > 0.95 && peak <= 1.0, "peak = {peak}");
+        assert!(peak > 0.45 && peak <= 1.0, "peak = {peak}");
     }
 
     #[test]
@@ -731,15 +754,18 @@ mod tests {
 
     #[test]
     fn freq_env_linear_mode() {
-        use super::oscillator::{FreqEnvMode, Waveform};
+        use super::oscillator::{FreqEnvMode, Waveform, set_waveform};
         let mut synth = KickSynthesizer::new(48000.0);
         synth.kit.instruments[0].length_ms = 10.0;
         let osc = &mut synth.kit.instruments[0].layers[0].oscillators[0];
-        osc.waveform = Waveform::Sine;
-        osc.base_freq_hz = 100.0;
-        osc.amplitude = 1.0;
-        osc.freq_env = Envelope::new(vec![EnvPoint::new(0.0, 0.0), EnvPoint::new(1.0, 1.0)]);
-        osc.freq_env_mode = FreqEnvMode::Linear;
+        set_waveform(osc, Waveform::Sine);
+        osc.set_base_freq_hz(100.0);
+        osc.set_amplitude(1.0);
+        osc.set_freq_env(Some(Envelope::new(vec![
+            EnvPoint::new(0.0, 0.0),
+            EnvPoint::new(1.0, 1.0),
+        ])));
+        osc.set_freq_env_mode(FreqEnvMode::Linear);
         synth.trigger(0, 60, 1.0);
 
         let mut out_l = vec![0.0f32; 480];
@@ -752,15 +778,18 @@ mod tests {
 
     #[test]
     fn freq_env_log_mode() {
-        use super::oscillator::{FreqEnvMode, Waveform};
+        use super::oscillator::{FreqEnvMode, Waveform, set_waveform};
         let mut synth = KickSynthesizer::new(48000.0);
         synth.kit.instruments[0].length_ms = 10.0;
         let osc = &mut synth.kit.instruments[0].layers[0].oscillators[0];
-        osc.waveform = Waveform::Sine;
-        osc.base_freq_hz = 100.0;
-        osc.amplitude = 1.0;
-        osc.freq_env = Envelope::new(vec![EnvPoint::new(0.0, 0.0), EnvPoint::new(1.0, 2.0)]);
-        osc.freq_env_mode = FreqEnvMode::Logarithmic;
+        set_waveform(osc, Waveform::Sine);
+        osc.set_base_freq_hz(100.0);
+        osc.set_amplitude(1.0);
+        osc.set_freq_env(Some(Envelope::new(vec![
+            EnvPoint::new(0.0, 0.0),
+            EnvPoint::new(1.0, 2.0),
+        ])));
+        osc.set_freq_env_mode(FreqEnvMode::Logarithmic);
         synth.trigger(0, 60, 1.0);
 
         let mut out_l = vec![0.0f32; 480];

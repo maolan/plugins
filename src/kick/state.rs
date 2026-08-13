@@ -497,7 +497,7 @@ fn default_pitch_env() -> SerdeEnvelope {
     }
 }
 
-fn default_amp_env() -> SerdeEnvelope {
+pub fn default_amp_env() -> SerdeEnvelope {
     SerdeEnvelope {
         points: vec![
             SerdeEnvPoint {
@@ -528,7 +528,7 @@ fn default_amp_env() -> SerdeEnvelope {
     }
 }
 
-fn default_flat_env() -> SerdeEnvelope {
+pub fn default_flat_env() -> SerdeEnvelope {
     SerdeEnvelope {
         points: vec![
             SerdeEnvPoint {

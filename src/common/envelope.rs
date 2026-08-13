@@ -358,3 +358,200 @@ impl AdsrEnvelope {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EnvPoint {
+    pub t: f32,
+    pub v: f32,
+    pub cp_t: f32,
+    pub cp_v: f32,
+}
+
+impl EnvPoint {
+    pub const fn new(t: f32, v: f32) -> Self {
+        Self {
+            t,
+            v,
+            cp_t: 0.33,
+            cp_v: 0.0,
+        }
+    }
+
+    pub const fn with_control(t: f32, v: f32, cp_t: f32, cp_v: f32) -> Self {
+        Self { t, v, cp_t, cp_v }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BezierEnvelope {
+    points: Vec<EnvPoint>,
+}
+
+impl Default for BezierEnvelope {
+    fn default() -> Self {
+        Self {
+            points: vec![EnvPoint::new(0.0, 1.0), EnvPoint::new(1.0, 0.0)],
+        }
+    }
+}
+
+impl BezierEnvelope {
+    pub fn new(points: Vec<EnvPoint>) -> Self {
+        let mut env = Self { points };
+        env.sort_and_dedup();
+        env
+    }
+
+    pub fn with_default_adsr(attack: f32, decay: f32, sustain: f32, release: f32) -> Self {
+        let total = attack + decay + release;
+        if total <= 0.0 {
+            return Self::default();
+        }
+        let mut points = vec![
+            EnvPoint::new(0.0, 0.0),
+            EnvPoint::new(attack / total, 1.0),
+            EnvPoint::new((attack + decay) / total, sustain.clamp(0.0, 1.0)),
+            EnvPoint::new(1.0, 0.0),
+        ];
+        if attack <= 0.0 {
+            points.remove(0);
+        }
+        Self::new(points)
+    }
+
+    pub fn flat(value: f32) -> Self {
+        Self::new(vec![EnvPoint::new(0.0, value), EnvPoint::new(1.0, value)])
+    }
+
+    fn sort_and_dedup(&mut self) {
+        self.points.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap());
+        self.points.dedup_by(|a, b| (a.t - b.t).abs() < 1.0e-6);
+    }
+
+    pub fn value(&self, t: f32) -> f32 {
+        if self.points.is_empty() {
+            return 0.0;
+        }
+        if t <= self.points[0].t {
+            return self.points[0].v;
+        }
+        if t >= self.points.last().unwrap().t {
+            return self.points.last().unwrap().v;
+        }
+        for i in 1..self.points.len() {
+            let p0 = &self.points[i - 1];
+            let p1 = &self.points[i];
+            if t >= p0.t && t <= p1.t {
+                let dt = p1.t - p0.t;
+                if dt < 1.0e-9 {
+                    return p0.v;
+                }
+                let frac = (t - p0.t) / dt;
+                let cp0_v = p0.v + p0.cp_v;
+                let cp1_v = p1.v - p1.cp_v;
+                return cubic_bezier(frac, p0.v, cp0_v, cp1_v, p1.v);
+            }
+        }
+        self.points.last().unwrap().v
+    }
+
+    pub fn fill_buffer(&self, out: &mut [f32], dt_per_sample: f32) {
+        if out.is_empty() {
+            return;
+        }
+
+        if let Some(first) = self.points.first()
+            && self.points.iter().all(|p| (p.v - first.v).abs() < 1.0e-9)
+        {
+            out.fill(first.v);
+            return;
+        }
+
+        if self.points.len() == 1 {
+            out.fill(self.points[0].v);
+            return;
+        }
+
+        let mut seg = 0usize;
+        for (i, s) in out.iter_mut().enumerate() {
+            let t = i as f32 * dt_per_sample;
+
+            while seg + 1 < self.points.len() && t > self.points[seg + 1].t {
+                seg += 1;
+            }
+            *s = self.value_at_segment(t, seg);
+        }
+    }
+
+    #[inline]
+    fn value_at_segment(&self, t: f32, seg: usize) -> f32 {
+        if self.points.is_empty() {
+            return 0.0;
+        }
+        if t <= self.points[0].t {
+            return self.points[0].v;
+        }
+        let last = self.points.len() - 1;
+        if t >= self.points[last].t {
+            return self.points[last].v;
+        }
+        let i = seg.min(last);
+        let p0 = &self.points[i];
+        let p1 = &self.points[(i + 1).min(last)];
+        let dt = p1.t - p0.t;
+        if dt < 1.0e-9 {
+            return p0.v;
+        }
+        let frac = ((t - p0.t) / dt).clamp(0.0, 1.0);
+        let cp0_v = p0.v + p0.cp_v;
+        let cp1_v = p1.v - p1.cp_v;
+        cubic_bezier(frac, p0.v, cp0_v, cp1_v, p1.v)
+    }
+
+    pub fn points(&self) -> &[EnvPoint] {
+        &self.points
+    }
+
+    pub fn points_mut(&mut self) -> &mut Vec<EnvPoint> {
+        &mut self.points
+    }
+}
+
+#[inline]
+fn cubic_bezier(t: f32, p0: f32, p1: f32, p2: f32, p3: f32) -> f32 {
+    let u = 1.0 - t;
+    let u2 = u * u;
+    let t2 = t * t;
+    u2 * u * p0 + 3.0 * u2 * t * p1 + 3.0 * u * t2 * p2 + t2 * t * p3
+}
+
+#[cfg(test)]
+mod bezier_tests {
+    use super::*;
+
+    #[test]
+    fn bezier_envelope_default() {
+        let env = BezierEnvelope::default();
+        assert!((env.value(0.0) - 1.0).abs() < 1.0e-6);
+        assert!((env.value(1.0) - 0.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn bezier_envelope_adsr() {
+        let env = BezierEnvelope::with_default_adsr(10.0, 50.0, 0.5, 40.0);
+        assert!(env.value(0.0).abs() < 1.0e-6);
+        assert!((env.value(10.0 / 100.0) - 1.0).abs() < 1.0e-6);
+        assert!((env.value(60.0 / 100.0) - 0.5).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn bezier_curve() {
+        let env = BezierEnvelope::new(vec![
+            EnvPoint::with_control(0.0, 0.0, 0.33, 0.8),
+            EnvPoint::with_control(1.0, 1.0, 0.33, 0.0),
+        ]);
+        let v = env.value(0.5);
+
+        assert!(v > 0.5, "bezier should curve above linear: {v}");
+    }
+}

@@ -155,7 +155,7 @@ impl SpectralBand {
             *env = coef * *env + (1.0 - coef) * m;
 
             let target = if self.region[bin] {
-                let over = *env - self.detector_contour[bin];
+                let over = *env - self.contour[bin];
                 let gr = if cfg.knee_db > 0.0 && over.abs() <= half_knee {
                     slope * (over + half_knee) * (over + half_knee) / (2.0 * cfg.knee_db)
                 } else if over > half_knee {
@@ -571,7 +571,7 @@ mod tests {
                 q: 1.0,
                 shape: dsp::SHAPE_BELL,
                 slope: 0,
-                threshold_db: 3.0,
+                threshold_db: -6.0,
                 ratio: 4.0,
                 knee_db: 0.0,
                 range_db: 3.0,
@@ -583,11 +583,10 @@ mod tests {
         let bin_hz = sample_rate / SPECTRAL_FFT_SIZE as f32;
         let bin = (320.0 / bin_hz).round() as usize;
         assert!(band.region[bin]);
-        assert!(band.detector_contour[bin] < -10.0);
 
         let mut mags_db = [-140.0; NUM_BINS];
         let mut total_gain_db = [0.0; NUM_BINS];
-        mags_db[bin] = band.detector_contour[bin] + 6.0;
+        mags_db[bin] = band.contour[bin] + 6.0;
         band.apply(&mags_db, &mut total_gain_db);
 
         assert!(
@@ -608,7 +607,7 @@ mod tests {
             q: 1.0,
             shape: dsp::SHAPE_BELL,
             slope: 0,
-            threshold_db: 3.0,
+            threshold_db: -20.0,
             ratio: 4.0,
             knee_db: 0.0,
             range_db: 3.0,

@@ -1,5 +1,5 @@
 use super::envelope::Envelope;
-use super::filter::{FilterType, SvfFilter};
+use crate::common::filter::{FilterType, SvfFilter};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -140,7 +140,7 @@ impl NoiseGenerator {
             noise_type: NoiseType::White,
             amp_env: Envelope::with_default_adsr(0.0, 0.03, 0.0, 0.02),
             density_env: Envelope::with_default_adsr(0.0, 0.03, 1.0, 0.02),
-            filter: SvfFilter::new(sample_rate, FilterType::Lowpass, 8000.0, 0.7),
+            filter: SvfFilter::new_with_params(sample_rate, FilterType::Lowpass, 8000.0, 0.7),
             filter_type: FilterType::Lowpass,
             filter_cutoff_hz: 8000.0,
             filter_q: 0.7,
@@ -180,7 +180,8 @@ impl NoiseGenerator {
         }
 
         self.filter.filter_type = self.filter_type;
-        self.filter.set_params(self.filter_cutoff_hz, self.filter_q);
+        self.filter
+            .prepare_block(self.filter_cutoff_hz, self.filter_q, num_samples);
         self.filter.process_block(out);
     }
 }
