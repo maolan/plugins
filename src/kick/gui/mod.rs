@@ -18,14 +18,17 @@ use maolan_baseview::iced::{
 };
 use maolan_widgets::meters::meters;
 
-use crate::common::ui::{SmallKnob, small_knob};
+use crate::common::ui::{SmallKnob, VerticalSlider, small_knob, vertical_slider};
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 
 mod envelope_editor;
 
 use crate::common::distortion::DistortionType;
 use crate::common::filter::FilterType;
-use crate::kick::dsp::{INSTRUMENTS_PER_KIT, oscillator::Waveform};
+use crate::kick::dsp::{
+    INSTRUMENTS_PER_KIT,
+    oscillator::{Oscillator, Waveform, set_waveform},
+};
 use crate::kick::gui::envelope_editor::{EnvelopeEditor, EnvelopeEditorMsg};
 use crate::kick::params::{ParamId, ParamType, param_type_def};
 use crate::kick::plugin::SharedState;
@@ -91,18 +94,10 @@ pub enum Message {
     AddInstrument,
     RemoveInstrument,
     EnvelopeEdit(EnvelopeEditorMsg),
-    PresetNameChanged(String),
     SavePreset,
-    LoadPreset(String),
-    RefreshPresets,
     EnvelopeKindChanged(u8),
     EnvelopeLayerChanged(u8),
     EnvelopeOscChanged(u8),
-    ExportPathChanged(String),
-    ExportFormatChanged(u8),
-    ExportChannelsChanged(u8),
-    ExportMidiNoteChanged(u8),
-    ExportCurrentInstrument,
     LayerTabChanged(u8),
     OscTabChanged(u8),
     InstrumentNameChanged(String),
@@ -147,16 +142,9 @@ struct State {
     shared: Arc<SharedState>,
     active_gestures: Vec<bool>,
     show_envelope_editor: bool,
-    preset_name_input: String,
     envelope_kind: u8,
     envelope_layer: u8,
     envelope_osc: u8,
-    export_path_input: String,
-    export_format: u8,
-    export_channels: u8,
-    export_midi_note: u8,
-    export_status: String,
-    preset_files: Vec<String>,
     active_layer_tab: u8,
     active_osc_tab: u8,
     instrument_name_input: String,
@@ -164,26 +152,6 @@ struct State {
 
 fn presets_dir() -> Option<std::path::PathBuf> {
     dirs::config_dir().map(|d| d.join("maolan").join("kick").join("presets"))
-}
-
-fn scan_presets() -> Vec<String> {
-    let dir = match presets_dir() {
-        Some(d) => d,
-        None => return Vec::new(),
-    };
-    let mut files = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("json")
-                && let Some(name) = path.file_stem().and_then(|s| s.to_str())
-            {
-                files.push(name.to_string());
-            }
-        }
-    }
-    files.sort();
-    files
 }
 
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
@@ -202,16 +170,9 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             shared,
             active_gestures: vec![false; ParamId::COUNT],
             show_envelope_editor: true,
-            preset_name_input: String::new(),
             envelope_kind: 0,
             envelope_layer: 0,
             envelope_osc: 0,
-            export_path_input: String::new(),
-            export_format: 0,
-            export_channels: 1,
-            export_midi_note: 36,
-            export_status: String::new(),
-            preset_files: scan_presets(),
             active_layer_tab: 0,
             active_osc_tab: 0,
             instrument_name_input,
@@ -498,46 +459,31 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             state.shared.mark_kit_changed();
         }
-        Message::PresetNameChanged(name) => {
-            state.preset_name_input = name;
-        }
         Message::SavePreset => {
             if let Some(dir) = presets_dir() {
                 let _ = std::fs::create_dir_all(&dir);
-                let name = state.preset_name_input.trim();
+                let active_inst = state
+                    .shared
+                    .params
+                    .get(ParamId::new(0, ParamType::ActiveInstrument))
+                    as usize;
+                let kit = state.shared.kit.lock();
+                let name = if active_inst < kit.instruments.len() {
+                    kit.instruments[active_inst].name.trim().to_string()
+                } else {
+                    String::new()
+                };
+                let kit_cfg = crate::kick::plugin::kit_to_config(&kit);
+                drop(kit);
                 if !name.is_empty() {
                     let path = dir.join(format!("{name}.json"));
-                    let kit = state.shared.kit.lock();
-                    let kit_cfg = crate::kick::plugin::kit_to_config(&kit);
-                    drop(kit);
                     let state_obj =
                         crate::kick::state::KitState::from_runtime(&state.shared.params, &kit_cfg);
                     if let Ok(bytes) = state_obj.to_bytes() {
                         let _ = std::fs::write(&path, bytes);
                     }
-                    state.preset_files = scan_presets();
                 }
             }
-        }
-        Message::LoadPreset(name) => {
-            if let Some(dir) = presets_dir() {
-                let path = dir.join(format!("{name}.json"));
-                if let Ok(bytes) = std::fs::read(&path)
-                    && let Ok(kit_state) = crate::kick::state::KitState::from_bytes(&bytes)
-                {
-                    let kit_cfg = kit_state.kit.clone();
-                    kit_state.apply_params(&state.shared.params);
-                    let mut kit = state.shared.kit.lock();
-                    *kit = crate::kick::plugin::config_to_kit(&kit_cfg, state.shared.sample_rate());
-                    state.shared.mark_kit_changed();
-                    drop(kit);
-                    state.shared.sync_output_port_count();
-                    state.shared.request_audio_ports_rescan();
-                }
-            }
-        }
-        Message::RefreshPresets => {
-            state.preset_files = scan_presets();
         }
         Message::EnvelopeKindChanged(kind) => {
             state.envelope_kind = kind.min(11);
@@ -547,92 +493,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::EnvelopeOscChanged(osc) => {
             state.envelope_osc = osc.min(2);
-        }
-        Message::ExportPathChanged(path) => {
-            state.export_path_input = path;
-            state.export_status.clear();
-        }
-        Message::ExportFormatChanged(v) => {
-            state.export_format = v.min(2);
-        }
-        Message::ExportChannelsChanged(v) => {
-            state.export_channels = if v == 0 { 1 } else { 2 };
-        }
-        Message::ExportMidiNoteChanged(v) => {
-            state.export_midi_note = v.clamp(0, 127);
-        }
-        Message::ExportCurrentInstrument => {
-            let path = std::path::Path::new(&state.export_path_input);
-            if state.export_path_input.trim().is_empty() {
-                state.export_status = "Export failed: output path is empty".to_string();
-                return Task::none();
-            }
-            if path.extension().is_none() {
-                state.export_status =
-                    "Export failed: output path must include file extension".to_string();
-                return Task::none();
-            }
-            let Some(parent) = path.parent() else {
-                state.export_status = "Export failed: invalid output path".to_string();
-                return Task::none();
-            };
-            if !parent.exists() {
-                state.export_status = format!(
-                    "Export failed: directory does not exist ({})",
-                    parent.display()
-                );
-                return Task::none();
-            }
-
-            let active_inst = state
-                .shared
-                .params
-                .get(ParamId::new(0, ParamType::ActiveInstrument))
-                as usize;
-            let mut kit = state.shared.kit.lock();
-            if active_inst >= kit.instruments.len() {
-                state.export_status = "Export failed: active instrument out of range".to_string();
-                return Task::none();
-            }
-
-            let inst = &mut kit.instruments[active_inst];
-            let num_samples =
-                ((inst.length_ms.max(1.0) * 0.001) * state.shared.sample_rate()) as usize;
-            let mut left = vec![0.0f32; num_samples];
-            let mut right = vec![0.0f32; num_samples];
-            inst.render(&mut left, &mut right, num_samples, state.export_midi_note);
-
-            let format = match state.export_format {
-                1 => "flac",
-                _ => "wav",
-            };
-            match crate::kick::export::export_audio(
-                path,
-                &left,
-                &right,
-                state.shared.sample_rate() as u32,
-                format,
-                state.export_channels as u16,
-            ) {
-                Ok(_) => {
-                    if format == "wav" {
-                        let sfz = path.with_extension("sfz");
-                        if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-                            let _ =
-                                crate::kick::export::export_sfz(&sfz, name, state.export_midi_note);
-                        }
-                    }
-                    state.export_status = format!(
-                        "Exported {} ({}ch, note {})",
-                        path.display(),
-                        state.export_channels,
-                        state.export_midi_note
-                    );
-                }
-                Err(err) => {
-                    state.export_status = format!("Export failed: {err}");
-                }
-            }
         }
         Message::InstrumentNameChanged(name) => {
             state.instrument_name_input = name.clone();
@@ -651,7 +511,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.active_layer_tab = tab.min(2);
         }
         Message::OscTabChanged(tab) => {
-            state.active_osc_tab = tab.min(3);
+            state.active_osc_tab = tab.min(2);
         }
     }
     Task::none()
@@ -665,6 +525,9 @@ struct InstOption {
 
 impl std::fmt::Display for InstOption {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.idx == u8::MAX {
+            return write!(f, "+");
+        }
         if self.name.is_empty() {
             write!(f, "{}", self.idx + 1)
         } else {
@@ -723,48 +586,101 @@ fn view(state: &State) -> Element<'_, Message> {
         )
         .clone();
         drop(kit);
+        let waveform = preview_waveform(
+            p(ap(ParamType::MasterLength)),
+            p(ap(ParamType::Osc0Freq)),
+            p(ap(ParamType::Osc0Waveform)),
+        );
         Some(
-            canvas(EnvelopeEditor::new(env))
+            canvas(EnvelopeEditor::new(env, waveform))
                 .width(Length::Fill)
-                .height(Length::Fixed(160.0)),
+                .height(Length::Fill),
         )
     } else {
         None
     };
 
-    let meter = container(meters(2, &[peak_db_l, peak_db_r], 120.0))
-        .height(Length::Fixed(120.0))
+    let meter = container(meters(2, &[peak_db_l, peak_db_r], 1.0))
+        .height(Length::Fill)
         .width(Length::Fixed(48.0));
+
+    let gain_id = ap(ParamType::MasterOutputGain);
+    let gain_value = p(gain_id);
+    let gain_def = param_type_def(gain_id.param_type());
+    let gain_slider = vertical_slider(
+        VerticalSlider {
+            value: gain_value,
+            range: gain_def.min as f32..=gain_def.max as f32,
+            default: gain_def.default as f32,
+            step: 0.1,
+            value_text: format!("{gain_value:.1} dB"),
+        },
+        move |v| Message::SetParam(gain_id, v),
+        Message::ReleaseParam(gain_id),
+    );
+    let gain_slider: Element<'_, Message> = container(gain_slider).height(Length::Fill).into();
 
     let top_display: Element<'_, Message> = if let Some(editor) = envelope_editor {
         let editor_el: Element<'_, EnvelopeEditorMsg> = editor.into();
         editor_el.map(Message::EnvelopeEdit)
     } else {
-        column![].spacing(0).into()
+        column![].spacing(0).height(Length::Fill).into()
     };
 
-    let top_row = row![top_display, meter]
+    let meter_gain = row![meter, gain_slider]
+        .spacing(0)
+        .align_y(Alignment::Start)
+        .height(Length::Fill);
+    let top_row = row![top_display, meter_gain]
         .spacing(8)
-        .align_y(Alignment::Start);
+        .align_y(Alignment::Start)
+        .height(Length::Fill);
 
+    let length_id = ap(ParamType::MasterLength);
+    let length_value = p(length_id);
+    let length_def = param_type_def(length_id.param_type());
+    let length_slider = column![
+        text("Length").size(11),
+        slider(
+            length_def.min as f32..=length_def.max as f32,
+            length_value,
+            move |v| { Message::SetParam(length_id, v) }
+        )
+        .step(1.0_f32)
+        .width(Length::Fill),
+    ]
+    .spacing(2)
+    .align_x(Alignment::Start);
+
+    const ADD_INSTRUMENT_IDX: u8 = u8::MAX;
     let inst_options: Vec<InstOption> = {
         let kit = state.shared.kit.lock();
-        kit.instruments
+        let mut opts: Vec<InstOption> = kit
+            .instruments
             .iter()
             .enumerate()
             .map(|(i, inst)| InstOption {
                 idx: i as u8,
                 name: inst.name.clone(),
             })
-            .collect()
+            .collect();
+        opts.push(InstOption {
+            idx: ADD_INSTRUMENT_IDX,
+            name: "+".to_string(),
+        });
+        opts
     };
-    let selected_inst = if active_inst < inst_options.len() {
+    let selected_inst = if active_inst < inst_options.len() - 1 {
         Some(inst_options[active_inst].clone())
     } else {
         None
     };
     let inst_dropdown = pick_list(inst_options, selected_inst, |opt| {
-        Message::SetActiveInstrument(opt.idx)
+        if opt.idx == ADD_INSTRUMENT_IDX {
+            Message::AddInstrument
+        } else {
+            Message::SetActiveInstrument(opt.idx)
+        }
     })
     .placeholder("Select instrument...")
     .width(Length::Fixed(200.0));
@@ -774,236 +690,110 @@ fn view(state: &State) -> Element<'_, Message> {
             .on_input(Message::InstrumentNameChanged)
             .width(Length::Fixed(160.0));
 
-    let layer_tabs = row![
-        tab_button(
-            "L1",
-            state.active_layer_tab == 0,
-            Message::LayerTabChanged(0)
-        ),
-        tab_button(
-            "L2",
-            state.active_layer_tab == 1,
-            Message::LayerTabChanged(1)
-        ),
-        tab_button(
-            "L3",
-            state.active_layer_tab == 2,
-            Message::LayerTabChanged(2)
-        ),
+    let layer0_enabled = checkbox_param(
+        "Enabled",
+        ap(ParamType::Layer0Enabled),
+        state.shared.params.get_bool(ap(ParamType::Layer0Enabled)),
+    );
+    let layer0_amp = amp_slider(ap(ParamType::Layer0Amp), p(ap(ParamType::Layer0Amp)));
+
+    let layer1_enabled = checkbox_param(
+        "Enabled",
+        ap(ParamType::Layer1Enabled),
+        state.shared.params.get_bool(ap(ParamType::Layer1Enabled)),
+    );
+    let layer1_amp = amp_slider(ap(ParamType::Layer1Amp), p(ap(ParamType::Layer1Amp)));
+
+    let layer2_enabled = checkbox_param(
+        "Enabled",
+        ap(ParamType::Layer2Enabled),
+        state.shared.params.get_bool(ap(ParamType::Layer2Enabled)),
+    );
+    let layer2_amp = amp_slider(ap(ParamType::Layer2Amp), p(ap(ParamType::Layer2Amp)));
+
+    let active_layer_enabled = match state.active_layer_tab {
+        0 => layer0_enabled,
+        1 => layer1_enabled,
+        2 => layer2_enabled,
+        _ => layer0_enabled,
+    };
+    let active_layer_amp = match state.active_layer_tab {
+        0 => layer0_amp,
+        1 => layer1_amp,
+        2 => layer2_amp,
+        _ => layer0_amp,
+    };
+
+    let midi_ch_knob = knob(
+        "MidiCh",
+        ap(ParamType::MasterMidiChannel),
+        p(ap(ParamType::MasterMidiChannel)),
+        "",
+        1.0,
+    );
+    let key_min_knob = knob(
+        "KeyMin",
+        ap(ParamType::MasterKeyMin),
+        p(ap(ParamType::MasterKeyMin)),
+        "",
+        1.0,
+    );
+    let key_max_knob = knob(
+        "KeyMax",
+        ap(ParamType::MasterKeyMax),
+        p(ap(ParamType::MasterKeyMax)),
+        "",
+        1.0,
+    );
+    let pitch_note_knob = knob(
+        "PitchNote",
+        ap(ParamType::MasterPitchToNote),
+        p(ap(ParamType::MasterPitchToNote)),
+        "",
+        1.0,
+    );
+    let note_off_checkbox = checkbox_param(
+        "NoteOff",
+        ap(ParamType::MasterNoteOffEnabled),
+        state
+            .shared
+            .params
+            .get_bool(ap(ParamType::MasterNoteOffEnabled)),
+    );
+
+    let remove_inst_button =
+        maolan_baseview::iced::widget::button("-").on_press(Message::RemoveInstrument);
+
+    let inst_selector = row![inst_dropdown, inst_name_input, remove_inst_button]
+        .spacing(8)
+        .align_y(Alignment::Center);
+
+    let edit_buttons = row![
+        maolan_baseview::iced::widget::button("Copy")
+            .padding(3)
+            .on_press(Message::CopyInstrument),
+        maolan_baseview::iced::widget::button("Paste")
+            .padding(3)
+            .on_press(Message::PasteInstrument),
+        maolan_baseview::iced::widget::button("Dup")
+            .padding(3)
+            .on_press(Message::DuplicateInstrument),
+        maolan_baseview::iced::widget::button("Clear")
+            .padding(3)
+            .on_press(Message::ClearInstrument),
+        maolan_baseview::iced::widget::button("Save")
+            .padding(3)
+            .on_press(Message::SavePreset),
+        midi_ch_knob,
+        key_min_knob,
+        key_max_knob,
+        pitch_note_knob,
+        note_off_checkbox,
     ]
     .spacing(4)
     .align_y(Alignment::Center);
 
-    let layer0_controls = row![
-        checkbox_param(
-            "Enabled",
-            ap(ParamType::Layer0Enabled),
-            state.shared.params.get_bool(ap(ParamType::Layer0Enabled)),
-        ),
-        amp_slider(ap(ParamType::Layer0Amp), p(ap(ParamType::Layer0Amp))),
-    ]
-    .spacing(6);
-
-    let layer1_controls = row![
-        checkbox_param(
-            "Enabled",
-            ap(ParamType::Layer1Enabled),
-            state.shared.params.get_bool(ap(ParamType::Layer1Enabled)),
-        ),
-        amp_slider(ap(ParamType::Layer1Amp), p(ap(ParamType::Layer1Amp))),
-    ]
-    .spacing(6);
-
-    let layer2_controls = row![
-        checkbox_param(
-            "Enabled",
-            ap(ParamType::Layer2Enabled),
-            state.shared.params.get_bool(ap(ParamType::Layer2Enabled)),
-        ),
-        amp_slider(ap(ParamType::Layer2Amp), p(ap(ParamType::Layer2Amp))),
-    ]
-    .spacing(6);
-
-    let active_layer_controls = match state.active_layer_tab {
-        0 => layer0_controls,
-        1 => layer1_controls,
-        2 => layer2_controls,
-        _ => layer0_controls,
-    };
-
-    let inst_selector = row![
-        inst_dropdown,
-        inst_name_input,
-        layer_tabs,
-        active_layer_controls
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center);
-
-    let kit_section = column![
-        section_header("KIT"),
-        row![
-            knob(
-                "Humanizer Vel",
-                ap(ParamType::HumanizerVelocity),
-                p(ap(ParamType::HumanizerVelocity)),
-                "",
-                0.01
-            ),
-            knob(
-                "Humanizer Time",
-                ap(ParamType::HumanizerTiming),
-                p(ap(ParamType::HumanizerTiming)),
-                "ms",
-                0.1
-            ),
-        ]
-        .spacing(6),
-        row![
-            maolan_baseview::iced::widget::button("Copy").on_press(Message::CopyInstrument),
-            maolan_baseview::iced::widget::button("Paste").on_press(Message::PasteInstrument),
-            maolan_baseview::iced::widget::button("Dup").on_press(Message::DuplicateInstrument),
-            maolan_baseview::iced::widget::button("Clear").on_press(Message::ClearInstrument),
-            maolan_baseview::iced::widget::button("+").on_press(Message::AddInstrument),
-            maolan_baseview::iced::widget::button("-").on_press(Message::RemoveInstrument),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "MidiCh",
-                ap(ParamType::MasterMidiChannel),
-                p(ap(ParamType::MasterMidiChannel)),
-                "",
-                1.0
-            ),
-            knob(
-                "KeyMin",
-                ap(ParamType::MasterKeyMin),
-                p(ap(ParamType::MasterKeyMin)),
-                "",
-                1.0
-            ),
-            knob(
-                "KeyMax",
-                ap(ParamType::MasterKeyMax),
-                p(ap(ParamType::MasterKeyMax)),
-                "",
-                1.0
-            ),
-            knob(
-                "PitchNote",
-                ap(ParamType::MasterPitchToNote),
-                p(ap(ParamType::MasterPitchToNote)),
-                "",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "Mute",
-                ap(ParamType::MasterMuted),
-                p(ap(ParamType::MasterMuted)),
-                "",
-                1.0
-            ),
-            knob(
-                "Solo",
-                ap(ParamType::MasterSoloed),
-                p(ap(ParamType::MasterSoloed)),
-                "",
-                1.0
-            ),
-        ]
-        .spacing(6),
-    ]
-    .spacing(6);
-
-    let master_section = column![
-        section_header("MASTER"),
-        row![
-            knob(
-                "Length",
-                ap(ParamType::MasterLength),
-                p(ap(ParamType::MasterLength)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "Gain",
-                ap(ParamType::MasterOutputGain),
-                p(ap(ParamType::MasterOutputGain)),
-                "dB",
-                0.1
-            ),
-            knob(
-                "NoteOff",
-                ap(ParamType::MasterNoteOffDecay),
-                p(ap(ParamType::MasterNoteOffDecay)),
-                "ms",
-                1.0
-            ),
-            checkbox_param(
-                "NO Enab",
-                ap(ParamType::MasterNoteOffEnabled),
-                state
-                    .shared
-                    .params
-                    .get_bool(ap(ParamType::MasterNoteOffEnabled)),
-            ),
-            knob(
-                "LimThresh",
-                ap(ParamType::MasterLimiterThreshold),
-                p(ap(ParamType::MasterLimiterThreshold)),
-                "dB",
-                0.1
-            ),
-            knob(
-                "LimRel",
-                ap(ParamType::MasterLimiterRelease),
-                p(ap(ParamType::MasterLimiterRelease)),
-                "ms",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            filter_type_dropdown(
-                ap(ParamType::MasterFilterType),
-                p(ap(ParamType::MasterFilterType))
-            ),
-            knob(
-                "Cutoff",
-                ap(ParamType::MasterFilterCutoff),
-                p(ap(ParamType::MasterFilterCutoff)),
-                "Hz",
-                1.0
-            ),
-            knob(
-                "Q",
-                ap(ParamType::MasterFilterQ),
-                p(ap(ParamType::MasterFilterQ)),
-                "",
-                0.01
-            ),
-            distortion_type_dropdown(
-                ap(ParamType::MasterDistortionType),
-                p(ap(ParamType::MasterDistortionType))
-            ),
-            knob(
-                "DistDrive",
-                ap(ParamType::MasterDistortionDrive),
-                p(ap(ParamType::MasterDistortionDrive)),
-                "",
-                0.01
-            ),
-        ]
-        .spacing(6),
-    ]
-    .spacing(6);
-
-    let osc_section = |label: &'static str,
-                       waveform_ty: ParamType,
+    let osc_section = |waveform_ty: ParamType,
                        freq_ty: ParamType,
                        amp_ty: ParamType,
                        phase_ty: ParamType,
@@ -1023,30 +813,22 @@ fn view(state: &State) -> Element<'_, Message> {
         let qv = ap(q_ty);
         let dt = ap(dist_type_ty);
         let dd = ap(dist_drive_ty);
-        column![
-            section_header(label),
-            row![
-                waveform_dropdown(w, p(w)),
-                knob("Freq", f, p(f), "Hz", 1.0),
-                knob("Amp", a, p(a), "", 0.01),
-                knob("Phase", ph, p(ph), "", 0.01),
-                knob("FM", fm, p(fm), "", 0.01),
-            ]
-            .spacing(6),
-            row![
-                filter_type_dropdown(ft, p(ft)),
-                knob("Cutoff", c, p(c), "Hz", 1.0),
-                knob("Q", qv, p(qv), "", 0.01),
-                distortion_type_dropdown(dt, p(dt)),
-                knob("DistDrive", dd, p(dd), "", 0.01),
-            ]
-            .spacing(6),
+        row![
+            waveform_dropdown(w, p(w)),
+            knob("Freq", f, p(f), "Hz", 1.0),
+            knob("Amp", a, p(a), "", 0.01),
+            knob("Phase", ph, p(ph), "", 0.01),
+            knob("FM", fm, p(fm), "", 0.01),
+            filter_type_dropdown(ft, p(ft)),
+            knob("Cutoff", c, p(c), "Hz", 1.0),
+            knob("Q", qv, p(qv), "", 0.01),
+            distortion_type_dropdown(dt, p(dt)),
+            knob("DistDrive", dd, p(dd), "", 0.01),
         ]
         .spacing(6)
     };
 
     let osc0 = osc_section(
-        "OSC 0",
         ParamType::Osc0Waveform,
         ParamType::Osc0Freq,
         ParamType::Osc0Amp,
@@ -1059,7 +841,6 @@ fn view(state: &State) -> Element<'_, Message> {
         ParamType::Osc0DistortionDrive,
     );
     let osc1 = osc_section(
-        "OSC 1",
         ParamType::Osc1Waveform,
         ParamType::Osc1Freq,
         ParamType::Osc1Amp,
@@ -1070,19 +851,6 @@ fn view(state: &State) -> Element<'_, Message> {
         ParamType::Osc1FilterQ,
         ParamType::Osc1DistortionType,
         ParamType::Osc1DistortionDrive,
-    );
-    let osc2 = osc_section(
-        "OSC 2",
-        ParamType::Osc2Waveform,
-        ParamType::Osc2Freq,
-        ParamType::Osc2Amp,
-        ParamType::Osc2Phase,
-        ParamType::Osc2FmAmount,
-        ParamType::Osc2FilterType,
-        ParamType::Osc2FilterCutoff,
-        ParamType::Osc2FilterQ,
-        ParamType::Osc2DistortionType,
-        ParamType::Osc2DistortionDrive,
     );
 
     let noise_section = column![
@@ -1877,117 +1645,69 @@ fn view(state: &State) -> Element<'_, Message> {
     ]
     .spacing(6);
 
-    let preset_dropdown = pick_list(
-        state.preset_files.clone(),
-        None::<String>,
-        Message::LoadPreset,
-    )
-    .placeholder("Select preset...")
-    .width(Length::Fixed(220.0));
-
-    let preset_section = column![
-        section_header("PRESETS"),
-        row![
-            maolan_baseview::iced::widget::text_input("Preset name", &state.preset_name_input)
-                .on_input(Message::PresetNameChanged)
-                .width(Length::Fixed(140.0)),
-            maolan_baseview::iced::widget::button("Save").on_press(Message::SavePreset),
-            maolan_baseview::iced::widget::button("Refresh").on_press(Message::RefreshPresets),
-        ]
-        .spacing(4),
-        preset_dropdown,
-    ]
-    .spacing(6);
-
-    let export_section = column![
-        section_header("EXPORT"),
-        row![
-            maolan_baseview::iced::widget::text_input("Output path", &state.export_path_input)
-                .on_input(Message::ExportPathChanged)
-                .width(Length::Fixed(220.0)),
-        ]
-        .spacing(6),
-        row![
-            maolan_baseview::iced::widget::text("Fmt"),
-            maolan_baseview::iced::widget::slider(0.0..=1.0, state.export_format as f32, |v| {
-                Message::ExportFormatChanged(v.round().clamp(0.0, 1.0) as u8)
-            })
-            .step(1.0_f32)
-            .width(Length::Fixed(90.0)),
-            maolan_baseview::iced::widget::text(match state.export_format {
-                1 => "FLAC",
-                _ => "WAV",
-            }),
-            maolan_baseview::iced::widget::text("Ch"),
-            maolan_baseview::iced::widget::slider(1.0..=2.0, state.export_channels as f32, |v| {
-                Message::ExportChannelsChanged(v.round().clamp(1.0, 2.0) as u8)
-            })
-            .step(1.0_f32)
-            .width(Length::Fixed(70.0)),
-            maolan_baseview::iced::widget::text(format!("{}", state.export_channels)),
-        ]
-        .spacing(6),
-        row![
-            maolan_baseview::iced::widget::text("MIDI"),
-            maolan_baseview::iced::widget::slider(
-                0.0..=127.0,
-                state.export_midi_note as f32,
-                |v| Message::ExportMidiNoteChanged(v.round().clamp(0.0, 127.0) as u8)
-            )
-            .step(1.0_f32)
-            .width(Length::Fixed(180.0)),
-            maolan_baseview::iced::widget::text(format!("{}", state.export_midi_note)),
-            maolan_baseview::iced::widget::button("Export")
-                .on_press(Message::ExportCurrentInstrument),
-        ]
-        .spacing(6),
-        maolan_baseview::iced::widget::text(state.export_status.clone()).size(9),
-    ]
-    .spacing(6);
-
     let osc_tabs = row![
         tab_button("Osc1", state.active_osc_tab == 0, Message::OscTabChanged(0)),
         tab_button("Osc2", state.active_osc_tab == 1, Message::OscTabChanged(1)),
-        tab_button("Osc3", state.active_osc_tab == 2, Message::OscTabChanged(2)),
         tab_button(
             "Noise",
-            state.active_osc_tab == 3,
-            Message::OscTabChanged(3)
+            state.active_osc_tab == 2,
+            Message::OscTabChanged(2)
         ),
     ]
     .spacing(4)
     .align_y(Alignment::Center);
 
-    let active_osc = match state.active_osc_tab {
-        0 => osc0,
-        1 => osc1,
-        2 => osc2,
-        3 => noise_section,
-        _ => osc0,
+    let active_osc: Element<'_, Message> = match state.active_osc_tab {
+        0 => osc0.into(),
+        1 => osc1.into(),
+        2 => noise_section.into(),
+        _ => osc0.into(),
     };
 
-    let synth_left = column![osc_tabs, active_osc,]
-        .spacing(8)
-        .align_x(Alignment::Start);
+    let mute_checkbox = checkbox_param(
+        "Mute",
+        ap(ParamType::MasterMuted),
+        state.shared.params.get_bool(ap(ParamType::MasterMuted)),
+    );
+    let solo_checkbox = checkbox_param(
+        "Solo",
+        ap(ParamType::MasterSoloed),
+        state.shared.params.get_bool(ap(ParamType::MasterSoloed)),
+    );
 
-    let setup_left = column![kit_section].spacing(8).align_x(Alignment::Start);
-    let setup_right = column![preset_section, export_section]
+    let controls: Element<'_, Message> = column![
+        row![
+            inst_selector,
+            tab_button(
+                "L1",
+                state.active_layer_tab == 0,
+                Message::LayerTabChanged(0)
+            ),
+            tab_button(
+                "L2",
+                state.active_layer_tab == 1,
+                Message::LayerTabChanged(1)
+            ),
+            tab_button(
+                "L3",
+                state.active_layer_tab == 2,
+                Message::LayerTabChanged(2)
+            ),
+            active_layer_enabled,
+            mute_checkbox,
+            solo_checkbox,
+            active_layer_amp,
+        ]
         .spacing(8)
-        .align_x(Alignment::Start);
-    let setup_section = row![setup_left, setup_right]
-        .spacing(8)
-        .align_y(Alignment::Start);
+        .align_y(Alignment::Center),
+        osc_tabs,
+        active_osc,
+    ]
+    .spacing(8)
+    .align_x(Alignment::Start)
+    .into();
 
-    let right_column = column![master_section, setup_section]
-        .spacing(8)
-        .align_x(Alignment::Start);
-
-    let controls: Element<'_, Message> = row![synth_left, right_column]
-        .spacing(8)
-        .align_y(Alignment::Start)
-        .into();
-
-    let content = column![top_row, inst_selector, controls]
+    let content = column![edit_buttons, top_row, length_slider, controls]
         .spacing(8)
         .align_x(Alignment::Start);
 
@@ -2188,6 +1908,29 @@ fn checkbox_param(label: &'static str, id: ParamId, value: bool) -> Element<'sta
     )
     .width(Length::Fixed(50.0))
     .into()
+}
+
+fn preview_waveform(length_ms: f32, freq_hz: f32, wave_val: f32) -> Option<Vec<f32>> {
+    if length_ms <= 0.0 || freq_hz <= 0.0 {
+        return None;
+    }
+
+    const SAMPLES: usize = 2048;
+    let length_sec = length_ms / 1000.0;
+    let sample_rate = SAMPLES as f32 / length_sec;
+
+    let mut osc = Oscillator::new(sample_rate);
+    osc.set_base_freq_hz(freq_hz.max(1.0));
+    osc.set_amplitude(1.0);
+    set_waveform(&mut osc, Waveform::from_u8(wave_val as u8));
+    osc.set_pitch_env(None);
+    osc.set_amp_env(None);
+    osc.set_filter_type(FilterType::Off);
+    osc.set_distortion(None);
+
+    let mut buf = vec![0.0f32; SAMPLES];
+    osc.render(&mut buf, SAMPLES, None);
+    Some(buf)
 }
 
 fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {

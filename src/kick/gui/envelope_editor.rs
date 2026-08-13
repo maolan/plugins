@@ -19,6 +19,7 @@ pub enum EnvelopeEditorMsg {
 
 pub struct EnvelopeEditor {
     pub envelope: Envelope,
+    pub waveform: Option<Vec<f32>>,
 }
 
 pub struct EnvelopeEditorState {
@@ -42,8 +43,8 @@ impl Default for EnvelopeEditorState {
 }
 
 impl EnvelopeEditor {
-    pub fn new(envelope: Envelope) -> Self {
-        Self { envelope }
+    pub fn new(envelope: Envelope, waveform: Option<Vec<f32>>) -> Self {
+        Self { envelope, waveform }
     }
 
     fn screen_to_env(
@@ -70,6 +71,40 @@ impl EnvelopeEditor {
         let x = ((t - state.offset_x) * state.zoom_x) * width;
         let y = (1.0 - v) * height;
         Point::new(x, y)
+    }
+
+    fn draw_waveform(
+        &self,
+        state: &EnvelopeEditorState,
+        frame: &mut Frame,
+        width: f32,
+        height: f32,
+    ) {
+        let samples = match self.waveform.as_ref() {
+            Some(s) if s.len() >= 2 => s,
+            _ => return,
+        };
+
+        let path = Path::new(|builder| {
+            let len = samples.len();
+            for (i, sample) in samples.iter().enumerate() {
+                let t = i as f32 / (len - 1) as f32;
+                let v = 0.5 + sample.clamp(-1.0, 1.0) * 0.5;
+                let p = self.env_to_screen(state, t, v, width, height);
+                if i == 0 {
+                    builder.move_to(p);
+                } else {
+                    builder.line_to(p);
+                }
+            }
+        });
+
+        frame.stroke(
+            &path,
+            Stroke::default()
+                .with_color(Color::from_rgb(0.3, 0.7, 0.9))
+                .with_width(1.5),
+        );
     }
 
     fn draw_curve(&self, state: &EnvelopeEditorState, frame: &mut Frame, width: f32, height: f32) {
@@ -314,6 +349,7 @@ impl Program<EnvelopeEditorMsg> for EnvelopeEditor {
             );
         }
 
+        self.draw_waveform(_state, &mut frame, width, height);
         self.draw_curve(_state, &mut frame, width, height);
         self.draw_control_points(_state, &mut frame, width, height);
         self.draw_points(_state, &mut frame, width, height);
