@@ -116,7 +116,8 @@ impl EnvelopeEditor {
             for (i, sample) in samples.iter().enumerate() {
                 let t = i as f32 / (len - 1) as f32;
                 let v = 0.5 + sample.clamp(-1.0, 1.0) * 0.5;
-                let p = self.env_to_screen(state, t, v, width, height);
+                let x = ((t - state.offset_x) * state.zoom_x) * width;
+                let p = Point::new(x, (1.0 - v) * height);
                 if i == 0 {
                     builder.move_to(p);
                 } else {
@@ -423,5 +424,28 @@ impl Program<EnvelopeEditorMsg> for EnvelopeEditor {
             _ => {}
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frequency_scale_uses_base_frequency_as_top() {
+        let editor = EnvelopeEditor::new(
+            Envelope::flat(1.0),
+            None,
+            100.0,
+            EnvelopeScale::Frequency { base_hz: 10000.0 },
+        );
+        let state = EnvelopeEditorState::default();
+
+        let point = editor.env_to_screen(&state, 0.5, 1.0, 200.0, 100.0);
+        assert_eq!(point.x, 100.0);
+        assert_eq!(point.y, 0.0);
+
+        let (_, value) = editor.screen_to_env(&state, 100.0, 0.0, 200.0, 100.0);
+        assert_eq!(value, 1.0);
     }
 }

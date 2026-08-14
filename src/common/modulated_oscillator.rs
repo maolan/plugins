@@ -18,6 +18,28 @@ impl FreqEnvMode {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::envelope::EnvPoint;
+
+    #[test]
+    fn changing_base_frequency_preserves_linear_freq_env_hz() {
+        let mut oscillator = ModulatedOscillator::new(48_000.0);
+        oscillator.set_base_freq_hz(1000.0);
+        oscillator.set_freq_env(Some(Envelope::new(vec![
+            EnvPoint::new(0.0, 0.5),
+            EnvPoint::new(1.0, 1.0),
+        ])));
+
+        oscillator.set_base_freq_hz_preserving_freq_env(2000.0);
+        let points = oscillator.freq_env().expect("frequency envelope").points();
+
+        assert_eq!(points[0].v, 0.25);
+        assert_eq!(points[1].v, 0.5);
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ModulatedOscillator {
     oscillator: Oscillator,
@@ -179,6 +201,21 @@ impl ModulatedOscillator {
 
     pub fn set_base_freq_hz(&mut self, freq: f32) {
         self.base_freq_hz = freq.max(0.1);
+    }
+
+    pub fn set_base_freq_hz_preserving_freq_env(&mut self, freq: f32) {
+        let old_freq = self.base_freq_hz.max(0.1);
+        let new_freq = freq.max(0.1);
+        if self.freq_env_mode == FreqEnvMode::Linear && (old_freq - new_freq).abs() > f32::EPSILON {
+            let scale = old_freq / new_freq;
+            if let Some(env) = &mut self.freq_env {
+                for point in env.points_mut() {
+                    point.v = (point.v * scale).clamp(0.0, 1.0);
+                    point.cp_v *= scale;
+                }
+            }
+        }
+        self.base_freq_hz = new_freq;
     }
 
     pub fn amplitude(&self) -> f32 {

@@ -384,6 +384,63 @@ fn selected_env(
     }
 }
 
+fn osc_location_for_freq_param(param_type: ParamType) -> Option<(usize, usize)> {
+    match param_type {
+        ParamType::Osc0Freq => Some((0, 0)),
+        ParamType::Osc1Freq => Some((0, 1)),
+        ParamType::Layer1Osc0Freq => Some((1, 0)),
+        ParamType::Layer1Osc1Freq => Some((1, 1)),
+        ParamType::Layer2Osc0Freq => Some((2, 0)),
+        ParamType::Layer2Osc1Freq => Some((2, 1)),
+        _ => None,
+    }
+}
+
+fn preserve_osc_freq_envelope_for_param_change(state: &State, id: ParamId, new_freq_hz: f32) {
+    let Some((layer, osc)) = osc_location_for_freq_param(id.param_type()) else {
+        return;
+    };
+    let old_freq_hz = (state.shared.params.get(id) as f32).max(0.1);
+    let new_freq_hz = new_freq_hz.max(0.1);
+    if (old_freq_hz - new_freq_hz).abs() <= f32::EPSILON {
+        return;
+    }
+
+    let mut kit = state.shared.kit.lock();
+    let Some(instrument) = kit.instruments.get_mut(id.instrument() as usize) else {
+        return;
+    };
+    let Some(layer) = instrument.layers.get_mut(layer) else {
+        return;
+    };
+    let Some(oscillator) = layer.oscillators.get_mut(osc) else {
+        return;
+    };
+    oscillator.set_base_freq_hz_preserving_freq_env(new_freq_hz);
+    state.shared.mark_kit_changed();
+}
+
+fn freq_to_log_knob(freq: f32, min: f32, max: f32) -> f32 {
+    let min = min.max(0.1);
+    let max = max.max(min);
+    let freq = freq.clamp(min, max);
+    if max <= min {
+        0.0
+    } else {
+        (freq / min).ln() / (max / min).ln()
+    }
+}
+
+fn log_knob_to_freq(position: f32, min: f32, max: f32) -> f32 {
+    let min = min.max(0.1);
+    let max = max.max(min);
+    if max <= min {
+        min
+    } else {
+        min * (max / min).powf(position.clamp(0.0, 1.0))
+    }
+}
+
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::SetParam(id, value) => {
@@ -392,6 +449,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.active_gestures[idx] = true;
                 state.shared.mark_gesture_begin_pending(id);
             }
+            preserve_osc_freq_envelope_for_param_change(state, id, value);
             state.shared.set_param_outbound_only(id, value as f64);
         }
         Message::SetBoolParam(id, value) => {
@@ -1452,15 +1510,27 @@ fn clickable_knob(
     let def = param_type_def(id.param_type());
     let min = def.min as f32;
     let max = def.max as f32;
-    let slider_widget = arch_slider(min..=max, value.clamp(min, max), move |v| {
-        Message::SetParam(id, v)
-    })
-    .step(step)
-    .double_click_reset(def.default as f32)
-    .on_release(Message::ReleaseParam(id))
-    .fill_from_start()
-    .width(Length::Fixed(41.0))
-    .height(Length::Fixed(41.0));
+    let slider_widget = if osc_location_for_freq_param(id.param_type()).is_some() {
+        arch_slider(0.0..=1.0, freq_to_log_knob(value, min, max), move |v| {
+            Message::SetParam(id, log_knob_to_freq(v, min, max))
+        })
+        .step(0.001)
+        .double_click_reset(freq_to_log_knob(def.default as f32, min, max))
+        .on_release(Message::ReleaseParam(id))
+        .fill_from_start()
+        .width(Length::Fixed(41.0))
+        .height(Length::Fixed(41.0))
+    } else {
+        arch_slider(min..=max, value.clamp(min, max), move |v| {
+            Message::SetParam(id, v)
+        })
+        .step(step)
+        .double_click_reset(def.default as f32)
+        .on_release(Message::ReleaseParam(id))
+        .fill_from_start()
+        .width(Length::Fixed(41.0))
+        .height(Length::Fixed(41.0))
+    };
 
     let label_button = maolan_baseview::iced::widget::button(text(label).size(11))
         .padding(0)
@@ -1548,6 +1618,21 @@ fn render_source_column(
     )
     .width(Length::Fixed(34.0))
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frequency_knob_log_scale_roundtrips_and_favors_low_range() {
+        let min = 1000.0;
+        let max = 20000.0;
+        let midpoint_freq = log_knob_to_freq(0.5, min, max);
+
+        assert!(midpoint_freq < (min + max) * 0.5);
+        assert!((freq_to_log_knob(midpoint_freq, min, max) - 0.5).abs() < 1.0e-6);
+    }
 }
 
 struct PreviewLayerParams {

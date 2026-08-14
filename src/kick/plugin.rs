@@ -941,7 +941,7 @@ fn apply_osc_param(osc: &mut Oscillator, ty: ParamType, value: f64) {
             oscillator::set_waveform(osc, Waveform::from_u8(value as u8));
         }
         Osc0Freq | Osc1Freq => {
-            osc.set_base_freq_hz(value as f32);
+            osc.set_base_freq_hz_preserving_freq_env(value as f32);
         }
         Osc0Amp | Osc1Amp => {
             osc.set_amplitude(value as f32);
