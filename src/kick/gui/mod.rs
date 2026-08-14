@@ -16,20 +16,20 @@ use maolan_baseview::iced::{
     alignment::{Horizontal, Vertical},
     widget::{canvas, checkbox, column, container, pick_list, row, slider, text},
 };
+use maolan_widgets::arch_slider::arch_slider;
 use maolan_widgets::meters::meters;
 
-use crate::common::ui::{SmallKnob, VerticalSlider, small_knob, vertical_slider};
+use crate::common::ui::{
+    FADER_MAX_DB, FADER_MIN_DB, SmallKnob, VerticalSlider, small_knob, vertical_slider,
+};
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 
 mod envelope_editor;
 
 use crate::common::distortion::DistortionType;
 use crate::common::filter::FilterType;
-use crate::kick::dsp::{
-    INSTRUMENTS_PER_KIT,
-    oscillator::{Oscillator, Waveform, set_waveform},
-};
-use crate::kick::gui::envelope_editor::{EnvelopeEditor, EnvelopeEditorMsg};
+use crate::kick::dsp::{INSTRUMENTS_PER_KIT, noise::NoiseType, oscillator::Waveform};
+use crate::kick::gui::envelope_editor::{EnvelopeEditor, EnvelopeEditorMsg, EnvelopeScale};
 use crate::kick::params::{ParamId, ParamType, param_type_def};
 use crate::kick::plugin::SharedState;
 
@@ -98,43 +98,186 @@ pub enum Message {
     EnvelopeKindChanged(u8),
     EnvelopeLayerChanged(u8),
     EnvelopeOscChanged(u8),
+    SelectOscEnvelope {
+        kind: u8,
+        osc: u8,
+    },
+    EnvelopeRenderSourceChanged {
+        layer: usize,
+        source: usize,
+        enabled: bool,
+    },
     LayerTabChanged(u8),
     OscTabChanged(u8),
     InstrumentNameChanged(String),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EnvelopeKind {
-    GlobalAmp = 0,
-    OscAmp = 1,
-    OscPitch = 2,
-    OscFreq = 3,
-    OscFilterCutoff = 4,
-    OscFilterQ = 5,
-    OscDistDrive = 6,
-    OscPitchShift = 7,
-    NoiseAmp = 8,
-    NoiseDensity = 9,
-    MasterDistVol = 10,
-    LayerDistVol = 11,
+    OscAmp = 0,
+    OscFreq = 1,
+    NoiseAmp = 2,
+    NoiseDensity = 3,
 }
+
+const NO_ENVELOPE_SELECTION: u8 = u8::MAX;
 
 impl EnvelopeKind {
     fn from_u8(v: u8) -> Self {
         match v {
-            1 => Self::OscAmp,
-            2 => Self::OscPitch,
-            3 => Self::OscFreq,
-            4 => Self::OscFilterCutoff,
-            5 => Self::OscFilterQ,
-            6 => Self::OscDistDrive,
-            7 => Self::OscPitchShift,
-            8 => Self::NoiseAmp,
-            9 => Self::NoiseDensity,
-            10 => Self::MasterDistVol,
-            11 => Self::LayerDistVol,
-            _ => Self::GlobalAmp,
+            1 => Self::OscFreq,
+            2 => Self::NoiseAmp,
+            3 => Self::NoiseDensity,
+            _ => Self::OscAmp,
         }
+    }
+
+    fn scale(self, base_freq_hz: f32) -> EnvelopeScale {
+        match self {
+            Self::OscFreq => EnvelopeScale::Frequency {
+                base_hz: base_freq_hz,
+            },
+            Self::OscAmp | Self::NoiseAmp => EnvelopeScale::Bipolar,
+            _ => EnvelopeScale::Normal,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct GuiOscParams {
+    waveform: ParamType,
+    freq: ParamType,
+    amp: ParamType,
+    phase: ParamType,
+    fm_amount: ParamType,
+    filter_type: ParamType,
+    filter_cutoff: ParamType,
+    filter_q: ParamType,
+    distortion_type: ParamType,
+    distortion_drive: ParamType,
+}
+
+#[derive(Clone, Copy)]
+struct GuiNoiseParams {
+    noise_type: ParamType,
+    amp: ParamType,
+    density: ParamType,
+    filter_type: ParamType,
+    filter_cutoff: ParamType,
+    filter_q: ParamType,
+}
+
+#[derive(Clone, Copy)]
+struct GuiLayerParams {
+    osc0: GuiOscParams,
+    osc1: GuiOscParams,
+    noise: GuiNoiseParams,
+}
+
+fn gui_layer_params(layer_idx: u8) -> GuiLayerParams {
+    match layer_idx {
+        1 => GuiLayerParams {
+            osc0: GuiOscParams {
+                waveform: ParamType::Layer1Osc0Waveform,
+                freq: ParamType::Layer1Osc0Freq,
+                amp: ParamType::Layer1Osc0Amp,
+                phase: ParamType::Layer1Osc0Phase,
+                fm_amount: ParamType::Layer1Osc0FmAmount,
+                filter_type: ParamType::Layer1Osc0FilterType,
+                filter_cutoff: ParamType::Layer1Osc0FilterCutoff,
+                filter_q: ParamType::Layer1Osc0FilterQ,
+                distortion_type: ParamType::Layer1Osc0DistortionType,
+                distortion_drive: ParamType::Layer1Osc0DistortionDrive,
+            },
+            osc1: GuiOscParams {
+                waveform: ParamType::Layer1Osc1Waveform,
+                freq: ParamType::Layer1Osc1Freq,
+                amp: ParamType::Layer1Osc1Amp,
+                phase: ParamType::Layer1Osc1Phase,
+                fm_amount: ParamType::Layer1Osc1FmAmount,
+                filter_type: ParamType::Layer1Osc1FilterType,
+                filter_cutoff: ParamType::Layer1Osc1FilterCutoff,
+                filter_q: ParamType::Layer1Osc1FilterQ,
+                distortion_type: ParamType::Layer1Osc1DistortionType,
+                distortion_drive: ParamType::Layer1Osc1DistortionDrive,
+            },
+            noise: GuiNoiseParams {
+                noise_type: ParamType::Layer1NoiseType,
+                amp: ParamType::Layer1NoiseAmp,
+                density: ParamType::Layer1NoiseDensity,
+                filter_type: ParamType::Layer1NoiseFilterType,
+                filter_cutoff: ParamType::Layer1NoiseFilterCutoff,
+                filter_q: ParamType::Layer1NoiseFilterQ,
+            },
+        },
+        2 => GuiLayerParams {
+            osc0: GuiOscParams {
+                waveform: ParamType::Layer2Osc0Waveform,
+                freq: ParamType::Layer2Osc0Freq,
+                amp: ParamType::Layer2Osc0Amp,
+                phase: ParamType::Layer2Osc0Phase,
+                fm_amount: ParamType::Layer2Osc0FmAmount,
+                filter_type: ParamType::Layer2Osc0FilterType,
+                filter_cutoff: ParamType::Layer2Osc0FilterCutoff,
+                filter_q: ParamType::Layer2Osc0FilterQ,
+                distortion_type: ParamType::Layer2Osc0DistortionType,
+                distortion_drive: ParamType::Layer2Osc0DistortionDrive,
+            },
+            osc1: GuiOscParams {
+                waveform: ParamType::Layer2Osc1Waveform,
+                freq: ParamType::Layer2Osc1Freq,
+                amp: ParamType::Layer2Osc1Amp,
+                phase: ParamType::Layer2Osc1Phase,
+                fm_amount: ParamType::Layer2Osc1FmAmount,
+                filter_type: ParamType::Layer2Osc1FilterType,
+                filter_cutoff: ParamType::Layer2Osc1FilterCutoff,
+                filter_q: ParamType::Layer2Osc1FilterQ,
+                distortion_type: ParamType::Layer2Osc1DistortionType,
+                distortion_drive: ParamType::Layer2Osc1DistortionDrive,
+            },
+            noise: GuiNoiseParams {
+                noise_type: ParamType::Layer2NoiseType,
+                amp: ParamType::Layer2NoiseAmp,
+                density: ParamType::Layer2NoiseDensity,
+                filter_type: ParamType::Layer2NoiseFilterType,
+                filter_cutoff: ParamType::Layer2NoiseFilterCutoff,
+                filter_q: ParamType::Layer2NoiseFilterQ,
+            },
+        },
+        _ => GuiLayerParams {
+            osc0: GuiOscParams {
+                waveform: ParamType::Osc0Waveform,
+                freq: ParamType::Osc0Freq,
+                amp: ParamType::Osc0Amp,
+                phase: ParamType::Osc0Phase,
+                fm_amount: ParamType::Osc0FmAmount,
+                filter_type: ParamType::Osc0FilterType,
+                filter_cutoff: ParamType::Osc0FilterCutoff,
+                filter_q: ParamType::Osc0FilterQ,
+                distortion_type: ParamType::Osc0DistortionType,
+                distortion_drive: ParamType::Osc0DistortionDrive,
+            },
+            osc1: GuiOscParams {
+                waveform: ParamType::Osc1Waveform,
+                freq: ParamType::Osc1Freq,
+                amp: ParamType::Osc1Amp,
+                phase: ParamType::Osc1Phase,
+                fm_amount: ParamType::Osc1FmAmount,
+                filter_type: ParamType::Osc1FilterType,
+                filter_cutoff: ParamType::Osc1FilterCutoff,
+                filter_q: ParamType::Osc1FilterQ,
+                distortion_type: ParamType::Osc1DistortionType,
+                distortion_drive: ParamType::Osc1DistortionDrive,
+            },
+            noise: GuiNoiseParams {
+                noise_type: ParamType::NoiseType,
+                amp: ParamType::NoiseAmp,
+                density: ParamType::NoiseDensity,
+                filter_type: ParamType::NoiseFilterType,
+                filter_cutoff: ParamType::NoiseFilterCutoff,
+                filter_q: ParamType::NoiseFilterQ,
+            },
+        },
     }
 }
 
@@ -145,6 +288,8 @@ struct State {
     envelope_kind: u8,
     envelope_layer: u8,
     envelope_osc: u8,
+    envelope_selections: [[u8; 3]; 3],
+    envelope_render_sources: [[bool; 3]; 3],
     active_layer_tab: u8,
     active_osc_tab: u8,
     instrument_name_input: String,
@@ -170,15 +315,57 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             shared,
             active_gestures: vec![false; ParamId::COUNT],
             show_envelope_editor: true,
-            envelope_kind: 0,
+            envelope_kind: EnvelopeKind::OscAmp as u8,
             envelope_layer: 0,
             envelope_osc: 0,
+            envelope_selections: default_envelope_selections(),
+            envelope_render_sources: [
+                [true, false, false],
+                [false, false, false],
+                [false, false, false],
+            ],
             active_layer_tab: 0,
             active_osc_tab: 0,
             instrument_name_input,
         },
         Task::none(),
     )
+}
+
+fn default_envelope_selections() -> [[u8; 3]; 3] {
+    let mut selections = [[NO_ENVELOPE_SELECTION; 3]; 3];
+    selections[0][0] = EnvelopeKind::OscAmp as u8;
+    selections
+}
+
+fn envelope_source_idx(kind: EnvelopeKind, osc: u8) -> usize {
+    match kind {
+        EnvelopeKind::NoiseAmp | EnvelopeKind::NoiseDensity => 2,
+        EnvelopeKind::OscAmp | EnvelopeKind::OscFreq => osc.min(1) as usize,
+    }
+}
+
+fn set_selected_envelope(state: &mut State, layer: u8, source: u8, kind: u8) {
+    let layer = layer.min(2);
+    let source = source.min(2);
+    let kind = kind.min(3);
+    state.envelope_layer = layer;
+    state.envelope_osc = if source == 2 { 0 } else { source };
+    state.envelope_kind = kind;
+    state.envelope_selections[layer as usize][source as usize] = kind;
+    state.show_envelope_editor = true;
+}
+
+fn sync_envelope_to_active_source(state: &mut State) {
+    let layer = state.active_layer_tab.min(2);
+    let source = state.active_osc_tab.min(2);
+    let kind = state.envelope_selections[layer as usize][source as usize];
+    state.envelope_layer = layer;
+    state.envelope_osc = if source == 2 { 0 } else { source };
+    if kind != NO_ENVELOPE_SELECTION {
+        state.envelope_kind = kind.min(3);
+        state.show_envelope_editor = true;
+    }
 }
 
 fn selected_env(
@@ -188,24 +375,12 @@ fn selected_env(
     osc: usize,
 ) -> &mut crate::kick::dsp::Envelope {
     let layer = layer.min(2);
-    let osc = osc.min(2);
+    let osc = osc.min(1);
     match kind {
-        EnvelopeKind::GlobalAmp => &mut inst.global_amp_env,
         EnvelopeKind::OscAmp => inst.layers[layer].oscillators[osc].amp_env_mut(),
-        EnvelopeKind::OscPitch => inst.layers[layer].oscillators[osc].pitch_env_mut(),
         EnvelopeKind::OscFreq => inst.layers[layer].oscillators[osc].freq_env_mut(),
-        EnvelopeKind::OscFilterCutoff => {
-            inst.layers[layer].oscillators[osc].filter_cutoff_env_mut()
-        }
-        EnvelopeKind::OscFilterQ => inst.layers[layer].oscillators[osc].filter_q_env_mut(),
-        EnvelopeKind::OscDistDrive => {
-            inst.layers[layer].oscillators[osc].distortion_drive_env_mut()
-        }
-        EnvelopeKind::OscPitchShift => inst.layers[layer].oscillators[osc].pitch_shift_env_mut(),
         EnvelopeKind::NoiseAmp => &mut inst.layers[layer].noise.amp_env,
         EnvelopeKind::NoiseDensity => &mut inst.layers[layer].noise.density_env,
-        EnvelopeKind::MasterDistVol => &mut inst.master_distortion.volume_env,
-        EnvelopeKind::LayerDistVol => &mut inst.layers[layer].distortion.volume_env,
     }
 }
 
@@ -426,30 +601,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.envelope_osc as usize,
             );
             match msg {
-                EnvelopeEditorMsg::PointMoved(idx, t, v) => {
+                EnvelopeEditorMsg::Move(idx, t, v) => {
                     if let Some(p) = env.points_mut().get_mut(idx) {
                         p.t = t.clamp(0.0, 1.0);
                         p.v = v.clamp(0.0, 1.0);
                     }
                 }
-                EnvelopeEditorMsg::ControlPointMoved(idx, is_left, t, v) => {
-                    if let Some(p) = env.points_mut().get_mut(idx) {
-                        if is_left {
-                            p.cp_t = (p.t - t).clamp(0.0, 1.0);
-                            p.cp_v = v - p.v;
-                        } else {
-                            p.cp_t = (t - p.t).clamp(0.0, 1.0);
-                            p.cp_v = v - p.v;
-                        }
-                    }
-                }
-                EnvelopeEditorMsg::PointAdded(t, v) => {
+                EnvelopeEditorMsg::Add(t, v) => {
                     let mut points: Vec<_> = env.points().to_vec();
                     points.push(crate::kick::dsp::envelope::EnvPoint::new(t, v));
                     points.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap());
                     *env = crate::kick::dsp::envelope::Envelope::new(points);
                 }
-                EnvelopeEditorMsg::PointRemoved(idx) => {
+                EnvelopeEditorMsg::Remove(idx) => {
                     let mut points: Vec<_> = env.points().to_vec();
                     if points.len() > 2 && idx < points.len() {
                         points.remove(idx);
@@ -486,13 +650,43 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::EnvelopeKindChanged(kind) => {
-            state.envelope_kind = kind.min(11);
+            let source = envelope_source_idx(EnvelopeKind::from_u8(kind), state.envelope_osc);
+            set_selected_envelope(state, state.envelope_layer, source as u8, kind);
         }
         Message::EnvelopeLayerChanged(layer) => {
             state.envelope_layer = layer.min(2);
+            let source = envelope_source_idx(
+                EnvelopeKind::from_u8(state.envelope_kind),
+                state.envelope_osc,
+            );
+            state.envelope_selections[state.envelope_layer as usize][source] = state.envelope_kind;
         }
         Message::EnvelopeOscChanged(osc) => {
-            state.envelope_osc = osc.min(2);
+            let source = osc.min(1);
+            set_selected_envelope(state, state.envelope_layer, source, state.envelope_kind);
+        }
+        Message::SelectOscEnvelope { kind, osc } => {
+            let kind = EnvelopeKind::from_u8(kind);
+            let source = envelope_source_idx(kind, osc);
+            set_selected_envelope(
+                state,
+                state.active_layer_tab.min(2),
+                source as u8,
+                kind as u8,
+            );
+        }
+        Message::EnvelopeRenderSourceChanged {
+            layer,
+            source,
+            enabled,
+        } => {
+            if let Some(source_enabled) = state
+                .envelope_render_sources
+                .get_mut(layer)
+                .and_then(|sources| sources.get_mut(source))
+            {
+                *source_enabled = enabled;
+            }
         }
         Message::InstrumentNameChanged(name) => {
             state.instrument_name_input = name.clone();
@@ -509,9 +703,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LayerTabChanged(tab) => {
             state.active_layer_tab = tab.min(2);
+            sync_envelope_to_active_source(state);
         }
         Message::OscTabChanged(tab) => {
             state.active_osc_tab = tab.min(2);
+            sync_envelope_to_active_source(state);
         }
     }
     Task::none()
@@ -573,36 +769,89 @@ fn view(state: &State) -> Element<'_, Message> {
         active.min(kit.instruments.len().saturating_sub(1))
     };
     let ap = |ty: ParamType| ParamId::new(active_inst as u8, ty);
+    let active_layer_params = gui_layer_params(state.active_layer_tab.min(2));
 
     let envelope_editor = if state.show_envelope_editor {
         let kit = state.shared.kit.lock();
         let env_kind = EnvelopeKind::from_u8(state.envelope_kind);
-        let mut inst = kit.instruments[active_inst].clone();
+        let inst = kit.instruments[active_inst].clone();
+        let mut env_inst = inst.clone();
         let env = selected_env(
-            &mut inst,
+            &mut env_inst,
             env_kind,
             state.envelope_layer as usize,
             state.envelope_osc as usize,
         )
         .clone();
         drop(kit);
+        let length_ms = p(ap(ParamType::MasterLength));
+        let layer_params = [
+            gui_layer_params(0),
+            gui_layer_params(1),
+            gui_layer_params(2),
+        ];
+        let layer_enabled = [
+            state.shared.params.get_bool(ap(ParamType::Layer0Enabled)),
+            state.shared.params.get_bool(ap(ParamType::Layer1Enabled)),
+            state.shared.params.get_bool(ap(ParamType::Layer2Enabled)),
+        ];
+        let layer_amp = [
+            p(ap(ParamType::Layer0Amp)),
+            p(ap(ParamType::Layer1Amp)),
+            p(ap(ParamType::Layer2Amp)),
+        ];
+        let osc_freq_hz =
+            layer_params.map(|params| [p(ap(params.osc0.freq)), p(ap(params.osc1.freq))]);
+        let osc_amp = layer_params.map(|params| [p(ap(params.osc0.amp)), p(ap(params.osc1.amp))]);
+        let noise_amp = layer_params.map(|params| p(ap(params.noise.amp)));
+        let noise_density = layer_params.map(|params| p(ap(params.noise.density)));
+        let osc_idx = state.envelope_osc.min(1) as usize;
+        let base_freq_hz = osc_freq_hz[state.envelope_layer.min(2) as usize][osc_idx];
         let waveform = preview_waveform(
-            p(ap(ParamType::MasterLength)),
-            p(ap(ParamType::Osc0Freq)),
-            p(ap(ParamType::Osc0Waveform)),
+            length_ms,
+            &inst,
+            PreviewLayerParams {
+                render: state.envelope_render_sources,
+                enabled: layer_enabled,
+                amp: layer_amp,
+                osc_freq_hz,
+                osc_amp,
+                noise_amp,
+                noise_density,
+            },
         );
         Some(
-            canvas(EnvelopeEditor::new(env, waveform))
-                .width(Length::Fill)
-                .height(Length::Fill),
+            canvas(EnvelopeEditor::new(
+                env,
+                waveform,
+                length_ms,
+                env_kind.scale(base_freq_hz),
+            ))
+            .width(Length::Fill)
+            .height(Length::Fill),
         )
     } else {
         None
     };
 
-    let meter = container(meters(2, &[peak_db_l, peak_db_r], 1.0))
-        .height(Length::Fill)
-        .width(Length::Fixed(48.0));
+    let peak_db = peak_db_l.max(peak_db_r).clamp(FADER_MIN_DB, FADER_MAX_DB);
+    let meter_readout = if peak_db <= FADER_MIN_DB {
+        "-inf dB".to_string()
+    } else {
+        format!("{peak_db:.1} dB")
+    };
+    let meter = container(
+        column![
+            container(meters(2, &[peak_db_l, peak_db_r], 1.0))
+                .height(Length::Fill)
+                .width(Length::Shrink),
+            text(meter_readout).size(10),
+        ]
+        .spacing(4)
+        .align_x(Alignment::Center),
+    )
+    .height(Length::Fill)
+    .width(Length::Fixed(48.0));
 
     let gain_id = ap(ParamType::MasterOutputGain);
     let gain_value = p(gain_id);
@@ -760,6 +1009,9 @@ fn view(state: &State) -> Element<'_, Message> {
             .params
             .get_bool(ap(ParamType::MasterNoteOffEnabled)),
     );
+    let layer0_toggle = render_source_column("L1", 0, state.envelope_render_sources[0]);
+    let layer1_toggle = render_source_column("L2", 1, state.envelope_render_sources[1]);
+    let layer2_toggle = render_source_column("L3", 2, state.envelope_render_sources[2]);
 
     let remove_inst_button =
         maolan_baseview::iced::widget::button("-").on_press(Message::RemoveInstrument);
@@ -789,15 +1041,19 @@ fn view(state: &State) -> Element<'_, Message> {
         key_max_knob,
         pitch_note_knob,
         note_off_checkbox,
+        layer0_toggle,
+        layer1_toggle,
+        layer2_toggle,
     ]
     .spacing(4)
     .align_y(Alignment::Center);
 
-    let osc_section = |waveform_ty: ParamType,
+    let osc_section = |osc_idx: u8,
+                       waveform_ty: ParamType,
                        freq_ty: ParamType,
                        amp_ty: ParamType,
                        phase_ty: ParamType,
-                       fm_ty: ParamType,
+                       fm_ty: Option<ParamType>,
                        filter_type_ty: ParamType,
                        cutoff_ty: ParamType,
                        q_ty: ParamType,
@@ -807,841 +1063,127 @@ fn view(state: &State) -> Element<'_, Message> {
         let f = ap(freq_ty);
         let a = ap(amp_ty);
         let ph = ap(phase_ty);
-        let fm = ap(fm_ty);
         let ft = ap(filter_type_ty);
         let c = ap(cutoff_ty);
         let qv = ap(q_ty);
         let dt = ap(dist_type_ty);
         let dd = ap(dist_drive_ty);
-        row![
+        let active_layer = state.active_layer_tab.min(2) as usize;
+        let selected_env_kind = state.envelope_selections[active_layer][osc_idx as usize];
+        let mut controls = row![
             waveform_dropdown(w, p(w)),
-            knob("Freq", f, p(f), "Hz", 1.0),
-            knob("Amp", a, p(a), "", 0.01),
-            knob("Phase", ph, p(ph), "", 0.01),
-            knob("FM", fm, p(fm), "", 0.01),
+            clickable_knob(
+                "Amp",
+                a,
+                p(a),
+                "",
+                0.01,
+                Message::SelectOscEnvelope {
+                    kind: EnvelopeKind::OscAmp as u8,
+                    osc: osc_idx,
+                },
+                selected_env_kind == EnvelopeKind::OscAmp as u8,
+            ),
+            clickable_knob(
+                "Freq",
+                f,
+                p(f),
+                "Hz",
+                1.0,
+                Message::SelectOscEnvelope {
+                    kind: EnvelopeKind::OscFreq as u8,
+                    osc: osc_idx,
+                },
+                selected_env_kind == EnvelopeKind::OscFreq as u8,
+            ),
+            knob("Phase", ph, p(ph), "deg", 1.0),
             filter_type_dropdown(ft, p(ft)),
             knob("Cutoff", c, p(c), "Hz", 1.0),
             knob("Q", qv, p(qv), "", 0.01),
             distortion_type_dropdown(dt, p(dt)),
             knob("DistDrive", dd, p(dd), "", 0.01),
         ]
-        .spacing(6)
+        .spacing(6);
+        if let Some(fm_ty) = fm_ty {
+            let fm = ap(fm_ty);
+            controls = controls.push(knob("FM", fm, p(fm), "", 0.01));
+        }
+        controls
     };
 
     let osc0 = osc_section(
-        ParamType::Osc0Waveform,
-        ParamType::Osc0Freq,
-        ParamType::Osc0Amp,
-        ParamType::Osc0Phase,
-        ParamType::Osc0FmAmount,
-        ParamType::Osc0FilterType,
-        ParamType::Osc0FilterCutoff,
-        ParamType::Osc0FilterQ,
-        ParamType::Osc0DistortionType,
-        ParamType::Osc0DistortionDrive,
+        0,
+        active_layer_params.osc0.waveform,
+        active_layer_params.osc0.freq,
+        active_layer_params.osc0.amp,
+        active_layer_params.osc0.phase,
+        None,
+        active_layer_params.osc0.filter_type,
+        active_layer_params.osc0.filter_cutoff,
+        active_layer_params.osc0.filter_q,
+        active_layer_params.osc0.distortion_type,
+        active_layer_params.osc0.distortion_drive,
     );
     let osc1 = osc_section(
-        ParamType::Osc1Waveform,
-        ParamType::Osc1Freq,
-        ParamType::Osc1Amp,
-        ParamType::Osc1Phase,
-        ParamType::Osc1FmAmount,
-        ParamType::Osc1FilterType,
-        ParamType::Osc1FilterCutoff,
-        ParamType::Osc1FilterQ,
-        ParamType::Osc1DistortionType,
-        ParamType::Osc1DistortionDrive,
+        1,
+        active_layer_params.osc1.waveform,
+        active_layer_params.osc1.freq,
+        active_layer_params.osc1.amp,
+        active_layer_params.osc1.phase,
+        Some(active_layer_params.osc1.fm_amount),
+        active_layer_params.osc1.filter_type,
+        active_layer_params.osc1.filter_cutoff,
+        active_layer_params.osc1.filter_q,
+        active_layer_params.osc1.distortion_type,
+        active_layer_params.osc1.distortion_drive,
     );
 
-    let noise_section = column![
-        section_header("NOISE"),
-        row![
-            knob(
-                "Type",
-                ap(ParamType::NoiseType),
-                p(ap(ParamType::NoiseType)),
-                "",
-                1.0
-            ),
-            knob(
-                "Amp",
-                ap(ParamType::NoiseAmp),
-                p(ap(ParamType::NoiseAmp)),
-                "",
-                0.01
-            ),
-            knob(
-                "Density",
-                ap(ParamType::NoiseDensity),
-                p(ap(ParamType::NoiseDensity)),
-                "",
-                0.01
-            ),
-        ]
-        .spacing(6),
-        row![
-            filter_type_dropdown(
-                ap(ParamType::NoiseFilterType),
-                p(ap(ParamType::NoiseFilterType))
-            ),
-            knob(
-                "Cutoff",
-                ap(ParamType::NoiseFilterCutoff),
-                p(ap(ParamType::NoiseFilterCutoff)),
-                "Hz",
-                1.0
-            ),
-            knob(
-                "Q",
-                ap(ParamType::NoiseFilterQ),
-                p(ap(ParamType::NoiseFilterQ)),
-                "",
-                0.01
-            ),
-        ]
-        .spacing(6),
-    ]
-    .spacing(6);
-
-    let _env_section = column![
-        section_header("ENVELOPES"),
-        row![
-            knob(
-                "Osc0A",
-                ap(ParamType::Osc0AmpEnvAttack),
-                p(ap(ParamType::Osc0AmpEnvAttack)),
-                "ms",
-                0.1
-            ),
-            knob(
-                "Osc0D",
-                ap(ParamType::Osc0AmpEnvDecay),
-                p(ap(ParamType::Osc0AmpEnvDecay)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "Osc0S",
-                ap(ParamType::Osc0AmpEnvSustain),
-                p(ap(ParamType::Osc0AmpEnvSustain)),
-                "",
-                0.01
-            ),
-            knob(
-                "Osc0R",
-                ap(ParamType::Osc0AmpEnvRelease),
-                p(ap(ParamType::Osc0AmpEnvRelease)),
-                "ms",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "NoiseA",
-                ap(ParamType::NoiseAmpEnvAttack),
-                p(ap(ParamType::NoiseAmpEnvAttack)),
-                "ms",
-                0.1
-            ),
-            knob(
-                "NoiseD",
-                ap(ParamType::NoiseAmpEnvDecay),
-                p(ap(ParamType::NoiseAmpEnvDecay)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "NoiseS",
-                ap(ParamType::NoiseAmpEnvSustain),
-                p(ap(ParamType::NoiseAmpEnvSustain)),
-                "",
-                0.01
-            ),
-            knob(
-                "NoiseR",
-                ap(ParamType::NoiseAmpEnvRelease),
-                p(ap(ParamType::NoiseAmpEnvRelease)),
-                "ms",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "Osc1A",
-                ap(ParamType::Osc1AmpEnvAttack),
-                p(ap(ParamType::Osc1AmpEnvAttack)),
-                "ms",
-                0.1
-            ),
-            knob(
-                "Osc1D",
-                ap(ParamType::Osc1AmpEnvDecay),
-                p(ap(ParamType::Osc1AmpEnvDecay)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "Osc1S",
-                ap(ParamType::Osc1AmpEnvSustain),
-                p(ap(ParamType::Osc1AmpEnvSustain)),
-                "",
-                0.01
-            ),
-            knob(
-                "Osc1R",
-                ap(ParamType::Osc1AmpEnvRelease),
-                p(ap(ParamType::Osc1AmpEnvRelease)),
-                "ms",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "Osc2A",
-                ap(ParamType::Osc2AmpEnvAttack),
-                p(ap(ParamType::Osc2AmpEnvAttack)),
-                "ms",
-                0.1
-            ),
-            knob(
-                "Osc2D",
-                ap(ParamType::Osc2AmpEnvDecay),
-                p(ap(ParamType::Osc2AmpEnvDecay)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "Osc2S",
-                ap(ParamType::Osc2AmpEnvSustain),
-                p(ap(ParamType::Osc2AmpEnvSustain)),
-                "",
-                0.01
-            ),
-            knob(
-                "Osc2R",
-                ap(ParamType::Osc2AmpEnvRelease),
-                p(ap(ParamType::Osc2AmpEnvRelease)),
-                "ms",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "DensA",
-                ap(ParamType::NoiseDensityEnvAttack),
-                p(ap(ParamType::NoiseDensityEnvAttack)),
-                "ms",
-                0.1
-            ),
-            knob(
-                "DensD",
-                ap(ParamType::NoiseDensityEnvDecay),
-                p(ap(ParamType::NoiseDensityEnvDecay)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "DensS",
-                ap(ParamType::NoiseDensityEnvSustain),
-                p(ap(ParamType::NoiseDensityEnvSustain)),
-                "",
-                0.01
-            ),
-            knob(
-                "DensR",
-                ap(ParamType::NoiseDensityEnvRelease),
-                p(ap(ParamType::NoiseDensityEnvRelease)),
-                "ms",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "MasterA",
-                ap(ParamType::MasterGlobalAmpEnvAttack),
-                p(ap(ParamType::MasterGlobalAmpEnvAttack)),
-                "ms",
-                0.1
-            ),
-            knob(
-                "MasterD",
-                ap(ParamType::MasterGlobalAmpEnvDecay),
-                p(ap(ParamType::MasterGlobalAmpEnvDecay)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "MasterS",
-                ap(ParamType::MasterGlobalAmpEnvSustain),
-                p(ap(ParamType::MasterGlobalAmpEnvSustain)),
-                "",
-                0.01
-            ),
-            knob(
-                "MasterR",
-                ap(ParamType::MasterGlobalAmpEnvRelease),
-                p(ap(ParamType::MasterGlobalAmpEnvRelease)),
-                "ms",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "O0FC A",
-                ap(ParamType::Osc0FilterCutoffEnvAttack),
-                p(ap(ParamType::Osc0FilterCutoffEnvAttack)),
-                "ms",
-                0.1
-            ),
-            knob(
-                "O0FC D",
-                ap(ParamType::Osc0FilterCutoffEnvDecay),
-                p(ap(ParamType::Osc0FilterCutoffEnvDecay)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "O0FC S",
-                ap(ParamType::Osc0FilterCutoffEnvSustain),
-                p(ap(ParamType::Osc0FilterCutoffEnvSustain)),
-                "",
-                0.01
-            ),
-            knob(
-                "O0FC R",
-                ap(ParamType::Osc0FilterCutoffEnvRelease),
-                p(ap(ParamType::Osc0FilterCutoffEnvRelease)),
-                "ms",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "O1FC A",
-                ap(ParamType::Osc1FilterCutoffEnvAttack),
-                p(ap(ParamType::Osc1FilterCutoffEnvAttack)),
-                "ms",
-                0.1
-            ),
-            knob(
-                "O1FC D",
-                ap(ParamType::Osc1FilterCutoffEnvDecay),
-                p(ap(ParamType::Osc1FilterCutoffEnvDecay)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "O1FC S",
-                ap(ParamType::Osc1FilterCutoffEnvSustain),
-                p(ap(ParamType::Osc1FilterCutoffEnvSustain)),
-                "",
-                0.01
-            ),
-            knob(
-                "O1FC R",
-                ap(ParamType::Osc1FilterCutoffEnvRelease),
-                p(ap(ParamType::Osc1FilterCutoffEnvRelease)),
-                "ms",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "O2FC A",
-                ap(ParamType::Osc2FilterCutoffEnvAttack),
-                p(ap(ParamType::Osc2FilterCutoffEnvAttack)),
-                "ms",
-                0.1
-            ),
-            knob(
-                "O2FC D",
-                ap(ParamType::Osc2FilterCutoffEnvDecay),
-                p(ap(ParamType::Osc2FilterCutoffEnvDecay)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "O2FC S",
-                ap(ParamType::Osc2FilterCutoffEnvSustain),
-                p(ap(ParamType::Osc2FilterCutoffEnvSustain)),
-                "",
-                0.01
-            ),
-            knob(
-                "O2FC R",
-                ap(ParamType::Osc2FilterCutoffEnvRelease),
-                p(ap(ParamType::Osc2FilterCutoffEnvRelease)),
-                "ms",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "O0Q A",
-                ap(ParamType::Osc0FilterQEnvAttack),
-                p(ap(ParamType::Osc0FilterQEnvAttack)),
-                "ms",
-                0.1
-            ),
-            knob(
-                "O0Q D",
-                ap(ParamType::Osc0FilterQEnvDecay),
-                p(ap(ParamType::Osc0FilterQEnvDecay)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "O0Q S",
-                ap(ParamType::Osc0FilterQEnvSustain),
-                p(ap(ParamType::Osc0FilterQEnvSustain)),
-                "",
-                0.01
-            ),
-            knob(
-                "O0Q R",
-                ap(ParamType::Osc0FilterQEnvRelease),
-                p(ap(ParamType::Osc0FilterQEnvRelease)),
-                "ms",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "O1Q A",
-                ap(ParamType::Osc1FilterQEnvAttack),
-                p(ap(ParamType::Osc1FilterQEnvAttack)),
-                "ms",
-                0.1
-            ),
-            knob(
-                "O1Q D",
-                ap(ParamType::Osc1FilterQEnvDecay),
-                p(ap(ParamType::Osc1FilterQEnvDecay)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "O1Q S",
-                ap(ParamType::Osc1FilterQEnvSustain),
-                p(ap(ParamType::Osc1FilterQEnvSustain)),
-                "",
-                0.01
-            ),
-            knob(
-                "O1Q R",
-                ap(ParamType::Osc1FilterQEnvRelease),
-                p(ap(ParamType::Osc1FilterQEnvRelease)),
-                "ms",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "O2Q A",
-                ap(ParamType::Osc2FilterQEnvAttack),
-                p(ap(ParamType::Osc2FilterQEnvAttack)),
-                "ms",
-                0.1
-            ),
-            knob(
-                "O2Q D",
-                ap(ParamType::Osc2FilterQEnvDecay),
-                p(ap(ParamType::Osc2FilterQEnvDecay)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "O2Q S",
-                ap(ParamType::Osc2FilterQEnvSustain),
-                p(ap(ParamType::Osc2FilterQEnvSustain)),
-                "",
-                0.01
-            ),
-            knob(
-                "O2Q R",
-                ap(ParamType::Osc2FilterQEnvRelease),
-                p(ap(ParamType::Osc2FilterQEnvRelease)),
-                "ms",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "O0DRV A",
-                ap(ParamType::Osc0DistortionDriveEnvAttack),
-                p(ap(ParamType::Osc0DistortionDriveEnvAttack)),
-                "ms",
-                0.1
-            ),
-            knob(
-                "O0DRV D",
-                ap(ParamType::Osc0DistortionDriveEnvDecay),
-                p(ap(ParamType::Osc0DistortionDriveEnvDecay)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "O0DRV S",
-                ap(ParamType::Osc0DistortionDriveEnvSustain),
-                p(ap(ParamType::Osc0DistortionDriveEnvSustain)),
-                "",
-                0.01
-            ),
-            knob(
-                "O0DRV R",
-                ap(ParamType::Osc0DistortionDriveEnvRelease),
-                p(ap(ParamType::Osc0DistortionDriveEnvRelease)),
-                "ms",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "O1DRV A",
-                ap(ParamType::Osc1DistortionDriveEnvAttack),
-                p(ap(ParamType::Osc1DistortionDriveEnvAttack)),
-                "ms",
-                0.1
-            ),
-            knob(
-                "O1DRV D",
-                ap(ParamType::Osc1DistortionDriveEnvDecay),
-                p(ap(ParamType::Osc1DistortionDriveEnvDecay)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "O1DRV S",
-                ap(ParamType::Osc1DistortionDriveEnvSustain),
-                p(ap(ParamType::Osc1DistortionDriveEnvSustain)),
-                "",
-                0.01
-            ),
-            knob(
-                "O1DRV R",
-                ap(ParamType::Osc1DistortionDriveEnvRelease),
-                p(ap(ParamType::Osc1DistortionDriveEnvRelease)),
-                "ms",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "O2DRV A",
-                ap(ParamType::Osc2DistortionDriveEnvAttack),
-                p(ap(ParamType::Osc2DistortionDriveEnvAttack)),
-                "ms",
-                0.1
-            ),
-            knob(
-                "O2DRV D",
-                ap(ParamType::Osc2DistortionDriveEnvDecay),
-                p(ap(ParamType::Osc2DistortionDriveEnvDecay)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "O2DRV S",
-                ap(ParamType::Osc2DistortionDriveEnvSustain),
-                p(ap(ParamType::Osc2DistortionDriveEnvSustain)),
-                "",
-                0.01
-            ),
-            knob(
-                "O2DRV R",
-                ap(ParamType::Osc2DistortionDriveEnvRelease),
-                p(ap(ParamType::Osc2DistortionDriveEnvRelease)),
-                "ms",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "O0PS A",
-                ap(ParamType::Osc0PitchShiftEnvAttack),
-                p(ap(ParamType::Osc0PitchShiftEnvAttack)),
-                "ms",
-                0.1
-            ),
-            knob(
-                "O0PS D",
-                ap(ParamType::Osc0PitchShiftEnvDecay),
-                p(ap(ParamType::Osc0PitchShiftEnvDecay)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "O0PS S",
-                ap(ParamType::Osc0PitchShiftEnvSustain),
-                p(ap(ParamType::Osc0PitchShiftEnvSustain)),
-                "",
-                0.01
-            ),
-            knob(
-                "O0PS R",
-                ap(ParamType::Osc0PitchShiftEnvRelease),
-                p(ap(ParamType::Osc0PitchShiftEnvRelease)),
-                "ms",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "O1PS A",
-                ap(ParamType::Osc1PitchShiftEnvAttack),
-                p(ap(ParamType::Osc1PitchShiftEnvAttack)),
-                "ms",
-                0.1
-            ),
-            knob(
-                "O1PS D",
-                ap(ParamType::Osc1PitchShiftEnvDecay),
-                p(ap(ParamType::Osc1PitchShiftEnvDecay)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "O1PS S",
-                ap(ParamType::Osc1PitchShiftEnvSustain),
-                p(ap(ParamType::Osc1PitchShiftEnvSustain)),
-                "",
-                0.01
-            ),
-            knob(
-                "O1PS R",
-                ap(ParamType::Osc1PitchShiftEnvRelease),
-                p(ap(ParamType::Osc1PitchShiftEnvRelease)),
-                "ms",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "O2PS A",
-                ap(ParamType::Osc2PitchShiftEnvAttack),
-                p(ap(ParamType::Osc2PitchShiftEnvAttack)),
-                "ms",
-                0.1
-            ),
-            knob(
-                "O2PS D",
-                ap(ParamType::Osc2PitchShiftEnvDecay),
-                p(ap(ParamType::Osc2PitchShiftEnvDecay)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "O2PS S",
-                ap(ParamType::Osc2PitchShiftEnvSustain),
-                p(ap(ParamType::Osc2PitchShiftEnvSustain)),
-                "",
-                0.01
-            ),
-            knob(
-                "O2PS R",
-                ap(ParamType::Osc2PitchShiftEnvRelease),
-                p(ap(ParamType::Osc2PitchShiftEnvRelease)),
-                "ms",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "O0F A",
-                ap(ParamType::Osc0FreqEnvAttack),
-                p(ap(ParamType::Osc0FreqEnvAttack)),
-                "ms",
-                0.1
-            ),
-            knob(
-                "O0F D",
-                ap(ParamType::Osc0FreqEnvDecay),
-                p(ap(ParamType::Osc0FreqEnvDecay)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "O0F S",
-                ap(ParamType::Osc0FreqEnvSustain),
-                p(ap(ParamType::Osc0FreqEnvSustain)),
-                "",
-                0.01
-            ),
-            knob(
-                "O0F R",
-                ap(ParamType::Osc0FreqEnvRelease),
-                p(ap(ParamType::Osc0FreqEnvRelease)),
-                "ms",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "O1F A",
-                ap(ParamType::Osc1FreqEnvAttack),
-                p(ap(ParamType::Osc1FreqEnvAttack)),
-                "ms",
-                0.1
-            ),
-            knob(
-                "O1F D",
-                ap(ParamType::Osc1FreqEnvDecay),
-                p(ap(ParamType::Osc1FreqEnvDecay)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "O1F S",
-                ap(ParamType::Osc1FreqEnvSustain),
-                p(ap(ParamType::Osc1FreqEnvSustain)),
-                "",
-                0.01
-            ),
-            knob(
-                "O1F R",
-                ap(ParamType::Osc1FreqEnvRelease),
-                p(ap(ParamType::Osc1FreqEnvRelease)),
-                "ms",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "O2F A",
-                ap(ParamType::Osc2FreqEnvAttack),
-                p(ap(ParamType::Osc2FreqEnvAttack)),
-                "ms",
-                0.1
-            ),
-            knob(
-                "O2F D",
-                ap(ParamType::Osc2FreqEnvDecay),
-                p(ap(ParamType::Osc2FreqEnvDecay)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "O2F S",
-                ap(ParamType::Osc2FreqEnvSustain),
-                p(ap(ParamType::Osc2FreqEnvSustain)),
-                "",
-                0.01
-            ),
-            knob(
-                "O2F R",
-                ap(ParamType::Osc2FreqEnvRelease),
-                p(ap(ParamType::Osc2FreqEnvRelease)),
-                "ms",
-                1.0
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "O0F Mode",
-                ap(ParamType::Osc0FreqEnvMode),
-                p(ap(ParamType::Osc0FreqEnvMode)),
-                "",
-                1.0
-            ),
-            knob(
-                "O1F Mode",
-                ap(ParamType::Osc1FreqEnvMode),
-                p(ap(ParamType::Osc1FreqEnvMode)),
-                "",
-                1.0
-            ),
-            knob(
-                "O2F Mode",
-                ap(ParamType::Osc2FreqEnvMode),
-                p(ap(ParamType::Osc2FreqEnvMode)),
-                "",
-                1.0
-            ),
-            knob(
-                "MDRV A",
-                ap(ParamType::MasterDistortionVolEnvAttack),
-                p(ap(ParamType::MasterDistortionVolEnvAttack)),
-                "ms",
-                0.1
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "MDRV D",
-                ap(ParamType::MasterDistortionVolEnvDecay),
-                p(ap(ParamType::MasterDistortionVolEnvDecay)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "MDRV S",
-                ap(ParamType::MasterDistortionVolEnvSustain),
-                p(ap(ParamType::MasterDistortionVolEnvSustain)),
-                "",
-                0.01
-            ),
-            knob(
-                "MDRV R",
-                ap(ParamType::MasterDistortionVolEnvRelease),
-                p(ap(ParamType::MasterDistortionVolEnvRelease)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "L0DRV A",
-                ap(ParamType::Layer0DistortionVolEnvAttack),
-                p(ap(ParamType::Layer0DistortionVolEnvAttack)),
-                "ms",
-                0.1
-            ),
-        ]
-        .spacing(6),
-        row![
-            knob(
-                "L0DRV D",
-                ap(ParamType::Layer0DistortionVolEnvDecay),
-                p(ap(ParamType::Layer0DistortionVolEnvDecay)),
-                "ms",
-                1.0
-            ),
-            knob(
-                "L0DRV S",
-                ap(ParamType::Layer0DistortionVolEnvSustain),
-                p(ap(ParamType::Layer0DistortionVolEnvSustain)),
-                "",
-                0.01
-            ),
-            knob(
-                "L0DRV R",
-                ap(ParamType::Layer0DistortionVolEnvRelease),
-                p(ap(ParamType::Layer0DistortionVolEnvRelease)),
-                "ms",
-                1.0
-            ),
-        ]
-        .spacing(6),
+    let active_layer = state.active_layer_tab.min(2) as usize;
+    let selected_noise_env_kind = state.envelope_selections[active_layer][2];
+    let noise_section = row![
+        noise_type_dropdown(p(ap(active_layer_params.noise.noise_type))),
+        clickable_knob(
+            "Amp",
+            ap(active_layer_params.noise.amp),
+            p(ap(active_layer_params.noise.amp)),
+            "",
+            0.01,
+            Message::SelectOscEnvelope {
+                kind: EnvelopeKind::NoiseAmp as u8,
+                osc: 0,
+            },
+            selected_noise_env_kind == EnvelopeKind::NoiseAmp as u8,
+        ),
+        clickable_knob(
+            "Density",
+            ap(active_layer_params.noise.density),
+            p(ap(active_layer_params.noise.density)),
+            "",
+            0.01,
+            Message::SelectOscEnvelope {
+                kind: EnvelopeKind::NoiseDensity as u8,
+                osc: 0,
+            },
+            selected_noise_env_kind == EnvelopeKind::NoiseDensity as u8,
+        ),
+        filter_type_dropdown(
+            ap(active_layer_params.noise.filter_type),
+            p(ap(active_layer_params.noise.filter_type))
+        ),
+        knob(
+            "Cutoff",
+            ap(active_layer_params.noise.filter_cutoff),
+            p(ap(active_layer_params.noise.filter_cutoff)),
+            "Hz",
+            1.0
+        ),
+        knob(
+            "Q",
+            ap(active_layer_params.noise.filter_q),
+            p(ap(active_layer_params.noise.filter_q)),
+            "",
+            0.01
+        ),
     ]
     .spacing(6);
 
@@ -1664,16 +1206,14 @@ fn view(state: &State) -> Element<'_, Message> {
         _ => osc0.into(),
     };
 
-    let mute_checkbox = checkbox_param(
-        "Mute",
-        ap(ParamType::MasterMuted),
-        state.shared.params.get_bool(ap(ParamType::MasterMuted)),
-    );
     let solo_checkbox = checkbox_param(
         "Solo",
         ap(ParamType::MasterSoloed),
         state.shared.params.get_bool(ap(ParamType::MasterSoloed)),
     );
+    let layer_state_controls = row![active_layer_enabled, solo_checkbox, active_layer_amp,]
+        .spacing(0)
+        .align_y(Alignment::Center);
 
     let controls: Element<'_, Message> = column![
         row![
@@ -1693,10 +1233,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 state.active_layer_tab == 2,
                 Message::LayerTabChanged(2)
             ),
-            active_layer_enabled,
-            mute_checkbox,
-            solo_checkbox,
-            active_layer_amp,
+            layer_state_controls,
         ]
         .spacing(8)
         .align_y(Alignment::Center),
@@ -1722,10 +1259,6 @@ fn view(state: &State) -> Element<'_, Message> {
 
 fn theme(_state: &State) -> Theme {
     Theme::TokyoNight
-}
-
-fn section_header(label: &'static str) -> Element<'static, Message> {
-    text(label).size(11).into()
 }
 
 fn waveform_dropdown(id: ParamId, value: f32) -> Element<'static, Message> {
@@ -1820,6 +1353,24 @@ fn filter_type_dropdown(id: ParamId, value: f32) -> Element<'static, Message> {
     .into()
 }
 
+fn noise_type_dropdown(value: f32) -> Element<'static, Message> {
+    let noise_type = NoiseType::from_u8(value as u8);
+    let options = vec![NoiseType::White, NoiseType::Pink, NoiseType::Brownian];
+    let dropdown = pick_list(options, Some(noise_type), move |t| {
+        Message::SetNoiseType(t as u8)
+    })
+    .placeholder("Type")
+    .width(Length::Fixed(84.0));
+
+    container(
+        column![text("Type").size(11), dropdown]
+            .spacing(2)
+            .align_x(Alignment::Center),
+    )
+    .width(Length::Fixed(90.0))
+    .into()
+}
+
 fn distortion_type_dropdown(id: ParamId, value: f32) -> Element<'static, Message> {
     let distortion_type = DistortionType::from_u8(value as u8);
     let options = vec![
@@ -1873,13 +1424,7 @@ fn knob(
     step: f32,
 ) -> Element<'static, Message> {
     let def = param_type_def(id.param_type());
-    let value_text = if units.is_empty() {
-        format!("{value:.2}")
-    } else if units == "Hz" {
-        format!("{value:.0} {units}")
-    } else {
-        format!("{value:.1} {units}")
-    };
+    let value_text = knob_value_text(value, units);
 
     small_knob(
         SmallKnob {
@@ -1893,6 +1438,64 @@ fn knob(
         move |v| Message::SetParam(id, v),
         Message::ReleaseParam(id),
     )
+}
+
+fn clickable_knob(
+    label: &'static str,
+    id: ParamId,
+    value: f32,
+    units: &'static str,
+    step: f32,
+    label_message: Message,
+    active: bool,
+) -> Element<'static, Message> {
+    let def = param_type_def(id.param_type());
+    let min = def.min as f32;
+    let max = def.max as f32;
+    let slider_widget = arch_slider(min..=max, value.clamp(min, max), move |v| {
+        Message::SetParam(id, v)
+    })
+    .step(step)
+    .double_click_reset(def.default as f32)
+    .on_release(Message::ReleaseParam(id))
+    .fill_from_start()
+    .width(Length::Fixed(41.0))
+    .height(Length::Fixed(41.0));
+
+    let label_button = maolan_baseview::iced::widget::button(text(label).size(11))
+        .padding(0)
+        .style(move |theme: &Theme, status| {
+            let mut base = if active {
+                maolan_baseview::iced::widget::button::primary(theme, status)
+            } else {
+                maolan_baseview::iced::widget::button::secondary(theme, status)
+            };
+            base.border.radius = 4.0.into();
+            base
+        })
+        .on_press(label_message);
+
+    container(
+        column![
+            label_button,
+            slider_widget,
+            text(knob_value_text(value, units)).size(10)
+        ]
+        .spacing(2)
+        .align_x(Alignment::Center),
+    )
+    .width(Length::Fixed(50.0))
+    .into()
+}
+
+fn knob_value_text(value: f32, units: &'static str) -> String {
+    if units.is_empty() {
+        format!("{value:.2}")
+    } else if units == "Hz" {
+        format!("{value:.0} {units}")
+    } else {
+        format!("{value:.1} {units}")
+    }
 }
 
 fn checkbox_param(label: &'static str, id: ParamId, value: bool) -> Element<'static, Message> {
@@ -1910,27 +1513,122 @@ fn checkbox_param(label: &'static str, id: ParamId, value: bool) -> Element<'sta
     .into()
 }
 
-fn preview_waveform(length_ms: f32, freq_hz: f32, wave_val: f32) -> Option<Vec<f32>> {
-    if length_ms <= 0.0 || freq_hz <= 0.0 {
+fn render_source_column(
+    label: &'static str,
+    layer: usize,
+    values: [bool; 3],
+) -> Element<'static, Message> {
+    container(
+        column![
+            text(label).size(9),
+            checkbox(values[0]).label("").on_toggle(move |enabled| {
+                Message::EnvelopeRenderSourceChanged {
+                    layer,
+                    source: 0,
+                    enabled,
+                }
+            }),
+            checkbox(values[1]).label("").on_toggle(move |enabled| {
+                Message::EnvelopeRenderSourceChanged {
+                    layer,
+                    source: 1,
+                    enabled,
+                }
+            }),
+            checkbox(values[2]).label("").on_toggle(move |enabled| {
+                Message::EnvelopeRenderSourceChanged {
+                    layer,
+                    source: 2,
+                    enabled,
+                }
+            }),
+        ]
+        .spacing(1)
+        .align_x(Alignment::Center),
+    )
+    .width(Length::Fixed(34.0))
+    .into()
+}
+
+struct PreviewLayerParams {
+    render: [[bool; 3]; 3],
+    enabled: [bool; 3],
+    amp: [f32; 3],
+    osc_freq_hz: [[f32; 2]; 3],
+    osc_amp: [[f32; 2]; 3],
+    noise_amp: [f32; 3],
+    noise_density: [f32; 3],
+}
+
+fn preview_waveform(
+    length_ms: f32,
+    instrument: &crate::kick::dsp::Instrument,
+    layer_params: PreviewLayerParams,
+) -> Option<Vec<f32>> {
+    if length_ms <= 0.0
+        || !layer_params
+            .render
+            .iter()
+            .any(|sources| sources.iter().any(|enabled| *enabled))
+    {
         return None;
     }
 
-    const SAMPLES: usize = 2048;
-    let length_sec = length_ms / 1000.0;
-    let sample_rate = SAMPLES as f32 / length_sec;
+    const PREVIEW_SAMPLES: usize = 2048;
+    let sample_rate = instrument.layers[0].oscillators[0].sample_rate().max(1.0);
+    let render_samples = (length_ms * 0.001 * sample_rate)
+        .round()
+        .clamp(2.0, 192_000.0) as usize;
 
-    let mut osc = Oscillator::new(sample_rate);
-    osc.set_base_freq_hz(freq_hz.max(1.0));
-    osc.set_amplitude(1.0);
-    set_waveform(&mut osc, Waveform::from_u8(wave_val as u8));
-    osc.set_pitch_env(None);
-    osc.set_amp_env(None);
-    osc.set_filter_type(FilterType::Off);
-    osc.set_distortion(None);
+    let mut mono = vec![0.0f32; render_samples];
+    for (layer_idx, layer) in instrument.layers.iter().enumerate() {
+        if !layer_params.enabled[layer_idx] {
+            continue;
+        }
 
-    let mut buf = vec![0.0f32; SAMPLES];
-    osc.render(&mut buf, SAMPLES, None);
-    Some(buf)
+        let mut layer_mix = vec![0.0f32; render_samples];
+        for osc_idx in 0..2 {
+            if layer_params.render[layer_idx][osc_idx]
+                && let Some(osc) = layer.oscillators.get(osc_idx)
+            {
+                let mut osc = osc.clone();
+                osc.set_base_freq_hz(layer_params.osc_freq_hz[layer_idx][osc_idx]);
+                osc.set_amplitude(layer_params.osc_amp[layer_idx][osc_idx]);
+                osc.set_midi_note(60);
+                let mut source_buf = vec![0.0f32; render_samples];
+                osc.render(&mut source_buf, render_samples, None);
+                for (mix_sample, source_sample) in layer_mix.iter_mut().zip(source_buf) {
+                    *mix_sample += source_sample;
+                }
+            }
+        }
+        if layer_params.render[layer_idx][2] {
+            let mut noise = layer.noise.clone();
+            noise.amplitude = layer_params.noise_amp[layer_idx];
+            noise.density = layer_params.noise_density[layer_idx];
+            let mut source_buf = vec![0.0f32; render_samples];
+            noise.render(&mut source_buf, render_samples);
+            for (mix_sample, source_sample) in layer_mix.iter_mut().zip(source_buf) {
+                *mix_sample += source_sample;
+            }
+        }
+
+        for (sample, layer_sample) in mono.iter_mut().zip(layer_mix) {
+            *sample += layer_sample * layer_params.amp[layer_idx];
+        }
+    }
+
+    let mut preview = vec![0.0f32; PREVIEW_SAMPLES];
+    for (i, sample) in preview.iter_mut().enumerate() {
+        let pos = i as f32 * (render_samples - 1) as f32 / (PREVIEW_SAMPLES - 1) as f32;
+        let idx = pos.floor() as usize;
+        let frac = pos - idx as f32;
+        let a = mono[idx];
+        let b = mono.get(idx + 1).copied().unwrap_or(a);
+        *sample = a + (b - a) * frac;
+    }
+
+    Some(preview)
 }
 
 fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {

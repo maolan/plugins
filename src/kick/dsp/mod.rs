@@ -25,7 +25,7 @@ pub fn kick_filter_type(v: u8) -> FilterType {
     }
 }
 
-pub const OSCILLATORS_PER_LAYER: usize = 3;
+pub const OSCILLATORS_PER_LAYER: usize = 2;
 pub const LAYERS_PER_INSTRUMENT: usize = 3;
 pub const INSTRUMENTS_PER_KIT: usize = 16;
 const MAX_SAMPLES: usize = 192_000 * 4;
@@ -46,12 +46,8 @@ pub struct Layer {
 
 impl Layer {
     pub fn new(sample_rate: f32) -> Self {
-        Self {
-            oscillators: [
-                Oscillator::new(sample_rate),
-                Oscillator::new(sample_rate),
-                Oscillator::new(sample_rate),
-            ],
+        let mut layer = Self {
+            oscillators: [Oscillator::new(sample_rate), Oscillator::new(sample_rate)],
             noise: NoiseGenerator::new(sample_rate),
             enabled: true,
             amplitude: 1.0,
@@ -60,8 +56,13 @@ impl Layer {
             filter_cutoff_hz: 20000.0,
             filter_q: 0.7,
             distortion: Distortion::new(DistortionType::SoftClipTanh, 0.0),
-            fm_routing: [0, 0, 0],
+            fm_routing: [0, 0],
+        };
+        for osc in &mut layer.oscillators {
+            osc.set_base_freq_hz(1000.0);
+            osc.set_amplitude(0.0);
         }
+        layer
     }
 
     pub fn reset(&mut self) {
@@ -78,11 +79,8 @@ impl Layer {
             return;
         }
 
-        let mut osc_bufs: [Vec<f32>; OSCILLATORS_PER_LAYER] = [
-            vec![0.0; num_samples],
-            vec![0.0; num_samples],
-            vec![0.0; num_samples],
-        ];
+        let mut osc_bufs: [Vec<f32>; OSCILLATORS_PER_LAYER] =
+            [vec![0.0; num_samples], vec![0.0; num_samples]];
 
         for i in 0..OSCILLATORS_PER_LAYER {
             self.oscillators[i].set_midi_note(midi_note);
@@ -150,7 +148,7 @@ pub struct Instrument {
 
 impl Instrument {
     pub fn new(sample_rate: f32) -> Self {
-        Self {
+        let mut instrument = Self {
             layers: [
                 Layer::new(sample_rate),
                 Layer::new(sample_rate),
@@ -183,7 +181,9 @@ impl Instrument {
             soloed: false,
             sample_rate,
             name: String::new(),
-        }
+        };
+        instrument.layers[0].oscillators[0].set_amplitude(1.0);
+        instrument
     }
 
     pub fn reset(&mut self) {
@@ -611,7 +611,6 @@ mod tests {
         ] {
             inst.layers[0].noise.amplitude = 0.0;
             inst.layers[0].oscillators[1].set_amplitude(0.0);
-            inst.layers[0].oscillators[2].set_amplitude(0.0);
             inst.layers[0].oscillators[0].set_amplitude(0.1);
             inst.layers[0].oscillators[0].set_pitch_env(Some(Envelope::new(vec![
                 EnvPoint::new(0.0, 1.0),

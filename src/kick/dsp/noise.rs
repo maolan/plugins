@@ -19,6 +19,16 @@ impl NoiseType {
     }
 }
 
+impl std::fmt::Display for NoiseType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NoiseType::White => write!(f, "White"),
+            NoiseType::Pink => write!(f, "Pink"),
+            NoiseType::Brownian => write!(f, "Brown"),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Rng {
     s: [u32; 4],
@@ -135,11 +145,11 @@ pub struct NoiseGenerator {
 impl NoiseGenerator {
     pub fn new(sample_rate: f32) -> Self {
         Self {
-            amplitude: 0.3,
+            amplitude: 0.0,
             density: 0.5,
             noise_type: NoiseType::White,
-            amp_env: Envelope::with_default_adsr(0.0, 0.03, 0.0, 0.02),
-            density_env: Envelope::with_default_adsr(0.0, 0.03, 1.0, 0.02),
+            amp_env: Envelope::flat(1.0),
+            density_env: Envelope::flat(1.0),
             filter: SvfFilter::new_with_params(sample_rate, FilterType::Lowpass, 8000.0, 0.7),
             filter_type: FilterType::Lowpass,
             filter_cutoff_hz: 8000.0,
@@ -161,8 +171,8 @@ impl NoiseGenerator {
         let dt = 1.0 / num_samples.max(1) as f32;
         let mut env_buf = vec![0.0f32; num_samples];
         let mut density_buf = vec![0.0f32; num_samples];
-        self.amp_env.fill_buffer(&mut env_buf, dt);
-        self.density_env.fill_buffer(&mut density_buf, dt);
+        self.amp_env.fill_buffer_linear(&mut env_buf, dt);
+        self.density_env.fill_buffer_linear(&mut density_buf, dt);
 
         let thresh = (1.0 - self.density) * u32::MAX as f32;
         for i in 0..num_samples {

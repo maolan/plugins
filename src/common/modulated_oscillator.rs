@@ -1,5 +1,5 @@
 use crate::common::distortion::{Distortion, DistortionType};
-use crate::common::envelope::BezierEnvelope;
+use crate::common::envelope::Envelope;
 use crate::common::filter::{Filter, FilterType};
 use crate::common::oscillator::{ClassicWaveform, OscType, Oscillator};
 
@@ -25,14 +25,12 @@ pub struct ModulatedOscillator {
     base_freq_hz: f32,
     amplitude: f32,
 
-    pitch_env: Option<BezierEnvelope>,
-    amp_env: Option<BezierEnvelope>,
-    filter_cutoff_env: Option<BezierEnvelope>,
-    filter_q_env: Option<BezierEnvelope>,
-    distortion_drive_env: Option<BezierEnvelope>,
-    distortion_volume_env: Option<BezierEnvelope>,
-    pitch_shift_env: Option<BezierEnvelope>,
-    freq_env: Option<BezierEnvelope>,
+    pitch_env: Option<Envelope>,
+    amp_env: Option<Envelope>,
+    filter_cutoff_env: Option<Envelope>,
+    filter_q_env: Option<Envelope>,
+    pitch_shift_env: Option<Envelope>,
+    freq_env: Option<Envelope>,
     freq_env_mode: FreqEnvMode,
 
     filter: Option<Filter>,
@@ -65,8 +63,6 @@ impl ModulatedOscillator {
             amp_env: None,
             filter_cutoff_env: None,
             filter_q_env: None,
-            distortion_drive_env: None,
-            distortion_volume_env: None,
             pitch_shift_env: None,
             freq_env: None,
             freq_env_mode: FreqEnvMode::Linear,
@@ -209,108 +205,78 @@ impl ModulatedOscillator {
         self.freq_env_mode = mode;
     }
 
-    pub fn set_pitch_env(&mut self, env: Option<BezierEnvelope>) {
+    pub fn set_pitch_env(&mut self, env: Option<Envelope>) {
         self.pitch_env = env;
     }
 
-    pub fn pitch_env(&self) -> Option<&BezierEnvelope> {
+    pub fn pitch_env(&self) -> Option<&Envelope> {
         self.pitch_env.as_ref()
     }
 
-    pub fn pitch_env_mut(&mut self) -> &mut BezierEnvelope {
-        self.pitch_env
-            .get_or_insert_with(|| BezierEnvelope::flat(1.0))
+    pub fn pitch_env_mut(&mut self) -> &mut Envelope {
+        self.pitch_env.get_or_insert_with(|| Envelope::flat(1.0))
     }
 
-    pub fn set_amp_env(&mut self, env: Option<BezierEnvelope>) {
+    pub fn set_amp_env(&mut self, env: Option<Envelope>) {
         self.amp_env = env;
     }
 
-    pub fn amp_env(&self) -> Option<&BezierEnvelope> {
+    pub fn amp_env(&self) -> Option<&Envelope> {
         self.amp_env.as_ref()
     }
 
-    pub fn amp_env_mut(&mut self) -> &mut BezierEnvelope {
-        self.amp_env
-            .get_or_insert_with(|| BezierEnvelope::flat(1.0))
+    pub fn amp_env_mut(&mut self) -> &mut Envelope {
+        self.amp_env.get_or_insert_with(|| Envelope::flat(1.0))
     }
 
-    pub fn set_filter_cutoff_env(&mut self, env: Option<BezierEnvelope>) {
+    pub fn set_filter_cutoff_env(&mut self, env: Option<Envelope>) {
         self.filter_cutoff_env = env;
     }
 
-    pub fn filter_cutoff_env(&self) -> Option<&BezierEnvelope> {
+    pub fn filter_cutoff_env(&self) -> Option<&Envelope> {
         self.filter_cutoff_env.as_ref()
     }
 
-    pub fn filter_cutoff_env_mut(&mut self) -> &mut BezierEnvelope {
+    pub fn filter_cutoff_env_mut(&mut self) -> &mut Envelope {
         self.filter_cutoff_env
-            .get_or_insert_with(|| BezierEnvelope::flat(1.0))
+            .get_or_insert_with(|| Envelope::flat(1.0))
     }
 
-    pub fn set_filter_q_env(&mut self, env: Option<BezierEnvelope>) {
+    pub fn set_filter_q_env(&mut self, env: Option<Envelope>) {
         self.filter_q_env = env;
     }
 
-    pub fn filter_q_env(&self) -> Option<&BezierEnvelope> {
+    pub fn filter_q_env(&self) -> Option<&Envelope> {
         self.filter_q_env.as_ref()
     }
 
-    pub fn filter_q_env_mut(&mut self) -> &mut BezierEnvelope {
-        self.filter_q_env
-            .get_or_insert_with(|| BezierEnvelope::flat(1.0))
+    pub fn filter_q_env_mut(&mut self) -> &mut Envelope {
+        self.filter_q_env.get_or_insert_with(|| Envelope::flat(1.0))
     }
 
-    pub fn set_distortion_drive_env(&mut self, env: Option<BezierEnvelope>) {
-        self.distortion_drive_env = env;
-    }
-
-    pub fn distortion_drive_env(&self) -> Option<&BezierEnvelope> {
-        self.distortion_drive_env.as_ref()
-    }
-
-    pub fn distortion_drive_env_mut(&mut self) -> &mut BezierEnvelope {
-        self.distortion_drive_env
-            .get_or_insert_with(|| BezierEnvelope::flat(1.0))
-    }
-
-    pub fn set_distortion_volume_env(&mut self, env: Option<BezierEnvelope>) {
-        self.distortion_volume_env = env;
-    }
-
-    pub fn distortion_volume_env(&self) -> Option<&BezierEnvelope> {
-        self.distortion_volume_env.as_ref()
-    }
-
-    pub fn distortion_volume_env_mut(&mut self) -> &mut BezierEnvelope {
-        self.distortion_volume_env
-            .get_or_insert_with(|| BezierEnvelope::flat(1.0))
-    }
-
-    pub fn set_pitch_shift_env(&mut self, env: Option<BezierEnvelope>) {
+    pub fn set_pitch_shift_env(&mut self, env: Option<Envelope>) {
         self.pitch_shift_env = env;
     }
 
-    pub fn pitch_shift_env(&self) -> Option<&BezierEnvelope> {
+    pub fn pitch_shift_env(&self) -> Option<&Envelope> {
         self.pitch_shift_env.as_ref()
     }
 
-    pub fn pitch_shift_env_mut(&mut self) -> &mut BezierEnvelope {
+    pub fn pitch_shift_env_mut(&mut self) -> &mut Envelope {
         self.pitch_shift_env
-            .get_or_insert_with(|| BezierEnvelope::flat(1.0))
+            .get_or_insert_with(|| Envelope::flat(1.0))
     }
 
-    pub fn set_freq_env(&mut self, env: Option<BezierEnvelope>) {
+    pub fn set_freq_env(&mut self, env: Option<Envelope>) {
         self.freq_env = env;
     }
 
-    pub fn freq_env(&self) -> Option<&BezierEnvelope> {
+    pub fn freq_env(&self) -> Option<&Envelope> {
         self.freq_env.as_ref()
     }
 
-    pub fn freq_env_mut(&mut self) -> &mut BezierEnvelope {
-        self.freq_env
-            .get_or_insert_with(|| BezierEnvelope::flat(0.0))
+    pub fn freq_env_mut(&mut self) -> &mut Envelope {
+        self.freq_env.get_or_insert_with(|| Envelope::flat(1.0))
     }
 
     pub fn filter_type(&self) -> FilterType {
@@ -400,7 +366,7 @@ impl ModulatedOscillator {
 
         let mut amp_buf = vec![1.0f32; out.len()];
         if let Some(env) = &self.amp_env {
-            env.fill_buffer(&mut amp_buf, dt);
+            env.fill_buffer_linear(&mut amp_buf, dt);
         }
 
         let mut cutoff_buf = vec![1.0f32; out.len()];
@@ -413,24 +379,20 @@ impl ModulatedOscillator {
             env.fill_buffer(&mut q_buf, dt);
         }
 
-        let mut drive_buf = vec![1.0f32; out.len()];
-        if let Some(env) = &self.distortion_drive_env {
-            env.fill_buffer(&mut drive_buf, dt);
-        }
-
-        let mut vol_buf = vec![1.0f32; out.len()];
-        if let Some(env) = &self.distortion_volume_env {
-            env.fill_buffer(&mut vol_buf, dt);
-        }
-
         let mut shift_buf = vec![1.0f32; out.len()];
         if let Some(env) = &self.pitch_shift_env {
             env.fill_buffer(&mut shift_buf, dt);
         }
 
-        let mut freq_buf = vec![0.0f32; out.len()];
+        let mut freq_buf = vec![
+            match self.freq_env_mode {
+                FreqEnvMode::Linear => 1.0,
+                FreqEnvMode::Logarithmic => 0.0,
+            };
+            out.len()
+        ];
         if let Some(env) = &self.freq_env {
-            env.fill_buffer(&mut freq_buf, dt);
+            env.fill_buffer_linear(&mut freq_buf, dt);
         }
 
         let base = if self.pitch_to_note {
@@ -446,7 +408,7 @@ impl ModulatedOscillator {
             let pitch_mul = pitch_buf[i];
             let freq_env_val = freq_buf[i];
             let freq_mul = match self.freq_env_mode {
-                FreqEnvMode::Linear => 1.0 + freq_env_val,
+                FreqEnvMode::Linear => freq_env_val,
                 FreqEnvMode::Logarithmic => 2.0f32.powf(freq_env_val),
             };
             let shift_mul = shift_buf[i];
@@ -470,12 +432,11 @@ impl ModulatedOscillator {
                 }
             }
 
-            if distortion_enabled && let Some(distortion) = &self.distortion {
-                let drive = drive_buf[i] * distortion.drive;
-                if drive >= 1.0e-6 {
-                    sample = distortion.process_with_drive(sample, drive);
-                    sample *= vol_buf[i];
-                }
+            if distortion_enabled
+                && let Some(distortion) = &self.distortion
+                && distortion.drive >= 1.0e-6
+            {
+                sample = distortion.process(sample);
             }
 
             out[i] = sample;

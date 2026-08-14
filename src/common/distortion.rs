@@ -48,7 +48,7 @@ impl std::fmt::Display for DistortionType {
     }
 }
 
-use crate::common::envelope::BezierEnvelope;
+use crate::common::envelope::Envelope;
 
 #[derive(Debug, Clone)]
 pub struct Distortion {
@@ -56,7 +56,7 @@ pub struct Distortion {
     pub drive: f32,
     pub input_limit: f32,
     pub output_limit: f32,
-    pub volume_env: BezierEnvelope,
+    pub volume_env: Envelope,
 }
 
 impl Default for Distortion {
@@ -66,7 +66,7 @@ impl Default for Distortion {
             drive: 0.0,
             input_limit: 1.0,
             output_limit: 1.0,
-            volume_env: BezierEnvelope::flat(1.0),
+            volume_env: Envelope::flat(1.0),
         }
     }
 }
@@ -78,7 +78,7 @@ impl Distortion {
             drive,
             input_limit: 1.0,
             output_limit: 1.0,
-            volume_env: BezierEnvelope::flat(1.0),
+            volume_env: Envelope::flat(1.0),
         }
     }
 

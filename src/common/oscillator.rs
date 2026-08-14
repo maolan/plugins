@@ -6,6 +6,9 @@ use crate::common::filter::{Filter, FilterType};
 use crate::common::twist::TwistOsc;
 use crate::common::wavetable::Wavetable;
 
+const DEFAULT_LOWCUT_HZ: f32 = 20.0;
+const DEFAULT_HIGHCUT_HZ: f32 = 20_000.0;
+
 #[inline]
 pub fn note_to_freq(midi_note: f32) -> f32 {
     440.0 * 2.0f32.powf((midi_note - 69.0) / 12.0)
@@ -548,17 +551,25 @@ impl SineOsc {
     }
 
     pub fn set_lowcut(&mut self, freq: f32) {
-        let f = freq.clamp(20.0, 20000.0);
+        let f = freq.clamp(DEFAULT_LOWCUT_HZ, DEFAULT_HIGHCUT_HZ);
         self.lowcut_hz = f;
         self.lowcut.set_params(f, 0.7);
         self.lowcut.prepare_block(f, 0.7, 1);
     }
 
     pub fn set_highcut(&mut self, freq: f32) {
-        let f = freq.clamp(20.0, 20000.0);
+        let f = freq.clamp(DEFAULT_LOWCUT_HZ, DEFAULT_HIGHCUT_HZ);
         self.highcut_hz = f;
         self.highcut.set_params(f, 0.7);
         self.highcut.prepare_block(f, 0.7, 1);
+    }
+
+    fn lowcut_enabled(&self) -> bool {
+        self.lowcut_hz > DEFAULT_LOWCUT_HZ + f32::EPSILON
+    }
+
+    fn highcut_enabled(&self) -> bool {
+        self.highcut_hz < DEFAULT_HIGHCUT_HZ - f32::EPSILON
     }
 
     pub fn set_unison(&mut self, voices: usize, detune: f32) {
@@ -868,16 +879,51 @@ impl SineOsc {
 
         let atten = 1.0 / (self.unison_voices as f32).sqrt();
 
-        self.lowcut.prepare_block(self.lowcut_hz, 0.7, 1);
-        let mut lowcut_r = self.lowcut.clone();
-        let out_l = self.lowcut.process(sum_l * atten);
-        let out_r = lowcut_r.process(sum_r * atten);
+        let (mut out_l, mut out_r) = (sum_l * atten, sum_r * atten);
 
-        self.highcut.prepare_block(self.highcut_hz, 0.7, 1);
-        let mut highcut_r = self.highcut.clone();
-        let out_l = self.highcut.process(out_l);
-        let out_r = highcut_r.process(out_r);
+        if self.lowcut_enabled() {
+            self.lowcut.prepare_block(self.lowcut_hz, 0.7, 1);
+            let mut lowcut_r = self.lowcut.clone();
+            out_l = self.lowcut.process(out_l);
+            out_r = lowcut_r.process(out_r);
+        }
+
+        if self.highcut_enabled() {
+            self.highcut.prepare_block(self.highcut_hz, 0.7, 1);
+            let mut highcut_r = self.highcut.clone();
+            out_l = self.highcut.process(out_l);
+            out_r = highcut_r.process(out_r);
+        }
         (out_l, out_r)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SineOsc;
+
+    #[test]
+    fn sine_default_filters_do_not_shift_initial_cycles() {
+        let sample_rate = 4096.0f32;
+        let freq_hz = 100.0f32;
+        let period = (sample_rate / freq_hz).round() as usize;
+        let mut osc = SineOsc::new(sample_rate);
+        osc.set_freq_hz(freq_hz);
+
+        let mut samples = Vec::with_capacity(period * 3);
+        for _ in 0..samples.capacity() {
+            samples.push(osc.next(0.0).0);
+        }
+
+        for cycle in 0..3 {
+            let start = cycle * period;
+            let end = start + period;
+            let mean = samples[start..end].iter().sum::<f32>() / period as f32;
+            assert!(
+                mean.abs() < 0.02,
+                "cycle {cycle} has unexpected DC shift: {mean}"
+            );
+        }
     }
 }
 

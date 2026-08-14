@@ -58,11 +58,6 @@ pub struct InstrumentConfig {
     #[serde(default = "default_limit", skip_serializing_if = "is_default_limit")]
     pub master_distortion_output_limit: f32,
     #[serde(
-        default = "default_flat_env",
-        skip_serializing_if = "is_default_flat_env"
-    )]
-    pub master_distortion_volume_env: SerdeEnvelope,
-    #[serde(
         default = "default_limiter_threshold",
         skip_serializing_if = "is_default"
     )]
@@ -113,7 +108,6 @@ impl Default for InstrumentConfig {
             master_distortion_drive: 0.0,
             master_distortion_input_limit: 1.0,
             master_distortion_output_limit: 1.0,
-            master_distortion_volume_env: default_flat_env(),
             master_limiter_threshold_db: 0.0,
             master_limiter_release_ms: 50.0,
             length_ms: 300.0,
@@ -155,11 +149,6 @@ pub struct LayerConfig {
     pub distortion_type: u8,
     #[serde(default, skip_serializing_if = "is_default")]
     pub distortion_drive: f32,
-    #[serde(
-        default = "default_flat_env",
-        skip_serializing_if = "is_default_flat_env"
-    )]
-    pub distortion_volume_env: SerdeEnvelope,
     #[serde(default, skip_serializing_if = "is_default")]
     pub fm_routing: Vec<u8>,
 }
@@ -176,8 +165,7 @@ impl Default for LayerConfig {
             filter_q: 0.7,
             distortion_type: 1,
             distortion_drive: 0.0,
-            distortion_volume_env: default_flat_env(),
-            fm_routing: vec![0, 0, 0],
+            fm_routing: vec![0; OSCILLATORS_PER_LAYER],
         }
     }
 }
@@ -234,16 +222,6 @@ pub struct OscillatorConfig {
         default = "default_flat_env",
         skip_serializing_if = "is_default_flat_env"
     )]
-    pub distortion_drive_env: SerdeEnvelope,
-    #[serde(
-        default = "default_flat_env",
-        skip_serializing_if = "is_default_flat_env"
-    )]
-    pub distortion_volume_env: SerdeEnvelope,
-    #[serde(
-        default = "default_flat_env",
-        skip_serializing_if = "is_default_flat_env"
-    )]
     pub pitch_shift_env: SerdeEnvelope,
     #[serde(
         default = "default_flat_env",
@@ -258,8 +236,8 @@ impl Default for OscillatorConfig {
     fn default() -> Self {
         Self {
             waveform: 0,
-            base_freq_hz: 150.0,
-            amplitude: 0.8,
+            base_freq_hz: 1000.0,
+            amplitude: 0.0,
             initial_phase: 0.0,
             fm_amount: 0.0,
             pitch_to_note: false,
@@ -274,8 +252,6 @@ impl Default for OscillatorConfig {
             amp_env: default_amp_env(),
             filter_cutoff_env: default_flat_env(),
             filter_q_env: default_flat_env(),
-            distortion_drive_env: default_flat_env(),
-            distortion_volume_env: default_flat_env(),
             pitch_shift_env: default_flat_env(),
             freq_env: default_flat_env(),
             freq_env_mode: 0,
@@ -319,7 +295,7 @@ impl Default for NoiseConfig {
     fn default() -> Self {
         Self {
             noise_type: 0,
-            amplitude: 0.3,
+            amplitude: 0.0,
             density: 0.5,
             filter_type: 0,
             filter_cutoff_hz: 8000.0,
@@ -382,13 +358,13 @@ fn default_key_max() -> u8 {
     127
 }
 fn default_freq() -> f32 {
-    150.0
+    1000.0
 }
 fn default_osc_amp() -> f32 {
-    0.8
+    0.0
 }
 fn default_noise_amp() -> f32 {
-    0.3
+    0.0
 }
 fn default_density() -> f32 {
     0.5
@@ -468,9 +444,16 @@ fn is_default_flat_env(value: &SerdeEnvelope) -> bool {
 }
 
 fn default_layers() -> Vec<LayerConfig> {
-    (0..LAYERS_PER_INSTRUMENT)
+    let mut layers: Vec<_> = (0..LAYERS_PER_INSTRUMENT)
         .map(|_| LayerConfig::default())
-        .collect()
+        .collect();
+    if let Some(osc) = layers
+        .get_mut(0)
+        .and_then(|layer| layer.oscillators.get_mut(0))
+    {
+        osc.amplitude = 1.0;
+    }
+    layers
 }
 fn default_oscillators() -> Vec<OscillatorConfig> {
     (0..OSCILLATORS_PER_LAYER)
@@ -498,34 +481,7 @@ fn default_pitch_env() -> SerdeEnvelope {
 }
 
 pub fn default_amp_env() -> SerdeEnvelope {
-    SerdeEnvelope {
-        points: vec![
-            SerdeEnvPoint {
-                t: 0.0,
-                v: 0.0,
-                cp_t: 0.33,
-                cp_v: 0.0,
-            },
-            SerdeEnvPoint {
-                t: 0.001,
-                v: 1.0,
-                cp_t: 0.33,
-                cp_v: 0.0,
-            },
-            SerdeEnvPoint {
-                t: 0.2,
-                v: 0.0,
-                cp_t: 0.33,
-                cp_v: 0.0,
-            },
-            SerdeEnvPoint {
-                t: 1.0,
-                v: 0.0,
-                cp_t: 0.33,
-                cp_v: 0.0,
-            },
-        ],
-    }
+    default_flat_env()
 }
 
 pub fn default_flat_env() -> SerdeEnvelope {
@@ -564,6 +520,7 @@ impl KitState {
         }
     }
 
+    #[cfg(test)]
     pub fn apply_params(self, params: &ParamStore) {
         for id in ParamId::all() {
             let key = state_key(id);
@@ -578,6 +535,22 @@ impl KitState {
                 } else {
                     params.set(id, def.default);
                 }
+            }
+        }
+    }
+
+    pub fn apply_param_overrides(&self, params: &ParamStore) {
+        for id in ParamId::all() {
+            let key = state_key(id);
+            if let Some(&value) = self.params.get(&key) {
+                params.set(id, sanitize_param_value(id, value));
+                continue;
+            }
+
+            let def = param_type_def(id.param_type());
+            let legacy_key = def.base_name.to_string();
+            if let Some(&value) = self.params.get(&legacy_key) {
+                params.set(id, sanitize_param_value(id, value));
             }
         }
     }

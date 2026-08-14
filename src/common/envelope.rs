@@ -383,11 +383,11 @@ impl EnvPoint {
 }
 
 #[derive(Debug, Clone)]
-pub struct BezierEnvelope {
+pub struct Envelope {
     points: Vec<EnvPoint>,
 }
 
-impl Default for BezierEnvelope {
+impl Default for Envelope {
     fn default() -> Self {
         Self {
             points: vec![EnvPoint::new(0.0, 1.0), EnvPoint::new(1.0, 0.0)],
@@ -395,7 +395,7 @@ impl Default for BezierEnvelope {
     }
 }
 
-impl BezierEnvelope {
+impl Envelope {
     pub fn new(points: Vec<EnvPoint>) -> Self {
         let mut env = Self { points };
         env.sort_and_dedup();
@@ -455,6 +455,26 @@ impl BezierEnvelope {
         self.points.last().unwrap().v
     }
 
+    pub fn linear_value(&self, t: f32) -> f32 {
+        if self.points.is_empty() {
+            return 0.0;
+        }
+        if t <= self.points[0].t {
+            return self.points[0].v;
+        }
+        if t >= self.points.last().unwrap().t {
+            return self.points.last().unwrap().v;
+        }
+        for i in 1..self.points.len() {
+            let p0 = &self.points[i - 1];
+            let p1 = &self.points[i];
+            if t >= p0.t && t <= p1.t {
+                return linear_between(t, p0, p1);
+            }
+        }
+        self.points.last().unwrap().v
+    }
+
     pub fn fill_buffer(&self, out: &mut [f32], dt_per_sample: f32) {
         if out.is_empty() {
             return;
@@ -483,6 +503,34 @@ impl BezierEnvelope {
         }
     }
 
+    pub fn fill_buffer_linear(&self, out: &mut [f32], dt_per_sample: f32) {
+        if out.is_empty() {
+            return;
+        }
+
+        if let Some(first) = self.points.first()
+            && self.points.iter().all(|p| (p.v - first.v).abs() < 1.0e-9)
+        {
+            out.fill(first.v);
+            return;
+        }
+
+        if self.points.len() == 1 {
+            out.fill(self.points[0].v);
+            return;
+        }
+
+        let mut seg = 0usize;
+        for (i, s) in out.iter_mut().enumerate() {
+            let t = i as f32 * dt_per_sample;
+
+            while seg + 1 < self.points.len() && t > self.points[seg + 1].t {
+                seg += 1;
+            }
+            *s = self.linear_value_at_segment(t, seg);
+        }
+    }
+
     #[inline]
     fn value_at_segment(&self, t: f32, seg: usize) -> f32 {
         if self.points.is_empty() {
@@ -508,6 +556,24 @@ impl BezierEnvelope {
         cubic_bezier(frac, p0.v, cp0_v, cp1_v, p1.v)
     }
 
+    #[inline]
+    fn linear_value_at_segment(&self, t: f32, seg: usize) -> f32 {
+        if self.points.is_empty() {
+            return 0.0;
+        }
+        if t <= self.points[0].t {
+            return self.points[0].v;
+        }
+        let last = self.points.len() - 1;
+        if t >= self.points[last].t {
+            return self.points[last].v;
+        }
+        let i = seg.min(last);
+        let p0 = &self.points[i];
+        let p1 = &self.points[(i + 1).min(last)];
+        linear_between(t, p0, p1)
+    }
+
     pub fn points(&self) -> &[EnvPoint] {
         &self.points
     }
@@ -525,33 +591,43 @@ fn cubic_bezier(t: f32, p0: f32, p1: f32, p2: f32, p3: f32) -> f32 {
     u2 * u * p0 + 3.0 * u2 * t * p1 + 3.0 * u * t2 * p2 + t2 * t * p3
 }
 
+#[inline]
+fn linear_between(t: f32, p0: &EnvPoint, p1: &EnvPoint) -> f32 {
+    let dt = p1.t - p0.t;
+    if dt < 1.0e-9 {
+        return p0.v;
+    }
+    let frac = ((t - p0.t) / dt).clamp(0.0, 1.0);
+    p0.v + (p1.v - p0.v) * frac
+}
+
 #[cfg(test)]
-mod bezier_tests {
+mod envelope_tests {
     use super::*;
 
     #[test]
-    fn bezier_envelope_default() {
-        let env = BezierEnvelope::default();
+    fn envelope_default() {
+        let env = Envelope::default();
         assert!((env.value(0.0) - 1.0).abs() < 1.0e-6);
         assert!((env.value(1.0) - 0.0).abs() < 1.0e-6);
     }
 
     #[test]
-    fn bezier_envelope_adsr() {
-        let env = BezierEnvelope::with_default_adsr(10.0, 50.0, 0.5, 40.0);
+    fn envelope_default_adsr() {
+        let env = Envelope::with_default_adsr(10.0, 50.0, 0.5, 40.0);
         assert!(env.value(0.0).abs() < 1.0e-6);
         assert!((env.value(10.0 / 100.0) - 1.0).abs() < 1.0e-6);
         assert!((env.value(60.0 / 100.0) - 0.5).abs() < 1.0e-6);
     }
 
     #[test]
-    fn bezier_curve() {
-        let env = BezierEnvelope::new(vec![
+    fn curved_value_uses_control_points() {
+        let env = Envelope::new(vec![
             EnvPoint::with_control(0.0, 0.0, 0.33, 0.8),
             EnvPoint::with_control(1.0, 1.0, 0.33, 0.0),
         ]);
         let v = env.value(0.5);
 
-        assert!(v > 0.5, "bezier should curve above linear: {v}");
+        assert!(v > 0.5, "control points should curve above linear: {v}");
     }
 }
