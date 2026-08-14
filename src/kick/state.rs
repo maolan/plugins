@@ -586,6 +586,13 @@ impl KitState {
 
 impl From<&SerdeEnvelope> for Envelope {
     fn from(se: &SerdeEnvelope) -> Self {
+        if se.points.is_empty() {
+            // Empty envelopes are a serialization artifact (for example from
+            // the old pitch-env default bug). Treat them as a flat unity
+            // envelope so they do not collapse the oscillator pitch or mute
+            // the output.
+            return Envelope::flat(1.0);
+        }
         let points: Vec<EnvPoint> = se
             .points
             .iter()

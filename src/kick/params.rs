@@ -267,7 +267,7 @@ pub const PARAM_TYPE_DEFS: [ParamTypeDef; ParamType::COUNT] = [
     param_def!("MIDI Channel", "Master", 0.0, 16.0, 0.0, 1.0, ENUM),
     param_def!("Muted", "Master", 0.0, 1.0, 0.0, 1.0, TOGGLE),
     param_def!("Soloed", "Master", 0.0, 1.0, 0.0, 1.0, TOGGLE),
-    param_def!("Filter Type", "Master", 0.0, 2.0, 0.0, 1.0, ENUM),
+    param_def!("Filter Type", "Master", 0.0, 3.0, 1.0, 1.0, ENUM),
     param_def!(
         "Filter Cutoff",
         "Master",
@@ -326,7 +326,7 @@ pub const PARAM_TYPE_DEFS: [ParamTypeDef; ParamType::COUNT] = [
     ),
     param_def!("Layer 0 Enabled", "Layer0", 0.0, 1.0, 1.0, 1.0, TOGGLE),
     param_def!("Layer 0 Amp", "Layer0", 0.0, 1.0, 1.0, 0.01, AUTOMATABLE),
-    param_def!("Layer 0 Filter Type", "Layer0", 0.0, 2.0, 0.0, 1.0, ENUM),
+    param_def!("Layer 0 Filter Type", "Layer0", 0.0, 3.0, 1.0, 1.0, ENUM),
     param_def!(
         "Layer 0 Filter Cutoff",
         "Layer0",
@@ -373,7 +373,7 @@ pub const PARAM_TYPE_DEFS: [ParamTypeDef; ParamType::COUNT] = [
     param_def!("Osc 0 Amp", "Osc0", 0.0, 1.0, 1.0, 0.01, AUTOMATABLE),
     param_def!("Osc 0 Phase", "Osc0", 0.0, 180.0, 0.0, 1.0, AUTOMATABLE),
     param_def!("Osc 0 FM Amount", "Osc0", 0.0, 1.0, 0.0, 0.01, AUTOMATABLE),
-    param_def!("Osc 0 Filter Type", "Osc0", 0.0, 2.0, 0.0, 1.0, ENUM),
+    param_def!("Osc 0 Filter Type", "Osc0", 0.0, 3.0, 1.0, 1.0, ENUM),
     param_def!(
         "Osc 0 Filter Cutoff",
         "Osc0",
@@ -399,7 +399,7 @@ pub const PARAM_TYPE_DEFS: [ParamTypeDef; ParamType::COUNT] = [
     param_def!("Osc 1 Amp", "Osc1", 0.0, 1.0, 0.0, 0.01, AUTOMATABLE),
     param_def!("Osc 1 Phase", "Osc1", 0.0, 180.0, 0.0, 1.0, AUTOMATABLE),
     param_def!("Osc 1 FM Amount", "Osc1", 0.0, 1.0, 0.0, 0.01, AUTOMATABLE),
-    param_def!("Osc 1 Filter Type", "Osc1", 0.0, 2.0, 0.0, 1.0, ENUM),
+    param_def!("Osc 1 Filter Type", "Osc1", 0.0, 3.0, 1.0, 1.0, ENUM),
     param_def!(
         "Osc 1 Filter Cutoff",
         "Osc1",
@@ -415,7 +415,7 @@ pub const PARAM_TYPE_DEFS: [ParamTypeDef; ParamType::COUNT] = [
     param_def!("Noise Type", "Noise", 0.0, 2.0, 0.0, 1.0, ENUM),
     param_def!("Noise Amp", "Noise", 0.0, 1.0, 0.0, 0.01, AUTOMATABLE),
     param_def!("Noise Density", "Noise", 0.0, 1.0, 0.5, 0.01, AUTOMATABLE),
-    param_def!("Noise Filter Type", "Noise", 0.0, 2.0, 0.0, 1.0, ENUM),
+    param_def!("Noise Filter Type", "Noise", 0.0, 3.0, 1.0, 1.0, ENUM),
     param_def!(
         "Noise Filter Cutoff",
         "Noise",
@@ -434,7 +434,7 @@ pub const PARAM_TYPE_DEFS: [ParamTypeDef; ParamType::COUNT] = [
         0.01,
         AUTOMATABLE
     ),
-    param_def!("Layer 1 Filter Type", "Layer1", 0.0, 2.0, 0.0, 1.0, ENUM),
+    param_def!("Layer 1 Filter Type", "Layer1", 0.0, 3.0, 1.0, 1.0, ENUM),
     param_def!(
         "Layer 1 Filter Cutoff",
         "Layer1",
@@ -513,8 +513,8 @@ pub const PARAM_TYPE_DEFS: [ParamTypeDef; ParamType::COUNT] = [
         "Layer 1 Osc 0 Filter Type",
         "Layer1 Osc0",
         0.0,
-        2.0,
-        0.0,
+        3.0,
+        1.0,
         1.0,
         ENUM
     ),
@@ -603,8 +603,8 @@ pub const PARAM_TYPE_DEFS: [ParamTypeDef; ParamType::COUNT] = [
         "Layer 1 Osc 1 Filter Type",
         "Layer1 Osc1",
         0.0,
-        2.0,
-        0.0,
+        3.0,
+        1.0,
         1.0,
         ENUM
     ),
@@ -675,8 +675,8 @@ pub const PARAM_TYPE_DEFS: [ParamTypeDef; ParamType::COUNT] = [
         "Layer 1 Noise Filter Type",
         "Layer1 Noise",
         0.0,
-        2.0,
-        0.0,
+        3.0,
+        1.0,
         1.0,
         ENUM
     ),
@@ -698,7 +698,7 @@ pub const PARAM_TYPE_DEFS: [ParamTypeDef; ParamType::COUNT] = [
         0.01,
         AUTOMATABLE
     ),
-    param_def!("Layer 2 Filter Type", "Layer2", 0.0, 2.0, 0.0, 1.0, ENUM),
+    param_def!("Layer 2 Filter Type", "Layer2", 0.0, 3.0, 1.0, 1.0, ENUM),
     param_def!(
         "Layer 2 Filter Cutoff",
         "Layer2",
@@ -777,8 +777,8 @@ pub const PARAM_TYPE_DEFS: [ParamTypeDef; ParamType::COUNT] = [
         "Layer 2 Osc 0 Filter Type",
         "Layer2 Osc0",
         0.0,
-        2.0,
-        0.0,
+        3.0,
+        1.0,
         1.0,
         ENUM
     ),
@@ -867,8 +867,8 @@ pub const PARAM_TYPE_DEFS: [ParamTypeDef; ParamType::COUNT] = [
         "Layer 2 Osc 1 Filter Type",
         "Layer2 Osc1",
         0.0,
-        2.0,
-        0.0,
+        3.0,
+        1.0,
         1.0,
         ENUM
     ),
@@ -939,8 +939,8 @@ pub const PARAM_TYPE_DEFS: [ParamTypeDef; ParamType::COUNT] = [
         "Layer 2 Noise Filter Type",
         "Layer2 Noise",
         0.0,
-        2.0,
-        0.0,
+        3.0,
+        1.0,
         1.0,
         ENUM
     ),

@@ -19,8 +19,9 @@ use oscillator::Oscillator;
 
 pub fn kick_filter_type(v: u8) -> FilterType {
     match v {
-        1 => FilterType::Highpass,
+        0 => FilterType::Off,
         2 => FilterType::Bandpass,
+        3 => FilterType::Highpass,
         _ => FilterType::Lowpass,
     }
 }
@@ -740,5 +741,14 @@ mod tests {
 
         let sum: f32 = out.iter().map(|s| s.abs()).sum();
         assert!(sum > 0.0, "freq env log should produce output");
+    }
+
+    #[test]
+    fn kick_filter_type_matches_filter_type_enum() {
+        use crate::common::filter::FilterType;
+        assert_eq!(super::kick_filter_type(0), FilterType::Off);
+        assert_eq!(super::kick_filter_type(1), FilterType::Lowpass);
+        assert_eq!(super::kick_filter_type(2), FilterType::Bandpass);
+        assert_eq!(super::kick_filter_type(3), FilterType::Highpass);
     }
 }

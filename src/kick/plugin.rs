@@ -34,6 +34,7 @@ use parking_lot::Mutex;
 use portable_atomic::{AtomicF32, AtomicF64};
 
 use crate::common::copy_str_to_array;
+use crate::common::ui::FADER_MIN_DB;
 use crate::common::{bus, fft};
 use crate::kick::{
     dsp::oscillator::Oscillator,
@@ -391,6 +392,16 @@ impl SharedState {
                 changed(host);
             }
         }
+    }
+}
+
+/// Peak-program meter logic: attack instantly to a new block peak, then decay
+/// smoothly by `decay_db` so short transients remain visible in the GUI.
+fn update_held_peak_db(prev_peak_db: f32, block_peak_db: f32, decay_db: f32) -> f32 {
+    if block_peak_db >= prev_peak_db {
+        block_peak_db
+    } else {
+        (prev_peak_db - decay_db).max(block_peak_db)
     }
 }
 
@@ -1400,12 +1411,20 @@ impl AudioProcessor {
         }
 
         let peak = crate::simd::peak_abs(&self.master_temp[..frames]);
-        let peak_db = if peak > 1.0e-12 {
+        let block_peak_db = if peak > 1.0e-12 {
             20.0 * peak.log10()
         } else {
-            -60.0
+            FADER_MIN_DB
         };
-        shared.set_output_peak_db(peak_db);
+
+        // Peak-program meter: attack instantly, decay smoothly so short kicks
+        // remain visible instead of flickering once per audio block.
+        const METER_DECAY_DB_PER_SEC: f32 = 60.0;
+        let block_duration_sec = frames as f32 / self.synth.sample_rate;
+        let decay_db = METER_DECAY_DB_PER_SEC * block_duration_sec;
+        let prev_peak_db = shared.output_peak_db_l.load(Ordering::Relaxed);
+        let held_peak_db = update_held_peak_db(prev_peak_db, block_peak_db, decay_db);
+        shared.set_output_peak_db(held_peak_db);
 
         let mut display = shared.waveform_display.lock();
         let num = self.synth.num_samples(0);
@@ -1857,8 +1876,12 @@ unsafe extern "C-unwind" fn ext_state_load(
             sync_params_from_kit_config(&inst.shared.params, &kit_cfg);
             state.apply_param_overrides(&inst.shared.params);
             inst.shared.bump_params_version();
+            let sample_rate = inst.shared.sample_rate();
             let mut kit = inst.shared.kit.lock();
-            *kit = config_to_kit(&kit_cfg, inst.shared.sample_rate());
+            let mut synth = KickSynthesizer::new(sample_rate);
+            synth.kit = config_to_kit(&kit_cfg, sample_rate);
+            apply_params_to_synth(&mut synth, &inst.shared.params);
+            *kit = synth.kit;
             inst.shared.kit_version.fetch_add(1, Ordering::AcqRel);
             drop(kit);
             inst.shared.sync_output_port_count();
@@ -2395,12 +2418,12 @@ pub const unsafe fn descriptor_ptr() -> *const clap_plugin_descriptor {
 mod tests {
     use super::{
         SharedState, apply_params_to_synth, build_note_names, config_to_kit,
-        handle_midi_note_message, kit_to_config, sync_params_from_kit_config,
+        handle_midi_note_message, kit_to_config, sync_params_from_kit_config, update_held_peak_db,
     };
     use crate::kick::{
         dsp::{KickSynthesizer, Kit},
         params::{ParamId, ParamStore, ParamType},
-        state::{KitConfig, KitState},
+        state::{InstrumentConfig, KitConfig, KitState},
     };
 
     const CLAP_IPC_SCRATCH_SIZE: usize = 65_536;
@@ -2637,6 +2660,71 @@ mod tests {
     }
 
     #[test]
+    fn empty_deserialized_pitch_env_recovers_to_unity() {
+        // Sessions saved with the old serialization bug may contain an
+        // explicit empty pitch envelope. Loading that must not collapse the
+        // oscillator to 0.1 Hz.
+        const SAMPLE_RATE: f32 = 48_000.0;
+        let mut kit_cfg = KitConfig {
+            instruments: vec![InstrumentConfig::default()],
+            ..Default::default()
+        };
+        kit_cfg.instruments[0].layers[0].oscillators[0]
+            .pitch_env
+            .points
+            .clear();
+
+        let restored_kit = config_to_kit(&kit_cfg, SAMPLE_RATE);
+        let mut osc = restored_kit.instruments[0].layers[0].oscillators[0].clone();
+        let mut buf = vec![0.0f32; 480];
+        osc.render(&mut buf, 480, None);
+
+        let crossings = buf
+            .windows(2)
+            .filter(|pair| pair[0] <= 0.0 && pair[1] > 0.0)
+            .count();
+        assert!(
+            (9..=11).contains(&crossings),
+            "expected about 10 cycles at 1 kHz over 10 ms, got {crossings}"
+        );
+    }
+
+    #[test]
+    fn first_trigger_output_is_not_attacked_by_filter_ramp() {
+        // Regression test for the SVF filter reset bug: after reset the filter
+        // coefficients g/k were left at zero, so prepare_block() interpolated
+        // the cutoff from 0 Hz over the entire render block. The first trigger
+        // therefore started near silence and had much lower RMS than later
+        // triggers.
+        const SAMPLE_RATE: f32 = 48_000.0;
+        let params = ParamStore::default();
+        let mut synth = KickSynthesizer::new(SAMPLE_RATE);
+        apply_params_to_synth(&mut synth, &params);
+
+        synth.trigger(0, 60, 1.0);
+        let num_samples = synth.num_samples(0);
+        let mut out = vec![0.0f32; num_samples];
+        synth.read_instrument(0, &mut out);
+
+        let rms = (out.iter().map(|s| s * s).sum::<f32>() / out.len().max(1) as f32).sqrt();
+        let first_10ms_peak = out[..480.min(out.len())]
+            .iter()
+            .fold(0.0f32, |a, &b| a.max(b.abs()));
+
+        // A sustained 1 kHz sine at unity amplitude has RMS ~0.707. With the
+        // ramp bug the first trigger RMS was ~0.45 and the first 10 ms peak
+        // was essentially zero.
+        assert!(
+            rms > 0.55,
+            "expected first-trigger RMS above 0.55, got {rms}"
+        );
+        assert!(
+            first_10ms_peak > 0.5,
+            "expected first 10 ms peak above 0.5, got {first_10ms_peak}"
+        );
+    }
+
+    #[test]
     fn note_names_follow_named_instrument_key_ranges() {
         let shared = SharedState::new(std::ptr::null());
         {
@@ -2665,5 +2753,148 @@ mod tests {
         assert!(names.contains(&(37, "Click".to_string())));
         assert!(names.contains(&(38, "Click".to_string())));
         assert!(!names.iter().any(|(note, _)| *note == 35));
+    }
+
+    /// Regression test for the user's ~/Tunes/drums kick session. The saved
+    /// state stores "Filter Type" as a FilterType enum value, but the DSP used
+    /// to interpret it with a different scale (0=lowpass, 1=highpass,
+    /// 2=bandpass). For this session that turned a GUI lowpass selection into
+    /// a 20 kHz highpass, leaving only a tiny residual signal. After the fix
+    /// every note in the drum clip must trigger full-scale audible output.
+    #[test]
+    fn drums_session_filter_type_maps_to_lowpass_not_highpass() {
+        use crate::common::filter::FilterType;
+
+        const SAMPLE_RATE: f32 = 48_000.0;
+        const STATE_BYTES: &[u8] = include_bytes!("../../tests/fixtures/kick_drums_state.bin");
+
+        let state = KitState::from_bytes(STATE_BYTES).expect("deserialize drums kick state");
+        let params = ParamStore::default();
+        sync_params_from_kit_config(&params, &state.kit);
+        state.apply_param_overrides(&params);
+
+        let mut synth = KickSynthesizer::new(SAMPLE_RATE);
+        apply_params_to_synth(&mut synth, &params);
+
+        let inst = &synth.kit.instruments[0];
+        assert_eq!(inst.master_filter_type, FilterType::Lowpass);
+        assert_eq!(inst.layers[0].filter_type, FilterType::Lowpass);
+        assert_eq!(
+            inst.layers[0].oscillators[0].filter_type(),
+            FilterType::Lowpass
+        );
+
+        for note in [35_u8, 36, 60] {
+            let mut out = vec![0.0f32; 4_800];
+            synth.trigger(0, note, 1.0);
+            synth.read_instrument(0, &mut out);
+
+            let peak = out
+                .iter()
+                .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+            assert!(
+                peak > 0.5,
+                "note {note} should be near full scale after fix, got peak {peak}"
+            );
+
+            let crossings = out
+                .windows(2)
+                .filter(|pair| pair[0] <= 0.0 && pair[1] > 0.0)
+                .count();
+            assert!(
+                crossings >= 4,
+                "note {note} should have audible cycles, got {crossings} zero crossings"
+            );
+        }
+    }
+
+    #[test]
+    fn held_peak_meter_attacks_instantly_and_decays_smoothly() {
+        assert_eq!(update_held_peak_db(-90.0, 0.0, 10.0), 0.0);
+        assert_eq!(update_held_peak_db(0.0, -6.0, 10.0), -6.0);
+        assert_eq!(update_held_peak_db(0.0, -90.0, 10.0), -10.0);
+        assert_eq!(update_held_peak_db(-10.0, -90.0, 5.0), -15.0);
+    }
+
+    /// Regression test for the save/reload silence reported after the filter
+    /// type fix: a freshly created kick, saved and restored, must still
+    /// trigger audible audio.
+    #[test]
+    fn default_state_roundtrip_still_triggers_audio() {
+        const SAMPLE_RATE: f32 = 48_000.0;
+
+        let shared = SharedState::new(std::ptr::null());
+        let params = &shared.params;
+        {
+            let mut kit = shared.kit.lock();
+            let mut synth = KickSynthesizer::new(SAMPLE_RATE);
+            synth.kit = kit.clone();
+            apply_params_to_synth(&mut synth, params);
+            *kit = synth.kit;
+        }
+
+        let state = KitState::from_runtime(params, &kit_to_config(&shared.kit.lock()));
+        let bytes = state.to_bytes().expect("serialize state");
+        let restored_state = KitState::from_bytes(&bytes).expect("deserialize state");
+
+        let restored_params = ParamStore::default();
+        sync_params_from_kit_config(&restored_params, &restored_state.kit);
+        restored_state.apply_param_overrides(&restored_params);
+
+        let mut restored_synth = KickSynthesizer::new(SAMPLE_RATE);
+        apply_params_to_synth(&mut restored_synth, &restored_params);
+
+        restored_synth.trigger(0, 60, 1.0);
+        let mut out = vec![0.0f32; 4_800];
+        restored_synth.read_instrument(0, &mut out);
+
+        let peak = out
+            .iter()
+            .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+        assert!(
+            peak > 0.5,
+            "restored default kick should produce near-full-scale audio, got peak {peak}"
+        );
+    }
+
+    /// Regression test for the save/reload silence caused by `ext_state_load`
+    /// building the kit from `KitConfig` without re-applying parameter
+    /// overrides. The bundled drums fixture has a kit config whose filter type
+    /// disagrees with the saved params map; the load path must honour the
+    /// params and produce full-scale output.
+    #[test]
+    fn state_load_kit_build_honours_param_overrides() {
+        use crate::common::filter::FilterType;
+
+        const SAMPLE_RATE: f32 = 48_000.0;
+        const STATE_BYTES: &[u8] = include_bytes!("../../tests/fixtures/kick_drums_state.bin");
+
+        let state = KitState::from_bytes(STATE_BYTES).expect("deserialize drums kick state");
+
+        // This mirrors the fixed `ext_state_load` path:
+        //   sync -> apply overrides -> config_to_kit -> apply_params_to_synth
+        let params = ParamStore::default();
+        sync_params_from_kit_config(&params, &state.kit);
+        state.apply_param_overrides(&params);
+
+        let mut synth = KickSynthesizer::new(SAMPLE_RATE);
+        synth.kit = config_to_kit(&state.kit, SAMPLE_RATE);
+        apply_params_to_synth(&mut synth, &params);
+
+        let inst = &synth.kit.instruments[0];
+        assert_eq!(inst.master_filter_type, FilterType::Lowpass);
+        assert_eq!(inst.layers[0].filter_type, FilterType::Lowpass);
+
+        synth.trigger(0, 36, 1.0);
+        let mut out = vec![0.0f32; 4_800];
+        synth.read_instrument(0, &mut out);
+
+        let peak = out
+            .iter()
+            .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+        assert!(
+            peak > 0.5,
+            "state-load kit must honour param overrides and produce audio, got peak {peak}"
+        );
     }
 }

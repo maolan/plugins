@@ -295,6 +295,13 @@ impl SvfFilter {
         self.s2_1 = 0.0;
         self.s1_2 = 0.0;
         self.s2_2 = 0.0;
+        // Initialize g/k so a render immediately after reset does not ramp
+        // the cutoff up from zero over the whole block.
+        let omega = (self.cutoff_hz / self.sample_rate).clamp(0.0001, 0.4999);
+        self.g = (std::f32::consts::PI * omega).tan();
+        self.k = 1.0 / self.resonance.max(0.1);
+        self.dg = 0.0;
+        self.dk = 0.0;
     }
 
     pub fn set_params(&mut self, cutoff: f32, resonance: f32) {
