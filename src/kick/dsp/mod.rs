@@ -202,13 +202,7 @@ impl Instrument {
             && note <= self.key_max
     }
 
-    pub fn render(
-        &mut self,
-        buf_l: &mut [f32],
-        buf_r: &mut [f32],
-        num_samples: usize,
-        midi_note: u8,
-    ) {
+    pub fn render(&mut self, out: &mut [f32], num_samples: usize, midi_note: u8) {
         let mut mix = vec![0.0f32; num_samples];
 
         for layer in &mut self.layers {
@@ -244,8 +238,7 @@ impl Instrument {
 
         self.master_limiter.process_block(&mut mix);
 
-        buf_l[..num_samples].copy_from_slice(&mix);
-        buf_r[..num_samples].copy_from_slice(&mix);
+        out[..num_samples].copy_from_slice(&mix);
     }
 }
 
@@ -324,20 +317,17 @@ pub struct KickSynthesizer {
     pub kit: Kit,
     pub sample_rate: f32,
 
-    buffers_l: [[Vec<f32>; 2]; INSTRUMENTS_PER_KIT],
-    buffers_r: [[Vec<f32>; 2]; INSTRUMENTS_PER_KIT],
+    buffers: [[Vec<f32>; 2]; INSTRUMENTS_PER_KIT],
     playback: [InstrumentPlayback; INSTRUMENTS_PER_KIT],
 }
 
 impl KickSynthesizer {
     pub fn new(sample_rate: f32) -> Self {
-        let buffers_l = std::array::from_fn(|_| [vec![0.0; MAX_SAMPLES], vec![0.0; MAX_SAMPLES]]);
-        let buffers_r = std::array::from_fn(|_| [vec![0.0; MAX_SAMPLES], vec![0.0; MAX_SAMPLES]]);
+        let buffers = std::array::from_fn(|_| [vec![0.0; MAX_SAMPLES], vec![0.0; MAX_SAMPLES]]);
         Self {
             kit: Kit::new(sample_rate),
             sample_rate,
-            buffers_l,
-            buffers_r,
+            buffers,
             playback: std::array::from_fn(|_| InstrumentPlayback::default()),
         }
     }
@@ -356,10 +346,8 @@ impl KickSynthesizer {
 
         let pb = &mut self.playback[instrument_idx];
         let synth_idx = 1 - pb.active_buffer;
-        let buf_l = &mut self.buffers_l[instrument_idx][synth_idx][..num_samples];
-        let buf_r = &mut self.buffers_r[instrument_idx][synth_idx][..num_samples];
-        buf_l.fill(0.0);
-        buf_r.fill(0.0);
+        let buf = &mut self.buffers[instrument_idx][synth_idx][..num_samples];
+        buf.fill(0.0);
 
         inst.reset();
 
@@ -371,15 +359,13 @@ impl KickSynthesizer {
             velocity.clamp(0.0, 1.0)
         };
 
-        inst.render(buf_l, buf_r, num_samples, note);
+        inst.render(buf, num_samples, note);
 
         if vel < 1.0 {
-            crate::kick::simd_kick::mul_gain_inplace(buf_l, vel);
-            crate::kick::simd_kick::mul_gain_inplace(buf_r, vel);
+            crate::kick::simd_kick::mul_gain_inplace(buf, vel);
         }
 
-        crate::kick::simd_kick::clip_inplace(buf_l, 1.0);
-        crate::kick::simd_kick::clip_inplace(buf_r, 1.0);
+        crate::kick::simd_kick::clip_inplace(buf, 1.0);
 
         pb.active_buffer = synth_idx;
         pb.num_samples = num_samples;
@@ -407,11 +393,9 @@ impl KickSynthesizer {
         pb.release_start_gain = 1.0;
     }
 
-    #[allow(dead_code)]
-    pub fn read(&mut self, out_l: &mut [f32], out_r: &mut [f32]) {
-        let frames = out_l.len().min(out_r.len());
-        out_l[..frames].fill(0.0);
-        out_r[..frames].fill(0.0);
+    #[cfg(test)]
+    pub fn read(&mut self, out: &mut [f32]) {
+        out.fill(0.0);
 
         for inst_idx in 0..self.kit.instruments.len() {
             let pb = &mut self.playback[inst_idx];
@@ -419,13 +403,12 @@ impl KickSynthesizer {
                 continue;
             }
 
-            let buf_l = &self.buffers_l[inst_idx][pb.active_buffer];
-            let buf_r = &self.buffers_r[inst_idx][pb.active_buffer];
+            let buf = &self.buffers[inst_idx][pb.active_buffer];
             let inst = &self.kit.instruments[inst_idx];
             let decay_samples = (inst.note_off_decay_ms * 0.001 * self.sample_rate) as usize;
 
             let mut frame = 0usize;
-            while frame < frames && pb.playback_pos < pb.num_samples {
+            while frame < out.len() && pb.playback_pos < pb.num_samples {
                 if pb.is_releasing && decay_samples > 0 {
                     let rel_pos = pb.playback_pos.saturating_sub(pb.release_sample);
                     if rel_pos >= decay_samples {
@@ -433,20 +416,14 @@ impl KickSynthesizer {
                         break;
                     }
                     let remaining_decay = decay_samples - rel_pos;
-                    let chunk = (frames - frame)
+                    let chunk = (out.len() - frame)
                         .min(pb.num_samples - pb.playback_pos)
                         .min(remaining_decay);
                     let start_gain = 1.0 - (rel_pos as f32 / decay_samples as f32);
                     let end_gain = 1.0 - ((rel_pos + chunk) as f32 / decay_samples as f32);
                     crate::simd::add_ramp_scaled_inplace(
-                        &mut out_l[frame..frame + chunk],
-                        &buf_l[pb.playback_pos..pb.playback_pos + chunk],
-                        start_gain,
-                        end_gain,
-                    );
-                    crate::simd::add_ramp_scaled_inplace(
-                        &mut out_r[frame..frame + chunk],
-                        &buf_r[pb.playback_pos..pb.playback_pos + chunk],
+                        &mut out[frame..frame + chunk],
+                        &buf[pb.playback_pos..pb.playback_pos + chunk],
                         start_gain,
                         end_gain,
                     );
@@ -456,15 +433,10 @@ impl KickSynthesizer {
                         pb.is_playing = false;
                     }
                 } else {
-                    let chunk = (frames - frame).min(pb.num_samples - pb.playback_pos);
+                    let chunk = (out.len() - frame).min(pb.num_samples - pb.playback_pos);
                     crate::simd::add_scaled_inplace(
-                        &mut out_l[frame..frame + chunk],
-                        &buf_l[pb.playback_pos..pb.playback_pos + chunk],
-                        1.0,
-                    );
-                    crate::simd::add_scaled_inplace(
-                        &mut out_r[frame..frame + chunk],
-                        &buf_r[pb.playback_pos..pb.playback_pos + chunk],
+                        &mut out[frame..frame + chunk],
+                        &buf[pb.playback_pos..pb.playback_pos + chunk],
                         1.0,
                     );
                     pb.playback_pos += chunk;
@@ -474,15 +446,8 @@ impl KickSynthesizer {
         }
     }
 
-    pub fn read_instrument(
-        &mut self,
-        inst_idx: usize,
-        out_l: &mut [f32],
-        out_r: &mut [f32],
-    ) -> bool {
-        let frames = out_l.len().min(out_r.len());
-        out_l[..frames].fill(0.0);
-        out_r[..frames].fill(0.0);
+    pub fn read_instrument(&mut self, inst_idx: usize, out: &mut [f32]) -> bool {
+        out.fill(0.0);
 
         if inst_idx >= self.kit.instruments.len() {
             return false;
@@ -493,13 +458,12 @@ impl KickSynthesizer {
             return false;
         }
 
-        let buf_l = &self.buffers_l[inst_idx][pb.active_buffer];
-        let buf_r = &self.buffers_r[inst_idx][pb.active_buffer];
+        let buf = &self.buffers[inst_idx][pb.active_buffer];
         let inst = &self.kit.instruments[inst_idx];
         let decay_samples = (inst.note_off_decay_ms * 0.001 * self.sample_rate) as usize;
 
         let mut frame = 0usize;
-        while frame < frames && pb.playback_pos < pb.num_samples {
+        while frame < out.len() && pb.playback_pos < pb.num_samples {
             if pb.is_releasing && decay_samples > 0 {
                 let rel_pos = pb.playback_pos.saturating_sub(pb.release_sample);
                 if rel_pos >= decay_samples {
@@ -507,20 +471,14 @@ impl KickSynthesizer {
                     break;
                 }
                 let remaining_decay = decay_samples - rel_pos;
-                let chunk = (frames - frame)
+                let chunk = (out.len() - frame)
                     .min(pb.num_samples - pb.playback_pos)
                     .min(remaining_decay);
                 let start_gain = 1.0 - (rel_pos as f32 / decay_samples as f32);
                 let end_gain = 1.0 - ((rel_pos + chunk) as f32 / decay_samples as f32);
                 crate::simd::copy_ramp_scaled_inplace(
-                    &mut out_l[frame..frame + chunk],
-                    &buf_l[pb.playback_pos..pb.playback_pos + chunk],
-                    start_gain,
-                    end_gain,
-                );
-                crate::simd::copy_ramp_scaled_inplace(
-                    &mut out_r[frame..frame + chunk],
-                    &buf_r[pb.playback_pos..pb.playback_pos + chunk],
+                    &mut out[frame..frame + chunk],
+                    &buf[pb.playback_pos..pb.playback_pos + chunk],
                     start_gain,
                     end_gain,
                 );
@@ -530,15 +488,10 @@ impl KickSynthesizer {
                     pb.is_playing = false;
                 }
             } else {
-                let chunk = (frames - frame).min(pb.num_samples - pb.playback_pos);
+                let chunk = (out.len() - frame).min(pb.num_samples - pb.playback_pos);
                 crate::simd::copy_scaled_inplace(
-                    &mut out_l[frame..frame + chunk],
-                    &buf_l[pb.playback_pos..pb.playback_pos + chunk],
-                    1.0,
-                );
-                crate::simd::copy_scaled_inplace(
-                    &mut out_r[frame..frame + chunk],
-                    &buf_r[pb.playback_pos..pb.playback_pos + chunk],
+                    &mut out[frame..frame + chunk],
+                    &buf[pb.playback_pos..pb.playback_pos + chunk],
                     1.0,
                 );
                 pb.playback_pos += chunk;
@@ -548,15 +501,13 @@ impl KickSynthesizer {
         true
     }
 
-    pub fn copy_active_buffer(&self, dst_l: &mut [f32], dst_r: &mut [f32]) -> usize {
+    pub fn copy_active_buffer(&self, dst: &mut [f32]) -> usize {
         for inst_idx in 0..self.kit.instruments.len() {
             let pb = &self.playback[inst_idx];
             if pb.is_playing || pb.num_samples > 0 {
-                let buf_l = &self.buffers_l[inst_idx][pb.active_buffer];
-                let buf_r = &self.buffers_r[inst_idx][pb.active_buffer];
-                let n = dst_l.len().min(dst_r.len()).min(pb.num_samples);
-                dst_l[..n].copy_from_slice(&buf_l[..n]);
-                dst_r[..n].copy_from_slice(&buf_r[..n]);
+                let buf = &self.buffers[inst_idx][pb.active_buffer];
+                let n = dst.len().min(pb.num_samples);
+                dst[..n].copy_from_slice(&buf[..n]);
                 return n;
             }
         }
@@ -591,10 +542,9 @@ mod tests {
         synth.kit.instruments[0].length_ms = 10.0;
         synth.trigger(0, 60, 1.0);
         assert!(synth.num_samples(0) > 0);
-        let mut out_l = vec![0.0f32; 64];
-        let mut out_r = vec![0.0f32; 64];
-        synth.read(&mut out_l, &mut out_r);
-        let sum: f32 = out_l.iter().map(|s| s.abs()).sum();
+        let mut out = vec![0.0f32; 64];
+        synth.read(&mut out);
+        let sum: f32 = out.iter().map(|s| s.abs()).sum();
         assert!(sum > 0.0);
     }
 
@@ -622,15 +572,13 @@ mod tests {
         synth1.trigger(0, 60, 1.0);
         synth2.trigger(0, 60, 0.5);
 
-        let mut buf1_l = vec![0.0f32; 480];
-        let mut buf1_r = vec![0.0f32; 480];
-        let mut buf2_l = vec![0.0f32; 480];
-        let mut buf2_r = vec![0.0f32; 480];
-        synth1.read(&mut buf1_l, &mut buf1_r);
-        synth2.read(&mut buf2_l, &mut buf2_r);
+        let mut buf1 = vec![0.0f32; 480];
+        let mut buf2 = vec![0.0f32; 480];
+        synth1.read(&mut buf1);
+        synth2.read(&mut buf2);
 
-        let energy1: f32 = buf1_l.iter().map(|s| s * s).sum();
-        let energy2: f32 = buf2_l.iter().map(|s| s * s).sum();
+        let energy1: f32 = buf1.iter().map(|s| s * s).sum();
+        let energy2: f32 = buf2.iter().map(|s| s * s).sum();
         let ratio = (energy1 / energy2).sqrt();
         assert!((ratio - 2.0).abs() < 0.2, "energy ratio={ratio}");
     }
@@ -702,12 +650,11 @@ mod tests {
         synth.trigger(0, 60, 1.0);
         synth.release(0);
 
-        let mut out_l = vec![0.0f32; 48000];
-        let mut out_r = vec![0.0f32; 48000];
-        synth.read(&mut out_l, &mut out_r);
+        let mut out = vec![0.0f32; 48000];
+        synth.read(&mut out);
 
         let decay_samples = (10.0 * 0.001 * 48000.0) as usize + 100;
-        let tail = &out_l[decay_samples..];
+        let tail = &out[decay_samples..];
         let max_tail = tail.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
         assert!(
             max_tail < 0.01,
@@ -724,11 +671,10 @@ mod tests {
         synth.trigger(0, 60, 1.0);
         synth.release(0);
 
-        let mut out_l = vec![0.0f32; 480];
-        let mut out_r = vec![0.0f32; 480];
-        synth.read(&mut out_l, &mut out_r);
+        let mut out = vec![0.0f32; 480];
+        synth.read(&mut out);
 
-        let sum: f32 = out_l.iter().map(|s| s.abs()).sum();
+        let sum: f32 = out.iter().map(|s| s.abs()).sum();
         assert!(
             sum < 0.001,
             "note-off disabled should stop immediately: {sum}"
@@ -743,11 +689,10 @@ mod tests {
         synth.kit.instruments[0].master_limiter.threshold_db = -6.0;
         synth.trigger(0, 60, 1.0);
 
-        let mut out_l = vec![0.0f32; 480];
-        let mut out_r = vec![0.0f32; 480];
-        synth.read(&mut out_l, &mut out_r);
+        let mut out = vec![0.0f32; 480];
+        synth.read(&mut out);
 
-        let peak = out_l.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
+        let peak = out.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
         assert!(peak <= 0.51, "limiter should reduce peak below 0.5: {peak}");
     }
 
@@ -767,11 +712,10 @@ mod tests {
         osc.set_freq_env_mode(FreqEnvMode::Linear);
         synth.trigger(0, 60, 1.0);
 
-        let mut out_l = vec![0.0f32; 480];
-        let mut out_r = vec![0.0f32; 480];
-        synth.read(&mut out_l, &mut out_r);
+        let mut out = vec![0.0f32; 480];
+        synth.read(&mut out);
 
-        let sum: f32 = out_l.iter().map(|s| s.abs()).sum();
+        let sum: f32 = out.iter().map(|s| s.abs()).sum();
         assert!(sum > 0.0, "freq env linear should produce output");
     }
 
@@ -791,11 +735,10 @@ mod tests {
         osc.set_freq_env_mode(FreqEnvMode::Logarithmic);
         synth.trigger(0, 60, 1.0);
 
-        let mut out_l = vec![0.0f32; 480];
-        let mut out_r = vec![0.0f32; 480];
-        synth.read(&mut out_l, &mut out_r);
+        let mut out = vec![0.0f32; 480];
+        synth.read(&mut out);
 
-        let sum: f32 = out_l.iter().map(|s| s.abs()).sum();
+        let sum: f32 = out.iter().map(|s| s.abs()).sum();
         assert!(sum > 0.0, "freq env log should produce output");
     }
 }

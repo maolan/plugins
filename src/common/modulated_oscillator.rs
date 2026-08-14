@@ -38,6 +38,24 @@ mod tests {
         assert_eq!(points[0].v, 0.25);
         assert_eq!(points[1].v, 0.5);
     }
+
+    #[test]
+    fn centered_stereo_oscillator_sums_to_mono_without_level_loss() {
+        let mut oscillator = ModulatedOscillator::new(48_000.0);
+        oscillator.set_base_freq_hz(100.0);
+        oscillator.set_amplitude(1.0);
+        let mut out = vec![0.0; 480];
+
+        oscillator.render(&mut out, 480, None);
+
+        let peak = out
+            .iter()
+            .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+        assert!(
+            peak > 0.9,
+            "mono summed oscillator should be near full scale, got {peak}"
+        );
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -456,8 +474,7 @@ impl ModulatedOscillator {
                 .map(|fm| fm.get(i).copied().unwrap_or(0.0) * self.fm_amount)
                 .unwrap_or(0.0);
 
-            let (l, r) = self.oscillator.next(fm, 0.0, 0.0);
-            let mut sample = (l + r) * 0.5 * amp_scale * amp_buf[i];
+            let mut sample = self.oscillator.next_mono(fm, 0.0, 0.0) * amp_scale * amp_buf[i];
 
             if filter_enabled {
                 let cutoff = cutoff_buf[i] * self.filter_cutoff_hz;

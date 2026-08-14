@@ -13,17 +13,18 @@ use clap_clap::{
     events::{EventBuilder, InputEvents, OutputEvents, ParamValue},
     ffi::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_AUDIO_PORTS_RESCAN_LIST, CLAP_CORE_EVENT_SPACE_ID,
-        CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_GESTURE_BEGIN,
+        CLAP_EVENT_MIDI, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_GESTURE_BEGIN,
         CLAP_EVENT_PARAM_GESTURE_END, CLAP_EVENT_PARAM_VALUE, CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI,
         CLAP_EXT_NOTE_NAME, CLAP_EXT_NOTE_PORTS, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL,
         CLAP_INVALID_ID, CLAP_NOTE_DIALECT_MIDI, CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PORT_MONO,
         CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11,
-        clap_audio_port_info, clap_event_header, clap_event_param_gesture, clap_gui_resize_hints,
-        clap_host, clap_host_audio_ports, clap_host_gui, clap_host_note_name, clap_host_params,
-        clap_host_state, clap_id, clap_istream, clap_note_name, clap_note_port_info, clap_ostream,
-        clap_param_info, clap_plugin, clap_plugin_audio_ports, clap_plugin_descriptor,
-        clap_plugin_gui, clap_plugin_note_name, clap_plugin_note_ports, clap_plugin_params,
-        clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status, clap_window,
+        clap_audio_port_info, clap_event_header, clap_event_midi, clap_event_param_gesture,
+        clap_gui_resize_hints, clap_host, clap_host_audio_ports, clap_host_gui,
+        clap_host_note_name, clap_host_params, clap_host_state, clap_id, clap_istream,
+        clap_note_name, clap_note_port_info, clap_ostream, clap_param_info, clap_plugin,
+        clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_gui, clap_plugin_note_name,
+        clap_plugin_note_ports, clap_plugin_params, clap_plugin_state, clap_plugin_tail,
+        clap_process, clap_process_status, clap_window,
     },
     id::ClapId,
     process::Process,
@@ -94,7 +95,6 @@ pub struct SharedState {
     pending_gesture_end: Vec<AtomicU32>,
     active_local_gestures: Vec<AtomicU32>,
     output_peak_db_l: AtomicF32,
-    output_peak_db_r: AtomicF32,
     pub waveform_display: Mutex<(Vec<f32>, Vec<f32>)>,
     host: AtomicPtr<clap_host>,
     pub output_port_count: AtomicU32,
@@ -115,7 +115,6 @@ impl SharedState {
             pending_gesture_end: (0..words).map(|_| AtomicU32::new(0)).collect(),
             active_local_gestures: (0..words).map(|_| AtomicU32::new(0)).collect(),
             output_peak_db_l: AtomicF32::new(-60.0),
-            output_peak_db_r: AtomicF32::new(-60.0),
             waveform_display: Mutex::new((Vec::new(), Vec::new())),
             host: AtomicPtr::new(host.cast_mut()),
             output_port_count: AtomicU32::new(1),
@@ -131,11 +130,7 @@ impl SharedState {
     }
 
     pub fn sync_output_port_count(&self) {
-        let count = self.kit.lock().instruments.len();
-        self.output_port_count.store(
-            count.min(crate::kick::dsp::INSTRUMENTS_PER_KIT) as u32,
-            Ordering::Release,
-        );
+        self.output_port_count.store(1, Ordering::Release);
     }
 
     pub fn request_audio_ports_rescan(&self) {
@@ -309,15 +304,13 @@ impl SharedState {
         }
     }
 
-    pub fn set_output_peak_db(&self, l: f32, r: f32) {
-        self.output_peak_db_l.store(l, Ordering::Relaxed);
-        self.output_peak_db_r.store(r, Ordering::Relaxed);
+    pub fn set_output_peak_db(&self, peak_db: f32) {
+        self.output_peak_db_l.store(peak_db, Ordering::Relaxed);
     }
 
     pub fn output_peak_db(&self) -> (f32, f32) {
-        let l = self.output_peak_db_l.load(Ordering::Relaxed);
-        let r = self.output_peak_db_r.load(Ordering::Relaxed);
-        (l, r)
+        let peak = self.output_peak_db_l.load(Ordering::Relaxed);
+        (peak, peak)
     }
 
     pub fn request_gui_closed(&self) {
@@ -1223,10 +1216,8 @@ fn apply_param_id(
 
 struct AudioProcessor {
     synth: KickSynthesizer,
-    temp_buf_l: Vec<f32>,
-    temp_buf_r: Vec<f32>,
-    master_temp_l: Vec<f32>,
-    master_temp_r: Vec<f32>,
+    temp_buf: Vec<f32>,
+    master_temp: Vec<f32>,
     last_kit_version: u64,
     last_params_version: u64,
     bus_data: Option<bus::PluginSharedData>,
@@ -1235,16 +1226,50 @@ struct AudioProcessor {
     fft_analyzer: fft::SpectrumAnalyzer,
 }
 
+fn trigger_matching_instruments(synth: &mut KickSynthesizer, channel: u8, key: u8, velocity: f32) {
+    if velocity <= 0.0 {
+        release_matching_instruments(synth, channel, key);
+        return;
+    }
+
+    for inst_idx in 0..synth.kit.instruments.len() {
+        let matches = synth.kit.instruments[inst_idx].matches_midi(channel, key);
+        if matches {
+            synth.trigger(inst_idx, key, velocity);
+        }
+    }
+}
+
+fn release_matching_instruments(synth: &mut KickSynthesizer, channel: u8, key: u8) {
+    for inst_idx in 0..synth.kit.instruments.len() {
+        let matches = synth.kit.instruments[inst_idx].matches_midi(channel, key);
+        if matches {
+            synth.release(inst_idx);
+        }
+    }
+}
+
+fn handle_midi_note_message(synth: &mut KickSynthesizer, data: [u8; 3]) {
+    let status = data[0] & 0xF0;
+    let channel = data[0] & 0x0F;
+    let key = data[1];
+    let velocity = data[2];
+
+    match status {
+        0x90 => trigger_matching_instruments(synth, channel, key, velocity as f32 / 127.0),
+        0x80 => release_matching_instruments(synth, channel, key),
+        _ => {}
+    }
+}
+
 impl AudioProcessor {
     fn new(sample_rate: f64, max_frames: u32, bus_data: Option<bus::PluginSharedData>) -> Self {
         let frames = max_frames as usize;
         Self {
             synth: KickSynthesizer::new(sample_rate as f32),
-            temp_buf_l: vec![0.0; frames],
-            temp_buf_r: vec![0.0; frames],
-            master_temp_l: vec![0.0; frames],
-            master_temp_r: vec![0.0; frames],
-            last_kit_version: 0,
+            temp_buf: vec![0.0; frames],
+            master_temp: vec![0.0; frames],
+            last_kit_version: u64::MAX,
             last_params_version: 0,
             bus_data,
             fft_scratch: vec![0.0; frames],
@@ -1255,15 +1280,15 @@ impl AudioProcessor {
 
     fn reset(&mut self) {
         self.synth = KickSynthesizer::new(self.synth.sample_rate);
-        self.last_kit_version = 0;
+        self.last_kit_version = u64::MAX;
         self.last_params_version = 0;
     }
 
     fn process(&mut self, shared: &SharedState, process: &mut Process) -> clap_process_status {
         let frames = process.frames_count() as usize;
-        if self.temp_buf_l.len() < frames {
-            self.temp_buf_l.resize(frames, 0.0);
-            self.temp_buf_r.resize(frames, 0.0);
+        if self.temp_buf.len() < frames {
+            self.temp_buf.resize(frames, 0.0);
+            self.master_temp.resize(frames, 0.0);
         }
 
         let kit_ver = shared.kit_version.load(Ordering::Acquire);
@@ -1316,109 +1341,87 @@ impl AudioProcessor {
                         let velocity = note.velocity() as f32;
                         let key = note.key() as u8;
                         let channel = note.channel() as u8;
-                        if velocity > 0.0 {
-                            for inst_idx in 0..self.synth.kit.instruments.len() {
-                                let inst = &self.synth.kit.instruments[inst_idx];
-                                if inst.matches_midi(channel, key) {
-                                    self.synth.trigger(inst_idx, key, velocity);
-                                }
-                            }
-                        }
+                        trigger_matching_instruments(&mut self.synth, channel, key, velocity);
                     }
                 }
                 CLAP_EVENT_NOTE_OFF => {
                     if let Ok(note) = header.note() {
                         let key = note.key() as u8;
                         let channel = note.channel() as u8;
-                        for inst_idx in 0..self.synth.kit.instruments.len() {
-                            let inst = &self.synth.kit.instruments[inst_idx];
-                            if inst.matches_midi(channel, key) {
-                                self.synth.release(inst_idx);
-                            }
-                        }
+                        release_matching_instruments(&mut self.synth, channel, key);
                     }
+                }
+                CLAP_EVENT_MIDI => {
+                    let midi = unsafe {
+                        &*((header.as_clap_event_header() as *const clap_event_header)
+                            as *const clap_event_midi)
+                    };
+                    handle_midi_note_message(&mut self.synth, midi.data);
                 }
                 _ => {}
             }
         }
 
         let outputs_count = process.audio_outputs_count() as usize;
-        self.master_temp_l[..frames].fill(0.0);
-        self.master_temp_r[..frames].fill(0.0);
+        self.master_temp[..frames].fill(0.0);
 
-        for inst_idx in 0..self.synth.kit.instruments.len() {
-            self.temp_buf_l[..frames].fill(0.0);
-            self.temp_buf_r[..frames].fill(0.0);
-            let playing = self.synth.read_instrument(
-                inst_idx,
-                &mut self.temp_buf_l[..frames],
-                &mut self.temp_buf_r[..frames],
-            );
-            if playing {
-                crate::simd::add_inplace(
-                    &mut self.master_temp_l[..frames],
-                    &self.temp_buf_l[..frames],
-                );
-                crate::simd::add_inplace(
-                    &mut self.master_temp_r[..frames],
-                    &self.temp_buf_r[..frames],
-                );
-
-                let port_idx = inst_idx;
-                if port_idx < outputs_count {
-                    let mut out_port = process.audio_outputs(port_idx as u32);
-                    let ch_count = out_port.channel_count() as usize;
-                    if ch_count >= 1 {
-                        let out_l = unsafe {
-                            std::slice::from_raw_parts_mut(out_port.data32(0).as_mut_ptr(), frames)
-                        };
-                        out_l.copy_from_slice(&self.temp_buf_l[..frames]);
-                    }
-                    if ch_count >= 2 {
-                        let out_r = unsafe {
-                            std::slice::from_raw_parts_mut(out_port.data32(1).as_mut_ptr(), frames)
-                        };
-                        out_r.copy_from_slice(&self.temp_buf_r[..frames]);
-                    }
-                }
+        for port_idx in 0..outputs_count {
+            let mut out_port = process.audio_outputs(port_idx as u32);
+            for channel_idx in 0..out_port.channel_count() {
+                let out = unsafe {
+                    std::slice::from_raw_parts_mut(
+                        out_port.data32(channel_idx).as_mut_ptr(),
+                        frames,
+                    )
+                };
+                out.fill(0.0);
             }
         }
 
-        let peak_l = crate::simd::peak_abs(&self.master_temp_l[..frames]);
-        let peak_r = crate::simd::peak_abs(&self.master_temp_r[..frames]);
-        let peak_db_l = if peak_l > 1.0e-12 {
-            20.0 * peak_l.log10()
+        for inst_idx in 0..self.synth.kit.instruments.len() {
+            self.temp_buf[..frames].fill(0.0);
+            let playing = self
+                .synth
+                .read_instrument(inst_idx, &mut self.temp_buf[..frames]);
+            if playing {
+                crate::simd::add_inplace(&mut self.master_temp[..frames], &self.temp_buf[..frames]);
+            }
+        }
+
+        if outputs_count > 0 {
+            let mut out_port = process.audio_outputs(0);
+            let ch_count = out_port.channel_count() as usize;
+            if ch_count >= 1 {
+                let out = unsafe {
+                    std::slice::from_raw_parts_mut(out_port.data32(0).as_mut_ptr(), frames)
+                };
+                out.copy_from_slice(&self.master_temp[..frames]);
+            }
+        }
+
+        let peak = crate::simd::peak_abs(&self.master_temp[..frames]);
+        let peak_db = if peak > 1.0e-12 {
+            20.0 * peak.log10()
         } else {
             -60.0
         };
-        let peak_db_r = if peak_r > 1.0e-12 {
-            20.0 * peak_r.log10()
-        } else {
-            -60.0
-        };
-        shared.set_output_peak_db(peak_db_l, peak_db_r);
+        shared.set_output_peak_db(peak_db);
 
         let mut display = shared.waveform_display.lock();
         let num = self.synth.num_samples(0);
         if num > 0 {
             display.0.resize(num, 0.0);
             display.1.resize(num, 0.0);
-            {
-                let d0 = &mut display.0 as *mut Vec<f32>;
-                let d1 = &mut display.1 as *mut Vec<f32>;
-                unsafe {
-                    self.synth.copy_active_buffer(&mut *d0, &mut *d1);
-                }
-            }
+            self.synth.copy_active_buffer(&mut display.0);
+            let mono = display.0.clone();
+            display.1.copy_from_slice(&mono);
         }
 
         if let Some(ref bus) = self.bus_data
             && bus::needs(bus::NEED_FFT)
         {
             self.fft_scratch[..frames].fill(0.0);
-            for i in 0..frames {
-                self.fft_scratch[i] = (self.master_temp_l[i] + self.master_temp_r[i]) * 0.5;
-            }
+            self.fft_scratch[..frames].copy_from_slice(&self.master_temp[..frames]);
             if let Some(slot) = bus.fft_slot() {
                 let n = frames.min(1024);
                 self.fft_analyzer
@@ -1598,7 +1601,7 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
         return false;
     }
     let instance = unsafe { instance(plugin) };
-    if index >= instance.shared.output_port_count.load(Ordering::Acquire) {
+    if index != 0 || index >= instance.shared.output_port_count.load(Ordering::Acquire) {
         return false;
     }
     let info = unsafe { &mut *info };
@@ -1606,8 +1609,7 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
     info.channel_count = 1;
     info.port_type = CLAP_PORT_MONO.as_ptr();
     info.flags = CLAP_AUDIO_PORT_IS_MAIN;
-    let name = format!("Inst {}", index + 1);
-    copy_str_to_array(&name, &mut info.name);
+    copy_str_to_array("Main", &mut info.name);
     info.in_place_pair = CLAP_INVALID_ID;
     true
 }
@@ -2392,8 +2394,8 @@ pub const unsafe fn descriptor_ptr() -> *const clap_plugin_descriptor {
 #[cfg(test)]
 mod tests {
     use super::{
-        SharedState, apply_params_to_synth, build_note_names, config_to_kit, kit_to_config,
-        sync_params_from_kit_config,
+        SharedState, apply_params_to_synth, build_note_names, config_to_kit,
+        handle_midi_note_message, kit_to_config, sync_params_from_kit_config,
     };
     use crate::kick::{
         dsp::{KickSynthesizer, Kit},
@@ -2487,6 +2489,20 @@ mod tests {
             }
             assert_eq!(layer.noise.amplitude, 0.0);
         }
+    }
+
+    #[test]
+    fn raw_midi_note_on_triggers_kick_audio() {
+        let mut synth = KickSynthesizer::new(48_000.0);
+        handle_midi_note_message(&mut synth, [0x90, 60, 127]);
+
+        let mut out = vec![0.0f32; 512];
+        synth.read(&mut out);
+
+        let peak = out
+            .iter()
+            .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+        assert!(peak > 0.0, "raw MIDI note-on should produce audio");
     }
 
     #[test]

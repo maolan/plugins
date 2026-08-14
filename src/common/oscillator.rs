@@ -377,6 +377,60 @@ impl ClassicOsc {
         let atten = 1.0 / (self.unison_voices as f32).sqrt();
         (sum_l * atten, sum_r * atten)
     }
+
+    pub fn next_mono(&mut self, fm_input: f32) -> f32 {
+        let mut sum = 0.0f32;
+        let fm_shift = fm_input * 0.05;
+        let morph = self.waveform_morph;
+        let current_wf = self.waveform;
+        let next_wf = self.waveform.next();
+        let pulse_width = self.pulse_width;
+
+        for (i, voice) in self.voices.iter_mut().enumerate() {
+            let t = (voice.phase + fm_shift).fract();
+            let t = if t < 0.0 { t + 1.0 } else { t };
+            let vdt = voice.phase_inc;
+
+            let current = Self::generate_waveform(current_wf, pulse_width, t, vdt);
+            let next = Self::generate_waveform(next_wf, pulse_width, t, vdt);
+            let mut out = current * (1.0 - morph) + next * morph;
+
+            if self.sync_amount > 0.0 {
+                let sync_ratio = 2.0f32.powf(self.sync_amount / 12.0);
+                let sync_inc = vdt * sync_ratio;
+                self.sync_phases[i] += sync_inc;
+                while self.sync_phases[i] >= 1.0 {
+                    self.sync_phases[i] -= 1.0;
+                    voice.phase = 0.0;
+                }
+            }
+
+            voice.phase += vdt;
+            while voice.phase >= 1.0 {
+                voice.phase -= 1.0;
+            }
+
+            out = soft_clip(out);
+            sum += out;
+        }
+
+        if self.sub_level > 0.0 {
+            let sub_ratio = 2.0f32.powi(self.sub_octave as i32);
+            let sub_inc = self.freq_hz * sub_ratio / self.sample_rate;
+            self.sub_phase += sub_inc;
+            while self.sub_phase >= 1.0 {
+                self.sub_phase -= 1.0;
+            }
+            let sub_out = if self.sub_phase < self.width2 {
+                1.0
+            } else {
+                -1.0
+            };
+            sum += sub_out * self.sub_level;
+        }
+
+        sum / (self.unison_voices as f32).sqrt()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -895,6 +949,258 @@ impl SineOsc {
             out_r = highcut_r.process(out_r);
         }
         (out_l, out_r)
+    }
+
+    pub fn next_mono(&mut self, fm_input: f32) -> f32 {
+        let mut sum = 0.0f32;
+
+        for i in 0..self.voices.len() {
+            let voice = &mut self.voices[i];
+            let fm = fm_input * self.fm_amount * 10.0;
+            let fb = self.voice_feedback[i] * self.feedback * 2.0 * PI;
+
+            let out = if self.pm_mode {
+                let phase = (voice.phase + fm + fb).fract();
+                let phase = if phase < 0.0 { phase + 1.0 } else { phase };
+                (phase * 2.0 * PI).sin()
+            } else {
+                let modulated_inc = voice.phase_inc * (1.0 + fm);
+                let fb_phase = (voice.phase + fb / (2.0 * PI)).fract();
+                let fb_phase = if fb_phase < 0.0 {
+                    fb_phase + 1.0
+                } else {
+                    fb_phase
+                };
+                let v = (fb_phase * 2.0 * PI).sin();
+                voice.phase += modulated_inc;
+                while voice.phase >= 1.0 {
+                    voice.phase -= 1.0;
+                }
+                v
+            };
+            self.voice_feedback[i] = out;
+
+            let shaped = if self.shaper_mode == SineShaperMode::Off {
+                out
+            } else {
+                let s = out;
+                let c = (voice.phase * 2.0 * PI).cos();
+                let s2 = 2.0 * s * c;
+                let c2 = c * c - s * s;
+                let s4 = 2.0 * s2 * c2;
+                let q1 = s >= 0.0 && c >= 0.0;
+                let q2 = s >= 0.0 && c < 0.0;
+                let q3 = s < 0.0 && c < 0.0;
+                let q4 = s < 0.0 && c >= 0.0;
+
+                match self.shaper_mode {
+                    SineShaperMode::Off => out,
+                    SineShaperMode::HalfRect => s.max(0.0),
+                    SineShaperMode::FullRect => s.abs(),
+                    SineShaperMode::Squared => s * s,
+                    SineShaperMode::Cubed => s * s * s,
+                    SineShaperMode::Abs => s.abs() * 2.0 - 1.0,
+                    SineShaperMode::SoftClip => {
+                        let x = s * 1.5;
+                        x.clamp(-1.0, 1.0)
+                    }
+                    SineShaperMode::Fold => {
+                        let x = s * 1.5;
+                        (x + 1.0 - ((x + 1.0) * 0.5).fract() * 2.0).fract() * 2.0 - 1.0
+                    }
+                    SineShaperMode::Wrap => {
+                        let x = s * 1.5;
+                        (x + 1.0).fract() * 2.0 - 1.0
+                    }
+                    SineShaperMode::SignSin2 => s.abs() * s,
+                    SineShaperMode::Sin2PosHalf => {
+                        if s >= 0.0 {
+                            s * s
+                        } else {
+                            0.0
+                        }
+                    }
+                    SineShaperMode::Sin2xPosHalf => {
+                        if s >= 0.0 {
+                            s2
+                        } else {
+                            0.0
+                        }
+                    }
+                    SineShaperMode::Mode1_2xPos => {
+                        if s >= 0.0 {
+                            s2.abs() * s2
+                        } else {
+                            0.0
+                        }
+                    }
+                    SineShaperMode::AbsSin2xPos => {
+                        if s >= 0.0 {
+                            s2.abs()
+                        } else {
+                            0.0
+                        }
+                    }
+                    SineShaperMode::Sin2_2xPos => {
+                        if s >= 0.0 {
+                            s2 * s2
+                        } else {
+                            0.0
+                        }
+                    }
+                    SineShaperMode::TwoSinMinus1Pos => {
+                        if s >= 0.0 {
+                            2.0 * s - 1.0
+                        } else {
+                            -1.0
+                        }
+                    }
+                    SineShaperMode::SinQ24 => {
+                        if q2 || q4 {
+                            s
+                        } else {
+                            0.0
+                        }
+                    }
+                    SineShaperMode::SinQ13 => {
+                        if q1 || q3 {
+                            s
+                        } else {
+                            0.0
+                        }
+                    }
+                    SineShaperMode::TwoSin2Minus1Pos => {
+                        if s >= 0.0 {
+                            2.0 * s * s - 1.0
+                        } else {
+                            -1.0
+                        }
+                    }
+                    SineShaperMode::Sin2xSignCos => s2 * c.signum(),
+                    SineShaperMode::Sin2xQ13 => {
+                        if q1 || q3 {
+                            s2
+                        } else {
+                            0.0
+                        }
+                    }
+                    SineShaperMode::AbsCos2xPos => {
+                        if s >= 0.0 {
+                            c2.abs()
+                        } else {
+                            0.0
+                        }
+                    }
+                    SineShaperMode::OneMinusSinQ14 => {
+                        if q1 {
+                            1.0 - s
+                        } else if q4 {
+                            -1.0 - s
+                        } else {
+                            0.0
+                        }
+                    }
+                    SineShaperMode::OneMinusSinCosQ14 => {
+                        if q1 {
+                            1.0 - s
+                        } else if q4 {
+                            c - 1.0
+                        } else {
+                            0.0
+                        }
+                    }
+                    SineShaperMode::OneMinusSinQ12 => {
+                        if q1 || q2 {
+                            1.0 - s
+                        } else {
+                            -1.0 - s
+                        }
+                    }
+                    SineShaperMode::MixQ => {
+                        if q1 {
+                            s2
+                        } else if q2 {
+                            c
+                        } else if q3 {
+                            -s2
+                        } else {
+                            s2
+                        }
+                    }
+                    SineShaperMode::Mix2 => {
+                        if q1 {
+                            s2
+                        } else if q2 {
+                            -s4
+                        } else {
+                            s
+                        }
+                    }
+                    SineShaperMode::SinQ13Sat => {
+                        if q1 || q3 {
+                            s
+                        } else if q2 {
+                            1.0
+                        } else {
+                            -1.0
+                        }
+                    }
+                    SineShaperMode::SinQ24Sat => {
+                        if q1 {
+                            1.0
+                        } else if q3 {
+                            -1.0
+                        } else {
+                            s
+                        }
+                    }
+                    SineShaperMode::SinCosPos => {
+                        if c >= 0.0 {
+                            s
+                        } else {
+                            0.0
+                        }
+                    }
+                    SineShaperMode::SinCosNeg => {
+                        if c <= 0.0 {
+                            s
+                        } else {
+                            0.0
+                        }
+                    }
+                    SineShaperMode::OneMinusSinMix => {
+                        if q1 || q2 {
+                            1.0 - s
+                        } else {
+                            s
+                        }
+                    }
+                }
+            };
+
+            if self.pm_mode {
+                voice.phase += voice.phase_inc;
+                while voice.phase >= 1.0 {
+                    voice.phase -= 1.0;
+                }
+            }
+
+            sum += shaped;
+        }
+
+        let mut out = sum / (self.unison_voices as f32).sqrt();
+
+        if self.lowcut_enabled() {
+            self.lowcut.prepare_block(self.lowcut_hz, 0.7, 1);
+            out = self.lowcut.process(out);
+        }
+
+        if self.highcut_enabled() {
+            self.highcut.prepare_block(self.highcut_hz, 0.7, 1);
+            out = self.highcut.process(out);
+        }
+
+        out
     }
 }
 
@@ -3086,6 +3392,26 @@ impl SampleOsc {
 
         (sample, sample)
     }
+
+    pub fn next_mono(&mut self, _fm_input: f32) -> f32 {
+        let len = self.buffer.len();
+        if len == 0 || self.phase >= len as f32 {
+            return 0.0;
+        }
+
+        let idx = self.phase as usize;
+        let frac = self.phase - idx as f32;
+        let s0 = self.buffer[idx];
+        let s1 = self.buffer[(idx + 1).min(len - 1)];
+        let sample = s0 + frac * (s1 - s0);
+
+        self.phase += self.freq_hz / self.sample_rate;
+        if self.phase >= len as f32 {
+            self.phase = len as f32;
+        }
+
+        sample
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -3211,6 +3537,18 @@ impl Oscillator {
             Oscillator::Twist(o) => o.next(fm_input),
             Oscillator::AudioInput(o) => o.next(fm_input, audio_in_l, audio_in_r),
             Oscillator::Sample(o) => o.next(fm_input),
+        }
+    }
+
+    pub fn next_mono(&mut self, fm_input: f32, audio_in_l: f32, audio_in_r: f32) -> f32 {
+        match self {
+            Oscillator::Classic(o) => o.next_mono(fm_input),
+            Oscillator::Sine(o) => o.next_mono(fm_input),
+            Oscillator::Sample(o) => o.next_mono(fm_input),
+            _ => {
+                let (left, right) = self.next(fm_input, audio_in_l, audio_in_r);
+                left + right
+            }
         }
     }
 
