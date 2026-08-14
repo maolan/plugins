@@ -2392,10 +2392,11 @@ pub const unsafe fn descriptor_ptr() -> *const clap_plugin_descriptor {
 #[cfg(test)]
 mod tests {
     use super::{
-        SharedState, build_note_names, config_to_kit, kit_to_config, sync_params_from_kit_config,
+        SharedState, apply_params_to_synth, build_note_names, config_to_kit, kit_to_config,
+        sync_params_from_kit_config,
     };
     use crate::kick::{
-        dsp::Kit,
+        dsp::{KickSynthesizer, Kit},
         params::{ParamId, ParamStore, ParamType},
         state::{KitConfig, KitState},
     };
@@ -2529,6 +2530,93 @@ mod tests {
         assert_eq!(
             restored_params.get(ParamId::new(0, ParamType::Osc0Freq)),
             1234.0
+        );
+    }
+
+    #[test]
+    fn state_roundtrip_preserves_oscillator_frequency() {
+        let params = ParamStore::default();
+        let freq_id = ParamId::new(0, ParamType::Osc0Freq);
+        params.set(freq_id, 1500.0);
+
+        let mut synth = KickSynthesizer::new(48_000.0);
+        apply_params_to_synth(&mut synth, &params);
+
+        let state = KitState::from_runtime(&params, &kit_to_config(&synth.kit));
+        let bytes = state.to_bytes().expect("serialize state");
+        let restored_state = KitState::from_bytes(&bytes).expect("deserialize state");
+
+        let restored_params = ParamStore::default();
+        sync_params_from_kit_config(&restored_params, &restored_state.kit);
+        restored_state.apply_param_overrides(&restored_params);
+
+        let mut restored_synth = KickSynthesizer::new(48_000.0);
+        apply_params_to_synth(&mut restored_synth, &restored_params);
+
+        assert_eq!(
+            restored_synth.kit.instruments[0].layers[0].oscillators[0].base_freq_hz(),
+            1500.0
+        );
+    }
+
+    #[test]
+    fn state_roundtrip_preserves_default_frequency() {
+        let params = ParamStore::default();
+        let mut synth = KickSynthesizer::new(48_000.0);
+        apply_params_to_synth(&mut synth, &params);
+
+        let state = KitState::from_runtime(&params, &kit_to_config(&synth.kit));
+        let bytes = state.to_bytes().expect("serialize state");
+        let restored_state = KitState::from_bytes(&bytes).expect("deserialize state");
+
+        let restored_params = ParamStore::default();
+        sync_params_from_kit_config(&restored_params, &restored_state.kit);
+        restored_state.apply_param_overrides(&restored_params);
+
+        let mut restored_synth = KickSynthesizer::new(48_000.0);
+        apply_params_to_synth(&mut restored_synth, &restored_params);
+
+        assert_eq!(
+            restored_synth.kit.instruments[0].layers[0].oscillators[0].base_freq_hz(),
+            1000.0
+        );
+    }
+
+    #[test]
+    fn state_roundtrip_preserves_rendered_pitch() {
+        // Regression test for the pitch-envelope default bug: an empty
+        // deserialized pitch envelope collapsed the oscillator frequency to
+        // the 0.1 Hz minimum, so the rendered output had no zero crossings.
+        //
+        // Note: we convert the restored KitConfig back to a Kit directly
+        // (without apply_params_to_synth) because re-applying parameters
+        // resets the oscillator and clears the pitch envelope, masking the
+        // serialization bug that occurs during normal state load.
+        const SAMPLE_RATE: f32 = 48_000.0;
+
+        let params = ParamStore::default();
+        let mut synth = KickSynthesizer::new(SAMPLE_RATE);
+        apply_params_to_synth(&mut synth, &params);
+
+        let state = KitState::from_runtime(&params, &kit_to_config(&synth.kit));
+        let bytes = state.to_bytes().expect("serialize state");
+        let restored_state = KitState::from_bytes(&bytes).expect("deserialize state");
+
+        let restored_kit = config_to_kit(&restored_state.kit, SAMPLE_RATE);
+        let mut osc = restored_kit.instruments[0].layers[0].oscillators[0].clone();
+        let mut buf = vec![0.0f32; 480];
+        osc.render(&mut buf, 480, None);
+
+        let crossings = buf
+            .windows(2)
+            .filter(|pair| pair[0] <= 0.0 && pair[1] > 0.0)
+            .count();
+
+        // 1 kHz sine over 10 ms -> 10 cycles -> ~10 positive-going zero crossings.
+        // A collapsed pitch envelope produces essentially none.
+        assert!(
+            (9..=11).contains(&crossings),
+            "expected about 10 cycles at 1 kHz over 10 ms, got {crossings}"
         );
     }
 

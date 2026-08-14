@@ -93,7 +93,10 @@ pub struct InstrumentConfig {
     pub muted: bool,
     #[serde(default, skip_serializing_if = "is_default")]
     pub soloed: bool,
-    #[serde(default, skip_serializing_if = "is_default_amp_env")]
+    #[serde(
+        default = "default_amp_env",
+        skip_serializing_if = "is_default_amp_env"
+    )]
     pub global_amp_env: SerdeEnvelope,
 }
 
@@ -201,7 +204,10 @@ pub struct OscillatorConfig {
     pub sample_data: Option<String>,
     #[serde(default, skip_serializing_if = "is_default_sample_rate")]
     pub sample_rate: f32,
-    #[serde(default, skip_serializing_if = "is_default_pitch_env")]
+    #[serde(
+        default = "default_pitch_env",
+        skip_serializing_if = "is_default_pitch_env"
+    )]
     pub pitch_env: SerdeEnvelope,
     #[serde(
         default = "default_amp_env",
