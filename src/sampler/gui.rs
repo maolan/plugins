@@ -14,9 +14,9 @@ use clap_clap::ffi::CLAP_WINDOW_API_WIN32;
 #[cfg(unix)]
 use clap_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::{
-    Alignment, Background, Border, Color, Element, Length, Point, Task, Theme,
+    Alignment, Background, Border, Color, Element, Length, Point, Rectangle, Size, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{button, checkbox, column, container, mouse_area, row, scrollable, text},
+    widget::{button, canvas, checkbox, column, container, mouse_area, pick_list, row, scrollable, text, text_input},
 };
 use maolan_widgets::arch_slider::arch_slider;
 use maolan_widgets::slider::Slider;
@@ -32,6 +32,7 @@ use crate::{
         dsp::mod_matrix::ModTarget,
         params::{PARAMS, ParamId},
         plugin::SharedState,
+        state::SampleZone,
     },
 };
 
@@ -96,10 +97,15 @@ pub enum Message {
     StopSideResize,
     OpenBrowserEntry(PathBuf),
     BeginAudioFileDrag(PathBuf),
-    ZoneNoteHovered(usize),
-    ZoneNoteReleased(usize),
+    ZoneNoteHovered(usize, u8, f32),
+    ZoneNoteReleased(usize, u8),
     StartZoneEdgeDrag(usize, ZoneEdge),
     StopZoneEdgeDrag,
+    StartZoneBodyDrag(usize, f32, f32),
+    StopZoneBodyDrag,
+    StartRenameZone(usize),
+    UpdateRenameText(String),
+    FinishRenameZone,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +118,71 @@ pub enum SidePanel {
 pub enum ZoneEdge {
     Start,
     End,
+    Top,
+    Bottom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EgSelectorOption {
+    Amp,
+    Filter,
+    Pitch,
+    Eg1,
+    Eg2,
+    Eg3,
+}
+
+impl EgSelectorOption {
+    fn index(self) -> usize {
+        match self {
+            EgSelectorOption::Amp => 0,
+            EgSelectorOption::Filter => 1,
+            EgSelectorOption::Pitch => 2,
+            EgSelectorOption::Eg1 => 3,
+            EgSelectorOption::Eg2 => 4,
+            EgSelectorOption::Eg3 => 5,
+        }
+    }
+
+    fn from_index(index: usize) -> Option<Self> {
+        match index {
+            0 => Some(EgSelectorOption::Amp),
+            1 => Some(EgSelectorOption::Filter),
+            2 => Some(EgSelectorOption::Pitch),
+            3 => Some(EgSelectorOption::Eg1),
+            4 => Some(EgSelectorOption::Eg2),
+            5 => Some(EgSelectorOption::Eg3),
+            _ => None,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            EgSelectorOption::Amp => "Amp",
+            EgSelectorOption::Filter => "Filter",
+            EgSelectorOption::Pitch => "Pitch",
+            EgSelectorOption::Eg1 => "EG 1",
+            EgSelectorOption::Eg2 => "EG 2",
+            EgSelectorOption::Eg3 => "EG 3",
+        }
+    }
+
+    fn all() -> [Self; 6] {
+        [
+            EgSelectorOption::Amp,
+            EgSelectorOption::Filter,
+            EgSelectorOption::Pitch,
+            EgSelectorOption::Eg1,
+            EgSelectorOption::Eg2,
+            EgSelectorOption::Eg3,
+        ]
+    }
+}
+
+impl std::fmt::Display for EgSelectorOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.label())
+    }
 }
 
 struct State {
@@ -128,8 +199,11 @@ struct State {
     browser_path: PathBuf,
     browser_entries: Vec<BrowserEntry>,
     dragged_audio_file: Option<PathBuf>,
-    zones: Vec<SampleZone>,
+    hovered_note: Option<usize>,
+    drag_y: Option<f32>,
     dragging_zone_edge: Option<(usize, ZoneEdge)>,
+    dragging_zone_body: Option<(usize, f32, f32)>,
+    editing_zone_name: Option<(usize, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -139,11 +213,29 @@ struct BrowserEntry {
     is_dir: bool,
 }
 
-#[derive(Debug, Clone)]
-struct SampleZone {
-    file: PathBuf,
-    start_note: usize,
-    end_note: usize,
+fn unique_zone_name(zones: &[SampleZone], base: &str) -> String {
+    let existing: std::collections::HashSet<&str> =
+        zones.iter().map(|zone| zone.name.as_str()).collect();
+    if !existing.contains(base) {
+        return base.to_string();
+    }
+
+    let mut candidate = base.to_string();
+    loop {
+        let next = if let Some((prefix, number)) = candidate.rsplit_once(' ') {
+            if let Ok(n) = number.parse::<u32>() {
+                format!("{} {}", prefix, n + 1)
+            } else {
+                format!("{} 2", candidate)
+            }
+        } else {
+            format!("{} 2", candidate)
+        };
+        if !existing.contains(next.as_str()) {
+            return next;
+        }
+        candidate = next;
+    }
 }
 
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
@@ -164,8 +256,11 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             browser_path,
             browser_entries,
             dragged_audio_file: None,
-            zones: Vec::new(),
+            hovered_note: None,
+            drag_y: None,
             dragging_zone_edge: None,
+            dragging_zone_body: None,
+            editing_zone_name: None,
         },
         Task::none(),
     )
@@ -177,7 +272,10 @@ fn read_browser_entries(path: &PathBuf) -> Vec<BrowserEntry> {
 
     dirs.push(BrowserEntry {
         name: String::from(".."),
-        path: path.parent().map(PathBuf::from).unwrap_or_else(|| path.clone()),
+        path: path
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| path.clone()),
         is_dir: true,
     });
 
@@ -295,10 +393,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::BeginAudioFileDrag(path) => {
             state.dragged_audio_file = Some(path);
+            state.hovered_note = None;
+            state.drag_y = None;
         }
-        Message::ZoneNoteHovered(note) => {
+        Message::ZoneNoteHovered(note, velocity, y) => {
+            state.hovered_note = Some(note);
+            state.drag_y = Some(y);
+            let mut zones = state.shared.zones.load();
+            let mut changed = false;
             if let Some((zone_index, edge)) = state.dragging_zone_edge {
-                if let Some(zone) = state.zones.get_mut(zone_index) {
+                if let Some(zone) = Arc::make_mut(&mut zones).get_mut(zone_index) {
                     match edge {
                         ZoneEdge::Start => {
                             zone.start_note = note.min(zone.end_note);
@@ -306,25 +410,122 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         ZoneEdge::End => {
                             zone.end_note = note.max(zone.start_note);
                         }
+                        ZoneEdge::Top => {
+                            zone.vel_high = velocity.max(zone.vel_low);
+                        }
+                        ZoneEdge::Bottom => {
+                            zone.vel_low = velocity.min(zone.vel_high);
+                        }
                     }
+                    changed = true;
                 }
             }
-        }
-        Message::ZoneNoteReleased(note) => {
-            if let Some(file) = state.dragged_audio_file.take() {
-                state.zones.push(SampleZone {
-                    file,
-                    start_note: note,
-                    end_note: note,
-                });
+            if let Some((zone_index, note_offset, velocity_offset)) = state.dragging_zone_body {
+                if let Some(zone) = Arc::make_mut(&mut zones).get_mut(zone_index) {
+                    let width = zone.end_note - zone.start_note;
+                    let height = zone.vel_high - zone.vel_low;
+                    let mut new_start = (note as f32 - note_offset).round() as usize;
+                    let mut new_end = new_start + width;
+                    if new_end > SAMPLE_MAP_NOTES - 1 {
+                        new_end = SAMPLE_MAP_NOTES - 1;
+                        new_start = new_end.saturating_sub(width);
+                    }
+                    let mut new_vel_low = (velocity as f32 - velocity_offset).round() as u8;
+                    let mut new_vel_high = new_vel_low.saturating_add(height);
+                    if new_vel_high > 127 {
+                        new_vel_high = 127;
+                        new_vel_low = new_vel_high.saturating_sub(height);
+                    }
+                    zone.start_note = new_start;
+                    zone.end_note = new_end;
+                    zone.vel_low = new_vel_low;
+                    zone.vel_high = new_vel_high;
+                    changed = true;
+                }
             }
+            if changed {
+                state.shared.zones.store(zones);
+                state.shared.mark_dirty();
+            }
+        }
+        Message::ZoneNoteReleased(note, velocity) => {
+            if let Some(file) = state.dragged_audio_file.take() {
+                let mut zones = state.shared.zones.load();
+                if zones.iter().any(|zone| {
+                    zone.start_note <= note
+                        && note <= zone.end_note
+                        && zone.vel_low <= velocity
+                        && velocity <= zone.vel_high
+                }) {
+                    let zones_arc = Arc::make_mut(&mut zones);
+                    if let Some(zone) = zones_arc.iter_mut().find(|zone| {
+                        zone.start_note <= note
+                            && note <= zone.end_note
+                            && zone.vel_low <= velocity
+                            && velocity <= zone.vel_high
+                    }) {
+                        zone.files.push(file);
+                    }
+                } else {
+                    let name = unique_zone_name(&zones, "New Zone");
+                    let width_notes = state
+                        .drag_y
+                        .map(zone_width_from_drag_y)
+                        .unwrap_or(1)
+                        .clamp(1, SAMPLE_MAP_NOTES);
+                    let half = width_notes / 2;
+                    let start_note = note.saturating_sub(half);
+                    let end_note = (start_note + width_notes - 1).min(SAMPLE_MAP_NOTES - 1);
+                    let start_note = end_note.saturating_sub(width_notes - 1);
+                    Arc::make_mut(&mut zones).push(SampleZone {
+                        name,
+                        files: vec![file],
+                        start_note,
+                        end_note,
+                        vel_low: 0,
+                        vel_high: 127,
+                    });
+                }
+                state.shared.zones.store(zones);
+                state.shared.mark_dirty();
+            }
+            state.hovered_note = None;
+            state.drag_y = None;
             state.dragging_zone_edge = None;
+            state.dragging_zone_body = None;
         }
         Message::StartZoneEdgeDrag(index, edge) => {
             state.dragging_zone_edge = Some((index, edge));
         }
         Message::StopZoneEdgeDrag => {
             state.dragging_zone_edge = None;
+        }
+        Message::StartZoneBodyDrag(index, note_offset, velocity_offset) => {
+            state.dragging_zone_body = Some((index, note_offset, velocity_offset));
+        }
+        Message::StopZoneBodyDrag => {
+            state.dragging_zone_body = None;
+        }
+        Message::StartRenameZone(index) => {
+            let zones = state.shared.zones.load();
+            if let Some(zone) = zones.get(index) {
+                state.editing_zone_name = Some((index, zone.name.clone()));
+            }
+        }
+        Message::UpdateRenameText(text) => {
+            if let Some((_, current)) = state.editing_zone_name.as_mut() {
+                *current = text;
+            }
+        }
+        Message::FinishRenameZone => {
+            if let Some((index, name)) = state.editing_zone_name.take() {
+                let mut zones = state.shared.zones.load();
+                if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index) {
+                    zone.name = name;
+                    state.shared.zones.store(zones);
+                    state.shared.mark_dirty();
+                }
+            }
         }
     }
     Task::none()
@@ -656,190 +857,425 @@ fn fill_panel_no_title<'a>(content: Element<'a, Message>) -> Element<'a, Message
         .into()
 }
 
-fn zone_for_note(state: &State, note: usize) -> Option<(usize, &SampleZone)> {
-    state
-        .zones
-        .iter()
-        .enumerate()
-        .find(|(_, zone)| zone.start_note <= note && note <= zone.end_note)
+fn zone_width_from_drag_y(y: f32) -> usize {
+    let ratio = (y / EDITOR_HEIGHT as f32).clamp(0.0, 1.0);
+    let width = 1.0 + (SAMPLE_MAP_NOTES as f32 - 1.0) * (1.0 - ratio);
+    width.round() as usize
 }
 
-fn zone_edge_handle(zone_index: usize, edge: ZoneEdge) -> Element<'static, Message> {
-    mouse_area(
-        container(text(""))
-            .width(Length::Fixed(3.0))
-            .height(Length::Fill)
-            .style(|_theme: &Theme| container::Style {
-                background: Some(Background::Color(Color::from_rgb(0.78, 0.88, 1.0))),
-                border: Border {
-                    color: Color::from_rgb(0.22, 0.48, 0.95),
-                    width: 1.0,
-                    radius: 1.0.into(),
-                },
-                ..container::Style::default()
-            }),
-    )
-    .on_press(Message::StartZoneEdgeDrag(zone_index, edge))
-    .on_release(Message::StopZoneEdgeDrag)
-    .into()
+const PIANO_ROLL_HEIGHT: f32 = 48.0;
+const VELOCITY_COUNT: f32 = 128.0;
+const HANDLE_SIZE: f32 = 4.0;
+
+fn note_at_x(x: f32, width: f32) -> usize {
+    let note_width = width / SAMPLE_MAP_NOTES as f32;
+    (x / note_width)
+        .floor()
+        .clamp(0.0, SAMPLE_MAP_NOTES as f32 - 1.0) as usize
 }
 
-fn zone_note_cell<'a>(state: &'a State, note: usize) -> Element<'a, Message> {
-    let pitch = note % 12;
-    let is_c = pitch == 0;
-    let label = if is_c {
-        format!("C{}", note as i32 / 12 - 1)
-    } else {
-        String::new()
-    };
-    let zone = zone_for_note(state, note);
-    let in_zone = zone.is_some();
-    let zone_index = zone.map(|(index, _)| index);
-    let start_edge = zone
-        .map(|(_, zone)| zone.start_note == note)
-        .unwrap_or(false);
-    let end_edge = zone.map(|(_, zone)| zone.end_note == note).unwrap_or(false);
-    let zone_label = zone
-        .and_then(|(_, zone)| zone.file.file_name())
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or(label);
-
-    let mut content = row![].spacing(0).height(Length::Fill);
-    if let Some(index) = zone_index {
-        if start_edge {
-            content = content.push(zone_edge_handle(index, ZoneEdge::Start));
-        }
+fn velocity_at_y(y: f32, grid_bottom: f32, grid_height: f32) -> u8 {
+    if grid_height <= 0.0 {
+        return 0;
     }
-    content = content.push(
-        container(text(zone_label).size(9))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .align_x(Horizontal::Center)
-            .align_y(Vertical::Top)
-            .padding(2),
-    );
-    if let Some(index) = zone_index {
-        if end_edge {
-            content = content.push(zone_edge_handle(index, ZoneEdge::End));
+    let velocity_height = grid_height / VELOCITY_COUNT;
+    ((grid_bottom - y) / velocity_height)
+        .floor()
+        .clamp(0.0, VELOCITY_COUNT - 1.0) as u8
+}
+
+fn zone_rect(zone: &SampleZone, bounds: Rectangle) -> Rectangle {
+    let width = bounds.width;
+    let grid_height = bounds.height - PIANO_ROLL_HEIGHT;
+    let note_width = width / SAMPLE_MAP_NOTES as f32;
+    let velocity_height = grid_height / VELOCITY_COUNT;
+    let x = zone.start_note as f32 * note_width;
+    let zone_width = (zone.end_note - zone.start_note + 1) as f32 * note_width;
+    let top = grid_height - (zone.vel_high + 1) as f32 * velocity_height;
+    let bottom = grid_height - zone.vel_low as f32 * velocity_height;
+    Rectangle {
+        x,
+        y: top,
+        width: zone_width,
+        height: bottom - top,
+    }
+}
+
+#[derive(Clone)]
+struct ZoneEditorData {
+    zones: Vec<SampleZone>,
+    dragged_audio_file: Option<PathBuf>,
+    hovered_note: Option<usize>,
+    drag_y: Option<f32>,
+    dragging_zone_edge: Option<(usize, ZoneEdge)>,
+    dragging_zone_body: Option<(usize, f32, f32)>,
+}
+
+struct ZoneEditor {
+    data: ZoneEditorData,
+}
+
+impl ZoneEditor {
+    fn edge_hit_test(&self, position: Point, bounds: Rectangle) -> Option<(usize, ZoneEdge)> {
+        let grid_height = bounds.height - PIANO_ROLL_HEIGHT;
+        if position.y < 0.0 || position.y > grid_height {
+            return None;
         }
+        for (index, zone) in self.data.zones.iter().enumerate() {
+            let rect = zone_rect(zone, bounds);
+            let near_left = (position.x - rect.x).abs() <= HANDLE_SIZE;
+            let near_right = (position.x - (rect.x + rect.width)).abs() <= HANDLE_SIZE;
+            let near_top = (position.y - rect.y).abs() <= HANDLE_SIZE;
+            let near_bottom = (position.y - (rect.y + rect.height)).abs() <= HANDLE_SIZE;
+            if !near_left && !near_right && !near_top && !near_bottom {
+                continue;
+            }
+            let in_horizontal = position.x >= rect.x && position.x <= rect.x + rect.width;
+            let in_vertical = position.y >= rect.y && position.y <= rect.y + rect.height;
+            let edge = if near_left && in_vertical {
+                ZoneEdge::Start
+            } else if near_right && in_vertical {
+                ZoneEdge::End
+            } else if near_top && in_horizontal {
+                ZoneEdge::Top
+            } else if near_bottom && in_horizontal {
+                ZoneEdge::Bottom
+            } else {
+                continue;
+            };
+            return Some((index, edge));
+        }
+        None
     }
 
-    mouse_area(
-        container(content)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .style(move |_theme: &Theme| container::Style {
-                background: Some(Background::Color(if in_zone {
-                    Color::from_rgb(0.16, 0.23, 0.34)
-                } else if is_c {
-                    Color::from_rgb(0.105, 0.108, 0.128)
-                } else {
-                    Color::from_rgb(0.085, 0.088, 0.108)
-                })),
-                border: Border {
-                    color: if in_zone {
-                        Color::from_rgb(0.22, 0.48, 0.95)
+    fn body_hit_test(&self, position: Point, bounds: Rectangle) -> Option<usize> {
+        let grid_height = bounds.height - PIANO_ROLL_HEIGHT;
+        if position.y < 0.0 || position.y > grid_height {
+            return None;
+        }
+        for (index, zone) in self.data.zones.iter().enumerate() {
+            let rect = zone_rect(zone, bounds);
+            if position.x >= rect.x
+                && position.x <= rect.x + rect.width
+                && position.y >= rect.y
+                && position.y <= rect.y + rect.height
+            {
+                return Some(index);
+            }
+        }
+        None
+    }
+}
+
+impl canvas::Program<Message> for ZoneEditor {
+    type State = ();
+
+    fn update(
+        &self,
+        _state: &mut Self::State,
+        event: &maolan_baseview::iced::Event,
+        bounds: Rectangle,
+        cursor: maolan_baseview::iced::mouse::Cursor,
+    ) -> Option<canvas::Action<Message>> {
+        let position = cursor.position_in(bounds)?;
+        match event {
+            maolan_baseview::iced::Event::Mouse(mouse_event) => match mouse_event {
+                maolan_baseview::iced::mouse::Event::CursorMoved { .. } => {
+                    let note = note_at_x(position.x, bounds.width);
+                    let velocity = velocity_at_y(position.y, bounds.height - PIANO_ROLL_HEIGHT, bounds.height - PIANO_ROLL_HEIGHT);
+                    Some(canvas::Action::publish(Message::ZoneNoteHovered(
+                        note,
+                        velocity,
+                        position.y + bounds.y,
+                    )))
+                }
+                maolan_baseview::iced::mouse::Event::ButtonPressed(
+                    maolan_baseview::iced::mouse::Button::Left,
+                ) => {
+                    if let Some((index, edge)) = self.edge_hit_test(position, bounds) {
+                        Some(
+                            canvas::Action::publish(Message::StartZoneEdgeDrag(index, edge))
+                                .and_capture(),
+                        )
+                    } else if let Some(index) = self.body_hit_test(position, bounds) {
+                        let zone = &self.data.zones[index];
+                        let note_width = bounds.width / SAMPLE_MAP_NOTES as f32;
+                        let grid_height = bounds.height - PIANO_ROLL_HEIGHT;
+                        let velocity_height = grid_height / VELOCITY_COUNT;
+                        let note_offset = (position.x - zone.start_note as f32 * note_width)
+                            / note_width;
+                        let velocity_offset =
+                            ((grid_height - position.y) / velocity_height) - zone.vel_low as f32;
+                        Some(
+                            canvas::Action::publish(Message::StartZoneBodyDrag(
+                                index,
+                                note_offset,
+                                velocity_offset,
+                            ))
+                            .and_capture(),
+                        )
                     } else {
-                        Color::from_rgb(0.18, 0.18, 0.22)
-                    },
-                    width: 1.0,
-                    radius: 0.0.into(),
-                },
-                text_color: Some(Color::from_rgb(0.48, 0.50, 0.58)),
-                ..container::Style::default()
-            }),
-    )
-    .on_move(move |_| Message::ZoneNoteHovered(note))
-    .on_release(Message::ZoneNoteReleased(note))
-    .into()
-}
-
-fn zone_grid<'a>(state: &'a State) -> Element<'a, Message> {
-    let mut lanes = row![].spacing(1).height(Length::Fill);
-    for note in 0..SAMPLE_MAP_NOTES {
-        lanes = lanes.push(zone_note_cell(state, note));
+                        None
+                    }
+                }
+                maolan_baseview::iced::mouse::Event::ButtonReleased(
+                    maolan_baseview::iced::mouse::Button::Left,
+                ) => {
+                    let note = note_at_x(position.x, bounds.width);
+                    let velocity = velocity_at_y(
+                        position.y,
+                        bounds.height - PIANO_ROLL_HEIGHT,
+                        bounds.height - PIANO_ROLL_HEIGHT,
+                    );
+                    Some(
+                        canvas::Action::publish(Message::ZoneNoteReleased(note, velocity))
+                            .and_capture(),
+                    )
+                }
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
-    container(lanes)
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &maolan_baseview::iced::Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        cursor: maolan_baseview::iced::mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let width = bounds.width;
+        let height = bounds.height;
+        let grid_height = height - PIANO_ROLL_HEIGHT;
+        let note_width = width / SAMPLE_MAP_NOTES as f32;
+        let velocity_height = grid_height / VELOCITY_COUNT;
+
+        let background = canvas::Path::rectangle(Point::ORIGIN, bounds.size());
+        frame.fill(&background, Color::from_rgb(0.075, 0.078, 0.095));
+
+        for note in 0..SAMPLE_MAP_NOTES {
+            let x = note as f32 * note_width;
+            let is_c = note % 12 == 0;
+            let line = canvas::Path::line(
+                Point::new(x, 0.0),
+                Point::new(x, grid_height),
+            );
+            frame.stroke(
+                &line,
+                canvas::Stroke::default()
+                    .with_color(if is_c {
+                        Color::from_rgb(0.18, 0.18, 0.22)
+                    } else {
+                        Color::from_rgb(0.12, 0.12, 0.14)
+                    })
+                    .with_width(1.0),
+            );
+        }
+
+        for vel in (0..=128).step_by(16) {
+            let y = grid_height - vel as f32 * velocity_height;
+            let line = canvas::Path::line(Point::new(0.0, y), Point::new(width, y));
+            frame.stroke(
+                &line,
+                canvas::Stroke::default()
+                    .with_color(Color::from_rgb(0.14, 0.14, 0.16))
+                    .with_width(1.0),
+            );
+        }
+
+        for (index, zone) in self.data.zones.iter().enumerate() {
+            let rect = zone_rect(zone, bounds);
+            let path = canvas::Path::rectangle(Point::new(rect.x, rect.y), Size::new(rect.width, rect.height));
+            let color = if self.data.dragging_zone_edge.is_some_and(|(i, _)| i == index) {
+                Color::from_rgb(0.20, 0.28, 0.40)
+            } else {
+                Color::from_rgb(0.16, 0.23, 0.34)
+            };
+            frame.fill(&path, color);
+            frame.stroke(
+                &path,
+                canvas::Stroke::default()
+                    .with_color(Color::from_rgb(0.22, 0.48, 0.95))
+                    .with_width(1.0),
+            );
+
+            let text = canvas::Text {
+                content: zone.name.clone(),
+                position: Point::new(rect.x + 2.0, rect.y + 2.0),
+                color: Color::from_rgb(0.72, 0.74, 0.82),
+                size: maolan_baseview::iced::Pixels(9.0),
+                ..canvas::Text::default()
+            };
+            frame.fill_text(text);
+        }
+
+        if let Some(position) = cursor.position_in(bounds) {
+            if let Some((index, edge)) = self.edge_hit_test(position, bounds) {
+                let zone = &self.data.zones[index];
+                let rect = zone_rect(zone, bounds);
+                let (start, end) = match edge {
+                    ZoneEdge::Start => (
+                        Point::new(rect.x, rect.y),
+                        Point::new(rect.x, rect.y + rect.height),
+                    ),
+                    ZoneEdge::End => (
+                        Point::new(rect.x + rect.width, rect.y),
+                        Point::new(rect.x + rect.width, rect.y + rect.height),
+                    ),
+                    ZoneEdge::Top => (
+                        Point::new(rect.x, rect.y),
+                        Point::new(rect.x + rect.width, rect.y),
+                    ),
+                    ZoneEdge::Bottom => (
+                        Point::new(rect.x, rect.y + rect.height),
+                        Point::new(rect.x + rect.width, rect.y + rect.height),
+                    ),
+                };
+                let line = canvas::Path::line(start, end);
+                frame.stroke(
+                    &line,
+                    canvas::Stroke::default()
+                        .with_color(Color::from_rgb(0.78, 0.88, 1.0))
+                        .with_width(2.0),
+                );
+            }
+        }
+
+        if self.data.dragged_audio_file.is_some() {
+            if let Some(hovered_note) = self.data.hovered_note {
+                let preview_width = self
+                    .data
+                    .drag_y
+                    .map(zone_width_from_drag_y)
+                    .unwrap_or(1)
+                    .clamp(1, SAMPLE_MAP_NOTES);
+                let half = preview_width / 2;
+                let start_note = hovered_note.saturating_sub(half);
+                let end_note = (start_note + preview_width - 1).min(SAMPLE_MAP_NOTES - 1);
+                let start_note = end_note.saturating_sub(preview_width - 1);
+                let preview = SampleZone {
+                    name: String::new(),
+                    files: Vec::new(),
+                    start_note,
+                    end_note,
+                    vel_low: 0,
+                    vel_high: 127,
+                };
+                let rect = zone_rect(&preview, bounds);
+                let path = canvas::Path::rectangle(Point::new(rect.x, rect.y), Size::new(rect.width, rect.height));
+                frame.fill(&path, Color::from_rgba(0.22, 0.34, 0.48, 0.6));
+                frame.stroke(
+                    &path,
+                    canvas::Stroke::default()
+                        .with_color(Color::from_rgb(0.42, 0.72, 1.0))
+                        .with_width(1.0),
+                );
+            }
+        }
+
+        let piano_background = canvas::Path::rectangle(
+            Point::new(0.0, grid_height),
+            Size::new(width, PIANO_ROLL_HEIGHT),
+        );
+        frame.fill(&piano_background, Color::from_rgb(0.045, 0.047, 0.058));
+
+        for note in 0..SAMPLE_MAP_NOTES {
+            let x = note as f32 * note_width;
+            let pitch = note % 12;
+            let is_black = matches!(pitch, 1 | 3 | 6 | 8 | 10);
+            let key_height = if is_black { PIANO_ROLL_HEIGHT * 0.65 } else { PIANO_ROLL_HEIGHT };
+            let key_y = grid_height + PIANO_ROLL_HEIGHT - key_height;
+            let key_rect = canvas::Path::rectangle(
+                Point::new(x, key_y),
+                Size::new(note_width, key_height),
+            );
+            frame.fill(
+                &key_rect,
+                if is_black {
+                    Color::from_rgb(0.035, 0.037, 0.045)
+                } else {
+                    Color::from_rgb(0.78, 0.80, 0.84)
+                },
+            );
+            frame.stroke(
+                &key_rect,
+                canvas::Stroke::default()
+                    .with_color(if is_black {
+                        Color::from_rgb(0.015, 0.016, 0.020)
+                    } else {
+                        Color::from_rgb(0.42, 0.43, 0.48)
+                    })
+                    .with_width(1.0),
+            );
+            if pitch == 0 {
+                let label = canvas::Text {
+                    content: format!("C{}", note as i32 / 12 - 1),
+                    position: Point::new(x + 2.0, grid_height + PIANO_ROLL_HEIGHT - 12.0),
+                    color: Color::from_rgb(0.16, 0.17, 0.20),
+                    size: maolan_baseview::iced::Pixels(9.0),
+                    ..canvas::Text::default()
+                };
+                frame.fill_text(label);
+            }
+        }
+
+        vec![frame.into_geometry()]
+    }
+
+    fn mouse_interaction(
+        &self,
+        _state: &Self::State,
+        bounds: Rectangle,
+        cursor: maolan_baseview::iced::mouse::Cursor,
+    ) -> maolan_baseview::iced::mouse::Interaction {
+        let Some(position) = cursor.position_in(bounds) else {
+            return maolan_baseview::iced::mouse::Interaction::default();
+        };
+        if self.data.dragging_zone_body.is_some() {
+            return maolan_baseview::iced::mouse::Interaction::Grabbing;
+        }
+        match self.edge_hit_test(position, bounds) {
+            Some((_, ZoneEdge::Start | ZoneEdge::End)) => {
+                maolan_baseview::iced::mouse::Interaction::ResizingHorizontally
+            }
+            Some((_, ZoneEdge::Top | ZoneEdge::Bottom)) => {
+                maolan_baseview::iced::mouse::Interaction::ResizingVertically
+            }
+            None => {
+                if self.body_hit_test(position, bounds).is_some() {
+                    maolan_baseview::iced::mouse::Interaction::Grab
+                } else {
+                    maolan_baseview::iced::mouse::Interaction::default()
+                }
+            }
+        }
+    }
+}
+
+fn sample_map<'a>(state: &'a State) -> Element<'a, Message> {
+    let data = ZoneEditorData {
+        zones: state.shared.zones.load().to_vec(),
+        dragged_audio_file: state.dragged_audio_file.clone(),
+        hovered_note: state.hovered_note,
+        drag_y: state.drag_y,
+        dragging_zone_edge: state.dragging_zone_edge,
+        dragging_zone_body: state.dragging_zone_body,
+    };
+    canvas(ZoneEditor { data })
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(|_theme: &Theme| container::Style {
-            background: Some(Background::Color(Color::from_rgb(0.075, 0.078, 0.095))),
-            border: Border {
-                color: Color::from_rgb(0.18, 0.18, 0.22),
-                width: 1.0,
-                radius: 3.0.into(),
-            },
-            ..container::Style::default()
-        })
-        .into()
-}
-
-fn piano_key(note: usize) -> Element<'static, Message> {
-    let pitch = note % 12;
-    let is_black = matches!(pitch, 1 | 3 | 6 | 8 | 10);
-    let label = if pitch == 0 {
-        format!("C{}", note / 12 + 1)
-    } else {
-        String::new()
-    };
-
-    container(text(label).size(9))
-        .width(Length::Fill)
-        .height(Length::Fixed(48.0))
-        .align_x(Horizontal::Center)
-        .align_y(Vertical::Bottom)
-        .padding(3)
-        .style(move |_theme: &Theme| container::Style {
-            background: Some(Background::Color(if is_black {
-                Color::from_rgb(0.035, 0.037, 0.045)
-            } else {
-                Color::from_rgb(0.78, 0.80, 0.84)
-            })),
-            border: Border {
-                color: if is_black {
-                    Color::from_rgb(0.015, 0.016, 0.020)
-                } else {
-                    Color::from_rgb(0.42, 0.43, 0.48)
-                },
-                width: 1.0,
-                radius: 2.0.into(),
-            },
-            text_color: Some(if is_black {
-                Color::from_rgb(0.72, 0.72, 0.76)
-            } else {
-                Color::from_rgb(0.16, 0.17, 0.20)
-            }),
-            ..container::Style::default()
-        })
-        .into()
-}
-
-fn piano_roll<'a>() -> Element<'a, Message> {
-    let mut keys = row![].spacing(1).align_y(Alignment::End);
-    for note in 0..SAMPLE_MAP_NOTES {
-        keys = keys.push(piano_key(note));
-    }
-
-    container(keys)
-        .width(Length::Fill)
-        .height(Length::Fixed(48.0))
-        .style(|_theme: &Theme| container::Style {
-            background: Some(Background::Color(Color::from_rgb(0.045, 0.047, 0.058))),
-            border: Border {
-                color: Color::from_rgb(0.18, 0.18, 0.22),
-                width: 1.0,
-                radius: 3.0.into(),
-            },
-            ..container::Style::default()
-        })
         .into()
 }
 
 fn resize_handle(side: SidePanel) -> Element<'static, Message> {
     mouse_area(
-        container(text("")).width(Length::Fixed(6.0)).height(Length::Fill).style(
-            |_theme: &Theme| container::Style {
+        container(text(""))
+            .width(Length::Fixed(6.0))
+            .height(Length::Fill)
+            .style(|_theme: &Theme| container::Style {
                 background: Some(Background::Color(Color::from_rgb(0.18, 0.18, 0.22))),
                 border: Border {
                     color: Color::from_rgb(0.27, 0.27, 0.32),
@@ -847,21 +1283,92 @@ fn resize_handle(side: SidePanel) -> Element<'static, Message> {
                     radius: 2.0.into(),
                 },
                 ..container::Style::default()
-            },
-        ),
+            }),
     )
     .on_press(Message::StartSideResize(side))
     .on_release(Message::StopSideResize)
     .into()
 }
 
-fn side_panel<'a>(title: &'static str, width: f32) -> Element<'a, Message> {
+fn zone_row<'a>(state: &'a State, index: usize, zone: SampleZone) -> Element<'a, Message> {
+    let file_name = if zone.files.is_empty() {
+        String::new()
+    } else if zone.files.len() == 1 {
+        zone.files[0]
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default()
+    } else {
+        format!("{} files", zone.files.len())
+    };
+    let range_text = format!(
+        "{}-{} | Vel {}-{}",
+        zone.start_note, zone.end_note, zone.vel_low, zone.vel_high
+    );
+
+    let is_editing = state
+        .editing_zone_name
+        .as_ref()
+        .is_some_and(|(edit_index, _)| *edit_index == index);
+    let name_element: Element<'a, Message> = if is_editing {
+        let edit_text = state
+            .editing_zone_name
+            .as_ref()
+            .map(|(_, text)| text.as_str())
+            .unwrap_or("");
+        text_input("Zone name", edit_text)
+            .on_input(Message::UpdateRenameText)
+            .on_submit(Message::FinishRenameZone)
+            .size(11)
+            .into()
+    } else {
+        text(zone.name).size(11).into()
+    };
+
+    let content = column![
+        name_element,
+        text(file_name).size(9).color(Color::from_rgb(0.48, 0.50, 0.58)),
+        text(range_text).size(9).color(Color::from_rgb(0.48, 0.50, 0.58)),
+    ]
+    .spacing(1)
+    .width(Length::Fill);
+
+    let wrapped = if is_editing {
+        container(content)
+    } else {
+        container(mouse_area(content).on_double_click(Message::StartRenameZone(index)))
+    }
+    .width(Length::Fill)
+    .padding([4, 6])
+    .style(|_theme: &Theme| container::Style {
+        border: Border {
+            color: Color::from_rgb(0.18, 0.18, 0.22),
+            width: 1.0,
+            radius: 3.0.into(),
+        },
+        ..container::Style::default()
+    });
+
+    wrapped.into()
+}
+
+fn zones_panel<'a>(state: &'a State) -> Element<'a, Message> {
+    let mut zones = column![].spacing(3).width(Length::Fill);
+    let shared_zones = state.shared.zones.load();
+    for (index, zone) in shared_zones.iter().enumerate() {
+        zones = zones.push(zone_row(state, index, zone.clone()));
+    }
+
     container(
-        column![section_title(title)]
-            .spacing(8)
-            .align_x(Alignment::Start),
+        column![
+            section_title("Zones"),
+            scrollable(zones).height(Length::Fill),
+        ]
+        .spacing(8)
+        .height(Length::Fill)
+        .align_x(Alignment::Start),
     )
-    .width(Length::Fixed(width))
+    .width(Length::Fixed(state.zones_width))
     .height(Length::Fill)
     .padding(8)
     .style(|_theme: &Theme| container::Style {
@@ -1018,12 +1525,7 @@ fn lfo_tab_button(label: &'static str, index: usize, state: &State) -> Element<'
 }
 
 fn view(state: &State) -> Element<'_, Message> {
-    let sample_map = fill_panel_no_title(
-        column![zone_grid(state), piano_roll()]
-            .spacing(8)
-            .height(Length::Fill)
-            .into(),
-    );
+    let sample_map = fill_panel_no_title(sample_map(state));
 
     let top_bar = row![
         panel(
@@ -1119,16 +1621,14 @@ fn view(state: &State) -> Element<'_, Message> {
         vslider(ParamId::Eg2Release, "R", state),
     ]));
 
-    let eg_selector = row![
-        tab_button("Amp", state.selected_eg == 0, Message::SelectEg(0)),
-        tab_button("Filter", state.selected_eg == 1, Message::SelectEg(1)),
-        tab_button("Pitch", state.selected_eg == 2, Message::SelectEg(2)),
-        tab_button("EG 3", state.selected_eg == 3, Message::SelectEg(3)),
-        tab_button("EG 4", state.selected_eg == 4, Message::SelectEg(4)),
-        tab_button("EG 5", state.selected_eg == 5, Message::SelectEg(5)),
-    ]
-    .spacing(4)
-    .align_y(Alignment::Center);
+    let selected_eg =
+        EgSelectorOption::from_index(state.selected_eg).unwrap_or(EgSelectorOption::Amp);
+    let eg_selector = pick_list(
+        EgSelectorOption::all().to_vec(),
+        Some(selected_eg),
+        |option| Message::SelectEg(option.index()),
+    )
+    .width(Length::Fixed(100.0));
 
     let eg3 = panel_no_title(knob_row(vec![
         vslider(ParamId::Eg3Attack, "A", state),
@@ -1247,16 +1747,24 @@ fn view(state: &State) -> Element<'_, Message> {
         ]),
     ]));
 
+    let top_row = row![
+        top_bar,
+        column![filter_selector, selected_filter_panel].spacing(10),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Start);
+
+    let bottom_row = row![
+        column![lfo_selector, lfo_panel].spacing(10),
+        column![eg_selector, selected_eg_panel].spacing(10),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Start);
+
     let main_content = column![
         sample_map,
-        top_bar,
-        row![
-            column![filter_selector, selected_filter_panel].spacing(10),
-            column![eg_selector, selected_eg_panel].spacing(10),
-        ]
-        .spacing(10)
-        .align_y(Alignment::Start),
-        column![lfo_selector, lfo_panel].spacing(10),
+        top_row,
+        bottom_row,
     ]
     .spacing(12)
     .width(Length::Fill)
@@ -1264,7 +1772,7 @@ fn view(state: &State) -> Element<'_, Message> {
     .align_x(Alignment::Start);
 
     let content_row = row![
-        side_panel("Zones", state.zones_width),
+        zones_panel(state),
         resize_handle(SidePanel::Zones),
         main_content,
         resize_handle(SidePanel::Browser),

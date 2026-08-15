@@ -4,9 +4,21 @@ use crate::common::ClapParamId;
 use crate::common::param_store::ParamStore;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SamplerZoneState {
+    pub name: String,
+    pub files: Vec<String>,
+    pub start_note: usize,
+    pub end_note: usize,
+    pub vel_low: u8,
+    pub vel_high: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginState {
     pub version: u32,
     pub params: Vec<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampler_zones: Option<Vec<SamplerZoneState>>,
 }
 
 impl PluginState {
@@ -20,6 +32,7 @@ impl PluginState {
         Self {
             version: Self::CURRENT_VERSION,
             params,
+            sampler_zones: None,
         }
     }
 

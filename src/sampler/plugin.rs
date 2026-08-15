@@ -46,6 +46,7 @@ use crate::sampler::{
     },
     gui::GuiBridge,
     params::{PARAMS, ParamId, sanitize_param_value},
+    state::{AtomicArc, SampleZone},
 };
 
 const PLUGIN_ID: &[u8] = b"rs.maolan.sampler\0";
@@ -91,6 +92,7 @@ pub struct SharedState {
     pending_gesture_begin: Vec<AtomicBool>,
     pending_gesture_end: Vec<AtomicBool>,
     gesture_active: [AtomicBool; ParamId::COUNT],
+    pub zones: AtomicArc<Vec<SampleZone>>,
 }
 
 impl Default for SharedState {
@@ -110,6 +112,7 @@ impl Default for SharedState {
                 .map(|_| AtomicBool::new(false))
                 .collect(),
             gesture_active: std::array::from_fn(|_| AtomicBool::new(false)),
+            zones: AtomicArc::default(),
         }
     }
 }
@@ -188,7 +191,7 @@ impl SharedState {
         }
     }
 
-    fn mark_dirty(&self) {
+    pub fn mark_dirty(&self) {
         let host = self.host.load(Ordering::Acquire);
         if host.is_null() {
             return;
@@ -1323,7 +1326,14 @@ unsafe extern "C-unwind" fn ext_state_save(
             return false;
         }
         let inst = instance(plugin);
-        let state = PluginState::from_runtime(&inst.shared.params);
+        let mut state = PluginState::from_runtime(&inst.shared.params);
+        let zones = inst.shared.zones.load();
+        state.sampler_zones = Some(
+            zones
+                .iter()
+                .map(SampleZone::to_state)
+                .collect(),
+        );
         let Ok(bytes) = state.to_bytes() else {
             return false;
         };
@@ -1350,6 +1360,12 @@ unsafe extern "C-unwind" fn ext_state_load(
             return false;
         };
         state.apply(&inst.shared.params);
+        let zones: Vec<SampleZone> = state
+            .sampler_zones
+            .as_ref()
+            .map(|zones| zones.iter().map(SampleZone::from_state).collect())
+            .unwrap_or_default();
+        inst.shared.zones.store(Arc::new(zones));
         inst.shared.bump_params_version();
         true
     }
