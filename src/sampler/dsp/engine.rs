@@ -82,6 +82,8 @@ pub struct SamplerEngine {
 
     note_pressure: [f32; 128],
 
+    note_timbre: [f32; 128],
+
     note_volume: [f32; 128],
 
     sustain_pedal: bool,
@@ -133,6 +135,7 @@ impl SamplerEngine {
             lfo2_params: (1.0, 0.0, LfoShape::Sine, false),
             note_tuning: [0.0; 128],
             note_pressure: [0.0; 128],
+            note_timbre: [0.0; 128],
             note_volume: [1.0; 128],
             sustain_pedal: false,
             sustained_notes: Vec::new(),
@@ -206,6 +209,24 @@ impl SamplerEngine {
         for voice in &mut self.voices {
             if voice.is_active() {
                 voice.set_mod_wheel(self.mod_wheel);
+            }
+        }
+    }
+
+    pub fn set_note_timbre(&mut self, note: u8, timbre: f32) {
+        let timbre = timbre.clamp(0.0, 1.0);
+        self.note_timbre[note as usize] = timbre;
+        for voice in &mut self.voices {
+            if voice.is_active() && voice.note == note {
+                voice.set_timbre(timbre);
+            }
+        }
+    }
+
+    pub fn set_note_pitch_bend(&mut self, note: u8, semitones: f32) {
+        for voice in &mut self.voices {
+            if voice.is_active() && voice.note == note {
+                voice.set_pitch_bend(semitones);
             }
         }
     }
@@ -300,7 +321,13 @@ impl SamplerEngine {
     }
 
     pub fn set_note_pressure(&mut self, note: u8, pressure: f32) {
+        let pressure = pressure.clamp(0.0, 1.0);
         self.note_pressure[note as usize] = pressure;
+        for voice in &mut self.voices {
+            if voice.is_active() && voice.note == note {
+                voice.set_pressure(pressure);
+            }
+        }
     }
 
     pub fn set_note_volume(&mut self, note: u8, volume: f32) {
@@ -833,6 +860,8 @@ impl SamplerEngine {
             .and_then(|p| p.microtuning.clone());
         self.voices[index].set_tuning(microtuning);
         self.voices[index].set_mod_wheel(self.mod_wheel);
+        self.voices[index].set_pressure(self.note_pressure[args.note as usize]);
+        self.voices[index].set_timbre(self.note_timbre[args.note as usize]);
         self.voices[index].trigger_with_sample(
             args.zone.clone(),
             args.note,
@@ -1429,5 +1458,95 @@ mod tests {
         let inc_after_off = voice_after_off.increment();
 
         assert!((inc_after_off - inc_60).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_per_note_pressure_modulates_amplitude() {
+        use crate::sampler::dsp::mod_matrix::{ModSource, ModTarget};
+
+        let mut patch = Patch::default();
+        let mut zone = Zone::default();
+        let mut sample = Sample::silent(48000.0);
+        sample.frames = 48000;
+        sample.data_l = vec![1.0f32; 48000];
+        sample.data_r = sample.data_l.clone();
+        zone.sample = Arc::new(sample);
+        zone.key_low = 60;
+        zone.key_high = 72;
+        zone.root_key = 60;
+        zone.mod_matrix
+            .set_route(0, ModSource::Pressure, ModTarget::Amplitude, 1.0);
+        let mut group = Group::default();
+        group.zones.push(zone);
+        let mut part = Part::default();
+        part.groups.push(group);
+        patch.parts = vec![part];
+
+        let mut engine = SamplerEngine::new(48000.0, 4);
+        engine.set_patch(patch);
+        engine.note_on(60, 127, 0);
+
+        let mut out_quiet = vec![0.0f32; 64];
+        let mut out_r = vec![0.0f32; 64];
+        engine.process_block(&mut out_quiet, &mut out_r);
+        let peak_quiet = out_quiet.iter().map(|&s| s.abs()).fold(0.0f32, f32::max);
+
+        engine.set_note_pressure(60, 1.0);
+        let mut out_loud = vec![0.0f32; 64];
+        engine.process_block(&mut out_loud, &mut out_r);
+        let peak_loud = out_loud.iter().map(|&s| s.abs()).fold(0.0f32, f32::max);
+
+        assert!(
+            peak_loud > peak_quiet * 1.5,
+            "per-note pressure should increase amplitude"
+        );
+    }
+
+    #[test]
+    fn test_per_note_pitch_bend_affects_only_target_voice() {
+        let mut patch = Patch::default();
+        let mut zone = Zone::default();
+        zone.sample = Arc::new(Sample::silent(48000.0));
+        zone.key_low = 60;
+        zone.key_high = 72;
+        zone.root_key = 60;
+        zone.pitch_bend_up = 12.0;
+        let mut group = Group::default();
+        group.zones.push(zone);
+        let mut part = Part::default();
+        part.groups.push(group);
+        patch.parts = vec![part];
+
+        let mut engine = SamplerEngine::new(48000.0, 4);
+        engine.set_patch(patch);
+        engine.note_on(60, 127, 0);
+        engine.note_on(64, 127, 0);
+
+        // set_pitch_bend expects a normalized value (-1..1) scaled by pitch_bend_up.
+        // With pitch_bend_up = 12.0, 1.0 gives +12 semitones, doubling the increment.
+        engine.set_note_pitch_bend(60, 1.0);
+
+        let inc_60 = engine
+            .voices
+            .iter()
+            .find(|v| v.is_active() && v.note == 60)
+            .unwrap()
+            .increment();
+        let inc_64 = engine
+            .voices
+            .iter()
+            .find(|v| v.is_active() && v.note == 64)
+            .unwrap()
+            .increment();
+
+        assert!(
+            (inc_60 - 2.0).abs() < 0.02,
+            "per-note bend should double note 60 increment"
+        );
+        assert!(
+            inc_64 > 1.25 && inc_64 < 1.27,
+            "note 64 should keep its natural +4 semitone increment, got {}",
+            inc_64
+        );
     }
 }

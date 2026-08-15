@@ -6,6 +6,8 @@ pub enum ModSource {
     KeyTrack,
     PitchBend,
     ModWheel,
+    Pressure,
+    Timbre,
     Lfo1,
     Lfo2,
     Lfo3,
@@ -16,6 +18,7 @@ pub enum ModSource {
     Eg4,
     Eg5,
     Random,
+    SampleAndHold,
 
     VariantFraction,
 
@@ -41,6 +44,7 @@ pub enum ModTarget {
     FilterCutoff,
     FilterResonance,
     Pan,
+    SampleStart,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -100,6 +104,8 @@ pub struct SourceValues {
     pub key_track: f32,
     pub pitch_bend: f32,
     pub mod_wheel: f32,
+    pub pressure: f32,
+    pub timbre: f32,
     pub lfo1: f32,
     pub lfo2: f32,
     pub lfo3: f32,
@@ -110,6 +116,7 @@ pub struct SourceValues {
     pub eg4: f32,
     pub eg5: f32,
     pub random: f32,
+    pub sample_and_hold: f32,
     pub variant_fraction: f32,
     pub playback_position: f32,
     pub loop_fraction: f32,
@@ -127,6 +134,8 @@ impl SourceValues {
             ModSource::KeyTrack => self.key_track,
             ModSource::PitchBend => self.pitch_bend,
             ModSource::ModWheel => self.mod_wheel,
+            ModSource::Pressure => self.pressure,
+            ModSource::Timbre => self.timbre,
             ModSource::Lfo1 => self.lfo1,
             ModSource::Lfo2 => self.lfo2,
             ModSource::Lfo3 => self.lfo3,
@@ -137,6 +146,7 @@ impl SourceValues {
             ModSource::Eg4 => self.eg4,
             ModSource::Eg5 => self.eg5,
             ModSource::Random => self.random,
+            ModSource::SampleAndHold => self.sample_and_hold,
             ModSource::VariantFraction => self.variant_fraction,
             ModSource::PlaybackPosition => self.playback_position,
             ModSource::LoopFraction => self.loop_fraction,
@@ -172,5 +182,49 @@ mod tests {
 
         let pan_mod = matrix.compute(ModTarget::Pan, &sources);
         assert_eq!(pan_mod, 0.0);
+    }
+
+    #[test]
+    fn test_sample_and_hold_source() {
+        let mut matrix = ModMatrix::default();
+        matrix.set_route(0, ModSource::SampleAndHold, ModTarget::Amplitude, 1.0);
+
+        let sources = SourceValues {
+            sample_and_hold: 0.75,
+            ..SourceValues::default()
+        };
+        let amp_mod = matrix.compute(ModTarget::Amplitude, &sources);
+        assert!((amp_mod - 0.75).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_sample_start_target() {
+        let mut matrix = ModMatrix::default();
+        matrix.set_route(0, ModSource::Velocity, ModTarget::SampleStart, 0.5);
+
+        let sources = SourceValues {
+            velocity: 1.0,
+            ..SourceValues::default()
+        };
+        let start_mod = matrix.compute(ModTarget::SampleStart, &sources);
+        assert!((start_mod - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_pressure_and_timbre_sources() {
+        let mut matrix = ModMatrix::default();
+        matrix.set_route(0, ModSource::Pressure, ModTarget::FilterCutoff, 1.0);
+        matrix.set_route(1, ModSource::Timbre, ModTarget::Pitch, 0.5);
+
+        let sources = SourceValues {
+            pressure: 0.75,
+            timbre: 0.4,
+            ..SourceValues::default()
+        };
+        let cutoff_mod = matrix.compute(ModTarget::FilterCutoff, &sources);
+        let pitch_mod = matrix.compute(ModTarget::Pitch, &sources);
+
+        assert!((cutoff_mod - 0.75).abs() < 0.001);
+        assert!((pitch_mod - 0.2).abs() < 0.001);
     }
 }

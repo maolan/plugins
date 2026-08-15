@@ -7,12 +7,36 @@ use crate::sampler::dsp::mod_matrix::{ModTarget, SourceValues};
 use crate::sampler::dsp::sample::InterpolationMode;
 use crate::sampler::dsp::zone::{LoopDirection, LoopMode, SamplePlayMode, Zone};
 
+const PHASE_FRAC_BITS: u32 = 32;
+const PHASE_ONE: u64 = 1u64 << PHASE_FRAC_BITS;
+const PHASE_ONE_F: f64 = PHASE_ONE as f64;
+
+#[inline]
+fn f64_to_fixed(inc: f64) -> i64 {
+    (inc * PHASE_ONE_F).round() as i64
+}
+
+#[inline]
+fn fixed_to_f64(inc: i64) -> f64 {
+    inc as f64 / PHASE_ONE_F
+}
+
+#[inline]
+fn phase_to_f64(phase: u64) -> f64 {
+    phase as f64 / PHASE_ONE_F
+}
+
+#[inline]
+fn phase_from_index(index: f64) -> u64 {
+    (index * PHASE_ONE_F).round() as u64
+}
+
 pub struct SampleVoice {
     sample_rate: f32,
     zone: Option<Arc<Zone>>,
     sample: Option<Arc<crate::sampler::dsp::sample::Sample>>,
-    phase: f64,
-    increment: f64,
+    phase: u64,
+    increment: i64,
     aeg: AdsrEnvelope,
     active: bool,
     pub note: u8,
@@ -48,6 +72,18 @@ pub struct SampleVoice {
     lfo2_enabled: bool,
     lfo2_amount: f32,
 
+    lfo3: Lfo,
+    lfo3_enabled: bool,
+    lfo3_amount: f32,
+
+    lfo4: Lfo,
+    lfo4_enabled: bool,
+    lfo4_amount: f32,
+
+    sample_hold_value: f32,
+    sample_hold_counter: usize,
+    sample_hold_rate: usize,
+
     filter_enabled: bool,
 
     filter_base_cutoff: f32,
@@ -57,6 +93,10 @@ pub struct SampleVoice {
     filter_eg_amount: f32,
 
     mod_wheel: f32,
+
+    pressure: f32,
+
+    timbre: f32,
 
     pitch_bend_norm: f32,
 
@@ -90,8 +130,8 @@ impl SampleVoice {
         Self {
             sample_rate,
             zone: None,
-            phase: 0.0,
-            increment: 1.0,
+            phase: 0,
+            increment: PHASE_ONE as i64,
             aeg: AdsrEnvelope::new(sample_rate),
             active: false,
             note: 0,
@@ -118,11 +158,22 @@ impl SampleVoice {
             lfo2: Lfo::new(sample_rate),
             lfo2_enabled: false,
             lfo2_amount: 0.0,
+            lfo3: Lfo::new(sample_rate),
+            lfo3_enabled: false,
+            lfo3_amount: 0.0,
+            lfo4: Lfo::new(sample_rate),
+            lfo4_enabled: false,
+            lfo4_amount: 0.0,
+            sample_hold_value: 0.0,
+            sample_hold_counter: 0,
+            sample_hold_rate: 0,
             filter_enabled: false,
             filter_base_cutoff: 20000.0,
             filter_resonance: 0.7,
             filter_eg_amount: 0.0,
             mod_wheel: 0.0,
+            pressure: 0.0,
+            timbre: 0.0,
             pitch_bend_norm: 0.0,
             pitch_bend_up: 2.0,
             pitch_bend_down: 2.0,
@@ -182,13 +233,22 @@ impl SampleVoice {
                 self.eg3.trigger();
                 self.eg4.trigger();
                 self.eg5.trigger();
-                if self.lfo1_enabled {
-                    self.lfo1.reset();
+                let reset = self.aeg.retrigger_mode() == EnvelopeRetriggerMode::Reset;
+                if reset {
+                    if self.lfo1_enabled {
+                        self.lfo1.reset();
+                    }
+                    if self.lfo2_enabled {
+                        self.lfo2.reset();
+                    }
+                    if self.lfo3_enabled {
+                        self.lfo3.reset();
+                    }
+                    if self.lfo4_enabled {
+                        self.lfo4.reset();
+                    }
                 }
-                if self.lfo2_enabled {
-                    self.lfo2.reset();
-                }
-                if self.filter_enabled {
+                if self.filter_enabled && reset {
                     self.feg.trigger();
                     self.filter.reset();
                 }
@@ -224,13 +284,47 @@ impl SampleVoice {
         } else {
             zone.compute_increment_with_bend(note, self.sample_rate, semitones)
         };
+
+        let sources = SourceValues {
+            velocity: self.velocity as f32 / 127.0,
+            key_track: (self.note as f32 - 60.0) / 60.0,
+            pitch_bend: self.pitch_bend_norm,
+            mod_wheel: self.mod_wheel,
+            pressure: self.pressure,
+            timbre: self.timbre,
+            lfo1: 0.0,
+            lfo2: 0.0,
+            lfo3: 0.0,
+            lfo4: 0.0,
+            eg1: self.aeg.value(),
+            eg2: self.eg2.value(),
+            eg3: self.eg3.value(),
+            eg4: self.eg4.value(),
+            eg5: self.eg5.value(),
+            random: rand::random_range(0.0..1.0),
+            sample_and_hold: self.sample_hold_value,
+            variant_fraction: 0.0,
+            playback_position: 0.0,
+            loop_fraction: 0.0,
+            is_gated: 1.0,
+            is_released: 0.0,
+            group_any_gated: 0.0,
+            group_voice_count: 0.0,
+        };
+        let start_mod = zone.mod_matrix.compute(ModTarget::SampleStart, &sources);
+        let max_offset = frames.saturating_sub(1);
+        let mod_offset = (start_mod * frames as f32).round() as isize;
+        let start_offset =
+            (zone.start_offset as isize + mod_offset).clamp(0, max_offset as isize) as usize;
+
         if self.reverse {
-            self.phase =
-                (frames.saturating_sub(1 + zone.start_offset.min(frames.saturating_sub(1)))) as f64;
-            self.increment = -inc;
+            let start_idx = frames.saturating_sub(1 + start_offset.min(frames.saturating_sub(1)));
+            self.phase = phase_from_index(start_idx as f64);
+            self.increment = f64_to_fixed(-inc);
         } else {
-            self.phase = zone.start_offset.min(frames.saturating_sub(1)) as f64;
-            self.increment = inc;
+            let start_idx = start_offset.min(frames.saturating_sub(1));
+            self.phase = phase_from_index(start_idx as f64);
+            self.increment = f64_to_fixed(inc);
         }
     }
 
@@ -242,11 +336,8 @@ impl SampleVoice {
             -self.pitch_bend_norm * self.pitch_bend_down
         };
         if let Some(zone) = self.zone.as_ref() {
-            self.increment =
-                zone.compute_increment_with_bend(self.note, self.sample_rate, semitones);
-            if self.reverse {
-                self.increment = -self.increment;
-            }
+            let inc = zone.compute_increment_with_bend(self.note, self.sample_rate, semitones);
+            self.increment = f64_to_fixed(if self.reverse { -inc } else { inc });
         }
     }
 
@@ -280,12 +371,13 @@ impl SampleVoice {
             && zone.play_mode == SamplePlayMode::OneShot
         {
             let frames = zone.sample.frames;
+            let phase_f64 = phase_to_f64(self.phase);
             if self.reverse {
-                if self.phase <= 0.0 {
+                if phase_f64 <= 0.0 {
                     self.aeg.release();
                 }
             } else {
-                if self.phase >= frames as f64 {
+                if phase_f64 >= frames as f64 {
                     self.aeg.release();
                 }
             }
@@ -308,7 +400,7 @@ impl SampleVoice {
     }
 
     pub fn increment(&self) -> f64 {
-        self.increment
+        fixed_to_f64(self.increment)
     }
 
     pub fn set_aeg_params(&mut self, attack: f32, decay: f32, sustain: f32, release: f32) {
@@ -356,6 +448,14 @@ impl SampleVoice {
         self.mod_wheel = value;
     }
 
+    pub fn set_pressure(&mut self, value: f32) {
+        self.pressure = value.clamp(0.0, 1.0);
+    }
+
+    pub fn set_timbre(&mut self, value: f32) {
+        self.timbre = value.clamp(0.0, 1.0);
+    }
+
     pub fn set_eg2_params(&mut self, attack: f32, decay: f32, sustain: f32, release: f32) {
         self.eg2.set_params(attack, decay, sustain, release);
     }
@@ -384,6 +484,25 @@ impl SampleVoice {
         self.lfo2_amount = amount;
         self.lfo2.set_rate_hz(rate);
         self.lfo2.set_shape(shape);
+    }
+
+    pub fn set_lfo3_params(&mut self, rate: f32, amount: f32, shape: LfoShape, enabled: bool) {
+        self.lfo3_enabled = enabled;
+        self.lfo3_amount = amount;
+        self.lfo3.set_rate_hz(rate);
+        self.lfo3.set_shape(shape);
+    }
+
+    pub fn set_lfo4_params(&mut self, rate: f32, amount: f32, shape: LfoShape, enabled: bool) {
+        self.lfo4_enabled = enabled;
+        self.lfo4_amount = amount;
+        self.lfo4.set_rate_hz(rate);
+        self.lfo4.set_shape(shape);
+    }
+
+    pub fn set_sample_hold_rate(&mut self, rate: usize) {
+        self.sample_hold_rate = rate;
+        self.sample_hold_counter = 0;
     }
 
     pub fn set_hierarchy_gain_pan(
@@ -434,17 +553,18 @@ impl SampleVoice {
             zone.compute_increment_with_bend(note, self.sample_rate, semitones)
         };
         let final_inc = if self.reverse { -new_inc } else { new_inc };
-        if portamento_time > 0.0 && self.increment != 0.0 {
+        let current_inc = fixed_to_f64(self.increment);
+        if portamento_time > 0.0 && current_inc != 0.0 {
             let samples = (portamento_time * self.sample_rate) as usize;
             if samples > 0 {
                 self.portamento_target_increment = final_inc;
-                self.portamento_step = (final_inc - self.increment) / samples as f64;
+                self.portamento_step = (final_inc - current_inc) / samples as f64;
                 self.portamento_samples = samples;
             } else {
-                self.increment = final_inc;
+                self.increment = f64_to_fixed(final_inc);
             }
         } else {
-            self.increment = final_inc;
+            self.increment = f64_to_fixed(final_inc);
         }
     }
 
@@ -458,10 +578,11 @@ impl SampleVoice {
             self.portamento_samples = 0;
             return;
         }
-        self.portamento_target_increment = self.increment;
+        let current_inc = fixed_to_f64(self.increment);
+        self.portamento_target_increment = current_inc;
         self.portamento_step = (self.portamento_target_increment - from_increment) / samples as f64;
         self.portamento_samples = samples;
-        self.increment = from_increment;
+        self.increment = f64_to_fixed(from_increment);
     }
 
     pub fn process_block(&mut self, out_l: &mut [f32], out_r: &mut [f32]) {
@@ -484,11 +605,21 @@ impl SampleVoice {
             return;
         }
 
+        if self.sample_hold_rate > 0 {
+            self.sample_hold_counter += 1;
+            if self.sample_hold_counter >= self.sample_hold_rate {
+                self.sample_hold_counter = 0;
+                self.sample_hold_value = rand::random_range(-1.0..1.0);
+            }
+        }
+
         let sources = SourceValues {
             velocity: self.velocity as f32 / 127.0,
             key_track: (self.note as f32 - 60.0) / 60.0,
             pitch_bend: self.pitch_bend_norm,
             mod_wheel: self.mod_wheel,
+            pressure: self.pressure,
+            timbre: self.timbre,
             lfo1: if self.lfo1_enabled {
                 self.lfo1.value()
             } else {
@@ -499,17 +630,26 @@ impl SampleVoice {
             } else {
                 0.0
             },
-            lfo3: 0.0,
-            lfo4: 0.0,
+            lfo3: if self.lfo3_enabled {
+                self.lfo3.value()
+            } else {
+                0.0
+            },
+            lfo4: if self.lfo4_enabled {
+                self.lfo4.value()
+            } else {
+                0.0
+            },
             eg1: self.aeg.value(),
             eg2: self.eg2.value(),
             eg3: self.eg3.value(),
             eg4: self.eg4.value(),
             eg5: self.eg5.value(),
             random: rand::random_range(0.0..1.0),
+            sample_and_hold: self.sample_hold_value,
             variant_fraction: 0.0,
             playback_position: if frames > 0 {
-                (self.phase / frames as f64).clamp(0.0, 1.0) as f32
+                (phase_to_f64(self.phase) / frames as f64).clamp(0.0, 1.0) as f32
             } else {
                 0.0
             },
@@ -529,9 +669,10 @@ impl SampleVoice {
         let pan_mod = zone.mod_matrix.compute(ModTarget::Pan, &sources);
 
         let original_increment = self.increment;
+        let mut current_inc_f64 = fixed_to_f64(self.increment);
         if pitch_mod != 0.0 {
             let pitch_factor = 2.0f32.powf(pitch_mod * 2.0 / 12.0);
-            self.increment *= pitch_factor as f64;
+            current_inc_f64 *= pitch_factor as f64;
         }
 
         let amp_factor = 1.0 + amp_mod;
@@ -542,13 +683,54 @@ impl SampleVoice {
         let mod_pan_l = pan_angle.cos();
         let mod_pan_r = pan_angle.sin();
 
+        let last_index = (frames - 1) as f64;
+        let loop_start_f = zone.loop_start.min(frames - 1) as f64;
+        let loop_end_f = zone.loop_end.min(frames) as f64;
+        let has_loop = zone.loop_mode != LoopMode::Off
+            && loop_end_f > loop_start_f
+            && loop_end_f <= frames as f64;
+        let crossfade_samples = if has_loop {
+            zone.loop_crossfade
+                .min(zone.loop_end.saturating_sub(zone.loop_start))
+        } else {
+            0
+        };
+
         for (ol, or) in out_l.iter_mut().zip(out_r.iter_mut()) {
             let env = self.aeg.next();
+            let effective_inc = if self.loop_phase_forward {
+                current_inc_f64
+            } else {
+                -current_inc_f64
+            };
+            let phase_f64 = phase_to_f64(self.phase).clamp(0.0, last_index);
 
-            let (sl, sr) = sample.read(
-                self.phase.clamp(0.0, (frames - 1) as f64),
-                self.interpolation,
-            );
+            let (mut sl, mut sr) =
+                sample.read_with_increment(phase_f64, effective_inc, self.interpolation);
+
+            if crossfade_samples > 0 && !self.released {
+                if effective_inc >= 0.0 {
+                    let dist = loop_end_f - phase_f64;
+                    if dist >= 0.0 && dist < crossfade_samples as f64 {
+                        let fade = dist / crossfade_samples as f64;
+                        let head_phase = loop_start_f + (crossfade_samples as f64 - dist);
+                        let (hl, hr) =
+                            sample.read(head_phase.clamp(0.0, last_index), self.interpolation);
+                        sl = sl * fade as f32 + hl * (1.0 - fade) as f32;
+                        sr = sr * fade as f32 + hr * (1.0 - fade) as f32;
+                    }
+                } else {
+                    let dist = phase_f64 - loop_start_f;
+                    if dist >= 0.0 && dist < crossfade_samples as f64 {
+                        let fade = dist / crossfade_samples as f64;
+                        let head_phase = (loop_end_f - 1.0) - (crossfade_samples as f64 - dist);
+                        let (hl, hr) =
+                            sample.read(head_phase.clamp(0.0, last_index), self.interpolation);
+                        sl = sl * fade as f32 + hl * (1.0 - fade) as f32;
+                        sr = sr * fade as f32 + hr * (1.0 - fade) as f32;
+                    }
+                }
+            }
 
             let mut vl = sl * env * self.amplitude * amp_factor;
             let mut vr = sr * env * self.amplitude * amp_factor;
@@ -596,21 +778,27 @@ impl SampleVoice {
             *or += vr * mod_pan_r;
 
             if self.portamento_samples > 0 {
-                self.increment += self.portamento_step;
+                current_inc_f64 += self.portamento_step;
                 self.portamento_samples -= 1;
                 if self.portamento_samples == 0 {
-                    self.increment = self.portamento_target_increment;
+                    current_inc_f64 = self.portamento_target_increment;
                 }
             }
 
-            self.advance_phase(&zone, frames);
+            let advance_inc = if self.loop_phase_forward {
+                current_inc_f64
+            } else {
+                -current_inc_f64
+            };
+            self.advance_phase(&zone, frames, f64_to_fixed(advance_inc));
 
             if env <= 0.0001 {
                 if zone.play_mode == SamplePlayMode::OneShot {
+                    let phase_f64 = phase_to_f64(self.phase);
                     let past_end = if self.reverse {
-                        self.phase <= 0.0
+                        phase_f64 <= 0.0
                     } else {
-                        self.phase >= frames as f64
+                        phase_f64 >= frames as f64
                     };
                     if past_end {
                         self.active = false;
@@ -626,58 +814,62 @@ impl SampleVoice {
         self.increment = original_increment;
     }
 
-    fn advance_phase(&mut self, zone: &Zone, frames: usize) {
-        let last_index = (frames.saturating_sub(1)) as f64;
-        let loop_start = zone.loop_start.min(frames.saturating_sub(1)) as f64;
-        let loop_end = zone.loop_end.min(frames) as f64;
-        let has_loop =
-            zone.loop_mode != LoopMode::Off && loop_end > loop_start && loop_end <= frames as f64;
+    fn advance_phase(&mut self, zone: &Zone, frames: usize, effective_increment: i64) {
+        let phase_one = PHASE_ONE as i128;
+        let last_index = (frames.saturating_sub(1)) as i128 * phase_one;
+        let loop_start = zone.loop_start.min(frames.saturating_sub(1)) as i128 * phase_one;
+        let loop_end = zone.loop_end.min(frames) as i128 * phase_one;
+        let has_loop = zone.loop_mode != LoopMode::Off
+            && loop_end > loop_start
+            && loop_end <= frames as i128 * phase_one;
 
-        if self.reverse {
-            self.phase += self.increment;
-            if has_loop && self.phase <= loop_start && !self.released {
+        let mut new_phase = self.phase as i128 + effective_increment as i128;
+
+        if effective_increment >= 0 {
+            if has_loop && new_phase >= loop_end && !self.released {
                 match zone.loop_direction {
                     LoopDirection::Forward => {
-                        self.phase = loop_end - 1.0;
+                        new_phase = loop_start + (new_phase - loop_end);
                         if zone.loop_mode == LoopMode::Count && self.loops_remaining > 0 {
                             self.loops_remaining -= 1;
                         }
                     }
                     LoopDirection::Alternate => {
-                        self.phase = loop_start + (loop_start - self.phase);
-                        self.increment = -self.increment;
+                        new_phase = loop_end - phase_one - (new_phase - loop_end);
+                        self.loop_phase_forward = !self.loop_phase_forward;
                         if zone.loop_mode == LoopMode::Count && self.loops_remaining > 0 {
                             self.loops_remaining -= 1;
                         }
                     }
                 }
             }
-            if self.phase < 0.0 {
-                self.phase = 0.0;
+            if new_phase > last_index {
+                new_phase = last_index;
             }
         } else {
-            self.phase += self.increment;
-            if has_loop && self.phase >= loop_end && !self.released {
+            if has_loop && new_phase <= loop_start && !self.released {
                 match zone.loop_direction {
                     LoopDirection::Forward => {
-                        self.phase = loop_start + (self.phase - loop_end);
+                        new_phase = loop_end - phase_one;
                         if zone.loop_mode == LoopMode::Count && self.loops_remaining > 0 {
                             self.loops_remaining -= 1;
                         }
                     }
                     LoopDirection::Alternate => {
-                        self.phase = loop_end - 1.0 - (self.phase - loop_end);
-                        self.increment = -self.increment;
+                        new_phase = loop_start + (loop_start - new_phase);
+                        self.loop_phase_forward = !self.loop_phase_forward;
                         if zone.loop_mode == LoopMode::Count && self.loops_remaining > 0 {
                             self.loops_remaining -= 1;
                         }
                     }
                 }
             }
-            if self.phase > last_index {
-                self.phase = last_index;
+            if new_phase < 0 {
+                new_phase = 0;
             }
         }
+
+        self.phase = new_phase as u64;
     }
 }
 
@@ -686,6 +878,7 @@ mod tests {
     use super::*;
     use crate::sampler::dsp::mod_matrix::{ModSource, ModTarget};
     use crate::sampler::dsp::sample::Sample;
+    use crate::sampler::dsp::zone::LoopMode;
 
     #[test]
     fn test_mod_matrix_pitch_modulation() {
@@ -735,6 +928,190 @@ mod tests {
             peak > 0.5,
             "expected amplitude modulation to increase output, got {}",
             peak
+        );
+    }
+
+    #[test]
+    fn test_fixed_point_phase_accumulation() {
+        let mut zone = Zone::default();
+        let mut sample = Sample::silent(48000.0);
+        sample.frames = 48000;
+        sample.data_l = (0..48000).map(|i| (i as f32 * 0.1).sin()).collect();
+        sample.data_r = sample.data_l.clone();
+        zone.sample = Arc::new(sample);
+        zone.root_key = 60;
+
+        let mut voice = SampleVoice::new(48000.0);
+        voice.trigger(Arc::new(zone), 36, 127, 0);
+
+        let mut out_l = vec![0.0f32; 64];
+        let mut out_r = vec![0.0f32; 64];
+        voice.process_block(&mut out_l, &mut out_r);
+
+        assert!(out_l.iter().any(|&s| s != 0.0));
+        assert!(
+            (voice.increment() - 0.25).abs() < 0.0001,
+            "expected stable low-pitch increment, got {}",
+            voice.increment()
+        );
+    }
+
+    #[test]
+    fn test_loop_crossfade_reduces_click() {
+        let mut zone = Zone::default();
+        let mut sample = Sample::silent(48000.0);
+        sample.frames = 100;
+        sample.data_l = (0..100).map(|i| if i < 50 { 1.0 } else { -1.0 }).collect();
+        sample.data_r = sample.data_l.clone();
+        zone.sample = Arc::new(sample);
+        zone.root_key = 60;
+        zone.loop_mode = LoopMode::DuringVoice;
+        zone.loop_start = 0;
+        zone.loop_end = 100;
+        zone.loop_crossfade = 10;
+
+        let mut voice = SampleVoice::new(48000.0);
+        voice.trigger(Arc::new(zone), 60, 127, 0);
+
+        let mut out_l = vec![0.0f32; 32];
+        let mut out_r = vec![0.0f32; 32];
+        let mut max_step = 0.0f32;
+        let mut prev = 0.0f32;
+        for _ in 0..10 {
+            voice.process_block(&mut out_l, &mut out_r);
+            for &s in &out_l {
+                let step = (s - prev).abs();
+                if step > max_step {
+                    max_step = step;
+                }
+                prev = s;
+            }
+        }
+
+        assert!(
+            max_step < 1.5,
+            "expected crossfade to soften loop click, got max_step={}",
+            max_step
+        );
+    }
+
+    #[test]
+    fn test_lfo3_modulates_pitch() {
+        use crate::common::lfo::LfoShape;
+        use crate::sampler::dsp::mod_matrix::{ModSource, ModTarget};
+
+        let mut zone = Zone::default();
+        let mut sample = Sample::silent(48000.0);
+        sample.frames = 48000;
+        sample.data_l = (0..48000).map(|i| (i as f32 * 0.1).sin()).collect();
+        sample.data_r = sample.data_l.clone();
+        zone.sample = Arc::new(sample);
+        zone.root_key = 60;
+        zone.mod_matrix
+            .set_route(0, ModSource::Lfo3, ModTarget::Pitch, 1.0);
+
+        let mut voice = SampleVoice::new(48000.0);
+        voice.set_lfo3_params(10.0, 1.0, LfoShape::Sine, true);
+        voice.trigger(Arc::new(zone), 60, 127, 0);
+
+        let mut out_l = vec![0.0f32; 64];
+        let mut out_r = vec![0.0f32; 64];
+        voice.process_block(&mut out_l, &mut out_r);
+
+        assert!(out_l.iter().any(|&s| s != 0.0));
+    }
+
+    #[test]
+    fn test_sample_and_hold_modulates_amplitude() {
+        use crate::sampler::dsp::mod_matrix::{ModSource, ModTarget};
+
+        let mut zone = Zone::default();
+        let mut sample = Sample::silent(48000.0);
+        sample.frames = 48000;
+        sample.data_l = vec![1.0f32; 48000];
+        sample.data_r = sample.data_l.clone();
+        zone.sample = Arc::new(sample);
+        zone.root_key = 60;
+        zone.mod_matrix
+            .set_route(0, ModSource::SampleAndHold, ModTarget::Amplitude, 1.0);
+
+        let mut voice = SampleVoice::new(48000.0);
+        voice.set_sample_hold_rate(8);
+        voice.trigger(Arc::new(zone), 60, 127, 0);
+
+        let mut out_l = vec![0.0f32; 64];
+        let mut out_r = vec![0.0f32; 64];
+        voice.process_block(&mut out_l, &mut out_r);
+
+        assert!(out_l.iter().any(|&s| s != 0.0));
+    }
+
+    #[test]
+    fn test_sample_start_modulation() {
+        use crate::sampler::dsp::mod_matrix::{ModSource, ModTarget};
+
+        let mut zone = Zone::default();
+        let mut sample = Sample::silent(48000.0);
+        sample.frames = 100;
+        sample.data_l = (0..100).map(|i| i as f32).collect();
+        sample.data_r = sample.data_l.clone();
+        zone.sample = Arc::new(sample);
+        zone.root_key = 60;
+        zone.mod_matrix
+            .set_route(0, ModSource::Velocity, ModTarget::SampleStart, 1.0);
+
+        let mut voice_low = SampleVoice::new(48000.0);
+        voice_low.trigger(Arc::new(zone.clone()), 60, 1, 0);
+        let mut out_low_l = vec![0.0f32; 8];
+        let mut out_low_r = vec![0.0f32; 8];
+        voice_low.process_block(&mut out_low_l, &mut out_low_r);
+
+        let mut voice_high = SampleVoice::new(48000.0);
+        voice_high.trigger(Arc::new(zone.clone()), 60, 127, 0);
+        let mut out_high_l = vec![0.0f32; 8];
+        let mut out_high_r = vec![0.0f32; 8];
+        voice_high.process_block(&mut out_high_l, &mut out_high_r);
+
+        assert!(
+            out_high_l.iter().sum::<f32>() > out_low_l.iter().sum::<f32>(),
+            "high velocity should start later in the sample and produce higher output"
+        );
+    }
+
+    #[test]
+    fn test_continue_retrigger_preserves_envelope_level() {
+        use crate::common::envelope::EnvelopeRetriggerMode;
+
+        let mut zone = Zone::default();
+        let mut sample = Sample::silent(48000.0);
+        sample.frames = 48000;
+        sample.data_l = vec![1.0f32; 48000];
+        sample.data_r = sample.data_l.clone();
+        zone.sample = Arc::new(sample);
+        zone.root_key = 60;
+
+        let mut voice = SampleVoice::new(48000.0);
+        voice.set_aeg_params(0.0, 0.0, 1.0, 0.0);
+        voice.set_aeg_retrigger(EnvelopeRetriggerMode::Continue);
+        voice.trigger(Arc::new(zone.clone()), 60, 127, 0);
+
+        // Let the voice run for a few samples so the AEG output is high.
+        let mut out_l = vec![0.0f32; 16];
+        let mut out_r = vec![0.0f32; 16];
+        voice.process_block(&mut out_l, &mut out_r);
+        let peak_before = out_l.iter().map(|&s| s.abs()).fold(0.0f32, f32::max);
+        assert!(peak_before > 0.6);
+
+        // Retrigger with the same note; in Continue mode the AEG should stay high.
+        voice.trigger(Arc::new(zone.clone()), 60, 127, 0);
+        let mut out_l2 = vec![0.0f32; 16];
+        let mut out_r2 = vec![0.0f32; 16];
+        voice.process_block(&mut out_l2, &mut out_r2);
+        let peak_after = out_l2.iter().map(|&s| s.abs()).fold(0.0f32, f32::max);
+        assert!(
+            peak_after > 0.6,
+            "continue retrigger should preserve envelope level, got {}",
+            peak_after
         );
     }
 }

@@ -7,6 +7,7 @@ pub mod eq;
 pub mod fft;
 pub mod filter;
 pub mod flavor;
+pub mod fx;
 pub mod lfo;
 pub mod macro_param;
 pub mod mmap;

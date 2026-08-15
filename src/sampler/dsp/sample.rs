@@ -60,10 +60,56 @@ impl Sample {
         }
     }
 
+    pub fn read_with_increment(
+        &self,
+        phase: f64,
+        increment: f64,
+        mode: InterpolationMode,
+    ) -> (f32, f32) {
+        match mode {
+            InterpolationMode::Zoh => self.read_zohaa(phase, increment),
+            InterpolationMode::Linear => self.read_linear(phase),
+            InterpolationMode::Sinc => self.read_sinc(phase),
+        }
+    }
+
     fn read_zoh(&self, phase: f64) -> (f32, f32) {
         let idx = phase.round() as usize;
         let idx = idx.min(self.frames.saturating_sub(1));
         (self.data_l[idx], self.data_r[idx])
+    }
+
+    fn read_zohaa(&self, phase: f64, increment: f64) -> (f32, f32) {
+        let frames = self.frames;
+        if frames == 0 {
+            return (0.0, 0.0);
+        }
+        let inc = increment.abs();
+        if inc <= 1.0 {
+            return self.read_zoh(phase);
+        }
+        let start = phase.floor() as isize;
+        let end = (phase + increment).floor() as isize;
+        let (low, high) = if increment >= 0.0 {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        let mut sum_l = 0.0f64;
+        let mut sum_r = 0.0f64;
+        let mut count = 0usize;
+        for i in low..=high {
+            let idx = i.clamp(0, frames.saturating_sub(1) as isize) as usize;
+            sum_l += self.data_l[idx] as f64;
+            sum_r += self.data_r[idx] as f64;
+            count += 1;
+        }
+        if count > 0 {
+            let scale = 1.0 / count as f64;
+            ((sum_l * scale) as f32, (sum_r * scale) as f32)
+        } else {
+            self.read_zoh(phase)
+        }
     }
 
     pub fn read_linear(&self, phase: f64) -> (f32, f32) {
@@ -117,21 +163,22 @@ impl Sample {
         if frames == 0 {
             return (0.0, 0.0);
         }
-        let center = phase;
         let half_window = 8;
+        let base = phase.floor() as isize;
+        let frac = (phase - base as f64) as f32;
         let mut sum_l = 0.0f32;
         let mut sum_r = 0.0f32;
         let mut weight_sum = 0.0f32;
 
         for i in -half_window..=half_window {
-            let idx_f = center + i as f64;
-            let idx = idx_f as usize;
-            if idx >= frames {
+            let idx = base + i;
+            if idx < 0 || idx >= frames as isize {
                 continue;
             }
-            let t = (center - idx_f) as f32;
+            let idx = idx as usize;
+            let t = frac - i as f32;
             let weight = if t.abs() < 1e-6 {
-                1.0
+                window_blackman_harris(0.0, half_window as f32)
             } else {
                 let pi_t = std::f32::consts::PI * t;
                 (pi_t.sin() / pi_t) * window_blackman_harris(i as f32, half_window as f32)
@@ -155,8 +202,9 @@ fn window_blackman_harris(n: f32, half_width: f32) -> f32 {
     let a1 = 0.48829;
     let a2 = 0.14128;
     let a3 = 0.01168;
-    a0 - a1 * (std::f32::consts::PI * x).cos() + a2 * (2.0 * std::f32::consts::PI * x).cos()
-        - a3 * (3.0 * std::f32::consts::PI * x).cos()
+    a0 + a1 * (std::f32::consts::PI * x).cos()
+        + a2 * (2.0 * std::f32::consts::PI * x).cos()
+        + a3 * (3.0 * std::f32::consts::PI * x).cos()
 }
 
 #[derive(Debug)]
@@ -358,5 +406,53 @@ mod tests {
 
         let (l, _r) = s.read(0.6, InterpolationMode::Zoh);
         assert_eq!(l, 1.0);
+    }
+
+    #[test]
+    fn test_zohaa_averages_window() {
+        let s = Sample {
+            sample_rate: 44100.0,
+            data_l: vec![0.0, 1.0, 2.0, 3.0, 4.0],
+            data_r: vec![0.0, 1.0, 2.0, 3.0, 4.0],
+            frames: 5,
+            peak: 4.0,
+            rms: 0.0,
+        };
+        let (l, _r) = s.read_with_increment(0.0, 2.0, InterpolationMode::Zoh);
+        assert!(
+            (l - 1.0).abs() < 0.001,
+            "expected average of 0,1,2, got {l}"
+        );
+    }
+
+    #[test]
+    fn test_zohaa_falls_back_to_zoh_for_small_increment() {
+        let s = Sample {
+            sample_rate: 44100.0,
+            data_l: vec![0.0, 1.0, 0.0],
+            data_r: vec![0.0, 0.5, 0.0],
+            frames: 3,
+            peak: 1.0,
+            rms: 0.0,
+        };
+        let (l, _r) = s.read_with_increment(0.6, 0.5, InterpolationMode::Zoh);
+        assert_eq!(l, 1.0);
+    }
+
+    #[test]
+    fn test_sinc_dc_preserve() {
+        let s = Sample {
+            sample_rate: 44100.0,
+            data_l: vec![1.0; 64],
+            data_r: vec![1.0; 64],
+            frames: 64,
+            peak: 1.0,
+            rms: 1.0,
+        };
+        for phase in [0.0f64, 0.5, 10.5, 31.75] {
+            let (l, r) = s.read(phase, InterpolationMode::Sinc);
+            assert!((l - 1.0).abs() < 0.001, "sinc DC l at {phase}: {l}");
+            assert!((r - 1.0).abs() < 0.001, "sinc DC r at {phase}: {r}");
+        }
     }
 }

@@ -62,6 +62,42 @@ impl LoopDirection {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CurveType {
+    #[default]
+    Linear = 0,
+    Exponential = 1,
+    Logarithmic = 2,
+    SCurve = 3,
+}
+
+impl CurveType {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => CurveType::Exponential,
+            2 => CurveType::Logarithmic,
+            3 => CurveType::SCurve,
+            _ => CurveType::Linear,
+        }
+    }
+}
+
+pub fn apply_curve(x: f32, curve: CurveType) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    match curve {
+        CurveType::Linear => x,
+        CurveType::Exponential => x * x,
+        CurveType::Logarithmic => x.sqrt(),
+        CurveType::SCurve => x * x * (3.0 - 2.0 * x),
+    }
+}
+
+pub fn curve_bipolar(x: f32, curve: CurveType) -> f32 {
+    let sign = x.signum();
+    let abs = x.abs().clamp(0.0, 1.0);
+    sign * apply_curve(abs, curve)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VariantMode {
     First = 0,
@@ -110,6 +146,10 @@ pub struct Zone {
 
     pub key_tracking: f32,
 
+    pub velocity_curve: CurveType,
+
+    pub key_tracking_curve: CurveType,
+
     pub gain_db: f32,
 
     pub pan: f32,
@@ -127,6 +167,8 @@ pub struct Zone {
     pub loop_end: usize,
 
     pub loop_count: u32,
+
+    pub loop_crossfade: usize,
 
     pub start_offset: usize,
 
@@ -165,6 +207,8 @@ impl Clone for Zone {
             vel_fade_high: self.vel_fade_high,
             pitch_offset: self.pitch_offset,
             key_tracking: self.key_tracking,
+            velocity_curve: self.velocity_curve,
+            key_tracking_curve: self.key_tracking_curve,
             gain_db: self.gain_db,
             pan: self.pan,
             reverse: self.reverse,
@@ -174,6 +218,7 @@ impl Clone for Zone {
             loop_start: self.loop_start,
             loop_end: self.loop_end,
             loop_count: self.loop_count,
+            loop_crossfade: self.loop_crossfade,
             start_offset: self.start_offset,
             pitch_bend_up: self.pitch_bend_up,
             pitch_bend_down: self.pitch_bend_down,
@@ -204,6 +249,8 @@ impl Default for Zone {
             vel_fade_high: 0,
             pitch_offset: 0.0,
             key_tracking: 1.0,
+            velocity_curve: CurveType::Linear,
+            key_tracking_curve: CurveType::Linear,
             gain_db: 0.0,
             pan: 0.0,
             reverse: false,
@@ -213,6 +260,7 @@ impl Default for Zone {
             loop_start: 0,
             loop_end: 0,
             loop_count: 0,
+            loop_crossfade: 0,
             start_offset: 0,
             pitch_bend_up: 2.0,
             pitch_bend_down: 2.0,
@@ -312,7 +360,8 @@ impl Zone {
             amp *= fade;
         }
 
-        amp *= velocity as f32 / 127.0;
+        let vel_norm = apply_curve(velocity as f32 / 127.0, self.velocity_curve);
+        amp *= vel_norm;
 
         amp *= 10.0_f32.powf(self.gain_db / 20.0);
 
@@ -329,7 +378,9 @@ impl Zone {
         project_sample_rate: f32,
         pitch_bend: f32,
     ) -> f64 {
-        let semitones = (note as f64 - self.root_key as f64) * self.key_tracking as f64
+        let key_delta = ((note as f64 - self.root_key as f64) / 60.0).clamp(-1.0, 1.0) as f32;
+        let shaped_key = curve_bipolar(key_delta, self.key_tracking_curve);
+        let semitones = shaped_key as f64 * 60.0 * self.key_tracking as f64
             + (self.pitch_offset as f64 / 100.0)
             + pitch_bend as f64;
         let pitch_ratio = 2.0_f64.powf(semitones / 12.0);
@@ -445,5 +496,47 @@ mod tests {
         let amp_40 = zone.compute_amplitude(40, 127);
         let amp_45 = zone.compute_amplitude(45, 127);
         assert!(amp_40 < amp_45);
+    }
+
+    #[test]
+    fn test_velocity_curve_shapes_amplitude() {
+        let linear_zone = Zone {
+            sample: Arc::new(Sample::silent(48000.0)),
+            ..Default::default()
+        };
+        let exp_zone = Zone {
+            sample: Arc::new(Sample::silent(48000.0)),
+            velocity_curve: CurveType::Exponential,
+            ..Default::default()
+        };
+
+        let amp_linear = linear_zone.compute_amplitude(60, 64);
+        let amp_exp = exp_zone.compute_amplitude(60, 64);
+        assert!(
+            amp_exp < amp_linear,
+            "exponential curve should reduce mid-velocity amplitude"
+        );
+    }
+
+    #[test]
+    fn test_key_tracking_curve_shapes_pitch() {
+        let linear_zone = Zone {
+            root_key: 60,
+            sample: Arc::new(Sample::silent(48000.0)),
+            ..Default::default()
+        };
+        let exp_zone = Zone {
+            root_key: 60,
+            sample: Arc::new(Sample::silent(48000.0)),
+            key_tracking_curve: CurveType::Exponential,
+            ..Default::default()
+        };
+
+        let inc_linear = linear_zone.compute_increment(72, 48000.0);
+        let inc_exp = exp_zone.compute_increment(72, 48000.0);
+        assert!(
+            inc_exp < inc_linear,
+            "exponential key curve should reduce upper-key pitch rise"
+        );
     }
 }

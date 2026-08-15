@@ -140,6 +140,10 @@ impl AdsrEnvelope {
         self.retrigger_mode = mode;
     }
 
+    pub fn retrigger_mode(&self) -> EnvelopeRetriggerMode {
+        self.retrigger_mode
+    }
+
     pub fn set_attack(&mut self, attack: f32) {
         self.attack = attack.max(0.0);
     }
