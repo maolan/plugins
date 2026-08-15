@@ -1,5 +1,7 @@
 use std::{
     ffi::CStr,
+    fs,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -12,9 +14,9 @@ use clap_clap::ffi::CLAP_WINDOW_API_WIN32;
 #[cfg(unix)]
 use clap_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::{
-    Alignment, Background, Border, Color, Element, Length, Task, Theme,
+    Alignment, Background, Border, Color, Element, Length, Point, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{button, checkbox, column, container, mouse_area, row, text},
+    widget::{button, checkbox, column, container, mouse_area, row, scrollable, text},
 };
 use maolan_widgets::arch_slider::arch_slider;
 use maolan_widgets::slider::Slider;
@@ -35,6 +37,7 @@ use crate::{
 
 pub const EDITOR_WIDTH: u32 = 1100;
 pub const EDITOR_HEIGHT: u32 = 750;
+const SAMPLE_MAP_NOTES: usize = 128;
 
 pub fn preferred_api() -> &'static CStr {
     #[cfg(target_os = "windows")]
@@ -88,6 +91,27 @@ pub enum Message {
     SelectLfo(usize),
     SelectFilter(usize),
     SelectEg(usize),
+    StartSideResize(SidePanel),
+    ResizeSidePanel(f32),
+    StopSideResize,
+    OpenBrowserEntry(PathBuf),
+    BeginAudioFileDrag(PathBuf),
+    ZoneNoteHovered(usize),
+    ZoneNoteReleased(usize),
+    StartZoneEdgeDrag(usize, ZoneEdge),
+    StopZoneEdgeDrag,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidePanel {
+    Zones,
+    Browser,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZoneEdge {
+    Start,
+    End,
 }
 
 struct State {
@@ -97,9 +121,34 @@ struct State {
     selected_lfo: usize,
     selected_filter: usize,
     selected_eg: usize,
+    zones_width: f32,
+    browser_width: f32,
+    resizing_side: Option<SidePanel>,
+    resize_last_x: Option<f32>,
+    browser_path: PathBuf,
+    browser_entries: Vec<BrowserEntry>,
+    dragged_audio_file: Option<PathBuf>,
+    zones: Vec<SampleZone>,
+    dragging_zone_edge: Option<(usize, ZoneEdge)>,
+}
+
+#[derive(Debug, Clone)]
+struct BrowserEntry {
+    name: String,
+    path: PathBuf,
+    is_dir: bool,
+}
+
+#[derive(Debug, Clone)]
+struct SampleZone {
+    file: PathBuf,
+    start_note: usize,
+    end_note: usize,
 }
 
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
+    let browser_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let browser_entries = read_browser_entries(&browser_path);
     (
         State {
             shared,
@@ -108,8 +157,63 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             selected_lfo: 0,
             selected_filter: 0,
             selected_eg: 0,
+            zones_width: 138.0,
+            browser_width: 138.0,
+            resizing_side: None,
+            resize_last_x: None,
+            browser_path,
+            browser_entries,
+            dragged_audio_file: None,
+            zones: Vec::new(),
+            dragging_zone_edge: None,
         },
         Task::none(),
+    )
+}
+
+fn read_browser_entries(path: &PathBuf) -> Vec<BrowserEntry> {
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+
+    dirs.push(BrowserEntry {
+        name: String::from(".."),
+        path: path.parent().map(PathBuf::from).unwrap_or_else(|| path.clone()),
+        is_dir: true,
+    });
+
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            let is_dir = entry.file_type().map(|ty| ty.is_dir()).unwrap_or(false);
+            let is_audio = is_audio_file(&entry_path);
+            let browser_entry = BrowserEntry {
+                name,
+                path: entry_path,
+                is_dir,
+            };
+            if is_dir {
+                dirs.push(browser_entry);
+            } else if is_audio {
+                files.push(browser_entry);
+            }
+        }
+    }
+
+    let sort_key = |entry: &BrowserEntry| entry.name.to_ascii_lowercase();
+    dirs[1..].sort_by_key(sort_key);
+    files.sort_by_key(sort_key);
+    dirs.extend(files);
+    dirs
+}
+
+fn is_audio_file(path: &PathBuf) -> bool {
+    let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
+        return false;
+    };
+    matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "wav" | "wave" | "aif" | "aiff" | "flac" | "ogg" | "mp3" | "m4a" | "aac"
     )
 }
 
@@ -158,6 +262,69 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::SelectEg(index) => {
             state.selected_eg = index;
+        }
+        Message::StartSideResize(side) => {
+            state.resizing_side = Some(side);
+            state.resize_last_x = None;
+        }
+        Message::ResizeSidePanel(x) => {
+            if let Some(side) = state.resizing_side {
+                if let Some(last_x) = state.resize_last_x {
+                    let delta = x - last_x;
+                    match side {
+                        SidePanel::Zones => {
+                            state.zones_width = (state.zones_width + delta).clamp(92.0, 260.0);
+                        }
+                        SidePanel::Browser => {
+                            state.browser_width = (state.browser_width - delta).clamp(92.0, 260.0);
+                        }
+                    }
+                }
+                state.resize_last_x = Some(x);
+            }
+        }
+        Message::StopSideResize => {
+            state.resizing_side = None;
+            state.resize_last_x = None;
+        }
+        Message::OpenBrowserEntry(path) => {
+            if path.is_dir() {
+                state.browser_path = path;
+                state.browser_entries = read_browser_entries(&state.browser_path);
+            }
+        }
+        Message::BeginAudioFileDrag(path) => {
+            state.dragged_audio_file = Some(path);
+        }
+        Message::ZoneNoteHovered(note) => {
+            if let Some((zone_index, edge)) = state.dragging_zone_edge {
+                if let Some(zone) = state.zones.get_mut(zone_index) {
+                    match edge {
+                        ZoneEdge::Start => {
+                            zone.start_note = note.min(zone.end_note);
+                        }
+                        ZoneEdge::End => {
+                            zone.end_note = note.max(zone.start_note);
+                        }
+                    }
+                }
+            }
+        }
+        Message::ZoneNoteReleased(note) => {
+            if let Some(file) = state.dragged_audio_file.take() {
+                state.zones.push(SampleZone {
+                    file,
+                    start_note: note,
+                    end_note: note,
+                });
+            }
+            state.dragging_zone_edge = None;
+        }
+        Message::StartZoneEdgeDrag(index, edge) => {
+            state.dragging_zone_edge = Some((index, edge));
+        }
+        Message::StopZoneEdgeDrag => {
+            state.dragging_zone_edge = None;
         }
     }
     Task::none()
@@ -472,6 +639,319 @@ fn panel_no_title<'a>(content: Element<'a, Message>) -> Element<'a, Message> {
         .into()
 }
 
+fn fill_panel_no_title<'a>(content: Element<'a, Message>) -> Element<'a, Message> {
+    container(content)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(8)
+        .style(|_theme: &Theme| container::Style {
+            background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.10))),
+            border: Border {
+                color: Color::from_rgb(0.20, 0.20, 0.24),
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+fn zone_for_note(state: &State, note: usize) -> Option<(usize, &SampleZone)> {
+    state
+        .zones
+        .iter()
+        .enumerate()
+        .find(|(_, zone)| zone.start_note <= note && note <= zone.end_note)
+}
+
+fn zone_edge_handle(zone_index: usize, edge: ZoneEdge) -> Element<'static, Message> {
+    mouse_area(
+        container(text(""))
+            .width(Length::Fixed(3.0))
+            .height(Length::Fill)
+            .style(|_theme: &Theme| container::Style {
+                background: Some(Background::Color(Color::from_rgb(0.78, 0.88, 1.0))),
+                border: Border {
+                    color: Color::from_rgb(0.22, 0.48, 0.95),
+                    width: 1.0,
+                    radius: 1.0.into(),
+                },
+                ..container::Style::default()
+            }),
+    )
+    .on_press(Message::StartZoneEdgeDrag(zone_index, edge))
+    .on_release(Message::StopZoneEdgeDrag)
+    .into()
+}
+
+fn zone_note_cell<'a>(state: &'a State, note: usize) -> Element<'a, Message> {
+    let pitch = note % 12;
+    let is_c = pitch == 0;
+    let label = if is_c {
+        format!("C{}", note as i32 / 12 - 1)
+    } else {
+        String::new()
+    };
+    let zone = zone_for_note(state, note);
+    let in_zone = zone.is_some();
+    let zone_index = zone.map(|(index, _)| index);
+    let start_edge = zone
+        .map(|(_, zone)| zone.start_note == note)
+        .unwrap_or(false);
+    let end_edge = zone.map(|(_, zone)| zone.end_note == note).unwrap_or(false);
+    let zone_label = zone
+        .and_then(|(_, zone)| zone.file.file_name())
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or(label);
+
+    let mut content = row![].spacing(0).height(Length::Fill);
+    if let Some(index) = zone_index {
+        if start_edge {
+            content = content.push(zone_edge_handle(index, ZoneEdge::Start));
+        }
+    }
+    content = content.push(
+        container(text(zone_label).size(9))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Horizontal::Center)
+            .align_y(Vertical::Top)
+            .padding(2),
+    );
+    if let Some(index) = zone_index {
+        if end_edge {
+            content = content.push(zone_edge_handle(index, ZoneEdge::End));
+        }
+    }
+
+    mouse_area(
+        container(content)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(move |_theme: &Theme| container::Style {
+                background: Some(Background::Color(if in_zone {
+                    Color::from_rgb(0.16, 0.23, 0.34)
+                } else if is_c {
+                    Color::from_rgb(0.105, 0.108, 0.128)
+                } else {
+                    Color::from_rgb(0.085, 0.088, 0.108)
+                })),
+                border: Border {
+                    color: if in_zone {
+                        Color::from_rgb(0.22, 0.48, 0.95)
+                    } else {
+                        Color::from_rgb(0.18, 0.18, 0.22)
+                    },
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
+                text_color: Some(Color::from_rgb(0.48, 0.50, 0.58)),
+                ..container::Style::default()
+            }),
+    )
+    .on_move(move |_| Message::ZoneNoteHovered(note))
+    .on_release(Message::ZoneNoteReleased(note))
+    .into()
+}
+
+fn zone_grid<'a>(state: &'a State) -> Element<'a, Message> {
+    let mut lanes = row![].spacing(1).height(Length::Fill);
+    for note in 0..SAMPLE_MAP_NOTES {
+        lanes = lanes.push(zone_note_cell(state, note));
+    }
+
+    container(lanes)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(|_theme: &Theme| container::Style {
+            background: Some(Background::Color(Color::from_rgb(0.075, 0.078, 0.095))),
+            border: Border {
+                color: Color::from_rgb(0.18, 0.18, 0.22),
+                width: 1.0,
+                radius: 3.0.into(),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+fn piano_key(note: usize) -> Element<'static, Message> {
+    let pitch = note % 12;
+    let is_black = matches!(pitch, 1 | 3 | 6 | 8 | 10);
+    let label = if pitch == 0 {
+        format!("C{}", note / 12 + 1)
+    } else {
+        String::new()
+    };
+
+    container(text(label).size(9))
+        .width(Length::Fill)
+        .height(Length::Fixed(48.0))
+        .align_x(Horizontal::Center)
+        .align_y(Vertical::Bottom)
+        .padding(3)
+        .style(move |_theme: &Theme| container::Style {
+            background: Some(Background::Color(if is_black {
+                Color::from_rgb(0.035, 0.037, 0.045)
+            } else {
+                Color::from_rgb(0.78, 0.80, 0.84)
+            })),
+            border: Border {
+                color: if is_black {
+                    Color::from_rgb(0.015, 0.016, 0.020)
+                } else {
+                    Color::from_rgb(0.42, 0.43, 0.48)
+                },
+                width: 1.0,
+                radius: 2.0.into(),
+            },
+            text_color: Some(if is_black {
+                Color::from_rgb(0.72, 0.72, 0.76)
+            } else {
+                Color::from_rgb(0.16, 0.17, 0.20)
+            }),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+fn piano_roll<'a>() -> Element<'a, Message> {
+    let mut keys = row![].spacing(1).align_y(Alignment::End);
+    for note in 0..SAMPLE_MAP_NOTES {
+        keys = keys.push(piano_key(note));
+    }
+
+    container(keys)
+        .width(Length::Fill)
+        .height(Length::Fixed(48.0))
+        .style(|_theme: &Theme| container::Style {
+            background: Some(Background::Color(Color::from_rgb(0.045, 0.047, 0.058))),
+            border: Border {
+                color: Color::from_rgb(0.18, 0.18, 0.22),
+                width: 1.0,
+                radius: 3.0.into(),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+fn resize_handle(side: SidePanel) -> Element<'static, Message> {
+    mouse_area(
+        container(text("")).width(Length::Fixed(6.0)).height(Length::Fill).style(
+            |_theme: &Theme| container::Style {
+                background: Some(Background::Color(Color::from_rgb(0.18, 0.18, 0.22))),
+                border: Border {
+                    color: Color::from_rgb(0.27, 0.27, 0.32),
+                    width: 1.0,
+                    radius: 2.0.into(),
+                },
+                ..container::Style::default()
+            },
+        ),
+    )
+    .on_press(Message::StartSideResize(side))
+    .on_release(Message::StopSideResize)
+    .into()
+}
+
+fn side_panel<'a>(title: &'static str, width: f32) -> Element<'a, Message> {
+    container(
+        column![section_title(title)]
+            .spacing(8)
+            .align_x(Alignment::Start),
+    )
+    .width(Length::Fixed(width))
+    .height(Length::Fill)
+    .padding(8)
+    .style(|_theme: &Theme| container::Style {
+        background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.10))),
+        border: Border {
+            color: Color::from_rgb(0.20, 0.20, 0.24),
+            width: 1.0,
+            radius: 4.0.into(),
+        },
+        ..container::Style::default()
+    })
+    .into()
+}
+
+fn browser_row<'a>(entry: &'a BrowserEntry) -> Element<'a, Message> {
+    let label = if entry.is_dir {
+        format!("{}/", entry.name)
+    } else {
+        entry.name.clone()
+    };
+    let content = container(text(label).size(11))
+        .width(Length::Fill)
+        .padding([3, 6])
+        .style(move |_theme: &Theme| container::Style {
+            background: entry
+                .is_dir
+                .then(|| Background::Color(Color::from_rgb(0.105, 0.108, 0.128))),
+            border: Border {
+                color: if entry.is_dir {
+                    Color::from_rgb(0.22, 0.48, 0.95)
+                } else {
+                    Color::from_rgb(0.18, 0.18, 0.22)
+                },
+                width: 1.0,
+                radius: 3.0.into(),
+            },
+            text_color: Some(if entry.is_dir {
+                Color::from_rgb(0.82, 0.84, 0.92)
+            } else {
+                Color::from_rgb(0.62, 0.64, 0.70)
+            }),
+            ..container::Style::default()
+        });
+
+    if entry.is_dir {
+        button(content)
+            .padding(1)
+            .on_press(Message::OpenBrowserEntry(entry.path.clone()))
+            .width(Length::Fill)
+            .into()
+    } else {
+        mouse_area(content)
+            .on_press(Message::BeginAudioFileDrag(entry.path.clone()))
+            .into()
+    }
+}
+
+fn browser_panel<'a>(state: &'a State) -> Element<'a, Message> {
+    let mut entries = column![].spacing(3).width(Length::Fill);
+    for entry in &state.browser_entries {
+        entries = entries.push(browser_row(entry));
+    }
+
+    container(
+        column![
+            section_title("Browser"),
+            container(text(state.browser_path.display().to_string()).size(10))
+                .width(Length::Fill)
+                .padding([3, 6]),
+            scrollable(entries).height(Length::Fill),
+        ]
+        .spacing(8)
+        .height(Length::Fill)
+        .align_x(Alignment::Start),
+    )
+    .width(Length::Fixed(state.browser_width))
+    .height(Length::Fill)
+    .padding(8)
+    .style(|_theme: &Theme| container::Style {
+        background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.10))),
+        border: Border {
+            color: Color::from_rgb(0.20, 0.20, 0.24),
+            width: 1.0,
+            radius: 4.0.into(),
+        },
+        ..container::Style::default()
+    })
+    .into()
+}
+
 fn knob_row<'a>(items: Vec<Element<'a, Message>>) -> Element<'a, Message> {
     let mut r = row![].spacing(6).align_y(Alignment::Center);
     for item in items {
@@ -538,6 +1018,13 @@ fn lfo_tab_button(label: &'static str, index: usize, state: &State) -> Element<'
 }
 
 fn view(state: &State) -> Element<'_, Message> {
+    let sample_map = fill_panel_no_title(
+        column![zone_grid(state), piano_roll()]
+            .spacing(8)
+            .height(Length::Fill)
+            .into(),
+    );
+
     let top_bar = row![
         panel(
             "Master",
@@ -760,7 +1247,8 @@ fn view(state: &State) -> Element<'_, Message> {
         ]),
     ]));
 
-    let content = column![
+    let main_content = column![
+        sample_map,
         top_bar,
         row![
             column![filter_selector, selected_filter_panel].spacing(10),
@@ -771,8 +1259,24 @@ fn view(state: &State) -> Element<'_, Message> {
         column![lfo_selector, lfo_panel].spacing(10),
     ]
     .spacing(12)
-    .padding(16)
+    .width(Length::Fill)
+    .height(Length::Fill)
     .align_x(Alignment::Start);
+
+    let content_row = row![
+        side_panel("Zones", state.zones_width),
+        resize_handle(SidePanel::Zones),
+        main_content,
+        resize_handle(SidePanel::Browser),
+        browser_panel(state)
+    ]
+    .spacing(8)
+    .height(Length::Fill)
+    .align_y(Alignment::Start);
+
+    let content = mouse_area(container(content_row).padding(16).height(Length::Fill))
+        .on_move(|Point { x, .. }| Message::ResizeSidePanel(x))
+        .on_release(Message::StopSideResize);
 
     container(content)
         .width(Length::Fill)

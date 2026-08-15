@@ -1430,22 +1430,39 @@ unsafe extern "C-unwind" fn ext_gui_get_size(
 }
 
 unsafe extern "C-unwind" fn ext_gui_can_resize(_plugin: *const clap_plugin) -> bool {
-    false
+    true
 }
 
 unsafe extern "C-unwind" fn ext_gui_get_resize_hints(
     _plugin: *const clap_plugin,
-    _hints: *mut clap_clap::ffi::clap_gui_resize_hints,
+    hints: *mut clap_clap::ffi::clap_gui_resize_hints,
 ) -> bool {
-    false
+    if hints.is_null() {
+        return false;
+    }
+    unsafe {
+        (*hints).can_resize_horizontally = true;
+        (*hints).can_resize_vertically = true;
+        (*hints).preserve_aspect_ratio = false;
+        (*hints).aspect_ratio_width = crate::sampler::gui::EDITOR_WIDTH;
+        (*hints).aspect_ratio_height = crate::sampler::gui::EDITOR_HEIGHT;
+    }
+    true
 }
 
 unsafe extern "C-unwind" fn ext_gui_adjust_size(
     _plugin: *const clap_plugin,
-    _width: *mut u32,
-    _height: *mut u32,
+    width: *mut u32,
+    height: *mut u32,
 ) -> bool {
-    false
+    if width.is_null() || height.is_null() {
+        return false;
+    }
+    unsafe {
+        *width = (*width).max(760);
+        *height = (*height).max(520);
+    }
+    true
 }
 
 unsafe extern "C-unwind" fn ext_gui_set_size(
@@ -1453,7 +1470,7 @@ unsafe extern "C-unwind" fn ext_gui_set_size(
     _width: u32,
     _height: u32,
 ) -> bool {
-    false
+    true
 }
 
 unsafe extern "C-unwind" fn ext_gui_set_parent(
