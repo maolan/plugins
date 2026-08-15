@@ -14,14 +14,18 @@ use clap_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::{
     Alignment, Background, Border, Color, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{column, container, row, text},
+    widget::{column, container, mouse_area, row, text},
 };
 use maolan_widgets::arch_slider::arch_slider;
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 
-use crate::sampler::{
-    params::{PARAMS, ParamId},
-    plugin::SharedState,
+use crate::{
+    common::lfo_assignment::{LfoAssignmentConfig, LfoAssignmentState, ModRouteParamIds},
+    sampler::{
+        dsp::mod_matrix::ModTarget,
+        params::{PARAMS, ParamId},
+        plugin::SharedState,
+    },
 };
 
 pub const EDITOR_WIDTH: u32 = 1100;
@@ -73,11 +77,14 @@ impl HasWindowHandle for ParentWindowHandle {
 pub enum Message {
     SetParam(ParamId, f32),
     ReleaseParam(ParamId),
+    AssignLfoToParam(ParamId),
+    ToggleLfoAssignment(usize),
 }
 
 struct State {
     shared: Arc<SharedState>,
     active_gestures: Vec<bool>,
+    lfo_assignment: LfoAssignmentState,
 }
 
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
@@ -85,6 +92,7 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
         State {
             shared,
             active_gestures: vec![false; ParamId::COUNT],
+            lfo_assignment: LfoAssignmentState::default(),
         },
         Task::none(),
     )
@@ -107,8 +115,116 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.shared.mark_gesture_end_pending(id);
             }
         }
+        Message::AssignLfoToParam(id) => {
+            if let Some(lfo_index) = state.lfo_assignment.armed_lfo() {
+                assign_lfo_to_param(state, lfo_index, id);
+            }
+        }
+        Message::ToggleLfoAssignment(index) => {
+            state.lfo_assignment.toggle(index);
+        }
     }
     Task::none()
+}
+
+const MOD_ROUTES: [ModRouteParamIds<ParamId>; 6] = [
+    ModRouteParamIds {
+        source: ParamId::ModRoute1Source,
+        target: ParamId::ModRoute1Target,
+        depth: ParamId::ModRoute1Depth,
+    },
+    ModRouteParamIds {
+        source: ParamId::ModRoute2Source,
+        target: ParamId::ModRoute2Target,
+        depth: ParamId::ModRoute2Depth,
+    },
+    ModRouteParamIds {
+        source: ParamId::ModRoute3Source,
+        target: ParamId::ModRoute3Target,
+        depth: ParamId::ModRoute3Depth,
+    },
+    ModRouteParamIds {
+        source: ParamId::ModRoute4Source,
+        target: ParamId::ModRoute4Target,
+        depth: ParamId::ModRoute4Depth,
+    },
+    ModRouteParamIds {
+        source: ParamId::ModRoute5Source,
+        target: ParamId::ModRoute5Target,
+        depth: ParamId::ModRoute5Depth,
+    },
+    ModRouteParamIds {
+        source: ParamId::ModRoute6Source,
+        target: ParamId::ModRoute6Target,
+        depth: ParamId::ModRoute6Depth,
+    },
+];
+
+const LFO_ASSIGNMENT_CONFIG: LfoAssignmentConfig<'static, ParamId> = LfoAssignmentConfig {
+    routes: &MOD_ROUTES,
+    first_lfo_source: ModSourceValue::Lfo1 as u8,
+    lfo_count: 2,
+    default_depth: 0.5,
+};
+
+#[repr(u8)]
+enum ModSourceValue {
+    Lfo1 = 7,
+}
+
+fn set_param_once(state: &State, id: ParamId, value: f32) {
+    state.shared.mark_gesture_begin_pending(id);
+    state.shared.set_param_outbound_only(id, value as f64);
+    state.shared.mark_gesture_end_pending(id);
+}
+
+fn assign_lfo_to_param(state: &mut State, lfo_index: usize, id: ParamId) {
+    let Some(target) = mod_target_for_param(id) else {
+        return;
+    };
+    LFO_ASSIGNMENT_CONFIG.assign(
+        &state.shared.params,
+        lfo_index,
+        target as u8,
+        |id, value| {
+            set_param_once(state, id, value);
+        },
+    );
+
+    let (amount, enabled) = match lfo_index {
+        0 => (ParamId::Lfo1Amount, ParamId::Lfo1Enabled),
+        _ => (ParamId::Lfo2Amount, ParamId::Lfo2Enabled),
+    };
+    if state.shared.params.get(amount).abs() <= 0.001 {
+        set_param_once(state, amount, 1.0);
+    }
+    if state.shared.params.get(enabled) < 0.5 {
+        set_param_once(state, enabled, 1.0);
+    }
+}
+
+fn param_has_lfo_assignment(state: &State, id: ParamId) -> bool {
+    let Some(target) = mod_target_for_param(id) else {
+        return false;
+    };
+    let Some(lfo_index) = state.lfo_assignment.armed_lfo() else {
+        return false;
+    };
+    LFO_ASSIGNMENT_CONFIG.has_lfo_assignment(&state.shared.params, lfo_index, target as u8)
+}
+
+fn mod_target_for_param(id: ParamId) -> Option<ModTarget> {
+    match id {
+        ParamId::MasterGain => Some(ModTarget::Amplitude),
+        ParamId::MasterPan => Some(ModTarget::Pan),
+        ParamId::FilterCutoff => Some(ModTarget::FilterCutoff),
+        ParamId::FilterResonance => Some(ModTarget::FilterResonance),
+        _ => None,
+    }
+}
+
+fn assignment_color() -> Color {
+    Color::from_rgb(1.0, 0.83, 0.10)
 }
 
 fn small_knob<'a>(
@@ -119,7 +235,8 @@ fn small_knob<'a>(
 ) -> Element<'a, Message> {
     let value = state.shared.params.get(id) as f32;
     let def = &PARAMS[id.as_index()];
-    let slider = arch_slider(def.min as f32..=def.max as f32, value, move |v| {
+    let assigned = param_has_lfo_assignment(state, id);
+    let mut slider = arch_slider(def.min as f32..=def.max as f32, value, move |v| {
         Message::SetParam(id, v)
     })
     .step(step)
@@ -128,6 +245,11 @@ fn small_knob<'a>(
     .fill_from_start()
     .width(Length::Fixed(48.0))
     .height(Length::Fixed(48.0));
+    if assigned {
+        slider = slider
+            .filled_color(Color::from_rgb(0.82, 0.58, 0.08))
+            .handle_color(assignment_color());
+    }
 
     let value_text = if def.step >= 1.0 {
         format!("{value:.0}")
@@ -135,13 +257,34 @@ fn small_knob<'a>(
         format!("{value:.2}")
     };
 
-    container(
+    let content = container(
         column![text(label).size(11), slider, text(value_text).size(10)]
             .spacing(2)
             .align_x(Alignment::Center),
     )
     .width(Length::Fixed(56.0))
-    .into()
+    .padding(2)
+    .style(move |_theme: &Theme| container::Style {
+        background: assigned.then(|| Background::Color(Color::from_rgba(1.0, 0.83, 0.10, 0.10))),
+        border: Border {
+            color: if assigned {
+                assignment_color()
+            } else {
+                Color::TRANSPARENT
+            },
+            width: if assigned { 1.0 } else { 0.0 },
+            radius: 3.0.into(),
+        },
+        ..container::Style::default()
+    });
+
+    if mod_target_for_param(id).is_some() {
+        mouse_area(content)
+            .on_press(Message::AssignLfoToParam(id))
+            .into()
+    } else {
+        content.into()
+    }
 }
 
 fn section_title(title: &'static str) -> Element<'static, Message> {
@@ -176,6 +319,53 @@ fn panel<'a>(title: &'static str, content: Element<'a, Message>) -> Element<'a, 
         ..container::Style::default()
     })
     .into()
+}
+
+fn lfo_panel<'a>(
+    title: &'static str,
+    lfo_index: usize,
+    state: &State,
+    content: Element<'a, Message>,
+) -> Element<'a, Message> {
+    let armed = state.lfo_assignment.armed_lfo() == Some(lfo_index);
+    let title = mouse_area(container(text(title).size(13)).padding([3, 6]).style(
+        move |_theme: &Theme| container::Style {
+            background: Some(Background::Color(if armed {
+                Color::from_rgb(0.72, 0.49, 0.06)
+            } else {
+                Color::from_rgb(0.15, 0.15, 0.18)
+            })),
+            text_color: armed.then(|| Color::from_rgb(1.0, 0.96, 0.78)),
+            border: Border {
+                color: if armed {
+                    assignment_color()
+                } else {
+                    Color::from_rgb(0.28, 0.28, 0.32)
+                },
+                width: 1.0,
+                radius: 3.0.into(),
+            },
+            ..container::Style::default()
+        },
+    ))
+    .on_right_press(Message::ToggleLfoAssignment(lfo_index));
+
+    container(column![title, content].spacing(6).align_x(Alignment::Start))
+        .padding(8)
+        .style(move |_theme: &Theme| container::Style {
+            background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.10))),
+            border: Border {
+                color: if armed {
+                    assignment_color()
+                } else {
+                    Color::from_rgb(0.20, 0.20, 0.24)
+                },
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..container::Style::default()
+        })
+        .into()
 }
 
 fn knob_row<'a>(items: Vec<Element<'a, Message>>) -> Element<'a, Message> {
@@ -285,8 +475,10 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(10)
         .align_y(Alignment::Start);
 
-    let lfo1 = panel(
+    let lfo1 = lfo_panel(
         "LFO 1",
+        0,
+        state,
         knob_row(vec![
             small_knob(ParamId::Lfo1Rate, "Rate", state, 0.01),
             small_knob(ParamId::Lfo1Amount, "Amt", state, 0.01),
@@ -295,8 +487,10 @@ fn view(state: &State) -> Element<'_, Message> {
         ]),
     );
 
-    let lfo2 = panel(
+    let lfo2 = lfo_panel(
         "LFO 2",
+        1,
+        state,
         knob_row(vec![
             small_knob(ParamId::Lfo2Rate, "Rate", state, 0.01),
             small_knob(ParamId::Lfo2Amount, "Amt", state, 0.01),

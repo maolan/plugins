@@ -9,6 +9,7 @@ use super::{
     NoiseColorMode, NoiseGenerator, NoiseType, OscType, Oscillator, PlayMode, PortamentoCurve,
     SineShaperMode, Tuning, VoicePriority, Waveshape, Waveshaper, WaveshaperSettings, WindowType,
 };
+use crate::common::macro_param::MacroParam;
 use parking_lot::Mutex;
 use std::sync::Arc;
 
@@ -429,6 +430,14 @@ pub enum ModSource {
     LowestKey = 42,
     HighestKey = 43,
     LatestKey = 44,
+    Macro9 = 45,
+    Macro10 = 46,
+    Macro11 = 47,
+    Macro12 = 48,
+    Macro13 = 49,
+    Macro14 = 50,
+    Macro15 = 51,
+    Macro16 = 52,
 }
 
 impl ModSource {
@@ -479,11 +488,19 @@ impl ModSource {
             42 => Some(ModSource::LowestKey),
             43 => Some(ModSource::HighestKey),
             44 => Some(ModSource::LatestKey),
+            45 => Some(ModSource::Macro9),
+            46 => Some(ModSource::Macro10),
+            47 => Some(ModSource::Macro11),
+            48 => Some(ModSource::Macro12),
+            49 => Some(ModSource::Macro13),
+            50 => Some(ModSource::Macro14),
+            51 => Some(ModSource::Macro15),
+            52 => Some(ModSource::Macro16),
             _ => None,
         }
     }
 
-    pub const COUNT: u8 = 42;
+    pub const COUNT: u8 = 53;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -724,6 +741,40 @@ impl Default for ModRouting {
     }
 }
 
+fn lfo_source_index(source: ModSource) -> Option<usize> {
+    match source {
+        ModSource::Lfo1 => Some(0),
+        ModSource::Lfo2 => Some(1),
+        ModSource::Lfo3 => Some(2),
+        ModSource::Lfo4 => Some(3),
+        ModSource::Lfo5 => Some(4),
+        ModSource::Lfo6 => Some(5),
+        _ => None,
+    }
+}
+
+fn mod_depth_target_index(target: ModTarget) -> Option<usize> {
+    match target {
+        ModTarget::ModRoute1Depth => Some(0),
+        ModTarget::ModRoute2Depth => Some(1),
+        ModTarget::ModRoute3Depth => Some(2),
+        ModTarget::ModRoute4Depth => Some(3),
+        ModTarget::ModRoute5Depth => Some(4),
+        ModTarget::ModRoute6Depth => Some(5),
+        ModTarget::ModRoute7Depth => Some(6),
+        ModTarget::ModRoute8Depth => Some(7),
+        ModTarget::ModRoute9Depth => Some(8),
+        ModTarget::ModRoute10Depth => Some(9),
+        ModTarget::ModRoute11Depth => Some(10),
+        ModTarget::ModRoute12Depth => Some(11),
+        _ => None,
+    }
+}
+
+fn cutoff_mod_hz(mod_value: f32) -> f32 {
+    mod_value * 10000.0
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ModValues {
     osc_pitch: [f32; 3],
@@ -840,7 +891,7 @@ pub struct VoiceParams {
     pub note_expression_volume: f32,
     pub note_expression_pan: f32,
     pub release_velocity: f32,
-    pub macros: [f32; 8],
+    pub macros: [MacroParam; 16],
     pub breath: f32,
     pub expression: f32,
     pub sustain: f32,
@@ -948,7 +999,7 @@ impl Default for VoiceParams {
             note_expression_volume: 1.0,
             note_expression_pan: 0.0,
             release_velocity: 0.0,
-            macros: [0.0; 8],
+            macros: crate::common::macro_param::default_macros(),
             breath: 0.0,
             expression: 0.0,
             sustain: 0.0,
@@ -2093,7 +2144,7 @@ impl Voice {
         self.params.sh_noise_correlation = params.sh_noise_correlation;
         self.params.sh_noise_width = params.sh_noise_width;
         self.params.sh_noise_sync = params.sh_noise_sync;
-        self.params.macros = params.macros;
+        self.params.macros = params.macros.clone();
     }
 
     pub fn set_mts_esp(&mut self, client: Option<Arc<Mutex<MtsEspClient>>>) {
@@ -2244,14 +2295,22 @@ impl Voice {
             ModSource::RandomUnipolar => (self.random_value + 1.0) * 0.5,
             ModSource::AlternateBipolar => self.alternate_sign,
             ModSource::AlternateUnipolar => (self.alternate_sign + 1.0) * 0.5,
-            ModSource::Macro1 => self.params.macros[0],
-            ModSource::Macro2 => self.params.macros[1],
-            ModSource::Macro3 => self.params.macros[2],
-            ModSource::Macro4 => self.params.macros[3],
-            ModSource::Macro5 => self.params.macros[4],
-            ModSource::Macro6 => self.params.macros[5],
-            ModSource::Macro7 => self.params.macros[6],
-            ModSource::Macro8 => self.params.macros[7],
+            ModSource::Macro1 => self.params.macros[0].value,
+            ModSource::Macro2 => self.params.macros[1].value,
+            ModSource::Macro3 => self.params.macros[2].value,
+            ModSource::Macro4 => self.params.macros[3].value,
+            ModSource::Macro5 => self.params.macros[4].value,
+            ModSource::Macro6 => self.params.macros[5].value,
+            ModSource::Macro7 => self.params.macros[6].value,
+            ModSource::Macro8 => self.params.macros[7].value,
+            ModSource::Macro9 => self.params.macros[8].value,
+            ModSource::Macro10 => self.params.macros[9].value,
+            ModSource::Macro11 => self.params.macros[10].value,
+            ModSource::Macro12 => self.params.macros[11].value,
+            ModSource::Macro13 => self.params.macros[12].value,
+            ModSource::Macro14 => self.params.macros[13].value,
+            ModSource::Macro15 => self.params.macros[14].value,
+            ModSource::Macro16 => self.params.macros[15].value,
             ModSource::Breath => self.params.breath,
             ModSource::Expression => self.params.expression,
             ModSource::Sustain => self.params.sustain,
@@ -2409,6 +2468,41 @@ impl Voice {
         }
 
         vals
+    }
+
+    pub fn lfo_visual_mod_values(&self) -> [[f32; ModTarget::COUNT as usize]; 6] {
+        let mut values = [[0.0; ModTarget::COUNT as usize]; 6];
+        let mut mod_depth = [0.0; MOD_MATRIX_SIZE];
+
+        for routing in self.params.modulations.iter() {
+            if !routing.active || routing.depth == 0.0 {
+                continue;
+            }
+            let Some(route_index) = mod_depth_target_index(routing.target) else {
+                continue;
+            };
+            let src_val = self.get_mod_source_value(routing.source);
+            let curved_depth = routing.depth_curve.apply(routing.depth);
+            mod_depth[route_index] += src_val * curved_depth;
+        }
+
+        for (i, routing) in self.params.modulations.iter().enumerate() {
+            if !routing.active {
+                continue;
+            }
+            let Some(lfo_index) = lfo_source_index(routing.source) else {
+                continue;
+            };
+            let effective_depth = (routing.depth + mod_depth[i]).clamp(-1.0, 1.0);
+            if effective_depth == 0.0 {
+                continue;
+            }
+            let src_val = self.get_mod_source_value(routing.source);
+            let curved_depth = routing.depth_curve.apply(effective_depth);
+            values[lfo_index][routing.target as usize] += src_val * curved_depth;
+        }
+
+        values
     }
 
     pub fn process_block(
@@ -3086,8 +3180,8 @@ impl Voice {
             let sample_l = f1_mix_l + f2_mix_l;
             let sample_r = f1_mix_r + f2_mix_r;
 
-            let flavor_cutoff =
-                (self.params.flavor_cutoff + mods.flavor_cutoff).clamp(20.0, 20000.0);
+            let flavor_cutoff = (self.params.flavor_cutoff + cutoff_mod_hz(mods.flavor_cutoff))
+                .clamp(20.0, 20000.0);
             self.flavor.cutoff_hz = flavor_cutoff;
             self.flavor2.cutoff_hz = flavor_cutoff;
             let (f1_char_l, f1_char_r, f2_char_l, f2_char_r, char_out_l, char_out_r) =
@@ -3172,7 +3266,8 @@ impl Voice {
                     self.lfo1_output * 5000.0
                 };
                 let key_track = self.params.filter1.key_tracking * (self.note as f32 - 60.0) * 50.0;
-                (base + eg_mod + lfo_mod + key_track + mods.f1_cutoff).clamp(20.0, 20000.0)
+                (base + eg_mod + lfo_mod + key_track + cutoff_mod_hz(mods.f1_cutoff))
+                    .clamp(20.0, 20000.0)
             } else {
                 20000.0
             };
@@ -3205,7 +3300,8 @@ impl Voice {
                     self.lfo2_output * 5000.0
                 };
                 let key_track = self.params.filter2.key_tracking * (self.note as f32 - 60.0) * 50.0;
-                (base + eg_mod + lfo_mod + key_track + mods.f2_cutoff).clamp(20.0, 20000.0)
+                (base + eg_mod + lfo_mod + key_track + cutoff_mod_hz(mods.f2_cutoff))
+                    .clamp(20.0, 20000.0)
             } else {
                 20000.0
             };
@@ -3624,8 +3720,8 @@ fn note_to_freq(note: u8, tuning: &Tuning, mts_esp: &Option<Arc<Mutex<MtsEspClie
 
 #[inline]
 fn freq_to_scale_degree(freq: f32, tuning: &Tuning) -> i32 {
-    let root_freq = 440.0 * 2.0f32.powf((tuning.root_midi_note as f32 - 69.0) / 12.0);
-    let cents = 1200.0 * (freq / root_freq.max(1e-6)).log2();
+    let root_freq = crate::common::pitch::midi_note_to_frequency(tuning.root_midi_note as u8);
+    let cents = crate::common::pitch::ratio_to_cents(freq / root_freq.max(1e-6));
     let octave_cents = tuning.octave_cents();
     let scale_len = tuning.num_degrees();
     if scale_len == 0 || octave_cents <= 0.0 {

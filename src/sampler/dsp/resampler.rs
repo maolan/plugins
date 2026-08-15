@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use crate::sampler::dsp::sample::{InterpolationMode, Sample};
+use crate::common::resampler::{ResampleQuality, resample_buffer};
+use crate::sampler::dsp::sample::Sample;
 
 /// Offline sample-rate conversion for sampler zones.
 ///
@@ -13,45 +14,32 @@ pub fn resample(sample: &Sample, target_sample_rate: f32) -> Arc<Sample> {
         return Arc::new(sample.clone());
     }
 
-    let ratio = sample.sample_rate as f64 / target_sample_rate as f64;
-    let out_frames = ((sample.frames as f64) / ratio).ceil().max(1.0) as usize;
+    let data_l = resample_buffer(
+        &sample.data_l,
+        sample.sample_rate as f64,
+        target_sample_rate as f64,
+        ResampleQuality::Best,
+    );
+    let data_r = resample_buffer(
+        &sample.data_r,
+        sample.sample_rate as f64,
+        target_sample_rate as f64,
+        ResampleQuality::Best,
+    );
 
-    let mut data_l = Vec::with_capacity(out_frames);
-    let mut data_r = Vec::with_capacity(out_frames);
-
-    for i in 0..out_frames {
-        let phase = i as f64 * ratio;
-        let (l, r) = sample.read(phase, InterpolationMode::Sinc);
-        data_l.push(l);
-        data_r.push(r);
-    }
-
-    let (peak, rms) = compute_stats(&data_l, &data_r);
+    let out_frames = data_l.len();
+    let channels = vec![data_l, data_r];
+    let (peak, rms) = crate::common::audio_file::compute_stats(&channels);
+    let mut iter = channels.into_iter();
 
     Arc::new(Sample {
         sample_rate: target_sample_rate,
-        data_l,
-        data_r,
+        data_l: iter.next().unwrap(),
+        data_r: iter.next().unwrap(),
         frames: out_frames,
         peak,
         rms,
     })
-}
-
-fn compute_stats(left: &[f32], right: &[f32]) -> (f32, f32) {
-    let mut peak = 0.0f32;
-    let mut sum_sq = 0.0f64;
-    let mut count = 0usize;
-    for &s in left.iter().chain(right.iter()) {
-        let abs = s.abs();
-        if abs > peak {
-            peak = abs;
-        }
-        sum_sq += (s as f64) * (s as f64);
-        count += 1;
-    }
-    let rms = ((sum_sq / count.max(1) as f64) as f32).sqrt();
-    (peak, rms)
 }
 
 #[cfg(test)]

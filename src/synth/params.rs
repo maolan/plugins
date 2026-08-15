@@ -761,10 +761,19 @@ pub enum ParamId {
     Ring23Route = 709,
     Ring12Combinator = 710,
     Ring23Combinator = 711,
+
+    Macro9 = 712,
+    Macro10 = 713,
+    Macro11 = 714,
+    Macro12 = 715,
+    Macro13 = 716,
+    Macro14 = 717,
+    Macro15 = 718,
+    Macro16 = 719,
 }
 
 impl ParamId {
-    pub const COUNT: usize = 712;
+    pub const COUNT: usize = 720;
 
     pub const fn all() -> [ParamId; Self::COUNT] {
         [
@@ -1480,6 +1489,14 @@ impl ParamId {
             ParamId::Ring23Route,
             ParamId::Ring12Combinator,
             ParamId::Ring23Combinator,
+            ParamId::Macro9,
+            ParamId::Macro10,
+            ParamId::Macro11,
+            ParamId::Macro12,
+            ParamId::Macro13,
+            ParamId::Macro14,
+            ParamId::Macro15,
+            ParamId::Macro16,
         ]
     }
 
@@ -4089,6 +4106,14 @@ pub static PARAMS: [ParamDef; ParamId::COUNT] = [
         10.0,
         0.0
     ),
+    def_automatable!(ParamId::Macro9, "Macro 9", "Macro", 0.0, 1.0, 0.0, 0.01),
+    def_automatable!(ParamId::Macro10, "Macro 10", "Macro", 0.0, 1.0, 0.0, 0.01),
+    def_automatable!(ParamId::Macro11, "Macro 11", "Macro", 0.0, 1.0, 0.0, 0.01),
+    def_automatable!(ParamId::Macro12, "Macro 12", "Macro", 0.0, 1.0, 0.0, 0.01),
+    def_automatable!(ParamId::Macro13, "Macro 13", "Macro", 0.0, 1.0, 0.0, 0.01),
+    def_automatable!(ParamId::Macro14, "Macro 14", "Macro", 0.0, 1.0, 0.0, 0.01),
+    def_automatable!(ParamId::Macro15, "Macro 15", "Macro", 0.0, 1.0, 0.0, 0.01),
+    def_automatable!(ParamId::Macro16, "Macro 16", "Macro", 0.0, 1.0, 0.0, 0.01),
 ];
 
 pub fn param_def(id: ParamId) -> Option<&'static ParamDef> {

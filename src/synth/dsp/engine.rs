@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use super::{Lfo, MtsEspClient, PlayMode, StealMode, Voice, VoiceParams, VoicePriority};
+use super::{Lfo, ModTarget, MtsEspClient, PlayMode, StealMode, Voice, VoiceParams, VoicePriority};
 use parking_lot::Mutex;
 use std::sync::Arc;
 
@@ -23,6 +23,7 @@ pub struct SynthEngine {
     pub scene_lfo6: Lfo,
     temp_l: Vec<f32>,
     temp_r: Vec<f32>,
+    visual_lfo_mod_values: [[f32; ModTarget::COUNT as usize]; 6],
 }
 
 impl SynthEngine {
@@ -49,6 +50,7 @@ impl SynthEngine {
             scene_lfo6: Lfo::new(sample_rate),
             temp_l: Vec::new(),
             temp_r: Vec::new(),
+            visual_lfo_mod_values: [[0.0; ModTarget::COUNT as usize]; 6],
         }
     }
 
@@ -675,6 +677,7 @@ impl SynthEngine {
 
         out_l.fill(0.0);
         out_r.fill(0.0);
+        self.visual_lfo_mod_values = [[0.0; ModTarget::COUNT as usize]; 6];
 
         if self.temp_l.len() < frames {
             self.temp_l.resize(frames, 0.0);
@@ -710,10 +713,12 @@ impl SynthEngine {
         let highest_key_norm = (highest_key - 60.0) / 60.0;
         let latest_key_norm = (latest_key - 60.0) / 60.0;
 
+        let mut active_voice_count = 0usize;
         for voice in &mut self.voices {
             if !voice.is_active() {
                 continue;
             }
+            active_voice_count += 1;
 
             voice.set_scene_lfo_outputs(scene_lfo_outputs);
             voice.set_key_mod_values(lowest_key_norm, highest_key_norm, latest_key_norm);
@@ -731,7 +736,27 @@ impl SynthEngine {
                 out_l[i] += self.temp_l[i];
                 out_r[i] += self.temp_r[i];
             }
+
+            let voice_visuals = voice.lfo_visual_mod_values();
+            for (lfo_index, lfo_values) in voice_visuals.iter().enumerate() {
+                for (target_index, value) in lfo_values.iter().enumerate() {
+                    self.visual_lfo_mod_values[lfo_index][target_index] += *value;
+                }
+            }
         }
+
+        if active_voice_count > 1 {
+            let scale = 1.0 / active_voice_count as f32;
+            for lfo_values in &mut self.visual_lfo_mod_values {
+                for value in lfo_values {
+                    *value *= scale;
+                }
+            }
+        }
+    }
+
+    pub fn visual_lfo_mod_values(&self) -> &[[f32; ModTarget::COUNT as usize]; 6] {
+        &self.visual_lfo_mod_values
     }
 
     pub fn active_voice_count(&self) -> usize {
@@ -798,5 +823,5 @@ fn note_to_freq(note: u8, mts_esp: &Option<Arc<Mutex<MtsEspClient>>>) -> f32 {
     {
         return freq;
     }
-    440.0 * 2.0f32.powf((note as f32 - 69.0) / 12.0)
+    crate::common::pitch::midi_note_to_frequency(note)
 }

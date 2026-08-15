@@ -1,4 +1,5 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
 pub enum ModSource {
     #[default]
     None,
@@ -35,7 +36,40 @@ pub enum ModSource {
     GroupVoiceCount,
 }
 
+impl ModSource {
+    pub fn from_u8(value: u8) -> Self {
+        match value {
+            1 => ModSource::Velocity,
+            2 => ModSource::KeyTrack,
+            3 => ModSource::PitchBend,
+            4 => ModSource::ModWheel,
+            5 => ModSource::Pressure,
+            6 => ModSource::Timbre,
+            7 => ModSource::Lfo1,
+            8 => ModSource::Lfo2,
+            9 => ModSource::Lfo3,
+            10 => ModSource::Lfo4,
+            11 => ModSource::Eg1,
+            12 => ModSource::Eg2,
+            13 => ModSource::Eg3,
+            14 => ModSource::Eg4,
+            15 => ModSource::Eg5,
+            16 => ModSource::Random,
+            17 => ModSource::SampleAndHold,
+            18 => ModSource::VariantFraction,
+            19 => ModSource::PlaybackPosition,
+            20 => ModSource::LoopFraction,
+            21 => ModSource::IsGated,
+            22 => ModSource::IsReleased,
+            23 => ModSource::GroupAnyGated,
+            24 => ModSource::GroupVoiceCount,
+            _ => ModSource::None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
 pub enum ModTarget {
     #[default]
     None,
@@ -45,6 +79,20 @@ pub enum ModTarget {
     FilterResonance,
     Pan,
     SampleStart,
+}
+
+impl ModTarget {
+    pub fn from_u8(value: u8) -> Self {
+        match value {
+            1 => ModTarget::Amplitude,
+            2 => ModTarget::Pitch,
+            3 => ModTarget::FilterCutoff,
+            4 => ModTarget::FilterResonance,
+            5 => ModTarget::Pan,
+            6 => ModTarget::SampleStart,
+            _ => ModTarget::None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

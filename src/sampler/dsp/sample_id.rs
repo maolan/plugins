@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use crate::common::sample_cache::SampleCache as CommonSampleCache;
+use crate::sampler::dsp::sample::Sample;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SampleId {
@@ -53,75 +54,13 @@ fn compute_file_hash(path: &str) -> String {
     hex_encode(&result)
 }
 
-pub struct SampleCache {
-    by_hash: HashMap<String, std::sync::Arc<crate::sampler::dsp::sample::Sample>>,
-
-    by_path: HashMap<String, std::sync::Arc<crate::sampler::dsp::sample::Sample>>,
-
-    aliases: HashMap<String, String>,
-}
-
-impl Default for SampleCache {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SampleCache {
-    pub fn new() -> Self {
-        Self {
-            by_hash: HashMap::new(),
-            by_path: HashMap::new(),
-            aliases: HashMap::new(),
-        }
-    }
-
-    pub fn set_alias(&mut self, missing_path: &str, replacement_path: &str) {
-        self.aliases
-            .insert(missing_path.to_string(), replacement_path.to_string());
-    }
-
-    pub fn get_by_path(
-        &self,
-        path: &str,
-    ) -> Option<std::sync::Arc<crate::sampler::dsp::sample::Sample>> {
-        if let Some(sample) = self.by_path.get(path) {
-            return Some(sample.clone());
-        }
-        if let Some(alias) = self.aliases.get(path) {
-            return self.by_path.get(alias).cloned();
-        }
-        None
-    }
-
-    pub fn insert(
-        &mut self,
-        id: &SampleId,
-        sample: std::sync::Arc<crate::sampler::dsp::sample::Sample>,
-    ) {
-        self.by_hash.insert(id.hash.clone(), sample.clone());
-        self.by_path.insert(id.path.clone(), sample);
-    }
-
-    pub fn has_hash(&self, hash: &str) -> bool {
-        self.by_hash.contains_key(hash)
-    }
-
-    pub fn get_by_hash(
-        &self,
-        hash: &str,
-    ) -> Option<std::sync::Arc<crate::sampler::dsp::sample::Sample>> {
-        self.by_hash.get(hash).cloned()
-    }
-
-    pub fn clear(&mut self) {
-        self.by_hash.clear();
-        self.by_path.clear();
-    }
-}
+/// Sampler-specific cache backed by the common implementation.
+pub type SampleCache = CommonSampleCache<Sample>;
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     #[test]
@@ -139,8 +78,8 @@ mod tests {
     fn test_sample_cache() {
         let mut cache = SampleCache::new();
         let id = SampleId::from_data(&[1.0f32, 2.0], "/test.wav");
-        let sample = std::sync::Arc::new(crate::sampler::dsp::sample::Sample::silent(48000.0));
-        cache.insert(&id, sample.clone());
+        let sample = Arc::new(Sample::silent(48000.0));
+        cache.insert(&id.hash, &id.path, sample);
 
         assert!(cache.get_by_path("/test.wav").is_some());
         assert!(cache.get_by_hash(&id.hash).is_some());

@@ -39,7 +39,10 @@ use crate::common::{
     SharedStateExt, apply_param_events, copy_str_to_array, emit_pending_param_events_to_host,
 };
 use crate::sampler::{
-    dsp::engine::SamplerEngine,
+    dsp::{
+        engine::SamplerEngine,
+        mod_matrix::{ModMatrix, ModSource, ModTarget},
+    },
     gui::GuiBridge,
     params::{PARAMS, ParamId, sanitize_param_value},
 };
@@ -272,6 +275,7 @@ struct DirtyFlags {
     eg5: bool,
     lfo1: bool,
     lfo2: bool,
+    modulations: bool,
 }
 
 fn apply_param_id(
@@ -339,7 +343,74 @@ fn apply_param_id(
             dirty.lfo2 = true;
             true
         }
+        ParamId::ModRoute1Source
+        | ParamId::ModRoute1Target
+        | ParamId::ModRoute1Depth
+        | ParamId::ModRoute2Source
+        | ParamId::ModRoute2Target
+        | ParamId::ModRoute2Depth
+        | ParamId::ModRoute3Source
+        | ParamId::ModRoute3Target
+        | ParamId::ModRoute3Depth
+        | ParamId::ModRoute4Source
+        | ParamId::ModRoute4Target
+        | ParamId::ModRoute4Depth
+        | ParamId::ModRoute5Source
+        | ParamId::ModRoute5Target
+        | ParamId::ModRoute5Depth
+        | ParamId::ModRoute6Source
+        | ParamId::ModRoute6Target
+        | ParamId::ModRoute6Depth => {
+            dirty.modulations = true;
+            true
+        }
     }
+}
+
+const MOD_ROUTES: [(ParamId, ParamId, ParamId); 6] = [
+    (
+        ParamId::ModRoute1Source,
+        ParamId::ModRoute1Target,
+        ParamId::ModRoute1Depth,
+    ),
+    (
+        ParamId::ModRoute2Source,
+        ParamId::ModRoute2Target,
+        ParamId::ModRoute2Depth,
+    ),
+    (
+        ParamId::ModRoute3Source,
+        ParamId::ModRoute3Target,
+        ParamId::ModRoute3Depth,
+    ),
+    (
+        ParamId::ModRoute4Source,
+        ParamId::ModRoute4Target,
+        ParamId::ModRoute4Depth,
+    ),
+    (
+        ParamId::ModRoute5Source,
+        ParamId::ModRoute5Target,
+        ParamId::ModRoute5Depth,
+    ),
+    (
+        ParamId::ModRoute6Source,
+        ParamId::ModRoute6Target,
+        ParamId::ModRoute6Depth,
+    ),
+];
+
+fn build_global_mod_matrix(params: &ParamStore<ParamId>) -> ModMatrix {
+    let mut matrix = ModMatrix::default();
+    for (index, (source_id, target_id, depth_id)) in MOD_ROUTES.iter().enumerate() {
+        matrix.set_route(
+            index,
+            ModSource::from_u8(params.get(*source_id) as u8),
+            ModTarget::from_u8(params.get(*target_id) as u8),
+            params.get(*depth_id) as f32,
+        );
+    }
+    matrix
 }
 
 fn apply_param_events_sampler(
@@ -486,6 +557,8 @@ impl AudioProcessor {
             LfoShape::from_u8(shared.params.get(ParamId::Lfo2Shape) as u8),
             shared.params.get(ParamId::Lfo2Enabled) as f32 >= 0.5,
         );
+        self.engine
+            .set_global_mod_matrix(build_global_mod_matrix(&shared.params));
         self.engine.set_pitch_bend(0.0);
     }
 
@@ -608,6 +681,10 @@ impl AudioProcessor {
                         LfoShape::from_u8(shared.params.get(ParamId::Lfo2Shape) as u8),
                         shared.params.get(ParamId::Lfo2Enabled) as f32 >= 0.5,
                     );
+                }
+                if dirty.modulations {
+                    self.engine
+                        .set_global_mod_matrix(build_global_mod_matrix(&shared.params));
                 }
             } else {
                 self.apply_params(shared);

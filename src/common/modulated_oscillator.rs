@@ -451,7 +451,7 @@ impl ModulatedOscillator {
         }
 
         let base = if self.pitch_to_note {
-            440.0 * 2.0f32.powf((self.midi_note as f32 - 69.0) / 12.0)
+            crate::common::pitch::midi_note_to_frequency(self.midi_note)
         } else {
             self.base_freq_hz
         };

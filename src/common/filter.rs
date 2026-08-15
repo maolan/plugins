@@ -112,7 +112,53 @@ impl FilterType {
             _ => FilterType::ResonanceWarpAp,
         }
     }
+}
 
+/// Shared filter parameter bundle.
+///
+/// Carries the filter type, cutoff, resonance, EG modulation amount, and
+/// on/off state. Plugins can store this as a single field instead of five
+/// separate fields.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FilterParams {
+    pub filter_type: FilterType,
+    pub cutoff: f32,
+    pub resonance: f32,
+    pub eg_amount: f32,
+    pub enabled: bool,
+}
+
+impl Default for FilterParams {
+    fn default() -> Self {
+        Self {
+            filter_type: FilterType::Lowpass,
+            cutoff: 20000.0,
+            resonance: 0.7,
+            eg_amount: 0.0,
+            enabled: false,
+        }
+    }
+}
+
+impl FilterParams {
+    pub fn new(
+        filter_type: FilterType,
+        cutoff: f32,
+        resonance: f32,
+        eg_amount: f32,
+        enabled: bool,
+    ) -> Self {
+        Self {
+            filter_type,
+            cutoff,
+            resonance,
+            eg_amount,
+            enabled,
+        }
+    }
+}
+
+impl FilterType {
     pub fn name(self) -> &'static str {
         match self {
             FilterType::Off => "Off",

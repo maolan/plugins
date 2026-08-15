@@ -29,7 +29,7 @@ use clap_clap::{
     stream::{IStream, OStream},
 };
 use parking_lot::Mutex;
-use portable_atomic::AtomicF64;
+use portable_atomic::{AtomicF32, AtomicF64};
 
 use crate::common::copy_str_to_array;
 use crate::common::param_events::ParamGesture;
@@ -94,6 +94,8 @@ pub struct SharedState {
     pending_gesture_begin: Vec<std::sync::atomic::AtomicBool>,
     pending_gesture_end: Vec<std::sync::atomic::AtomicBool>,
     active_local_gestures: Vec<std::sync::atomic::AtomicBool>,
+    visual_lfo_mod_values: Vec<AtomicF32>,
+    pub poll_notifier: Mutex<Option<maolan_baseview::iced::PollSubNotifier>>,
     host: AtomicPtr<clap_host>,
 }
 
@@ -121,6 +123,10 @@ impl Default for SharedState {
             active_local_gestures: (0..ParamId::COUNT)
                 .map(|_| std::sync::atomic::AtomicBool::new(false))
                 .collect(),
+            visual_lfo_mod_values: (0..(6 * ModTarget::COUNT as usize))
+                .map(|_| AtomicF32::new(0.0))
+                .collect(),
+            poll_notifier: Mutex::new(None),
             host: AtomicPtr::new(null_mut()),
         }
     }
@@ -202,6 +208,20 @@ impl SharedState {
 
     pub fn set_param_from_host(&self, id: ParamId, value: f64) {
         self.set_param_internal(id, value, false);
+    }
+
+    pub fn visual_lfo_mod_value(&self, lfo_index: usize, target: ModTarget) -> f32 {
+        let index = lfo_index.min(5) * ModTarget::COUNT as usize + target as usize;
+        self.visual_lfo_mod_values[index].load(Ordering::Acquire)
+    }
+
+    fn set_visual_lfo_mod_values(&self, values: &[[f32; ModTarget::COUNT as usize]; 6]) {
+        for (lfo_index, lfo_values) in values.iter().enumerate() {
+            for (target_index, value) in lfo_values.iter().enumerate() {
+                let index = lfo_index * ModTarget::COUNT as usize + target_index;
+                self.visual_lfo_mod_values[index].store(*value, Ordering::Release);
+            }
+        }
     }
 
     pub fn request_gui_closed(&self) {
@@ -1500,16 +1520,24 @@ fn build_misc_globals_params(params: &mut VoiceParams, store: &ParamStore) {
     params.sh_noise_correlation = store.get(ParamId::ShNoiseCorrelation) as f32;
     params.sh_noise_width = store.get(ParamId::ShNoiseWidth) as f32;
     params.sh_noise_sync = store.get(ParamId::ShNoiseSync) as f32;
-    params.macros = [
-        store.get(ParamId::Macro1) as f32,
-        store.get(ParamId::Macro2) as f32,
-        store.get(ParamId::Macro3) as f32,
-        store.get(ParamId::Macro4) as f32,
-        store.get(ParamId::Macro5) as f32,
-        store.get(ParamId::Macro6) as f32,
-        store.get(ParamId::Macro7) as f32,
-        store.get(ParamId::Macro8) as f32,
-    ];
+    let mut macros = crate::common::macro_param::default_macros();
+    macros[0].set_value(store.get(ParamId::Macro1) as f32);
+    macros[1].set_value(store.get(ParamId::Macro2) as f32);
+    macros[2].set_value(store.get(ParamId::Macro3) as f32);
+    macros[3].set_value(store.get(ParamId::Macro4) as f32);
+    macros[4].set_value(store.get(ParamId::Macro5) as f32);
+    macros[5].set_value(store.get(ParamId::Macro6) as f32);
+    macros[6].set_value(store.get(ParamId::Macro7) as f32);
+    macros[7].set_value(store.get(ParamId::Macro8) as f32);
+    macros[8].set_value(store.get(ParamId::Macro9) as f32);
+    macros[9].set_value(store.get(ParamId::Macro10) as f32);
+    macros[10].set_value(store.get(ParamId::Macro11) as f32);
+    macros[11].set_value(store.get(ParamId::Macro12) as f32);
+    macros[12].set_value(store.get(ParamId::Macro13) as f32);
+    macros[13].set_value(store.get(ParamId::Macro14) as f32);
+    macros[14].set_value(store.get(ParamId::Macro15) as f32);
+    macros[15].set_value(store.get(ParamId::Macro16) as f32);
+    params.macros = macros;
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -2474,7 +2502,15 @@ fn apply_param_id_to_voice_params(
         | ParamId::Macro5
         | ParamId::Macro6
         | ParamId::Macro7
-        | ParamId::Macro8 => {
+        | ParamId::Macro8
+        | ParamId::Macro9
+        | ParamId::Macro10
+        | ParamId::Macro11
+        | ParamId::Macro12
+        | ParamId::Macro13
+        | ParamId::Macro14
+        | ParamId::Macro15
+        | ParamId::Macro16 => {
             build_misc_globals_params(params, store);
             dirty.misc_globals = true;
             true
@@ -2821,6 +2857,10 @@ impl AudioProcessor {
             audio_in_l,
             audio_in_r,
         );
+        shared.set_visual_lfo_mod_values(self.engine.visual_lfo_mod_values());
+        if let Some(ref notifier) = *shared.poll_notifier.lock() {
+            notifier.notify();
+        }
 
         let outputs_count = process.audio_outputs_count();
         if outputs_count >= 1 {

@@ -52,10 +52,28 @@ pub enum ParamId {
     Lfo2Amount = 38,
     Lfo2Shape = 39,
     Lfo2Enabled = 40,
+    ModRoute1Source = 41,
+    ModRoute1Target = 42,
+    ModRoute1Depth = 43,
+    ModRoute2Source = 44,
+    ModRoute2Target = 45,
+    ModRoute2Depth = 46,
+    ModRoute3Source = 47,
+    ModRoute3Target = 48,
+    ModRoute3Depth = 49,
+    ModRoute4Source = 50,
+    ModRoute4Target = 51,
+    ModRoute4Depth = 52,
+    ModRoute5Source = 53,
+    ModRoute5Target = 54,
+    ModRoute5Depth = 55,
+    ModRoute6Source = 56,
+    ModRoute6Target = 57,
+    ModRoute6Depth = 58,
 }
 
 impl ParamId {
-    pub const COUNT: usize = 41;
+    pub const COUNT: usize = 59;
 
     pub fn all() -> impl Iterator<Item = Self> {
         (0..Self::COUNT as u16).filter_map(|i| Self::from_raw(i as u32))
@@ -108,6 +126,24 @@ impl ParamId {
             38 => Some(ParamId::Lfo2Amount),
             39 => Some(ParamId::Lfo2Shape),
             40 => Some(ParamId::Lfo2Enabled),
+            41 => Some(ParamId::ModRoute1Source),
+            42 => Some(ParamId::ModRoute1Target),
+            43 => Some(ParamId::ModRoute1Depth),
+            44 => Some(ParamId::ModRoute2Source),
+            45 => Some(ParamId::ModRoute2Target),
+            46 => Some(ParamId::ModRoute2Depth),
+            47 => Some(ParamId::ModRoute3Source),
+            48 => Some(ParamId::ModRoute3Target),
+            49 => Some(ParamId::ModRoute3Depth),
+            50 => Some(ParamId::ModRoute4Source),
+            51 => Some(ParamId::ModRoute4Target),
+            52 => Some(ParamId::ModRoute4Depth),
+            53 => Some(ParamId::ModRoute5Source),
+            54 => Some(ParamId::ModRoute5Target),
+            55 => Some(ParamId::ModRoute5Depth),
+            56 => Some(ParamId::ModRoute6Source),
+            57 => Some(ParamId::ModRoute6Target),
+            58 => Some(ParamId::ModRoute6Depth),
             _ => None,
         }
     }
@@ -277,6 +313,72 @@ pub const PARAMS: [ParamDef; ParamId::COUNT] = [
     def_automatable!(ParamId::Lfo2Amount, "Amount", "LFO2", 0.0, 1.0, 0.0, 0.01),
     def_stepped!(ParamId::Lfo2Shape, "Shape", "LFO2", 0.0, 9.0, 0.0),
     def_stepped!(ParamId::Lfo2Enabled, "Enabled", "LFO2", 0.0, 1.0, 0.0),
+    def_stepped!(ParamId::ModRoute1Source, "Source", "Mod 1", 0.0, 8.0, 0.0),
+    def_stepped!(ParamId::ModRoute1Target, "Target", "Mod 1", 0.0, 6.0, 0.0),
+    def_automatable!(
+        ParamId::ModRoute1Depth,
+        "Depth",
+        "Mod 1",
+        -1.0,
+        1.0,
+        0.0,
+        0.01
+    ),
+    def_stepped!(ParamId::ModRoute2Source, "Source", "Mod 2", 0.0, 8.0, 0.0),
+    def_stepped!(ParamId::ModRoute2Target, "Target", "Mod 2", 0.0, 6.0, 0.0),
+    def_automatable!(
+        ParamId::ModRoute2Depth,
+        "Depth",
+        "Mod 2",
+        -1.0,
+        1.0,
+        0.0,
+        0.01
+    ),
+    def_stepped!(ParamId::ModRoute3Source, "Source", "Mod 3", 0.0, 8.0, 0.0),
+    def_stepped!(ParamId::ModRoute3Target, "Target", "Mod 3", 0.0, 6.0, 0.0),
+    def_automatable!(
+        ParamId::ModRoute3Depth,
+        "Depth",
+        "Mod 3",
+        -1.0,
+        1.0,
+        0.0,
+        0.01
+    ),
+    def_stepped!(ParamId::ModRoute4Source, "Source", "Mod 4", 0.0, 8.0, 0.0),
+    def_stepped!(ParamId::ModRoute4Target, "Target", "Mod 4", 0.0, 6.0, 0.0),
+    def_automatable!(
+        ParamId::ModRoute4Depth,
+        "Depth",
+        "Mod 4",
+        -1.0,
+        1.0,
+        0.0,
+        0.01
+    ),
+    def_stepped!(ParamId::ModRoute5Source, "Source", "Mod 5", 0.0, 8.0, 0.0),
+    def_stepped!(ParamId::ModRoute5Target, "Target", "Mod 5", 0.0, 6.0, 0.0),
+    def_automatable!(
+        ParamId::ModRoute5Depth,
+        "Depth",
+        "Mod 5",
+        -1.0,
+        1.0,
+        0.0,
+        0.01
+    ),
+    def_stepped!(ParamId::ModRoute6Source, "Source", "Mod 6", 0.0, 8.0, 0.0),
+    def_stepped!(ParamId::ModRoute6Target, "Target", "Mod 6", 0.0, 6.0, 0.0),
+    def_automatable!(
+        ParamId::ModRoute6Depth,
+        "Depth",
+        "Mod 6",
+        -1.0,
+        1.0,
+        0.0,
+        0.01
+    ),
 ];
 
 pub fn sanitize_param_value(id: ParamId, value: f64) -> f64 {

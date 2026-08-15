@@ -1,5 +1,39 @@
 #![allow(dead_code)]
 
+/// Shared ADSR parameter bundle.
+///
+/// Plugins with multiple envelope generators can use this to pass the four
+/// stage times/levels around without listing individual fields.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AdsrParams {
+    pub attack: f32,
+    pub decay: f32,
+    pub sustain: f32,
+    pub release: f32,
+}
+
+impl Default for AdsrParams {
+    fn default() -> Self {
+        Self {
+            attack: 0.01,
+            decay: 0.2,
+            sustain: 1.0,
+            release: 0.3,
+        }
+    }
+}
+
+impl AdsrParams {
+    pub fn new(attack: f32, decay: f32, sustain: f32, release: f32) -> Self {
+        Self {
+            attack,
+            decay,
+            sustain,
+            release,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EnvelopeMode {
     Digital,

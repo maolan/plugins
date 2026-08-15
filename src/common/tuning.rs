@@ -38,10 +38,10 @@ impl Tuning {
 
     pub fn note_to_freq(&self, note: u8) -> f32 {
         if self.degrees.len() < 2 {
-            return 440.0 * 2.0f32.powf((note as f32 - 69.0) / 12.0);
+            return crate::common::pitch::midi_note_to_frequency(note);
         }
         let scale_len = self.num_degrees() as i32;
-        let root_freq = 440.0 * 2.0f32.powf((self.root_midi_note as f32 - 69.0) / 12.0);
+        let root_freq = crate::common::pitch::midi_note_to_frequency(self.root_midi_note as u8);
         let offset = note as i32 - self.root_midi_note;
         let idx = offset.rem_euclid(scale_len) as usize;
         let octave = offset.div_euclid(scale_len);

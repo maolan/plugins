@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
-use crate::common::filter::FilterType;
+use crate::common::envelope::AdsrParams;
+use crate::common::filter::{FilterParams, FilterType};
 use crate::common::lfo::LfoShape;
 use crate::common::voice::{PlayMode, StealMode, VoicePriority};
+use crate::sampler::dsp::mod_matrix::ModMatrix;
 use crate::sampler::dsp::patch::Patch;
 use crate::sampler::dsp::sample::Sample;
 use crate::sampler::dsp::voice::SampleVoice;
@@ -46,37 +48,19 @@ pub struct SamplerEngine {
 
     master_gain: f32,
 
-    aeg_attack: f32,
+    amp_eg: AdsrParams,
 
-    aeg_decay: f32,
+    filter: FilterParams,
 
-    aeg_sustain: f32,
+    filter_eg: AdsrParams,
 
-    aeg_release: f32,
-
-    filter_type: FilterType,
-
-    filter_cutoff: f32,
-
-    filter_resonance: f32,
-
-    filter_eg_amount: f32,
-
-    filter_enabled: bool,
-
-    feg_attack: f32,
-
-    feg_decay: f32,
-
-    feg_sustain: f32,
-
-    feg_release: f32,
-
-    eg_params: [(f32, f32, f32, f32); 4],
+    eg_params: [AdsrParams; 4],
 
     lfo1_params: (f32, f32, LfoShape, bool),
 
     lfo2_params: (f32, f32, LfoShape, bool),
+
+    global_mod_matrix: ModMatrix,
 
     note_tuning: [f32; 128],
 
@@ -117,22 +101,16 @@ impl SamplerEngine {
             pitch_bend: 0.0,
             global_poly_limit: 0,
             master_gain: 1.0,
-            aeg_attack: 0.01,
-            aeg_decay: 0.2,
-            aeg_sustain: 1.0,
-            aeg_release: 0.3,
-            filter_type: FilterType::Lowpass,
-            filter_cutoff: 20000.0,
-            filter_resonance: 0.7,
-            filter_eg_amount: 0.0,
-            filter_enabled: false,
-            feg_attack: 0.01,
-            feg_decay: 0.2,
-            feg_sustain: 0.0,
-            feg_release: 0.3,
-            eg_params: [(0.01, 0.2, 1.0, 0.3); 4],
+            amp_eg: AdsrParams::default(),
+            filter: FilterParams::default(),
+            filter_eg: AdsrParams {
+                sustain: 0.0,
+                ..AdsrParams::default()
+            },
+            eg_params: [AdsrParams::default(); 4],
             lfo1_params: (1.0, 0.0, LfoShape::Sine, false),
             lfo2_params: (1.0, 0.0, LfoShape::Sine, false),
+            global_mod_matrix: ModMatrix::default(),
             note_tuning: [0.0; 128],
             note_pressure: [0.0; 128],
             note_timbre: [0.0; 128],
@@ -262,10 +240,7 @@ impl SamplerEngine {
     }
 
     pub fn set_aeg_params(&mut self, attack: f32, decay: f32, sustain: f32, release: f32) {
-        self.aeg_attack = attack;
-        self.aeg_decay = decay;
-        self.aeg_sustain = sustain;
-        self.aeg_release = release;
+        self.amp_eg = AdsrParams::new(attack, decay, sustain, release);
     }
 
     pub fn set_filter_params(
@@ -275,45 +250,64 @@ impl SamplerEngine {
         resonance: f32,
         enabled: bool,
     ) {
-        self.filter_type = filter_type;
-        self.filter_cutoff = cutoff;
-        self.filter_resonance = resonance;
-        self.filter_enabled = enabled;
+        self.filter = FilterParams::new(
+            filter_type,
+            cutoff,
+            resonance,
+            self.filter.eg_amount,
+            enabled,
+        );
     }
 
     pub fn set_filter_eg_amount(&mut self, amount: f32) {
-        self.filter_eg_amount = amount;
+        self.filter.eg_amount = amount;
     }
 
     pub fn set_feg_params(&mut self, attack: f32, decay: f32, sustain: f32, release: f32) {
-        self.feg_attack = attack;
-        self.feg_decay = decay;
-        self.feg_sustain = sustain;
-        self.feg_release = release;
+        self.filter_eg = AdsrParams::new(attack, decay, sustain, release);
     }
 
     pub fn set_eg2_params(&mut self, attack: f32, decay: f32, sustain: f32, release: f32) {
-        self.eg_params[0] = (attack, decay, sustain, release);
+        self.eg_params[0] = AdsrParams::new(attack, decay, sustain, release);
     }
 
     pub fn set_eg3_params(&mut self, attack: f32, decay: f32, sustain: f32, release: f32) {
-        self.eg_params[1] = (attack, decay, sustain, release);
+        self.eg_params[1] = AdsrParams::new(attack, decay, sustain, release);
     }
 
     pub fn set_eg4_params(&mut self, attack: f32, decay: f32, sustain: f32, release: f32) {
-        self.eg_params[2] = (attack, decay, sustain, release);
+        self.eg_params[2] = AdsrParams::new(attack, decay, sustain, release);
     }
 
     pub fn set_eg5_params(&mut self, attack: f32, decay: f32, sustain: f32, release: f32) {
-        self.eg_params[3] = (attack, decay, sustain, release);
+        self.eg_params[3] = AdsrParams::new(attack, decay, sustain, release);
     }
 
     pub fn set_lfo1_params(&mut self, rate: f32, amount: f32, shape: LfoShape, enabled: bool) {
         self.lfo1_params = (rate, amount, shape, enabled);
+        for voice in &mut self.voices {
+            if voice.is_active() {
+                voice.set_lfo1_params(rate, amount, shape, enabled);
+            }
+        }
     }
 
     pub fn set_lfo2_params(&mut self, rate: f32, amount: f32, shape: LfoShape, enabled: bool) {
         self.lfo2_params = (rate, amount, shape, enabled);
+        for voice in &mut self.voices {
+            if voice.is_active() {
+                voice.set_lfo2_params(rate, amount, shape, enabled);
+            }
+        }
+    }
+
+    pub fn set_global_mod_matrix(&mut self, matrix: ModMatrix) {
+        self.global_mod_matrix = matrix.clone();
+        for voice in &mut self.voices {
+            if voice.is_active() {
+                voice.set_global_mod_matrix(matrix.clone());
+            }
+        }
     }
 
     pub fn set_note_tuning(&mut self, note: u8, semitones: f32) {
@@ -815,37 +809,54 @@ impl SamplerEngine {
             .or_else(|| self.find_voice_to_steal());
         let Some(index) = index else { return };
         self.voices[index].set_aeg_params(
-            self.aeg_attack,
-            self.aeg_decay,
-            self.aeg_sustain,
-            self.aeg_release,
+            self.amp_eg.attack,
+            self.amp_eg.decay,
+            self.amp_eg.sustain,
+            self.amp_eg.release,
         );
         self.voices[index].set_filter_params(
-            self.filter_type,
-            self.filter_cutoff,
-            self.filter_resonance,
-            self.filter_enabled,
+            self.filter.filter_type,
+            self.filter.cutoff,
+            self.filter.resonance,
+            self.filter.enabled,
         );
         self.voices[index].set_feg_params(
-            self.feg_attack,
-            self.feg_decay,
-            self.feg_sustain,
-            self.feg_release,
+            self.filter_eg.attack,
+            self.filter_eg.decay,
+            self.filter_eg.sustain,
+            self.filter_eg.release,
         );
-        self.voices[index].set_filter_eg_amount(self.filter_eg_amount);
+        self.voices[index].set_filter_eg_amount(self.filter.eg_amount);
         self.voices[index].set_pitch_bend(self.pitch_bend);
-        let (a2, d2, s2, r2) = self.eg_params[0];
-        self.voices[index].set_eg2_params(a2, d2, s2, r2);
-        let (a3, d3, s3, r3) = self.eg_params[1];
-        self.voices[index].set_eg3_params(a3, d3, s3, r3);
-        let (a4, d4, s4, r4) = self.eg_params[2];
-        self.voices[index].set_eg4_params(a4, d4, s4, r4);
-        let (a5, d5, s5, r5) = self.eg_params[3];
-        self.voices[index].set_eg5_params(a5, d5, s5, r5);
+        self.voices[index].set_eg2_params(
+            self.eg_params[0].attack,
+            self.eg_params[0].decay,
+            self.eg_params[0].sustain,
+            self.eg_params[0].release,
+        );
+        self.voices[index].set_eg3_params(
+            self.eg_params[1].attack,
+            self.eg_params[1].decay,
+            self.eg_params[1].sustain,
+            self.eg_params[1].release,
+        );
+        self.voices[index].set_eg4_params(
+            self.eg_params[2].attack,
+            self.eg_params[2].decay,
+            self.eg_params[2].sustain,
+            self.eg_params[2].release,
+        );
+        self.voices[index].set_eg5_params(
+            self.eg_params[3].attack,
+            self.eg_params[3].decay,
+            self.eg_params[3].sustain,
+            self.eg_params[3].release,
+        );
         let (lfo1_rate, lfo1_amount, lfo1_shape, lfo1_enabled) = self.lfo1_params;
         self.voices[index].set_lfo1_params(lfo1_rate, lfo1_amount, lfo1_shape, lfo1_enabled);
         let (lfo2_rate, lfo2_amount, lfo2_shape, lfo2_enabled) = self.lfo2_params;
         self.voices[index].set_lfo2_params(lfo2_rate, lfo2_amount, lfo2_shape, lfo2_enabled);
+        self.voices[index].set_global_mod_matrix(self.global_mod_matrix.clone());
         self.voices[index].set_hierarchy_gain_pan(
             params.group_gain,
             params.group_pan,

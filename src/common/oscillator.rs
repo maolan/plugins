@@ -11,7 +11,7 @@ const DEFAULT_HIGHCUT_HZ: f32 = 20_000.0;
 
 #[inline]
 pub fn note_to_freq(midi_note: f32) -> f32 {
-    440.0 * 2.0f32.powf((midi_note - 69.0) / 12.0)
+    crate::common::pitch::midi_note_to_frequency(midi_note as u8)
 }
 
 #[inline]

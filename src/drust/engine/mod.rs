@@ -581,7 +581,7 @@ impl DrumGizmoEngine {
                         return;
                     }
                     if let Ok(mut file) = load_wav_channels(Path::new(&path), &channels) {
-                        if (file.original_sample_rate as f64 - host_sr as f64).abs() > 0.1 {
+                        if (file.original_sample_rate - host_sr).abs() > 0.1 {
                             for ch in &mut file.channels {
                                 *ch = resample_buffer(
                                     ch,
@@ -589,7 +589,7 @@ impl DrumGizmoEngine {
                                     host_sr as f64,
                                 );
                             }
-                            file.sample_rate = host_sr as u32;
+                            file.sample_rate = host_sr;
                         }
                         if let Some(&idx) = audio_data_for_jobs.index.get(&path) {
                             let ptr = Box::into_raw(Box::new(file));
@@ -681,12 +681,15 @@ impl DrumGizmoEngine {
                     resample_buffer(ch, file.original_sample_rate as f64, new_sr as f64);
                 new_channels.push(resampled);
             }
+            let (peak, rms) = crate::common::audio_file::compute_stats(&new_channels);
             let new_file = LoadedAudioFile {
                 path: file.path.clone(),
-                sample_rate: new_sr as u32,
+                sample_rate: new_sr,
                 original_sample_rate: file.original_sample_rate,
                 source_channels: file.source_channels.clone(),
                 channels: new_channels,
+                peak,
+                rms,
             };
             let new_ptr = Box::into_raw(Box::new(new_file.clone()));
             new_entries.push(LockFreeAudioEntry {

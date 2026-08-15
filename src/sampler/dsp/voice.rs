@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::common::envelope::{AdsrEnvelope, EnvelopeMode, EnvelopeRetriggerMode};
 use crate::common::filter::{FilterType, SvfFilter};
 use crate::common::lfo::{Lfo, LfoShape};
-use crate::sampler::dsp::mod_matrix::{ModTarget, SourceValues};
+use crate::sampler::dsp::mod_matrix::{ModMatrix, ModTarget, SourceValues};
 use crate::sampler::dsp::sample::InterpolationMode;
 use crate::sampler::dsp::zone::{LoopDirection, LoopMode, SamplePlayMode, Zone};
 
@@ -122,6 +122,8 @@ pub struct SampleVoice {
 
     tuning: Option<crate::common::tuning::Tuning>,
 
+    global_mod_matrix: ModMatrix,
+
     oversample: bool,
 }
 
@@ -186,6 +188,7 @@ impl SampleVoice {
             group_index: 0,
             part_index: 0,
             tuning: None,
+            global_mod_matrix: ModMatrix::default(),
             oversample: false,
         }
     }
@@ -217,9 +220,7 @@ impl SampleVoice {
         self.amplitude = zone.compute_amplitude(note, velocity) * self.hierarchy_gain;
 
         let pan = (zone.pan + self.hierarchy_pan).clamp(-1.0, 1.0);
-        let angle = (pan + 1.0) * std::f32::consts::PI / 4.0;
-        self.pan_l = angle.cos();
-        self.pan_r = angle.sin();
+        (self.pan_l, self.pan_r) = crate::common::gain_pan::pan_gains(pan);
 
         match zone.play_mode {
             SamplePlayMode::Normal | SamplePlayMode::OneShot => {
@@ -500,6 +501,10 @@ impl SampleVoice {
         self.lfo4.set_shape(shape);
     }
 
+    pub fn set_global_mod_matrix(&mut self, matrix: ModMatrix) {
+        self.global_mod_matrix = matrix;
+    }
+
     pub fn set_sample_hold_rate(&mut self, rate: usize) {
         self.sample_hold_rate = rate;
         self.sample_hold_counter = 0;
@@ -620,26 +625,10 @@ impl SampleVoice {
             mod_wheel: self.mod_wheel,
             pressure: self.pressure,
             timbre: self.timbre,
-            lfo1: if self.lfo1_enabled {
-                self.lfo1.value()
-            } else {
-                0.0
-            },
-            lfo2: if self.lfo2_enabled {
-                self.lfo2.value()
-            } else {
-                0.0
-            },
-            lfo3: if self.lfo3_enabled {
-                self.lfo3.value()
-            } else {
-                0.0
-            },
-            lfo4: if self.lfo4_enabled {
-                self.lfo4.value()
-            } else {
-                0.0
-            },
+            lfo1: self.lfo1.value(),
+            lfo2: self.lfo2.value(),
+            lfo3: self.lfo3.value(),
+            lfo4: self.lfo4.value(),
             eg1: self.aeg.value(),
             eg2: self.eg2.value(),
             eg3: self.eg3.value(),
@@ -660,13 +649,8 @@ impl SampleVoice {
             group_voice_count: 0.0,
         };
 
-        let pitch_mod = zone.mod_matrix.compute(ModTarget::Pitch, &sources);
-        let amp_mod = zone.mod_matrix.compute(ModTarget::Amplitude, &sources);
-        let cutoff_mod = zone.mod_matrix.compute(ModTarget::FilterCutoff, &sources);
-        let res_mod = zone
-            .mod_matrix
-            .compute(ModTarget::FilterResonance, &sources);
-        let pan_mod = zone.mod_matrix.compute(ModTarget::Pan, &sources);
+        let pitch_mod = zone.mod_matrix.compute(ModTarget::Pitch, &sources)
+            + self.global_mod_matrix.compute(ModTarget::Pitch, &sources);
 
         let original_increment = self.increment;
         let mut current_inc_f64 = fixed_to_f64(self.increment);
@@ -674,14 +658,6 @@ impl SampleVoice {
             let pitch_factor = 2.0f32.powf(pitch_mod * 2.0 / 12.0);
             current_inc_f64 *= pitch_factor as f64;
         }
-
-        let amp_factor = 1.0 + amp_mod;
-
-        let pan_angle = ((zone.pan + self.hierarchy_pan + pan_mod).clamp(-1.0, 1.0) + 1.0)
-            * std::f32::consts::PI
-            / 4.0;
-        let mod_pan_l = pan_angle.cos();
-        let mod_pan_r = pan_angle.sin();
 
         let last_index = (frames - 1) as f64;
         let loop_start_f = zone.loop_start.min(frames - 1) as f64;
@@ -698,6 +674,73 @@ impl SampleVoice {
 
         for (ol, or) in out_l.iter_mut().zip(out_r.iter_mut()) {
             let env = self.aeg.next();
+            let lfo1_value = if self.lfo1_enabled {
+                self.lfo1.next()
+            } else {
+                0.0
+            };
+            let lfo2_value = if self.lfo2_enabled {
+                self.lfo2.next()
+            } else {
+                0.0
+            };
+            let lfo3_value = if self.lfo3_enabled {
+                self.lfo3.next()
+            } else {
+                0.0
+            };
+            let lfo4_value = if self.lfo4_enabled {
+                self.lfo4.next()
+            } else {
+                0.0
+            };
+            let sources = SourceValues {
+                velocity: self.velocity as f32 / 127.0,
+                key_track: (self.note as f32 - 60.0) / 60.0,
+                pitch_bend: self.pitch_bend_norm,
+                mod_wheel: self.mod_wheel,
+                pressure: self.pressure,
+                timbre: self.timbre,
+                lfo1: lfo1_value,
+                lfo2: lfo2_value,
+                lfo3: lfo3_value,
+                lfo4: lfo4_value,
+                eg1: env,
+                eg2: self.eg2.value(),
+                eg3: self.eg3.value(),
+                eg4: self.eg4.value(),
+                eg5: self.eg5.value(),
+                random: rand::random_range(0.0..1.0),
+                sample_and_hold: self.sample_hold_value,
+                variant_fraction: 0.0,
+                playback_position: (phase_to_f64(self.phase) / frames as f64).clamp(0.0, 1.0)
+                    as f32,
+                loop_fraction: 0.0,
+                is_gated: if self.released { 0.0 } else { 1.0 },
+                is_released: if self.released { 1.0 } else { 0.0 },
+                group_any_gated: 0.0,
+                group_voice_count: 0.0,
+            };
+            let amp_mod = zone.mod_matrix.compute(ModTarget::Amplitude, &sources)
+                + self
+                    .global_mod_matrix
+                    .compute(ModTarget::Amplitude, &sources);
+            let cutoff_mod = zone.mod_matrix.compute(ModTarget::FilterCutoff, &sources)
+                + self
+                    .global_mod_matrix
+                    .compute(ModTarget::FilterCutoff, &sources);
+            let res_mod = zone
+                .mod_matrix
+                .compute(ModTarget::FilterResonance, &sources)
+                + self
+                    .global_mod_matrix
+                    .compute(ModTarget::FilterResonance, &sources);
+            let pan_mod = zone.mod_matrix.compute(ModTarget::Pan, &sources)
+                + self.global_mod_matrix.compute(ModTarget::Pan, &sources);
+            let amp_factor = 1.0 + amp_mod;
+            let (mod_pan_l, mod_pan_r) = crate::common::gain_pan::pan_gains(
+                (zone.pan + self.hierarchy_pan + pan_mod).clamp(-1.0, 1.0),
+            );
             let effective_inc = if self.loop_phase_forward {
                 current_inc_f64
             } else {
@@ -736,8 +779,7 @@ impl SampleVoice {
             let mut vr = sr * env * self.amplitude * amp_factor;
 
             if self.lfo1_enabled {
-                let lfo1_val = self.lfo1.next();
-                let tremolo = 1.0 + lfo1_val * self.lfo1_amount;
+                let tremolo = 1.0 + lfo1_value * self.lfo1_amount;
                 vl *= tremolo;
                 vr *= tremolo;
             }
@@ -749,8 +791,7 @@ impl SampleVoice {
 
                 octaves += self.mod_wheel * 2.0;
                 if self.lfo2_enabled {
-                    let lfo2_val = self.lfo2.next();
-                    octaves += lfo2_val * self.lfo2_amount * 4.0;
+                    octaves += lfo2_value * self.lfo2_amount * 4.0;
                 }
 
                 octaves += cutoff_mod * 2.0;

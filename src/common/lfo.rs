@@ -32,6 +32,27 @@ impl LfoShape {
             _ => LfoShape::Mseg,
         }
     }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            LfoShape::Sine => "Sine",
+            LfoShape::Triangle => "Triangle",
+            LfoShape::Saw => "Saw",
+            LfoShape::Ramp => "Ramp",
+            LfoShape::Square => "Square",
+            LfoShape::SampleHold => "S&H",
+            LfoShape::Noise => "Noise",
+            LfoShape::Envelope => "Env",
+            LfoShape::StepSeq => "Step",
+            LfoShape::Mseg => "MSEG",
+        }
+    }
+}
+
+impl std::fmt::Display for LfoShape {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
