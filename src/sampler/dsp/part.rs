@@ -1,4 +1,3 @@
-use crate::common::macro_param::{MacroParam, default_macros};
 use crate::common::tuning::Tuning;
 use crate::sampler::dsp::bus::{AuxSend, Bus};
 use crate::sampler::dsp::group::Group;
@@ -23,8 +22,6 @@ pub struct Part {
 
     pub mpe_enabled: bool,
 
-    pub macros: [MacroParam; 16],
-
     pub bus: Bus,
 
     pub aux_sends: [AuxSend; 4],
@@ -44,7 +41,6 @@ impl Default for Part {
             pan: 0.0,
             poly_limit: 0,
             mpe_enabled: false,
-            macros: default_macros(),
             bus: Bus::default(),
             aux_sends: [AuxSend::default(); 4],
             microtuning: None,

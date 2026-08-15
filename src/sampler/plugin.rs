@@ -13,7 +13,7 @@ use clap_clap::ffi::CLAP_WINDOW_API_WIN32;
 #[cfg(unix)]
 use clap_clap::ffi::CLAP_WINDOW_API_X11;
 use clap_clap::{
-    events::{InputEvents, OutputEvents},
+    events::{EventBuilder, InputEvents, OutputEvents},
     ffi::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI,
         CLAP_EVENT_NOTE_EXPRESSION, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EXT_AUDIO_PORTS,
@@ -33,15 +33,16 @@ use clap_clap::{
 use parking_lot::Mutex;
 use portable_atomic::AtomicF64;
 
+use crate::common::filter::{FilterParams, FilterSubtype, FilterType};
+use crate::common::lfo::{LfoShape, LfoSyncMode, LfoTriggerMode};
 use crate::common::param_store::ParamStore;
 use crate::common::state::PluginState;
-use crate::common::{
-    SharedStateExt, apply_param_events, copy_str_to_array, emit_pending_param_events_to_host,
-};
+use crate::common::{copy_str_to_array, param_events::ParamGesture};
 use crate::sampler::{
     dsp::{
         engine::SamplerEngine,
         mod_matrix::{ModMatrix, ModSource, ModTarget},
+        voice::LfoParams,
     },
     gui::GuiBridge,
     params::{PARAMS, ParamId, sanitize_param_value},
@@ -86,9 +87,9 @@ pub struct SharedState {
     host: AtomicPtr<clap_host>,
     pub params: ParamStore<ParamId>,
     params_version: AtomicU64,
-    pending_param_notifications: AtomicU64,
-    pending_gesture_begin: AtomicU64,
-    pending_gesture_end: AtomicU64,
+    pending_param_notifications: Vec<AtomicBool>,
+    pending_gesture_begin: Vec<AtomicBool>,
+    pending_gesture_end: Vec<AtomicBool>,
     gesture_active: [AtomicBool; ParamId::COUNT],
 }
 
@@ -99,9 +100,15 @@ impl Default for SharedState {
             host: AtomicPtr::new(null_mut()),
             params: ParamStore::default(),
             params_version: AtomicU64::new(1),
-            pending_param_notifications: AtomicU64::new(0),
-            pending_gesture_begin: AtomicU64::new(0),
-            pending_gesture_end: AtomicU64::new(0),
+            pending_param_notifications: (0..ParamId::COUNT)
+                .map(|_| AtomicBool::new(false))
+                .collect(),
+            pending_gesture_begin: (0..ParamId::COUNT)
+                .map(|_| AtomicBool::new(false))
+                .collect(),
+            pending_gesture_end: (0..ParamId::COUNT)
+                .map(|_| AtomicBool::new(false))
+                .collect(),
             gesture_active: std::array::from_fn(|_| AtomicBool::new(false)),
         }
     }
@@ -124,23 +131,19 @@ impl SharedState {
     pub fn set_param_outbound_only(&self, id: ParamId, value: f64) {
         self.params.set(id, sanitize_param_value(id, value));
         self.bump_params_version();
-        let bit = 1_u64 << (id.as_index() as u64);
-        self.pending_param_notifications
-            .fetch_or(bit, Ordering::AcqRel);
+        self.pending_param_notifications[id.as_index()].store(true, Ordering::Release);
         self.request_flush();
         self.mark_dirty();
     }
 
     pub fn mark_gesture_begin_pending(&self, id: ParamId) {
-        let bit = 1_u64 << (id.as_index() as u64);
-        self.pending_gesture_begin.fetch_or(bit, Ordering::AcqRel);
+        self.pending_gesture_begin[id.as_index()].store(true, Ordering::Release);
         self.gesture_active[id.as_index()].store(true, Ordering::Release);
         self.mark_dirty();
     }
 
     pub fn mark_gesture_end_pending(&self, id: ParamId) {
-        let bit = 1_u64 << (id.as_index() as u64);
-        self.pending_gesture_end.fetch_or(bit, Ordering::AcqRel);
+        self.pending_gesture_end[id.as_index()].store(true, Ordering::Release);
         self.gesture_active[id.as_index()].store(false, Ordering::Release);
         self.mark_dirty();
     }
@@ -212,13 +215,6 @@ impl SharedState {
     fn params_version(&self) -> u64 {
         self.params_version.load(Ordering::Acquire)
     }
-}
-
-impl SharedStateExt<ParamId> for SharedState {
-    fn params_get(&self, id: ParamId) -> f64 {
-        self.params.get(id)
-    }
-
     fn set_gesture_active(&self, id: ParamId, active: bool) {
         self.gesture_active[id.as_index()].store(active, Ordering::Release);
     }
@@ -230,34 +226,7 @@ impl SharedStateExt<ParamId> for SharedState {
     fn set_param_from_host(&self, id: ParamId, value: f64) {
         self.params.set(id, value);
         self.bump_params_version();
-        let bit = 1u64 << id.as_index();
-        self.pending_param_notifications
-            .fetch_or(bit, Ordering::Release);
-    }
-
-    fn take_pending_param_notifications(&self) -> u64 {
-        self.pending_param_notifications.swap(0, Ordering::Acquire)
-    }
-
-    fn requeue_pending_param_notifications(&self, bits: u64) {
-        self.pending_param_notifications
-            .fetch_or(bits, Ordering::Release);
-    }
-
-    fn take_pending_gesture_begin(&self) -> u64 {
-        self.pending_gesture_begin.swap(0, Ordering::Acquire)
-    }
-
-    fn requeue_pending_gesture_begin(&self, bits: u64) {
-        self.pending_gesture_begin.fetch_or(bits, Ordering::Release);
-    }
-
-    fn take_pending_gesture_end(&self) -> u64 {
-        self.pending_gesture_end.swap(0, Ordering::Acquire)
-    }
-
-    fn requeue_pending_gesture_end(&self, bits: u64) {
-        self.pending_gesture_end.fetch_or(bits, Ordering::Release);
+        self.pending_param_notifications[id.as_index()].store(true, Ordering::Release);
     }
 }
 
@@ -267,7 +236,9 @@ struct DirtyFlags {
     master_pan: bool,
     amp_eg: bool,
     filter: bool,
+    filter2: bool,
     filter_eg: bool,
+    filter2_eg: bool,
     feg: bool,
     eg2: bool,
     eg3: bool,
@@ -275,6 +246,10 @@ struct DirtyFlags {
     eg5: bool,
     lfo1: bool,
     lfo2: bool,
+    lfo3: bool,
+    lfo4: bool,
+    lfo5: bool,
+    lfo6: bool,
     modulations: bool,
 }
 
@@ -302,14 +277,31 @@ fn apply_param_id(
             true
         }
         ParamId::FilterType
+        | ParamId::FilterSubtype
         | ParamId::FilterCutoff
         | ParamId::FilterResonance
+        | ParamId::FilterKeyTrack
+        | ParamId::FilterDrive
         | ParamId::FilterEnabled => {
             dirty.filter = true;
             true
         }
+        ParamId::Filter2Type
+        | ParamId::Filter2Subtype
+        | ParamId::Filter2Cutoff
+        | ParamId::Filter2Resonance
+        | ParamId::Filter2KeyTrack
+        | ParamId::Filter2Drive
+        | ParamId::Filter2Enabled => {
+            dirty.filter2 = true;
+            true
+        }
         ParamId::FilterEgAmount => {
             dirty.filter_eg = true;
+            true
+        }
+        ParamId::Filter2EgAmount => {
+            dirty.filter2_eg = true;
             true
         }
         ParamId::FilterAttack
@@ -335,12 +327,76 @@ fn apply_param_id(
             dirty.eg5 = true;
             true
         }
-        ParamId::Lfo1Rate | ParamId::Lfo1Amount | ParamId::Lfo1Shape | ParamId::Lfo1Enabled => {
+        ParamId::Lfo1Rate
+        | ParamId::Lfo1Amount
+        | ParamId::Lfo1Shape
+        | ParamId::Lfo1Enabled
+        | ParamId::Lfo1Deform
+        | ParamId::Lfo1Phase
+        | ParamId::Lfo1Trigger
+        | ParamId::Lfo1Unipolar
+        | ParamId::Lfo1SyncMode => {
             dirty.lfo1 = true;
             true
         }
-        ParamId::Lfo2Rate | ParamId::Lfo2Amount | ParamId::Lfo2Shape | ParamId::Lfo2Enabled => {
+        ParamId::Lfo2Rate
+        | ParamId::Lfo2Amount
+        | ParamId::Lfo2Shape
+        | ParamId::Lfo2Enabled
+        | ParamId::Lfo2Deform
+        | ParamId::Lfo2Phase
+        | ParamId::Lfo2Trigger
+        | ParamId::Lfo2Unipolar
+        | ParamId::Lfo2SyncMode => {
             dirty.lfo2 = true;
+            true
+        }
+        ParamId::Lfo3Rate
+        | ParamId::Lfo3Amount
+        | ParamId::Lfo3Shape
+        | ParamId::Lfo3Enabled
+        | ParamId::Lfo3Deform
+        | ParamId::Lfo3Phase
+        | ParamId::Lfo3Trigger
+        | ParamId::Lfo3Unipolar
+        | ParamId::Lfo3SyncMode => {
+            dirty.lfo3 = true;
+            true
+        }
+        ParamId::Lfo4Rate
+        | ParamId::Lfo4Amount
+        | ParamId::Lfo4Shape
+        | ParamId::Lfo4Enabled
+        | ParamId::Lfo4Deform
+        | ParamId::Lfo4Phase
+        | ParamId::Lfo4Trigger
+        | ParamId::Lfo4Unipolar
+        | ParamId::Lfo4SyncMode => {
+            dirty.lfo4 = true;
+            true
+        }
+        ParamId::Lfo5Rate
+        | ParamId::Lfo5Amount
+        | ParamId::Lfo5Shape
+        | ParamId::Lfo5Enabled
+        | ParamId::Lfo5Deform
+        | ParamId::Lfo5Phase
+        | ParamId::Lfo5Trigger
+        | ParamId::Lfo5Unipolar
+        | ParamId::Lfo5SyncMode => {
+            dirty.lfo5 = true;
+            true
+        }
+        ParamId::Lfo6Rate
+        | ParamId::Lfo6Amount
+        | ParamId::Lfo6Shape
+        | ParamId::Lfo6Enabled
+        | ParamId::Lfo6Deform
+        | ParamId::Lfo6Phase
+        | ParamId::Lfo6Trigger
+        | ParamId::Lfo6Unipolar
+        | ParamId::Lfo6SyncMode => {
+            dirty.lfo6 = true;
             true
         }
         ParamId::ModRoute1Source
@@ -476,6 +532,148 @@ fn apply_param_events_sampler(
     overflow
 }
 
+fn emit_pending_param_events_to_host_sampler(
+    shared: &SharedState,
+    out_events: &mut OutputEvents<'_>,
+) {
+    use clap_clap::{events::ParamValue, id::ClapId};
+
+    for id in ParamId::all() {
+        let index = id.as_index();
+        if shared.pending_gesture_begin[index].swap(false, Ordering::AcqRel) {
+            let begin = ParamGesture::begin(ClapId::from(index as u16));
+            if out_events.try_push(begin).is_err() {
+                shared.pending_gesture_begin[index].store(true, Ordering::Release);
+                return;
+            }
+        }
+        if shared.pending_param_notifications[index].swap(false, Ordering::AcqRel) {
+            let event_builder = ParamValue::build()
+                .param_id(ClapId::from(index as u16))
+                .value(shared.params.get(id));
+            let event = event_builder.event();
+            if out_events.try_push(event).is_err() {
+                shared.pending_param_notifications[index].store(true, Ordering::Release);
+                return;
+            }
+        }
+        if shared.pending_gesture_end[index].swap(false, Ordering::AcqRel) {
+            let end = ParamGesture::end(ClapId::from(index as u16));
+            if out_events.try_push(end).is_err() {
+                shared.pending_gesture_end[index].store(true, Ordering::Release);
+                return;
+            }
+        }
+    }
+}
+
+fn lfo_params(store: &ParamStore<ParamId>, index: usize) -> LfoParams {
+    let (rate, amount, shape, enabled, deform, phase, trigger, unipolar, sync_mode) = match index {
+        0 => (
+            ParamId::Lfo1Rate,
+            ParamId::Lfo1Amount,
+            ParamId::Lfo1Shape,
+            ParamId::Lfo1Enabled,
+            ParamId::Lfo1Deform,
+            ParamId::Lfo1Phase,
+            ParamId::Lfo1Trigger,
+            ParamId::Lfo1Unipolar,
+            ParamId::Lfo1SyncMode,
+        ),
+        1 => (
+            ParamId::Lfo2Rate,
+            ParamId::Lfo2Amount,
+            ParamId::Lfo2Shape,
+            ParamId::Lfo2Enabled,
+            ParamId::Lfo2Deform,
+            ParamId::Lfo2Phase,
+            ParamId::Lfo2Trigger,
+            ParamId::Lfo2Unipolar,
+            ParamId::Lfo2SyncMode,
+        ),
+        2 => (
+            ParamId::Lfo3Rate,
+            ParamId::Lfo3Amount,
+            ParamId::Lfo3Shape,
+            ParamId::Lfo3Enabled,
+            ParamId::Lfo3Deform,
+            ParamId::Lfo3Phase,
+            ParamId::Lfo3Trigger,
+            ParamId::Lfo3Unipolar,
+            ParamId::Lfo3SyncMode,
+        ),
+        3 => (
+            ParamId::Lfo4Rate,
+            ParamId::Lfo4Amount,
+            ParamId::Lfo4Shape,
+            ParamId::Lfo4Enabled,
+            ParamId::Lfo4Deform,
+            ParamId::Lfo4Phase,
+            ParamId::Lfo4Trigger,
+            ParamId::Lfo4Unipolar,
+            ParamId::Lfo4SyncMode,
+        ),
+        4 => (
+            ParamId::Lfo5Rate,
+            ParamId::Lfo5Amount,
+            ParamId::Lfo5Shape,
+            ParamId::Lfo5Enabled,
+            ParamId::Lfo5Deform,
+            ParamId::Lfo5Phase,
+            ParamId::Lfo5Trigger,
+            ParamId::Lfo5Unipolar,
+            ParamId::Lfo5SyncMode,
+        ),
+        _ => (
+            ParamId::Lfo6Rate,
+            ParamId::Lfo6Amount,
+            ParamId::Lfo6Shape,
+            ParamId::Lfo6Enabled,
+            ParamId::Lfo6Deform,
+            ParamId::Lfo6Phase,
+            ParamId::Lfo6Trigger,
+            ParamId::Lfo6Unipolar,
+            ParamId::Lfo6SyncMode,
+        ),
+    };
+
+    LfoParams {
+        rate: store.get(rate) as f32,
+        amount: store.get(amount) as f32,
+        shape: LfoShape::from_u8(store.get(shape) as u8),
+        enabled: store.get(enabled) >= 0.5,
+        deform: store.get(deform) as f32,
+        phase: store.get(phase) as f32,
+        trigger: LfoTriggerMode::from_u8(store.get(trigger) as u8),
+        unipolar: store.get(unipolar) >= 0.5,
+        sync_mode: LfoSyncMode::from_u8(store.get(sync_mode) as u8),
+    }
+}
+
+struct FilterParamIds {
+    filter_type: ParamId,
+    subtype: ParamId,
+    cutoff: ParamId,
+    resonance: ParamId,
+    eg_amount: ParamId,
+    key_tracking: ParamId,
+    drive: ParamId,
+    enabled: ParamId,
+}
+
+fn filter_params(store: &ParamStore<ParamId>, ids: FilterParamIds) -> FilterParams {
+    FilterParams {
+        filter_type: FilterType::from_u8(store.get(ids.filter_type) as u8),
+        subtype: FilterSubtype::from_u8(store.get(ids.subtype) as u8),
+        cutoff: store.get(ids.cutoff) as f32,
+        resonance: store.get(ids.resonance) as f32,
+        eg_amount: store.get(ids.eg_amount) as f32,
+        key_tracking: store.get(ids.key_tracking) as f32,
+        drive: store.get(ids.drive) as f32,
+        enabled: store.get(ids.enabled) >= 0.5,
+    }
+}
+
 struct AudioProcessor {
     engine: SamplerEngine,
     out_l: Vec<f32>,
@@ -505,15 +703,36 @@ impl AudioProcessor {
             shared.params.get(ParamId::AmpSustain) as f32,
             shared.params.get(ParamId::AmpRelease) as f32,
         );
-        use crate::common::filter::FilterType;
-        self.engine.set_filter_params(
-            FilterType::from_u8(shared.params.get(ParamId::FilterType) as u8),
-            shared.params.get(ParamId::FilterCutoff) as f32,
-            shared.params.get(ParamId::FilterResonance) as f32,
-            shared.params.get(ParamId::FilterEnabled) as f32 >= 0.5,
-        );
+        self.engine.set_filter_params(filter_params(
+            &shared.params,
+            FilterParamIds {
+                filter_type: ParamId::FilterType,
+                subtype: ParamId::FilterSubtype,
+                cutoff: ParamId::FilterCutoff,
+                resonance: ParamId::FilterResonance,
+                eg_amount: ParamId::FilterEgAmount,
+                key_tracking: ParamId::FilterKeyTrack,
+                drive: ParamId::FilterDrive,
+                enabled: ParamId::FilterEnabled,
+            },
+        ));
+        self.engine.set_filter2_params(filter_params(
+            &shared.params,
+            FilterParamIds {
+                filter_type: ParamId::Filter2Type,
+                subtype: ParamId::Filter2Subtype,
+                cutoff: ParamId::Filter2Cutoff,
+                resonance: ParamId::Filter2Resonance,
+                eg_amount: ParamId::Filter2EgAmount,
+                key_tracking: ParamId::Filter2KeyTrack,
+                drive: ParamId::Filter2Drive,
+                enabled: ParamId::Filter2Enabled,
+            },
+        ));
         self.engine
             .set_filter_eg_amount(shared.params.get(ParamId::FilterEgAmount) as f32);
+        self.engine
+            .set_filter2_eg_amount(shared.params.get(ParamId::Filter2EgAmount) as f32);
         self.engine.set_feg_params(
             shared.params.get(ParamId::FilterAttack) as f32,
             shared.params.get(ParamId::FilterDecay) as f32,
@@ -544,19 +763,12 @@ impl AudioProcessor {
             shared.params.get(ParamId::Eg5Sustain) as f32,
             shared.params.get(ParamId::Eg5Release) as f32,
         );
-        use crate::common::lfo::LfoShape;
-        self.engine.set_lfo1_params(
-            shared.params.get(ParamId::Lfo1Rate) as f32,
-            shared.params.get(ParamId::Lfo1Amount) as f32,
-            LfoShape::from_u8(shared.params.get(ParamId::Lfo1Shape) as u8),
-            shared.params.get(ParamId::Lfo1Enabled) as f32 >= 0.5,
-        );
-        self.engine.set_lfo2_params(
-            shared.params.get(ParamId::Lfo2Rate) as f32,
-            shared.params.get(ParamId::Lfo2Amount) as f32,
-            LfoShape::from_u8(shared.params.get(ParamId::Lfo2Shape) as u8),
-            shared.params.get(ParamId::Lfo2Enabled) as f32 >= 0.5,
-        );
+        self.engine.set_lfo1_params(lfo_params(&shared.params, 0));
+        self.engine.set_lfo2_params(lfo_params(&shared.params, 1));
+        self.engine.set_lfo3_params(lfo_params(&shared.params, 2));
+        self.engine.set_lfo4_params(lfo_params(&shared.params, 3));
+        self.engine.set_lfo5_params(lfo_params(&shared.params, 4));
+        self.engine.set_lfo6_params(lfo_params(&shared.params, 5));
         self.engine
             .set_global_mod_matrix(build_global_mod_matrix(&shared.params));
         self.engine.set_pitch_bend(0.0);
@@ -578,7 +790,7 @@ impl AudioProcessor {
         );
         {
             let mut out_events = process.out_events();
-            emit_pending_param_events_to_host(shared, &mut out_events);
+            emit_pending_param_events_to_host_sampler(shared, &mut out_events);
         }
 
         let params_version = shared.params_version();
@@ -612,17 +824,44 @@ impl AudioProcessor {
                     );
                 }
                 if dirty.filter {
-                    use crate::common::filter::FilterType;
-                    self.engine.set_filter_params(
-                        FilterType::from_u8(shared.params.get(ParamId::FilterType) as u8),
-                        shared.params.get(ParamId::FilterCutoff) as f32,
-                        shared.params.get(ParamId::FilterResonance) as f32,
-                        shared.params.get(ParamId::FilterEnabled) as f32 >= 0.5,
+                    let filter = filter_params(
+                        &shared.params,
+                        FilterParamIds {
+                            filter_type: ParamId::FilterType,
+                            subtype: ParamId::FilterSubtype,
+                            cutoff: ParamId::FilterCutoff,
+                            resonance: ParamId::FilterResonance,
+                            eg_amount: ParamId::FilterEgAmount,
+                            key_tracking: ParamId::FilterKeyTrack,
+                            drive: ParamId::FilterDrive,
+                            enabled: ParamId::FilterEnabled,
+                        },
                     );
+                    self.engine.set_filter_params(filter);
+                }
+                if dirty.filter2 {
+                    let filter = filter_params(
+                        &shared.params,
+                        FilterParamIds {
+                            filter_type: ParamId::Filter2Type,
+                            subtype: ParamId::Filter2Subtype,
+                            cutoff: ParamId::Filter2Cutoff,
+                            resonance: ParamId::Filter2Resonance,
+                            eg_amount: ParamId::Filter2EgAmount,
+                            key_tracking: ParamId::Filter2KeyTrack,
+                            drive: ParamId::Filter2Drive,
+                            enabled: ParamId::Filter2Enabled,
+                        },
+                    );
+                    self.engine.set_filter2_params(filter);
                 }
                 if dirty.filter_eg {
                     self.engine
                         .set_filter_eg_amount(shared.params.get(ParamId::FilterEgAmount) as f32);
+                }
+                if dirty.filter2_eg {
+                    self.engine
+                        .set_filter2_eg_amount(shared.params.get(ParamId::Filter2EgAmount) as f32);
                 }
                 if dirty.feg {
                     self.engine.set_feg_params(
@@ -665,22 +904,22 @@ impl AudioProcessor {
                     );
                 }
                 if dirty.lfo1 {
-                    use crate::common::lfo::LfoShape;
-                    self.engine.set_lfo1_params(
-                        shared.params.get(ParamId::Lfo1Rate) as f32,
-                        shared.params.get(ParamId::Lfo1Amount) as f32,
-                        LfoShape::from_u8(shared.params.get(ParamId::Lfo1Shape) as u8),
-                        shared.params.get(ParamId::Lfo1Enabled) as f32 >= 0.5,
-                    );
+                    self.engine.set_lfo1_params(lfo_params(&shared.params, 0));
                 }
                 if dirty.lfo2 {
-                    use crate::common::lfo::LfoShape;
-                    self.engine.set_lfo2_params(
-                        shared.params.get(ParamId::Lfo2Rate) as f32,
-                        shared.params.get(ParamId::Lfo2Amount) as f32,
-                        LfoShape::from_u8(shared.params.get(ParamId::Lfo2Shape) as u8),
-                        shared.params.get(ParamId::Lfo2Enabled) as f32 >= 0.5,
-                    );
+                    self.engine.set_lfo2_params(lfo_params(&shared.params, 1));
+                }
+                if dirty.lfo3 {
+                    self.engine.set_lfo3_params(lfo_params(&shared.params, 2));
+                }
+                if dirty.lfo4 {
+                    self.engine.set_lfo4_params(lfo_params(&shared.params, 3));
+                }
+                if dirty.lfo5 {
+                    self.engine.set_lfo5_params(lfo_params(&shared.params, 4));
+                }
+                if dirty.lfo6 {
+                    self.engine.set_lfo6_params(lfo_params(&shared.params, 5));
                 }
                 if dirty.modulations {
                     self.engine
@@ -1056,11 +1295,12 @@ unsafe extern "C-unwind" fn ext_params_flush(
         let inst = instance(plugin);
         if !in_events.is_null() {
             let input = InputEvents::new_unchecked(&*in_events);
-            apply_param_events(&inst.shared, &input, sanitize_param_value);
+            let mut changed: [Option<(ParamId, f64)>; 32] = [None; 32];
+            apply_param_events_sampler(&inst.shared, &input, sanitize_param_value, &mut changed);
         }
         if !out_events.is_null() {
             let mut output = OutputEvents::new_unchecked(&*out_events);
-            emit_pending_param_events_to_host(&inst.shared, &mut output);
+            emit_pending_param_events_to_host_sampler(&inst.shared, &mut output);
         }
     }
 }

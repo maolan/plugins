@@ -1520,24 +1520,6 @@ fn build_misc_globals_params(params: &mut VoiceParams, store: &ParamStore) {
     params.sh_noise_correlation = store.get(ParamId::ShNoiseCorrelation) as f32;
     params.sh_noise_width = store.get(ParamId::ShNoiseWidth) as f32;
     params.sh_noise_sync = store.get(ParamId::ShNoiseSync) as f32;
-    let mut macros = crate::common::macro_param::default_macros();
-    macros[0].set_value(store.get(ParamId::Macro1) as f32);
-    macros[1].set_value(store.get(ParamId::Macro2) as f32);
-    macros[2].set_value(store.get(ParamId::Macro3) as f32);
-    macros[3].set_value(store.get(ParamId::Macro4) as f32);
-    macros[4].set_value(store.get(ParamId::Macro5) as f32);
-    macros[5].set_value(store.get(ParamId::Macro6) as f32);
-    macros[6].set_value(store.get(ParamId::Macro7) as f32);
-    macros[7].set_value(store.get(ParamId::Macro8) as f32);
-    macros[8].set_value(store.get(ParamId::Macro9) as f32);
-    macros[9].set_value(store.get(ParamId::Macro10) as f32);
-    macros[10].set_value(store.get(ParamId::Macro11) as f32);
-    macros[11].set_value(store.get(ParamId::Macro12) as f32);
-    macros[12].set_value(store.get(ParamId::Macro13) as f32);
-    macros[13].set_value(store.get(ParamId::Macro14) as f32);
-    macros[14].set_value(store.get(ParamId::Macro15) as f32);
-    macros[15].set_value(store.get(ParamId::Macro16) as f32);
-    params.macros = macros;
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -2494,23 +2476,7 @@ fn apply_param_id_to_voice_params(
         | ParamId::TwistLpgDecay
         | ParamId::ShNoiseCorrelation
         | ParamId::ShNoiseWidth
-        | ParamId::ShNoiseSync
-        | ParamId::Macro1
-        | ParamId::Macro2
-        | ParamId::Macro3
-        | ParamId::Macro4
-        | ParamId::Macro5
-        | ParamId::Macro6
-        | ParamId::Macro7
-        | ParamId::Macro8
-        | ParamId::Macro9
-        | ParamId::Macro10
-        | ParamId::Macro11
-        | ParamId::Macro12
-        | ParamId::Macro13
-        | ParamId::Macro14
-        | ParamId::Macro15
-        | ParamId::Macro16 => {
+        | ParamId::ShNoiseSync => {
             build_misc_globals_params(params, store);
             dirty.misc_globals = true;
             true
@@ -2520,7 +2486,23 @@ fn apply_param_id_to_voice_params(
         ParamId::Polyphony | ParamId::StealMode => true,
 
         // Tuning SCL index is handled separately by the processor.
-        ParamId::TuningSclIndex => true,
+        ParamId::TuningSclIndex
+        | ParamId::Reserved134
+        | ParamId::Reserved135
+        | ParamId::Reserved136
+        | ParamId::Reserved137
+        | ParamId::Reserved257
+        | ParamId::Reserved258
+        | ParamId::Reserved259
+        | ParamId::Reserved260
+        | ParamId::Reserved712
+        | ParamId::Reserved713
+        | ParamId::Reserved714
+        | ParamId::Reserved715
+        | ParamId::Reserved716
+        | ParamId::Reserved717
+        | ParamId::Reserved718
+        | ParamId::Reserved719 => true,
     }
 }
 

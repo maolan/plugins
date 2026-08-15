@@ -9,7 +9,6 @@ use super::{
     NoiseColorMode, NoiseGenerator, NoiseType, OscType, Oscillator, PlayMode, PortamentoCurve,
     SineShaperMode, Tuning, VoicePriority, Waveshape, Waveshaper, WaveshaperSettings, WindowType,
 };
-use crate::common::macro_param::MacroParam;
 use parking_lot::Mutex;
 use std::sync::Arc;
 
@@ -403,14 +402,6 @@ pub enum ModSource {
     RandomUnipolar = 15,
     AlternateBipolar = 16,
     AlternateUnipolar = 17,
-    Macro1 = 18,
-    Macro2 = 19,
-    Macro3 = 20,
-    Macro4 = 21,
-    Macro5 = 22,
-    Macro6 = 23,
-    Macro7 = 24,
-    Macro8 = 25,
     Breath = 26,
     Expression = 27,
     Sustain = 28,
@@ -430,14 +421,6 @@ pub enum ModSource {
     LowestKey = 42,
     HighestKey = 43,
     LatestKey = 44,
-    Macro9 = 45,
-    Macro10 = 46,
-    Macro11 = 47,
-    Macro12 = 48,
-    Macro13 = 49,
-    Macro14 = 50,
-    Macro15 = 51,
-    Macro16 = 52,
 }
 
 impl ModSource {
@@ -461,14 +444,6 @@ impl ModSource {
             15 => Some(ModSource::RandomUnipolar),
             16 => Some(ModSource::AlternateBipolar),
             17 => Some(ModSource::AlternateUnipolar),
-            18 => Some(ModSource::Macro1),
-            19 => Some(ModSource::Macro2),
-            20 => Some(ModSource::Macro3),
-            21 => Some(ModSource::Macro4),
-            22 => Some(ModSource::Macro5),
-            23 => Some(ModSource::Macro6),
-            24 => Some(ModSource::Macro7),
-            25 => Some(ModSource::Macro8),
             26 => Some(ModSource::Breath),
             27 => Some(ModSource::Expression),
             28 => Some(ModSource::Sustain),
@@ -488,14 +463,6 @@ impl ModSource {
             42 => Some(ModSource::LowestKey),
             43 => Some(ModSource::HighestKey),
             44 => Some(ModSource::LatestKey),
-            45 => Some(ModSource::Macro9),
-            46 => Some(ModSource::Macro10),
-            47 => Some(ModSource::Macro11),
-            48 => Some(ModSource::Macro12),
-            49 => Some(ModSource::Macro13),
-            50 => Some(ModSource::Macro14),
-            51 => Some(ModSource::Macro15),
-            52 => Some(ModSource::Macro16),
             _ => None,
         }
     }
@@ -891,7 +858,6 @@ pub struct VoiceParams {
     pub note_expression_volume: f32,
     pub note_expression_pan: f32,
     pub release_velocity: f32,
-    pub macros: [MacroParam; 16],
     pub breath: f32,
     pub expression: f32,
     pub sustain: f32,
@@ -999,7 +965,6 @@ impl Default for VoiceParams {
             note_expression_volume: 1.0,
             note_expression_pan: 0.0,
             release_velocity: 0.0,
-            macros: crate::common::macro_param::default_macros(),
             breath: 0.0,
             expression: 0.0,
             sustain: 0.0,
@@ -2144,7 +2109,6 @@ impl Voice {
         self.params.sh_noise_correlation = params.sh_noise_correlation;
         self.params.sh_noise_width = params.sh_noise_width;
         self.params.sh_noise_sync = params.sh_noise_sync;
-        self.params.macros = params.macros.clone();
     }
 
     pub fn set_mts_esp(&mut self, client: Option<Arc<Mutex<MtsEspClient>>>) {
@@ -2295,22 +2259,6 @@ impl Voice {
             ModSource::RandomUnipolar => (self.random_value + 1.0) * 0.5,
             ModSource::AlternateBipolar => self.alternate_sign,
             ModSource::AlternateUnipolar => (self.alternate_sign + 1.0) * 0.5,
-            ModSource::Macro1 => self.params.macros[0].value,
-            ModSource::Macro2 => self.params.macros[1].value,
-            ModSource::Macro3 => self.params.macros[2].value,
-            ModSource::Macro4 => self.params.macros[3].value,
-            ModSource::Macro5 => self.params.macros[4].value,
-            ModSource::Macro6 => self.params.macros[5].value,
-            ModSource::Macro7 => self.params.macros[6].value,
-            ModSource::Macro8 => self.params.macros[7].value,
-            ModSource::Macro9 => self.params.macros[8].value,
-            ModSource::Macro10 => self.params.macros[9].value,
-            ModSource::Macro11 => self.params.macros[10].value,
-            ModSource::Macro12 => self.params.macros[11].value,
-            ModSource::Macro13 => self.params.macros[12].value,
-            ModSource::Macro14 => self.params.macros[13].value,
-            ModSource::Macro15 => self.params.macros[14].value,
-            ModSource::Macro16 => self.params.macros[15].value,
             ModSource::Breath => self.params.breath,
             ModSource::Expression => self.params.expression,
             ModSource::Sustain => self.params.sustain,

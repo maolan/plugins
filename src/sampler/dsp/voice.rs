@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use crate::common::envelope::{AdsrEnvelope, EnvelopeMode, EnvelopeRetriggerMode};
-use crate::common::filter::{FilterType, SvfFilter};
-use crate::common::lfo::{Lfo, LfoShape};
+use crate::common::filter::{FilterParams, SvfFilter};
+use crate::common::lfo::{Lfo, LfoShape, LfoSyncMode, LfoTriggerMode};
 use crate::sampler::dsp::mod_matrix::{ModMatrix, ModTarget, SourceValues};
 use crate::sampler::dsp::sample::InterpolationMode;
 use crate::sampler::dsp::zone::{LoopDirection, LoopMode, SamplePlayMode, Zone};
@@ -10,6 +10,35 @@ use crate::sampler::dsp::zone::{LoopDirection, LoopMode, SamplePlayMode, Zone};
 const PHASE_FRAC_BITS: u32 = 32;
 const PHASE_ONE: u64 = 1u64 << PHASE_FRAC_BITS;
 const PHASE_ONE_F: f64 = PHASE_ONE as f64;
+
+#[derive(Debug, Clone, Copy)]
+pub struct LfoParams {
+    pub rate: f32,
+    pub amount: f32,
+    pub shape: LfoShape,
+    pub enabled: bool,
+    pub deform: f32,
+    pub phase: f32,
+    pub trigger: LfoTriggerMode,
+    pub unipolar: bool,
+    pub sync_mode: LfoSyncMode,
+}
+
+impl Default for LfoParams {
+    fn default() -> Self {
+        Self {
+            rate: 1.0,
+            amount: 0.0,
+            shape: LfoShape::Sine,
+            enabled: true,
+            deform: 0.0,
+            phase: 0.0,
+            trigger: LfoTriggerMode::KeyTrigger,
+            unipolar: false,
+            sync_mode: LfoSyncMode::Free,
+        }
+    }
+}
 
 #[inline]
 fn f64_to_fixed(inc: f64) -> i64 {
@@ -56,6 +85,7 @@ pub struct SampleVoice {
     interpolation: InterpolationMode,
 
     filter: SvfFilter,
+    filter2: SvfFilter,
 
     feg: AdsrEnvelope,
 
@@ -80,17 +110,32 @@ pub struct SampleVoice {
     lfo4_enabled: bool,
     lfo4_amount: f32,
 
+    lfo5: Lfo,
+    lfo5_enabled: bool,
+    lfo5_amount: f32,
+
+    lfo6: Lfo,
+    lfo6_enabled: bool,
+    lfo6_amount: f32,
+
     sample_hold_value: f32,
     sample_hold_counter: usize,
     sample_hold_rate: usize,
 
     filter_enabled: bool,
+    filter2_enabled: bool,
 
     filter_base_cutoff: f32,
+    filter2_base_cutoff: f32,
 
     filter_resonance: f32,
+    filter2_resonance: f32,
 
     filter_eg_amount: f32,
+    filter2_eg_amount: f32,
+
+    filter_key_tracking: f32,
+    filter2_key_tracking: f32,
 
     mod_wheel: f32,
 
@@ -149,6 +194,7 @@ impl SampleVoice {
             interpolation: InterpolationMode::Linear,
             sample: None,
             filter: SvfFilter::new(sample_rate),
+            filter2: SvfFilter::new(sample_rate),
             feg: AdsrEnvelope::new(sample_rate),
             eg2: AdsrEnvelope::new(sample_rate),
             eg3: AdsrEnvelope::new(sample_rate),
@@ -166,13 +212,25 @@ impl SampleVoice {
             lfo4: Lfo::new(sample_rate),
             lfo4_enabled: false,
             lfo4_amount: 0.0,
+            lfo5: Lfo::new(sample_rate),
+            lfo5_enabled: false,
+            lfo5_amount: 0.0,
+            lfo6: Lfo::new(sample_rate),
+            lfo6_enabled: false,
+            lfo6_amount: 0.0,
             sample_hold_value: 0.0,
             sample_hold_counter: 0,
             sample_hold_rate: 0,
             filter_enabled: false,
+            filter2_enabled: false,
             filter_base_cutoff: 20000.0,
+            filter2_base_cutoff: 20000.0,
             filter_resonance: 0.7,
+            filter2_resonance: 0.7,
             filter_eg_amount: 0.0,
+            filter2_eg_amount: 0.0,
+            filter_key_tracking: 0.0,
+            filter2_key_tracking: 0.0,
             mod_wheel: 0.0,
             pressure: 0.0,
             timbre: 0.0,
@@ -248,10 +306,20 @@ impl SampleVoice {
                     if self.lfo4_enabled {
                         self.lfo4.reset();
                     }
+                    if self.lfo5_enabled {
+                        self.lfo5.reset();
+                    }
+                    if self.lfo6_enabled {
+                        self.lfo6.reset();
+                    }
                 }
                 if self.filter_enabled && reset {
                     self.feg.trigger();
                     self.filter.reset();
+                }
+                if self.filter2_enabled && reset {
+                    self.feg.trigger();
+                    self.filter2.reset();
                 }
                 self.active = true;
             }
@@ -297,6 +365,8 @@ impl SampleVoice {
             lfo2: 0.0,
             lfo3: 0.0,
             lfo4: 0.0,
+            lfo5: 0.0,
+            lfo6: 0.0,
             eg1: self.aeg.value(),
             eg2: self.eg2.value(),
             eg3: self.eg3.value(),
@@ -358,9 +428,25 @@ impl SampleVoice {
                 if self.lfo2_enabled {
                     self.lfo2.reset();
                 }
+                if self.lfo3_enabled {
+                    self.lfo3.reset();
+                }
+                if self.lfo4_enabled {
+                    self.lfo4.reset();
+                }
+                if self.lfo5_enabled {
+                    self.lfo5.reset();
+                }
+                if self.lfo6_enabled {
+                    self.lfo6.reset();
+                }
                 if self.filter_enabled {
                     self.feg.trigger();
                     self.filter.reset();
+                }
+                if self.filter2_enabled {
+                    self.feg.trigger();
+                    self.filter2.reset();
                 }
             }
             return;
@@ -420,17 +506,26 @@ impl SampleVoice {
         self.interpolation = mode;
     }
 
-    pub fn set_filter_params(
-        &mut self,
-        filter_type: FilterType,
-        cutoff: f32,
-        resonance: f32,
-        enabled: bool,
-    ) {
-        self.filter_enabled = enabled;
-        self.filter.filter_type = filter_type;
-        self.filter_base_cutoff = cutoff;
-        self.filter_resonance = resonance;
+    pub fn set_filter_params(&mut self, params: FilterParams) {
+        self.filter_enabled = params.enabled;
+        self.filter.filter_type = params.filter_type;
+        self.filter.subtype = params.subtype;
+        self.filter.drive = params.drive.clamp(0.0, 1.0);
+        self.filter_base_cutoff = params.cutoff;
+        self.filter_resonance = params.resonance;
+        self.filter_eg_amount = params.eg_amount;
+        self.filter_key_tracking = params.key_tracking.clamp(0.0, 1.0);
+    }
+
+    pub fn set_filter2_params(&mut self, params: FilterParams) {
+        self.filter2_enabled = params.enabled;
+        self.filter2.filter_type = params.filter_type;
+        self.filter2.subtype = params.subtype;
+        self.filter2.drive = params.drive.clamp(0.0, 1.0);
+        self.filter2_base_cutoff = params.cutoff;
+        self.filter2_resonance = params.resonance;
+        self.filter2_eg_amount = params.eg_amount;
+        self.filter2_key_tracking = params.key_tracking.clamp(0.0, 1.0);
     }
 
     pub fn set_feg_params(&mut self, attack: f32, decay: f32, sustain: f32, release: f32) {
@@ -443,6 +538,10 @@ impl SampleVoice {
 
     pub fn set_filter_eg_amount(&mut self, amount: f32) {
         self.filter_eg_amount = amount;
+    }
+
+    pub fn set_filter2_eg_amount(&mut self, amount: f32) {
+        self.filter2_eg_amount = amount;
     }
 
     pub fn set_mod_wheel(&mut self, value: f32) {
@@ -473,32 +572,70 @@ impl SampleVoice {
         self.eg5.set_params(attack, decay, sustain, release);
     }
 
-    pub fn set_lfo1_params(&mut self, rate: f32, amount: f32, shape: LfoShape, enabled: bool) {
-        self.lfo1_enabled = enabled;
-        self.lfo1_amount = amount;
-        self.lfo1.set_rate_hz(rate);
-        self.lfo1.set_shape(shape);
+    fn apply_lfo_params(lfo: &mut Lfo, amount: &mut f32, enabled: &mut bool, params: LfoParams) {
+        *enabled = params.enabled;
+        *amount = params.amount;
+        lfo.set_rate_hz(params.rate);
+        lfo.set_shape(params.shape);
+        lfo.set_deform(params.deform);
+        lfo.set_start_phase(params.phase);
+        lfo.set_trigger_mode(params.trigger);
+        lfo.set_unipolar(params.unipolar);
+        lfo.set_sync_mode(params.sync_mode);
     }
 
-    pub fn set_lfo2_params(&mut self, rate: f32, amount: f32, shape: LfoShape, enabled: bool) {
-        self.lfo2_enabled = enabled;
-        self.lfo2_amount = amount;
-        self.lfo2.set_rate_hz(rate);
-        self.lfo2.set_shape(shape);
+    pub fn set_lfo1_params(&mut self, params: LfoParams) {
+        Self::apply_lfo_params(
+            &mut self.lfo1,
+            &mut self.lfo1_amount,
+            &mut self.lfo1_enabled,
+            params,
+        );
     }
 
-    pub fn set_lfo3_params(&mut self, rate: f32, amount: f32, shape: LfoShape, enabled: bool) {
-        self.lfo3_enabled = enabled;
-        self.lfo3_amount = amount;
-        self.lfo3.set_rate_hz(rate);
-        self.lfo3.set_shape(shape);
+    pub fn set_lfo2_params(&mut self, params: LfoParams) {
+        Self::apply_lfo_params(
+            &mut self.lfo2,
+            &mut self.lfo2_amount,
+            &mut self.lfo2_enabled,
+            params,
+        );
     }
 
-    pub fn set_lfo4_params(&mut self, rate: f32, amount: f32, shape: LfoShape, enabled: bool) {
-        self.lfo4_enabled = enabled;
-        self.lfo4_amount = amount;
-        self.lfo4.set_rate_hz(rate);
-        self.lfo4.set_shape(shape);
+    pub fn set_lfo3_params(&mut self, params: LfoParams) {
+        Self::apply_lfo_params(
+            &mut self.lfo3,
+            &mut self.lfo3_amount,
+            &mut self.lfo3_enabled,
+            params,
+        );
+    }
+
+    pub fn set_lfo4_params(&mut self, params: LfoParams) {
+        Self::apply_lfo_params(
+            &mut self.lfo4,
+            &mut self.lfo4_amount,
+            &mut self.lfo4_enabled,
+            params,
+        );
+    }
+
+    pub fn set_lfo5_params(&mut self, params: LfoParams) {
+        Self::apply_lfo_params(
+            &mut self.lfo5,
+            &mut self.lfo5_amount,
+            &mut self.lfo5_enabled,
+            params,
+        );
+    }
+
+    pub fn set_lfo6_params(&mut self, params: LfoParams) {
+        Self::apply_lfo_params(
+            &mut self.lfo6,
+            &mut self.lfo6_amount,
+            &mut self.lfo6_enabled,
+            params,
+        );
     }
 
     pub fn set_global_mod_matrix(&mut self, matrix: ModMatrix) {
@@ -629,6 +766,8 @@ impl SampleVoice {
             lfo2: self.lfo2.value(),
             lfo3: self.lfo3.value(),
             lfo4: self.lfo4.value(),
+            lfo5: self.lfo5.value(),
+            lfo6: self.lfo6.value(),
             eg1: self.aeg.value(),
             eg2: self.eg2.value(),
             eg3: self.eg3.value(),
@@ -694,6 +833,16 @@ impl SampleVoice {
             } else {
                 0.0
             };
+            let lfo5_value = if self.lfo5_enabled {
+                self.lfo5.next()
+            } else {
+                0.0
+            };
+            let lfo6_value = if self.lfo6_enabled {
+                self.lfo6.next()
+            } else {
+                0.0
+            };
             let sources = SourceValues {
                 velocity: self.velocity as f32 / 127.0,
                 key_track: (self.note as f32 - 60.0) / 60.0,
@@ -705,6 +854,8 @@ impl SampleVoice {
                 lfo2: lfo2_value,
                 lfo3: lfo3_value,
                 lfo4: lfo4_value,
+                lfo5: lfo5_value,
+                lfo6: lfo6_value,
                 eg1: env,
                 eg2: self.eg2.value(),
                 eg3: self.eg3.value(),
@@ -784,9 +935,13 @@ impl SampleVoice {
                 vr *= tremolo;
             }
 
-            if self.filter_enabled {
-                let feg_val = self.feg.next();
+            let feg_val = if self.filter_enabled || self.filter2_enabled {
+                self.feg.next()
+            } else {
+                self.feg.value()
+            };
 
+            if self.filter_enabled {
                 let mut octaves = self.filter_eg_amount * feg_val;
 
                 octaves += self.mod_wheel * 2.0;
@@ -797,7 +952,8 @@ impl SampleVoice {
                 octaves += cutoff_mod * 2.0;
                 let mut mod_resonance = self.filter_resonance * (1.0 + res_mod);
                 mod_resonance = mod_resonance.clamp(0.1, 10.0);
-                let mod_cutoff = self.filter_base_cutoff * 2.0f32.powf(octaves);
+                let key_track = self.filter_key_tracking * (self.note as f32 - 60.0) * 50.0;
+                let mod_cutoff = self.filter_base_cutoff * 2.0f32.powf(octaves) + key_track;
                 let mod_cutoff = mod_cutoff.clamp(20.0, self.sample_rate * 0.49);
 
                 if self.oversample {
@@ -812,6 +968,36 @@ impl SampleVoice {
                     self.filter.prepare_block(mod_cutoff, mod_resonance, 1);
                     vl = self.filter.process(vl);
                     vr = self.filter.process(vr);
+                }
+            }
+
+            if self.filter2_enabled {
+                let mut octaves = self.filter2_eg_amount * feg_val;
+
+                octaves += self.mod_wheel * 2.0;
+                if self.lfo2_enabled {
+                    octaves += lfo2_value * self.lfo2_amount * 4.0;
+                }
+
+                octaves += cutoff_mod * 2.0;
+                let mut mod_resonance = self.filter2_resonance * (1.0 + res_mod);
+                mod_resonance = mod_resonance.clamp(0.1, 10.0);
+                let key_track = self.filter2_key_tracking * (self.note as f32 - 60.0) * 50.0;
+                let mod_cutoff = self.filter2_base_cutoff * 2.0f32.powf(octaves) + key_track;
+                let mod_cutoff = mod_cutoff.clamp(20.0, self.sample_rate * 0.49);
+
+                if self.oversample {
+                    self.filter2.prepare_block(mod_cutoff, mod_resonance, 1);
+                    let o1l = self.filter2.process(vl);
+                    let o1r = self.filter2.process(vr);
+                    let o2l = self.filter2.process(vl);
+                    let o2r = self.filter2.process(vr);
+                    vl = (o1l + o2l) * 0.5;
+                    vr = (o1r + o2r) * 0.5;
+                } else {
+                    self.filter2.prepare_block(mod_cutoff, mod_resonance, 1);
+                    vl = self.filter2.process(vl);
+                    vr = self.filter2.process(vr);
                 }
             }
 
@@ -1052,7 +1238,12 @@ mod tests {
             .set_route(0, ModSource::Lfo3, ModTarget::Pitch, 1.0);
 
         let mut voice = SampleVoice::new(48000.0);
-        voice.set_lfo3_params(10.0, 1.0, LfoShape::Sine, true);
+        voice.set_lfo3_params(LfoParams {
+            rate: 10.0,
+            amount: 1.0,
+            shape: LfoShape::Sine,
+            ..Default::default()
+        });
         voice.trigger(Arc::new(zone), 60, 127, 0);
 
         let mut out_l = vec![0.0f32; 64];

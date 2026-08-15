@@ -13,8 +13,6 @@ pub enum TriggerType {
 
     KeyswitchMomentary,
 
-    Macro,
-
     MidiCc,
 }
 
@@ -34,8 +32,6 @@ pub struct TriggerCondition {
     pub cc: u8,
 
     pub cc_value: u8,
-
-    pub macro_id: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -126,26 +122,19 @@ pub fn group_is_active(
     match group.trigger_type {
         TriggerType::None => true,
         TriggerType::KeyswitchLatch | TriggerType::KeyswitchMomentary => group.trigger_active,
-        TriggerType::Macro => evaluate_conditions(group, part, cc_values),
         TriggerType::MidiCc => evaluate_conditions(group, part, cc_values),
     }
 }
 
 fn evaluate_conditions(
     group: &Group,
-    part: &crate::sampler::dsp::part::Part,
+    _part: &crate::sampler::dsp::part::Part,
     cc_values: &[u8; 128],
 ) -> bool {
     let mut results = [false; 4];
     for (i, result) in results.iter_mut().enumerate() {
         let cond = &group.trigger_conditions[i];
         *result = match group.trigger_type {
-            TriggerType::Macro => {
-                let macro_idx = cond.macro_id as usize % 16;
-                let macro_val = part.macros[macro_idx].normalized_value();
-
-                macro_val > 0.5
-            }
             TriggerType::MidiCc => {
                 let cc_val = cc_values[cond.cc as usize % 128];
 
@@ -195,22 +184,6 @@ mod tests {
     }
 
     #[test]
-    fn test_group_macro_trigger() {
-        let mut group = Group {
-            trigger_type: TriggerType::Macro,
-            ..Default::default()
-        };
-        group.trigger_conditions[0].macro_id = 0;
-        let mut part = Part::default();
-        let cc = [0u8; 128];
-
-        assert!(!group_is_active(&group, &part, &cc));
-
-        part.macros[0].value = 1.0;
-        assert!(group_is_active(&group, &part, &cc));
-    }
-
-    #[test]
     fn test_group_midi_cc_trigger() {
         let mut group = Group {
             trigger_type: TriggerType::MidiCc,
@@ -231,38 +204,40 @@ mod tests {
     #[test]
     fn test_trigger_conjunction_and() {
         let mut group = Group {
-            trigger_type: TriggerType::Macro,
+            trigger_type: TriggerType::MidiCc,
             ..Default::default()
         };
-        group.trigger_conditions[0].macro_id = 0;
-        group.trigger_conditions[1].macro_id = 1;
+        group.trigger_conditions[0].cc = 10;
+        group.trigger_conditions[0].cc_value = 64;
+        group.trigger_conditions[1].cc = 11;
+        group.trigger_conditions[1].cc_value = 64;
         group.trigger_conjunctions[0] = TriggerConjunction::And;
-        let mut part = Part::default();
-        let cc = [0u8; 128];
-        part.macros[0].value = 1.0;
-        part.macros[1].value = 0.0;
+        let part = Part::default();
+        let mut cc = [0u8; 128];
+        cc[10] = 64;
 
         assert!(!group_is_active(&group, &part, &cc));
-        part.macros[1].value = 1.0;
+        cc[11] = 64;
         assert!(group_is_active(&group, &part, &cc));
     }
 
     #[test]
     fn test_trigger_conjunction_or() {
         let mut group = Group {
-            trigger_type: TriggerType::Macro,
+            trigger_type: TriggerType::MidiCc,
             ..Default::default()
         };
-        group.trigger_conditions[0].macro_id = 0;
-        group.trigger_conditions[1].macro_id = 1;
+        group.trigger_conditions[0].cc = 10;
+        group.trigger_conditions[0].cc_value = 64;
+        group.trigger_conditions[1].cc = 11;
+        group.trigger_conditions[1].cc_value = 64;
         group.trigger_conjunctions[0] = TriggerConjunction::Or;
-        let mut part = Part::default();
-        let cc = [0u8; 128];
-        part.macros[0].value = 1.0;
-        part.macros[1].value = 0.0;
+        let part = Part::default();
+        let mut cc = [0u8; 128];
+        cc[10] = 64;
 
         assert!(group_is_active(&group, &part, &cc));
-        part.macros[0].value = 0.0;
+        cc[10] = 0;
         assert!(!group_is_active(&group, &part, &cc));
     }
 }

@@ -993,34 +993,6 @@ fn view(state: &State) -> Element<'_, Message> {
         .into(),
     );
 
-    let macros = panel(
-        "Macros",
-        column![
-            knob_row(vec![
-                param_control(ParamId::Macro1, "M1", state),
-                param_control(ParamId::Macro2, "M2", state),
-                param_control(ParamId::Macro3, "M3", state),
-                param_control(ParamId::Macro4, "M4", state),
-                param_control(ParamId::Macro5, "M5", state),
-                param_control(ParamId::Macro6, "M6", state),
-                param_control(ParamId::Macro7, "M7", state),
-                param_control(ParamId::Macro8, "M8", state),
-            ]),
-            knob_row(vec![
-                param_control(ParamId::Macro9, "M9", state),
-                param_control(ParamId::Macro10, "M10", state),
-                param_control(ParamId::Macro11, "M11", state),
-                param_control(ParamId::Macro12, "M12", state),
-                param_control(ParamId::Macro13, "M13", state),
-                param_control(ParamId::Macro14, "M14", state),
-                param_control(ParamId::Macro15, "M15", state),
-                param_control(ParamId::Macro16, "M16", state),
-            ]),
-        ]
-        .spacing(6)
-        .into(),
-    );
-
     let waveshaper = panel_no_title(
         column![
             knob_row(vec![
@@ -1135,7 +1107,6 @@ fn view(state: &State) -> Element<'_, Message> {
     let right_column = column![
         filter_selector,
         selected_filter_panel,
-        macros,
         row![
             column![eg_selector, selected_eg_panel].spacing(10),
             column![misc_selector, selected_misc_panel].spacing(10),

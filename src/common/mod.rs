@@ -12,7 +12,6 @@ pub mod fx;
 pub mod gain_pan;
 pub mod lfo;
 pub mod lfo_assignment;
-pub mod macro_param;
 pub mod mmap;
 pub mod modulated_delay;
 pub mod modulated_oscillator;

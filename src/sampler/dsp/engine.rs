@@ -1,13 +1,12 @@
 use std::sync::Arc;
 
 use crate::common::envelope::AdsrParams;
-use crate::common::filter::{FilterParams, FilterType};
-use crate::common::lfo::LfoShape;
+use crate::common::filter::FilterParams;
 use crate::common::voice::{PlayMode, StealMode, VoicePriority};
 use crate::sampler::dsp::mod_matrix::ModMatrix;
 use crate::sampler::dsp::patch::Patch;
 use crate::sampler::dsp::sample::Sample;
-use crate::sampler::dsp::voice::SampleVoice;
+use crate::sampler::dsp::voice::{LfoParams, SampleVoice};
 use crate::sampler::dsp::zone::Zone;
 
 #[derive(Clone)]
@@ -51,14 +50,13 @@ pub struct SamplerEngine {
     amp_eg: AdsrParams,
 
     filter: FilterParams,
+    filter2: FilterParams,
 
     filter_eg: AdsrParams,
 
     eg_params: [AdsrParams; 4],
 
-    lfo1_params: (f32, f32, LfoShape, bool),
-
-    lfo2_params: (f32, f32, LfoShape, bool),
+    lfo_params: [LfoParams; 6],
 
     global_mod_matrix: ModMatrix,
 
@@ -103,13 +101,13 @@ impl SamplerEngine {
             master_gain: 1.0,
             amp_eg: AdsrParams::default(),
             filter: FilterParams::default(),
+            filter2: FilterParams::default(),
             filter_eg: AdsrParams {
                 sustain: 0.0,
                 ..AdsrParams::default()
             },
             eg_params: [AdsrParams::default(); 4],
-            lfo1_params: (1.0, 0.0, LfoShape::Sine, false),
-            lfo2_params: (1.0, 0.0, LfoShape::Sine, false),
+            lfo_params: [LfoParams::default(); 6],
             global_mod_matrix: ModMatrix::default(),
             note_tuning: [0.0; 128],
             note_pressure: [0.0; 128],
@@ -243,24 +241,40 @@ impl SamplerEngine {
         self.amp_eg = AdsrParams::new(attack, decay, sustain, release);
     }
 
-    pub fn set_filter_params(
-        &mut self,
-        filter_type: FilterType,
-        cutoff: f32,
-        resonance: f32,
-        enabled: bool,
-    ) {
-        self.filter = FilterParams::new(
-            filter_type,
-            cutoff,
-            resonance,
-            self.filter.eg_amount,
-            enabled,
-        );
+    pub fn set_filter_params(&mut self, params: FilterParams) {
+        self.filter = params;
+        for voice in &mut self.voices {
+            if voice.is_active() {
+                voice.set_filter_params(params);
+            }
+        }
+    }
+
+    pub fn set_filter2_params(&mut self, params: FilterParams) {
+        self.filter2 = params;
+        for voice in &mut self.voices {
+            if voice.is_active() {
+                voice.set_filter2_params(params);
+            }
+        }
     }
 
     pub fn set_filter_eg_amount(&mut self, amount: f32) {
         self.filter.eg_amount = amount;
+        for voice in &mut self.voices {
+            if voice.is_active() {
+                voice.set_filter_eg_amount(amount);
+            }
+        }
+    }
+
+    pub fn set_filter2_eg_amount(&mut self, amount: f32) {
+        self.filter2.eg_amount = amount;
+        for voice in &mut self.voices {
+            if voice.is_active() {
+                voice.set_filter2_eg_amount(amount);
+            }
+        }
     }
 
     pub fn set_feg_params(&mut self, attack: f32, decay: f32, sustain: f32, release: f32) {
@@ -283,20 +297,42 @@ impl SamplerEngine {
         self.eg_params[3] = AdsrParams::new(attack, decay, sustain, release);
     }
 
-    pub fn set_lfo1_params(&mut self, rate: f32, amount: f32, shape: LfoShape, enabled: bool) {
-        self.lfo1_params = (rate, amount, shape, enabled);
-        for voice in &mut self.voices {
-            if voice.is_active() {
-                voice.set_lfo1_params(rate, amount, shape, enabled);
-            }
-        }
+    pub fn set_lfo1_params(&mut self, params: LfoParams) {
+        self.set_lfo_params(0, params);
     }
 
-    pub fn set_lfo2_params(&mut self, rate: f32, amount: f32, shape: LfoShape, enabled: bool) {
-        self.lfo2_params = (rate, amount, shape, enabled);
+    pub fn set_lfo2_params(&mut self, params: LfoParams) {
+        self.set_lfo_params(1, params);
+    }
+
+    pub fn set_lfo3_params(&mut self, params: LfoParams) {
+        self.set_lfo_params(2, params);
+    }
+
+    pub fn set_lfo4_params(&mut self, params: LfoParams) {
+        self.set_lfo_params(3, params);
+    }
+
+    pub fn set_lfo5_params(&mut self, params: LfoParams) {
+        self.set_lfo_params(4, params);
+    }
+
+    pub fn set_lfo6_params(&mut self, params: LfoParams) {
+        self.set_lfo_params(5, params);
+    }
+
+    fn set_lfo_params(&mut self, index: usize, params: LfoParams) {
+        self.lfo_params[index] = params;
         for voice in &mut self.voices {
             if voice.is_active() {
-                voice.set_lfo2_params(rate, amount, shape, enabled);
+                match index {
+                    0 => voice.set_lfo1_params(params),
+                    1 => voice.set_lfo2_params(params),
+                    2 => voice.set_lfo3_params(params),
+                    3 => voice.set_lfo4_params(params),
+                    4 => voice.set_lfo5_params(params),
+                    _ => voice.set_lfo6_params(params),
+                }
             }
         }
     }
@@ -814,12 +850,8 @@ impl SamplerEngine {
             self.amp_eg.sustain,
             self.amp_eg.release,
         );
-        self.voices[index].set_filter_params(
-            self.filter.filter_type,
-            self.filter.cutoff,
-            self.filter.resonance,
-            self.filter.enabled,
-        );
+        self.voices[index].set_filter_params(self.filter);
+        self.voices[index].set_filter2_params(self.filter2);
         self.voices[index].set_feg_params(
             self.filter_eg.attack,
             self.filter_eg.decay,
@@ -827,6 +859,7 @@ impl SamplerEngine {
             self.filter_eg.release,
         );
         self.voices[index].set_filter_eg_amount(self.filter.eg_amount);
+        self.voices[index].set_filter2_eg_amount(self.filter2.eg_amount);
         self.voices[index].set_pitch_bend(self.pitch_bend);
         self.voices[index].set_eg2_params(
             self.eg_params[0].attack,
@@ -852,10 +885,12 @@ impl SamplerEngine {
             self.eg_params[3].sustain,
             self.eg_params[3].release,
         );
-        let (lfo1_rate, lfo1_amount, lfo1_shape, lfo1_enabled) = self.lfo1_params;
-        self.voices[index].set_lfo1_params(lfo1_rate, lfo1_amount, lfo1_shape, lfo1_enabled);
-        let (lfo2_rate, lfo2_amount, lfo2_shape, lfo2_enabled) = self.lfo2_params;
-        self.voices[index].set_lfo2_params(lfo2_rate, lfo2_amount, lfo2_shape, lfo2_enabled);
+        self.voices[index].set_lfo1_params(self.lfo_params[0]);
+        self.voices[index].set_lfo2_params(self.lfo_params[1]);
+        self.voices[index].set_lfo3_params(self.lfo_params[2]);
+        self.voices[index].set_lfo4_params(self.lfo_params[3]);
+        self.voices[index].set_lfo5_params(self.lfo_params[4]);
+        self.voices[index].set_lfo6_params(self.lfo_params[5]);
         self.voices[index].set_global_mod_matrix(self.global_mod_matrix.clone());
         self.voices[index].set_hierarchy_gain_pan(
             params.group_gain,
@@ -1087,7 +1122,11 @@ mod tests {
 
         let mut engine = SamplerEngine::new(48000.0, 4);
         engine.set_patch(patch);
-        engine.set_lfo1_params(10.0, 0.5, crate::common::lfo::LfoShape::Sine, true);
+        engine.set_lfo1_params(crate::sampler::dsp::voice::LfoParams {
+            rate: 10.0,
+            amount: 0.5,
+            ..Default::default()
+        });
 
         engine.note_on(60, 100, 0);
         let mut out_l = vec![0.0f32; 64];
@@ -1167,7 +1206,13 @@ mod tests {
 
         let mut engine = SamplerEngine::new(48000.0, 4);
         engine.set_patch(patch);
-        engine.set_filter_params(FilterType::Lowpass, 1000.0, 0.7, true);
+        engine.set_filter_params(crate::common::filter::FilterParams {
+            filter_type: crate::common::filter::FilterType::Lowpass,
+            cutoff: 1000.0,
+            resonance: 0.7,
+            enabled: true,
+            ..Default::default()
+        });
         engine.set_mod_wheel(1.0);
 
         engine.note_on(60, 100, 0);

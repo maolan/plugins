@@ -117,14 +117,17 @@ impl FilterType {
 /// Shared filter parameter bundle.
 ///
 /// Carries the filter type, cutoff, resonance, EG modulation amount, and
-/// on/off state. Plugins can store this as a single field instead of five
-/// separate fields.
+/// related shaping state. Plugins can store this as a single field instead of
+/// passing every control separately.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FilterParams {
     pub filter_type: FilterType,
+    pub subtype: FilterSubtype,
     pub cutoff: f32,
     pub resonance: f32,
     pub eg_amount: f32,
+    pub key_tracking: f32,
+    pub drive: f32,
     pub enabled: bool,
 }
 
@@ -132,28 +135,13 @@ impl Default for FilterParams {
     fn default() -> Self {
         Self {
             filter_type: FilterType::Lowpass,
+            subtype: FilterSubtype::Clean,
             cutoff: 20000.0,
             resonance: 0.7,
             eg_amount: 0.0,
+            key_tracking: 0.0,
+            drive: 0.0,
             enabled: false,
-        }
-    }
-}
-
-impl FilterParams {
-    pub fn new(
-        filter_type: FilterType,
-        cutoff: f32,
-        resonance: f32,
-        eg_amount: f32,
-        enabled: bool,
-    ) -> Self {
-        Self {
-            filter_type,
-            cutoff,
-            resonance,
-            eg_amount,
-            enabled,
         }
     }
 }
