@@ -117,6 +117,9 @@ pub enum Message {
     DeleteSelectedZone,
     SelectZoneListItem(ZoneListSelection),
     Undo,
+    OpenSamplerEditor(usize),
+    CloseSamplerEditor,
+    SelectEditingSample(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,6 +227,9 @@ struct State {
     editing_zone_name: Option<(usize, String)>,
     selected: Option<ZoneListSelection>,
     undo_stack: Vec<Vec<SampleZone>>,
+    editing_zone_index: Option<usize>,
+    editing_zone_sample_index: usize,
+    editing_audio_file: Option<crate::common::audio_file::AudioFile>,
 }
 
 #[derive(Debug, Clone)]
@@ -255,6 +261,25 @@ fn unique_zone_name(zones: &[SampleZone], base: &str) -> String {
             return next;
         }
         candidate = next;
+    }
+}
+
+fn load_editing_sample(state: &mut State) {
+    state.editing_audio_file = None;
+    let zones = state.shared.zones.load();
+    let Some(zone) = state
+        .editing_zone_index
+        .and_then(|index| zones.get(index))
+    else {
+        return;
+    };
+    let Some(path) = zone.files.get(state.editing_zone_sample_index) else {
+        return;
+    };
+    if let Ok(audio) = crate::common::audio_file::decode_file(path) {
+        if let Ok(stereo) = audio.into_stereo() {
+            state.editing_audio_file = Some(stereo);
+        }
     }
 }
 
@@ -336,6 +361,9 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             editing_zone_name: None,
             selected: None,
             undo_stack: Vec::new(),
+            editing_zone_index: None,
+            editing_zone_sample_index: 0,
+            editing_audio_file: None,
         },
         Task::none(),
     )
@@ -663,6 +691,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.shared.mark_dirty();
                 state.selected = None;
             }
+        }
+        Message::OpenSamplerEditor(index) => {
+            state.editing_zone_index = Some(index);
+            state.editing_zone_sample_index = 0;
+            load_editing_sample(state);
+        }
+        Message::CloseSamplerEditor => {
+            state.editing_zone_index = None;
+            state.editing_zone_sample_index = 0;
+            state.editing_audio_file = None;
+        }
+        Message::SelectEditingSample(index) => {
+            state.editing_zone_sample_index = index;
+            load_editing_sample(state);
         }
         Message::StartRenameZone(index) => {
             let zones = state.shared.zones.load();
@@ -1527,11 +1569,19 @@ fn zone_row<'a>(state: &'a State, index: usize, zone: SampleZone) -> Element<'a,
     let wrapped = if is_editing {
         container(content)
     } else {
-        container(
+        let mut inner = row![
             mouse_area(content)
                 .on_press(Message::SelectZoneListItem(ZoneListSelection::Zone(index)))
-                .on_double_click(Message::StartRenameZone(index)),
-        )
+                .on_double_click(Message::OpenSamplerEditor(index)),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center);
+        inner = inner.push(
+            button(text("✎").size(9))
+                .on_press(Message::StartRenameZone(index))
+                .padding([2, 4]),
+        );
+        container(inner)
     }
     .width(Length::Fill)
     .padding([4, 6])
@@ -1796,7 +1846,216 @@ fn lfo_tab_button(label: &'static str, index: usize, state: &State) -> Element<'
         .into()
 }
 
+struct WaveformEditor<'a> {
+    audio: Option<&'a crate::common::audio_file::AudioFile>,
+}
+
+impl<'a> canvas::Program<Message> for WaveformEditor<'a> {
+    type State = ();
+
+    fn update(
+        &self,
+        _state: &mut Self::State,
+        _event: &maolan_baseview::iced::Event,
+        _bounds: Rectangle,
+        _cursor: maolan_baseview::iced::mouse::Cursor,
+    ) -> Option<canvas::Action<Message>> {
+        None
+    }
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &maolan_baseview::iced::Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: maolan_baseview::iced::mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+
+        let background = canvas::Path::rectangle(Point::ORIGIN, bounds.size());
+        frame.fill(&background, Color::from_rgb(0.075, 0.078, 0.095));
+
+        let Some(audio) = self.audio else {
+            let label = canvas::Text {
+                content: String::from("No sample loaded"),
+                position: Point::new(8.0, 18.0),
+                color: Color::from_rgb(0.50, 0.52, 0.58),
+                size: maolan_baseview::iced::Pixels(12.0),
+                ..canvas::Text::default()
+            };
+            frame.fill_text(label);
+            return vec![frame.into_geometry()];
+        };
+
+        let frames = audio.frames();
+        if frames == 0 {
+            let label = canvas::Text {
+                content: String::from("Empty sample"),
+                position: Point::new(8.0, 18.0),
+                color: Color::from_rgb(0.50, 0.52, 0.58),
+                size: maolan_baseview::iced::Pixels(12.0),
+                ..canvas::Text::default()
+            };
+            frame.fill_text(label);
+            return vec![frame.into_geometry()];
+        }
+
+        let width = bounds.width.max(1.0) as usize;
+        let height = bounds.height.max(1.0);
+        let center = height / 2.0;
+        let scale = center;
+        let peak = audio.peak.max(1e-10);
+        let samples_per_pixel = frames as f32 / width as f32;
+
+        let mut top_points = Vec::with_capacity(width);
+        let mut bottom_points = Vec::with_capacity(width);
+        for x in 0..width {
+            let start = ((x as f32 * samples_per_pixel) as usize).min(frames);
+            let end = (((x + 1) as f32 * samples_per_pixel) as usize).min(frames);
+
+            let mut min_sample = 0.0f32;
+            let mut max_sample = 0.0f32;
+            if start < end {
+                for channel in &audio.channels {
+                    for &sample in &channel[start..end] {
+                        if sample < min_sample {
+                            min_sample = sample;
+                        }
+                        if sample > max_sample {
+                            max_sample = sample;
+                        }
+                    }
+                }
+            }
+
+            let y_top = (center - (max_sample / peak) * scale).clamp(0.0, height);
+            let y_bottom = (center - (min_sample / peak) * scale).clamp(0.0, height);
+            top_points.push(Point::new(x as f32, y_top));
+            bottom_points.push(Point::new(x as f32, y_bottom));
+        }
+
+        let waveform_path = canvas::Path::new(|builder| {
+            if let Some(first) = top_points.first() {
+                builder.move_to(*first);
+                for point in &top_points[1..] {
+                    builder.line_to(*point);
+                }
+                for point in bottom_points.iter().rev() {
+                    builder.line_to(*point);
+                }
+                builder.close();
+            }
+        });
+
+        frame.fill(
+            &waveform_path,
+            Color::from_rgba(0.35, 0.55, 0.85, 0.35),
+        );
+        frame.stroke(
+            &waveform_path,
+            canvas::Stroke::default()
+                .with_color(Color::from_rgb(0.45, 0.72, 1.0))
+                .with_width(1.0),
+        );
+
+        vec![frame.into_geometry()]
+    }
+}
+
+fn sampler_editor_view<'a>(state: &'a State, index: usize) -> Element<'a, Message> {
+    let zones = state.shared.zones.load();
+    let zone = zones
+        .get(index)
+        .cloned()
+        .unwrap_or_else(|| SampleZone {
+            name: String::new(),
+            files: Vec::new(),
+            start_note: 0,
+            end_note: 0,
+            vel_low: 0,
+            vel_high: 0,
+            group: String::new(),
+        });
+
+    let sample_labels: Vec<String> = zone
+        .files
+        .iter()
+        .map(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string())
+        })
+        .collect();
+
+    let selected_label = sample_labels.get(state.editing_zone_sample_index).cloned();
+    let labels_for_pick_list = sample_labels.clone();
+
+    let header = row![
+        button(text("← Back").size(11))
+            .on_press(Message::CloseSamplerEditor)
+            .padding([4, 8]),
+        text(zone.name).size(14),
+        pick_list(
+            sample_labels,
+            selected_label,
+            move |label: String| {
+                let index = labels_for_pick_list
+                    .iter()
+                    .position(|name| name == &label)
+                    .unwrap_or(0);
+                Message::SelectEditingSample(index)
+            }
+        )
+        .placeholder("Sample")
+        .width(Length::Fixed(240.0)),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+
+    let waveform = fill_panel_no_title(
+        canvas(WaveformEditor {
+            audio: state.editing_audio_file.as_ref(),
+        })
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into(),
+    );
+
+    let main_content = column![header, waveform]
+        .spacing(10)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Alignment::Start);
+
+    let content_row = row![
+        zones_panel(state),
+        resize_handle(SidePanel::Zones),
+        main_content,
+        resize_handle(SidePanel::Browser),
+        browser_panel(state)
+    ]
+    .spacing(8)
+    .height(Length::Fill)
+    .align_y(Alignment::Start);
+
+    let content = mouse_area(container(content_row).padding(16).height(Length::Fill))
+        .on_move(|Point { x, .. }| Message::ResizeSidePanel(x))
+        .on_release(Message::StopSideResize);
+
+    container(content)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Horizontal::Left)
+        .align_y(Vertical::Top)
+        .into()
+}
+
 fn view(state: &State) -> Element<'_, Message> {
+    if let Some(index) = state.editing_zone_index {
+        return sampler_editor_view(state, index);
+    }
+
     let sample_map = fill_panel_no_title(sample_map(state));
 
     let top_bar = row![
@@ -2090,11 +2349,16 @@ fn subscription(state: &State) -> maolan_baseview::iced::Subscription<Message> {
             );
             let is_delete =
                 matches!(key, keyboard::Key::Named(keyboard::key::Named::Delete));
+            let is_esc =
+                matches!(key, keyboard::Key::Named(keyboard::key::Named::Escape));
             if is_undo {
                 return Some(Message::Undo);
             }
             if is_delete {
                 return Some(Message::DeleteSelectedZone);
+            }
+            if is_esc {
+                return Some(Message::CloseSamplerEditor);
             }
         }
         None
