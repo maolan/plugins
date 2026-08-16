@@ -47,7 +47,7 @@ use crate::sampler::{
         patch::Patch,
         sample::Sample,
         voice::LfoParams,
-        zone::{VariantMode, Zone},
+        zone::Zone,
     },
     gui::GuiBridge,
     params::{PARAMS, ParamId, sanitize_param_value},
@@ -741,31 +741,30 @@ fn build_patch_from_zones(zones: &[SampleZone], sample_rate: f32) -> Patch {
             };
 
             let root_key = ((zone.start_note + zone.end_note) / 2).min(127) as u8;
-            let mut dsp_zone = Zone::default();
-            dsp_zone.name = zone.name.clone();
-            dsp_zone.sample = sample;
-            dsp_zone.root_key = root_key;
-            dsp_zone.key_low = zone.start_note as u8;
-            dsp_zone.key_high = zone.end_note as u8;
-            dsp_zone.vel_low = zone.vel_low;
-            dsp_zone.vel_high = zone.vel_high;
-            dsp_zone.variant_mode = VariantMode::RoundRobin;
-            dsp_zone.variants = variants;
-            dsp_zones.push(dsp_zone);
+            dsp_zones.push(Zone::new_round_robin(
+                zone.name.clone(),
+                sample,
+                root_key,
+                (zone.start_note as u8, zone.end_note as u8),
+                (zone.vel_low, zone.vel_high),
+                variants,
+            ));
         }
 
-        let mut group = Group::default();
-        group.name = group_name;
-        group.zones = dsp_zones;
-        dsp_groups.push(group);
+        dsp_groups.push(Group {
+            name: group_name,
+            zones: dsp_zones,
+            ..Default::default()
+        });
     }
 
-    let mut part = Part::default();
-    part.groups = dsp_groups;
-
-    let mut patch = Patch::default();
-    patch.parts = vec![part];
-    patch
+    Patch {
+        parts: vec![Part {
+            groups: dsp_groups,
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
 }
 
 struct AudioProcessor {
@@ -1432,12 +1431,7 @@ unsafe extern "C-unwind" fn ext_state_save(
         let inst = instance(plugin);
         let mut state = PluginState::from_runtime(&inst.shared.params);
         let zones = inst.shared.zones.load();
-        state.sampler_zones = Some(
-            zones
-                .iter()
-                .map(SampleZone::to_state)
-                .collect(),
-        );
+        state.sampler_zones = Some(zones.iter().map(SampleZone::to_state).collect());
         let Ok(bytes) = state.to_bytes() else {
             return false;
         };

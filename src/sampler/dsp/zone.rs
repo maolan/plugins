@@ -276,6 +276,30 @@ impl Default for Zone {
 }
 
 impl Zone {
+    pub fn new_round_robin(
+        name: String,
+        sample: Arc<Sample>,
+        root_key: u8,
+        key_range: (u8, u8),
+        vel_range: (u8, u8),
+        variants: Vec<Arc<Sample>>,
+    ) -> Self {
+        Self {
+            name,
+            sample,
+            root_key,
+            key_low: key_range.0,
+            key_high: key_range.1,
+            vel_low: vel_range.0,
+            vel_high: vel_range.1,
+            variant_mode: VariantMode::RoundRobin,
+            variants,
+            ..Default::default()
+        }
+    }
+}
+
+impl Zone {
     pub fn select_variant(&self) -> Arc<Sample> {
         if self.variants.is_empty() {
             return self.sample.clone();

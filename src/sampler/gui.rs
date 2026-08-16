@@ -17,17 +17,17 @@ use maolan_baseview::iced::{
     Alignment, Background, Border, Color, Element, Length, Point, Rectangle, Size, Task, Theme,
     alignment::{Horizontal, Vertical},
     keyboard,
-    widget::{button, canvas, checkbox, column, container, mouse_area, pick_list, row, scrollable, text, text_input},
-};
-use symphonia::core::{
-    formats::FormatOptions,
-    io::MediaSourceStream,
-    meta::MetadataOptions,
-    probe::Hint,
+    widget::{
+        button, canvas, checkbox, column, container, mouse_area, pick_list, row, scrollable, text,
+        text_input,
+    },
 };
 use maolan_widgets::arch_slider::arch_slider;
 use maolan_widgets::slider::Slider;
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
+use symphonia::core::{
+    formats::FormatOptions, io::MediaSourceStream, meta::MetadataOptions, probe::Hint,
+};
 
 use crate::{
     common::{
@@ -267,19 +267,16 @@ fn unique_zone_name(zones: &[SampleZone], base: &str) -> String {
 fn load_editing_sample(state: &mut State) {
     state.editing_audio_file = None;
     let zones = state.shared.zones.load();
-    let Some(zone) = state
-        .editing_zone_index
-        .and_then(|index| zones.get(index))
-    else {
+    let Some(zone) = state.editing_zone_index.and_then(|index| zones.get(index)) else {
         return;
     };
     let Some(path) = zone.files.get(state.editing_zone_sample_index) else {
         return;
     };
-    if let Ok(audio) = crate::common::audio_file::decode_file(path) {
-        if let Ok(stereo) = audio.into_stereo() {
-            state.editing_audio_file = Some(stereo);
-        }
+    if let Ok(audio) = crate::common::audio_file::decode_file(path)
+        && let Ok(stereo) = audio.into_stereo()
+    {
+        state.editing_audio_file = Some(stereo);
     }
 }
 
@@ -441,8 +438,7 @@ fn is_mono_or_stereo(path: &PathBuf) -> bool {
     format
         .tracks()
         .iter()
-        .filter(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
-        .next()
+        .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
         .or_else(|| format.tracks().first())
         .and_then(|track| track.codec_params.channels)
         .map(|channels| {
@@ -540,47 +536,47 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.drag_y = Some(y);
             let mut zones = state.shared.zones.load();
             let mut changed = false;
-            if let Some((zone_index, edge)) = state.dragging_zone_edge {
-                if let Some(zone) = Arc::make_mut(&mut zones).get_mut(zone_index) {
-                    match edge {
-                        ZoneEdge::Start => {
-                            zone.start_note = note.min(zone.end_note);
-                        }
-                        ZoneEdge::End => {
-                            zone.end_note = note.max(zone.start_note);
-                        }
-                        ZoneEdge::Top => {
-                            zone.vel_high = velocity.max(zone.vel_low);
-                        }
-                        ZoneEdge::Bottom => {
-                            zone.vel_low = velocity.min(zone.vel_high);
-                        }
+            if let Some((zone_index, edge)) = state.dragging_zone_edge
+                && let Some(zone) = Arc::make_mut(&mut zones).get_mut(zone_index)
+            {
+                match edge {
+                    ZoneEdge::Start => {
+                        zone.start_note = note.min(zone.end_note);
                     }
-                    changed = true;
+                    ZoneEdge::End => {
+                        zone.end_note = note.max(zone.start_note);
+                    }
+                    ZoneEdge::Top => {
+                        zone.vel_high = velocity.max(zone.vel_low);
+                    }
+                    ZoneEdge::Bottom => {
+                        zone.vel_low = velocity.min(zone.vel_high);
+                    }
                 }
+                changed = true;
             }
-            if let Some((zone_index, note_offset, velocity_offset)) = state.dragging_zone_body {
-                if let Some(zone) = Arc::make_mut(&mut zones).get_mut(zone_index) {
-                    let width = zone.end_note - zone.start_note;
-                    let height = zone.vel_high - zone.vel_low;
-                    let mut new_start = (note as f32 - note_offset).round() as usize;
-                    let mut new_end = new_start + width;
-                    if new_end > SAMPLE_MAP_NOTES - 1 {
-                        new_end = SAMPLE_MAP_NOTES - 1;
-                        new_start = new_end.saturating_sub(width);
-                    }
-                    let mut new_vel_low = (velocity as f32 - velocity_offset).round() as u8;
-                    let mut new_vel_high = new_vel_low.saturating_add(height);
-                    if new_vel_high > 127 {
-                        new_vel_high = 127;
-                        new_vel_low = new_vel_high.saturating_sub(height);
-                    }
-                    zone.start_note = new_start;
-                    zone.end_note = new_end;
-                    zone.vel_low = new_vel_low;
-                    zone.vel_high = new_vel_high;
-                    changed = true;
+            if let Some((zone_index, note_offset, velocity_offset)) = state.dragging_zone_body
+                && let Some(zone) = Arc::make_mut(&mut zones).get_mut(zone_index)
+            {
+                let width = zone.end_note - zone.start_note;
+                let height = zone.vel_high - zone.vel_low;
+                let mut new_start = (note as f32 - note_offset).round() as usize;
+                let mut new_end = new_start + width;
+                if new_end > SAMPLE_MAP_NOTES - 1 {
+                    new_end = SAMPLE_MAP_NOTES - 1;
+                    new_start = new_end.saturating_sub(width);
                 }
+                let mut new_vel_low = (velocity as f32 - velocity_offset).round() as u8;
+                let mut new_vel_high = new_vel_low.saturating_add(height);
+                if new_vel_high > 127 {
+                    new_vel_high = 127;
+                    new_vel_low = new_vel_high.saturating_sub(height);
+                }
+                zone.start_note = new_start;
+                zone.end_note = new_end;
+                zone.vel_low = new_vel_low;
+                zone.vel_high = new_vel_high;
+                changed = true;
             }
             if changed {
                 state.shared.zones.store(zones);
@@ -1190,7 +1186,11 @@ impl canvas::Program<Message> for ZoneEditor {
                 match mouse_event {
                     maolan_baseview::iced::mouse::Event::CursorMoved { .. } => {
                         let note = note_at_x(position.x, bounds.width);
-                        let velocity = velocity_at_y(position.y, bounds.height - PIANO_ROLL_HEIGHT, bounds.height - PIANO_ROLL_HEIGHT);
+                        let velocity = velocity_at_y(
+                            position.y,
+                            bounds.height - PIANO_ROLL_HEIGHT,
+                            bounds.height - PIANO_ROLL_HEIGHT,
+                        );
                         Some(canvas::Action::publish(Message::ZoneNoteHovered(
                             note,
                             velocity,
@@ -1210,10 +1210,10 @@ impl canvas::Program<Message> for ZoneEditor {
                             let note_width = bounds.width / SAMPLE_MAP_NOTES as f32;
                             let grid_height = bounds.height - PIANO_ROLL_HEIGHT;
                             let velocity_height = grid_height / VELOCITY_COUNT;
-                            let note_offset = (position.x - zone.start_note as f32 * note_width)
-                                / note_width;
-                            let velocity_offset =
-                                ((grid_height - position.y) / velocity_height) - zone.vel_low as f32;
+                            let note_offset =
+                                (position.x - zone.start_note as f32 * note_width) / note_width;
+                            let velocity_offset = ((grid_height - position.y) / velocity_height)
+                                - zone.vel_low as f32;
                             Some(
                                 canvas::Action::publish(Message::StartZoneBodyDrag(
                                     index,
@@ -1270,10 +1270,7 @@ impl canvas::Program<Message> for ZoneEditor {
         for note in 0..SAMPLE_MAP_NOTES {
             let x = note as f32 * note_width;
             let is_c = note % 12 == 0;
-            let line = canvas::Path::line(
-                Point::new(x, 0.0),
-                Point::new(x, grid_height),
-            );
+            let line = canvas::Path::line(Point::new(x, 0.0), Point::new(x, grid_height));
             frame.stroke(
                 &line,
                 canvas::Stroke::default()
@@ -1299,13 +1296,20 @@ impl canvas::Program<Message> for ZoneEditor {
 
         for (index, zone) in self.data.zones.iter().enumerate() {
             let rect = zone_rect(zone, bounds);
-            let path = canvas::Path::rectangle(Point::new(rect.x, rect.y), Size::new(rect.width, rect.height));
+            let path = canvas::Path::rectangle(
+                Point::new(rect.x, rect.y),
+                Size::new(rect.width, rect.height),
+            );
             let selected = self
                 .data
                 .selected
                 .as_ref()
                 .is_some_and(|sel| matches!(sel, ZoneListSelection::Zone(i) if *i == index));
-            let color = if self.data.dragging_zone_edge.is_some_and(|(i, _)| i == index) {
+            let color = if self
+                .data
+                .dragging_zone_edge
+                .is_some_and(|(i, _)| i == index)
+            {
                 Color::from_rgb(0.20, 0.28, 0.40)
             } else if selected {
                 Color::from_rgb(0.24, 0.34, 0.50)
@@ -1334,72 +1338,75 @@ impl canvas::Program<Message> for ZoneEditor {
             frame.fill_text(text);
         }
 
-        if let Some(position) = cursor.position_in(bounds) {
-            if let Some((index, edge)) = self.edge_hit_test(position, bounds) {
-                let zone = &self.data.zones[index];
-                let rect = zone_rect(zone, bounds);
-                let (start, end) = match edge {
-                    ZoneEdge::Start => (
-                        Point::new(rect.x, rect.y),
-                        Point::new(rect.x, rect.y + rect.height),
-                    ),
-                    ZoneEdge::End => (
-                        Point::new(rect.x + rect.width, rect.y),
-                        Point::new(rect.x + rect.width, rect.y + rect.height),
-                    ),
-                    ZoneEdge::Top => (
-                        Point::new(rect.x, rect.y),
-                        Point::new(rect.x + rect.width, rect.y),
-                    ),
-                    ZoneEdge::Bottom => (
-                        Point::new(rect.x, rect.y + rect.height),
-                        Point::new(rect.x + rect.width, rect.y + rect.height),
-                    ),
-                };
-                let line = canvas::Path::line(start, end);
-                frame.stroke(
-                    &line,
-                    canvas::Stroke::default()
-                        .with_color(Color::from_rgb(0.78, 0.88, 1.0))
-                        .with_width(2.0),
-                );
-            }
+        if let Some(position) = cursor.position_in(bounds)
+            && let Some((index, edge)) = self.edge_hit_test(position, bounds)
+        {
+            let zone = &self.data.zones[index];
+            let rect = zone_rect(zone, bounds);
+            let (start, end) = match edge {
+                ZoneEdge::Start => (
+                    Point::new(rect.x, rect.y),
+                    Point::new(rect.x, rect.y + rect.height),
+                ),
+                ZoneEdge::End => (
+                    Point::new(rect.x + rect.width, rect.y),
+                    Point::new(rect.x + rect.width, rect.y + rect.height),
+                ),
+                ZoneEdge::Top => (
+                    Point::new(rect.x, rect.y),
+                    Point::new(rect.x + rect.width, rect.y),
+                ),
+                ZoneEdge::Bottom => (
+                    Point::new(rect.x, rect.y + rect.height),
+                    Point::new(rect.x + rect.width, rect.y + rect.height),
+                ),
+            };
+            let line = canvas::Path::line(start, end);
+            frame.stroke(
+                &line,
+                canvas::Stroke::default()
+                    .with_color(Color::from_rgb(0.78, 0.88, 1.0))
+                    .with_width(2.0),
+            );
         }
 
-        if self.data.dragged_audio_file.is_some() {
-            if let Some(hovered_note) = self.data.hovered_note {
-                let preview_width = self
-                    .data
-                    .drag_y
-                    .map(zone_width_from_drag_y)
-                    .unwrap_or(1)
-                    .clamp(1, SAMPLE_MAP_NOTES);
-                let half = preview_width / 2;
-                let start_note = hovered_note.saturating_sub(half);
-                let end_note = (start_note + preview_width - 1).min(SAMPLE_MAP_NOTES - 1);
-                let start_note = end_note.saturating_sub(preview_width - 1);
-                let velocity = self.data.hovered_velocity.unwrap_or(0);
-                let (vel_low, vel_high) =
-                    find_vertical_slot(&self.data.zones, start_note, end_note, velocity);
-                let preview = SampleZone {
-                    name: String::new(),
-                    files: Vec::new(),
-                    start_note,
-                    end_note,
-                    vel_low,
-                    vel_high,
-                    group: String::new(),
-                };
-                let rect = zone_rect(&preview, bounds);
-                let path = canvas::Path::rectangle(Point::new(rect.x, rect.y), Size::new(rect.width, rect.height));
-                frame.fill(&path, Color::from_rgba(0.22, 0.34, 0.48, 0.6));
-                frame.stroke(
-                    &path,
-                    canvas::Stroke::default()
-                        .with_color(Color::from_rgb(0.42, 0.72, 1.0))
-                        .with_width(1.0),
-                );
-            }
+        if self.data.dragged_audio_file.is_some()
+            && let Some(hovered_note) = self.data.hovered_note
+        {
+            let preview_width = self
+                .data
+                .drag_y
+                .map(zone_width_from_drag_y)
+                .unwrap_or(1)
+                .clamp(1, SAMPLE_MAP_NOTES);
+            let half = preview_width / 2;
+            let start_note = hovered_note.saturating_sub(half);
+            let end_note = (start_note + preview_width - 1).min(SAMPLE_MAP_NOTES - 1);
+            let start_note = end_note.saturating_sub(preview_width - 1);
+            let velocity = self.data.hovered_velocity.unwrap_or(0);
+            let (vel_low, vel_high) =
+                find_vertical_slot(&self.data.zones, start_note, end_note, velocity);
+            let preview = SampleZone {
+                name: String::new(),
+                files: Vec::new(),
+                start_note,
+                end_note,
+                vel_low,
+                vel_high,
+                group: String::new(),
+            };
+            let rect = zone_rect(&preview, bounds);
+            let path = canvas::Path::rectangle(
+                Point::new(rect.x, rect.y),
+                Size::new(rect.width, rect.height),
+            );
+            frame.fill(&path, Color::from_rgba(0.22, 0.34, 0.48, 0.6));
+            frame.stroke(
+                &path,
+                canvas::Stroke::default()
+                    .with_color(Color::from_rgb(0.42, 0.72, 1.0))
+                    .with_width(1.0),
+            );
         }
 
         let piano_background = canvas::Path::rectangle(
@@ -1412,12 +1419,14 @@ impl canvas::Program<Message> for ZoneEditor {
             let x = note as f32 * note_width;
             let pitch = note % 12;
             let is_black = matches!(pitch, 1 | 3 | 6 | 8 | 10);
-            let key_height = if is_black { PIANO_ROLL_HEIGHT * 0.65 } else { PIANO_ROLL_HEIGHT };
+            let key_height = if is_black {
+                PIANO_ROLL_HEIGHT * 0.65
+            } else {
+                PIANO_ROLL_HEIGHT
+            };
             let key_y = grid_height + PIANO_ROLL_HEIGHT - key_height;
-            let key_rect = canvas::Path::rectangle(
-                Point::new(x, key_y),
-                Size::new(note_width, key_height),
-            );
+            let key_rect =
+                canvas::Path::rectangle(Point::new(x, key_y), Size::new(note_width, key_height));
             frame.fill(
                 &key_rect,
                 if is_black {
@@ -1555,8 +1564,12 @@ fn zone_row<'a>(state: &'a State, index: usize, zone: SampleZone) -> Element<'a,
 
     let content = column![
         name_element,
-        text(file_name).size(9).color(Color::from_rgb(0.48, 0.50, 0.58)),
-        text(range_text).size(9).color(Color::from_rgb(0.48, 0.50, 0.58)),
+        text(file_name)
+            .size(9)
+            .color(Color::from_rgb(0.48, 0.50, 0.58)),
+        text(range_text)
+            .size(9)
+            .color(Color::from_rgb(0.48, 0.50, 0.58)),
     ]
     .spacing(1)
     .width(Length::Fill);
@@ -1614,10 +1627,9 @@ fn zones_panel<'a>(state: &'a State) -> Element<'a, Message> {
 
     let mut panel = column![].spacing(6).width(Length::Fill);
     for (group_name, entries) in groups {
-        let group_selected = state
-            .selected
-            .as_ref()
-            .is_some_and(|sel| matches!(sel, ZoneListSelection::Group(name) if name == &group_name));
+        let group_selected = state.selected.as_ref().is_some_and(
+            |sel| matches!(sel, ZoneListSelection::Group(name) if name == &group_name),
+        );
         let mut zones = column![].spacing(3).width(Length::Fill);
         for (index, zone) in entries {
             zones = zones.push(zone_row(state, index, zone));
@@ -1652,25 +1664,21 @@ fn zones_panel<'a>(state: &'a State) -> Element<'a, Message> {
         .on_press(Message::SelectZoneListItem(ZoneListSelection::Group(
             group_name_for_press,
         )));
-        let group_box = container(
-            column![header, zones]
-                .spacing(4)
-                .width(Length::Fill),
-        )
-        .width(Length::Fill)
-        .padding([6, 6])
-        .style(move |_theme: &Theme| container::Style {
-            border: Border {
-                color: if group_selected {
-                    Color::from_rgb(0.45, 0.65, 0.95)
-                } else {
-                    Color::from_rgb(0.22, 0.26, 0.34)
+        let group_box = container(column![header, zones].spacing(4).width(Length::Fill))
+            .width(Length::Fill)
+            .padding([6, 6])
+            .style(move |_theme: &Theme| container::Style {
+                border: Border {
+                    color: if group_selected {
+                        Color::from_rgb(0.45, 0.65, 0.95)
+                    } else {
+                        Color::from_rgb(0.22, 0.26, 0.34)
+                    },
+                    width: if group_selected { 2.0 } else { 1.0 },
+                    radius: 4.0.into(),
                 },
-                width: if group_selected { 2.0 } else { 1.0 },
-                radius: 4.0.into(),
-            },
-            ..container::Style::default()
-        });
+                ..container::Style::default()
+            });
         panel = panel.push(group_box);
     }
 
@@ -1751,11 +1759,13 @@ fn browser_panel<'a>(state: &'a State) -> Element<'a, Message> {
         column![
             section_title("Browser"),
             container(
-                text(state
-                    .browser_path
-                    .file_name()
-                    .map(|name| name.to_string_lossy().to_string())
-                    .unwrap_or_else(|| state.browser_path.display().to_string()))
+                text(
+                    state
+                        .browser_path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().to_string())
+                        .unwrap_or_else(|| state.browser_path.display().to_string())
+                )
                 .size(10),
             )
             .width(Length::Fill)
@@ -1948,10 +1958,7 @@ impl<'a> canvas::Program<Message> for WaveformEditor<'a> {
             }
         });
 
-        frame.fill(
-            &waveform_path,
-            Color::from_rgba(0.35, 0.55, 0.85, 0.35),
-        );
+        frame.fill(&waveform_path, Color::from_rgba(0.35, 0.55, 0.85, 0.35));
         frame.stroke(
             &waveform_path,
             canvas::Stroke::default()
@@ -1965,18 +1972,15 @@ impl<'a> canvas::Program<Message> for WaveformEditor<'a> {
 
 fn sampler_editor_view<'a>(state: &'a State, index: usize) -> Element<'a, Message> {
     let zones = state.shared.zones.load();
-    let zone = zones
-        .get(index)
-        .cloned()
-        .unwrap_or_else(|| SampleZone {
-            name: String::new(),
-            files: Vec::new(),
-            start_note: 0,
-            end_note: 0,
-            vel_low: 0,
-            vel_high: 0,
-            group: String::new(),
-        });
+    let zone = zones.get(index).cloned().unwrap_or_else(|| SampleZone {
+        name: String::new(),
+        files: Vec::new(),
+        start_note: 0,
+        end_note: 0,
+        vel_low: 0,
+        vel_high: 0,
+        group: String::new(),
+    });
 
     let sample_labels: Vec<String> = zone
         .files
@@ -1996,17 +2000,13 @@ fn sampler_editor_view<'a>(state: &'a State, index: usize) -> Element<'a, Messag
             .on_press(Message::CloseSamplerEditor)
             .padding([4, 8]),
         text(zone.name).size(14),
-        pick_list(
-            sample_labels,
-            selected_label,
-            move |label: String| {
-                let index = labels_for_pick_list
-                    .iter()
-                    .position(|name| name == &label)
-                    .unwrap_or(0);
-                Message::SelectEditingSample(index)
-            }
-        )
+        pick_list(sample_labels, selected_label, move |label: String| {
+            let index = labels_for_pick_list
+                .iter()
+                .position(|name| name == &label)
+                .unwrap_or(0);
+            Message::SelectEditingSample(index)
+        })
         .placeholder("Sample")
         .width(Length::Fixed(240.0)),
     ]
@@ -2292,15 +2292,11 @@ fn view(state: &State) -> Element<'_, Message> {
     .spacing(10)
     .align_y(Alignment::Start);
 
-    let main_content = column![
-        sample_map,
-        top_row,
-        bottom_row,
-    ]
-    .spacing(12)
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .align_x(Alignment::Start);
+    let main_content = column![sample_map, top_row, bottom_row,]
+        .spacing(12)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Alignment::Start);
 
     let content_row = row![
         zones_panel(state),
@@ -2347,10 +2343,8 @@ fn subscription(state: &State) -> maolan_baseview::iced::Subscription<Message> {
                 key,
                 keyboard::Key::Character(ref c) if c == "z" && modifiers.command()
             );
-            let is_delete =
-                matches!(key, keyboard::Key::Named(keyboard::key::Named::Delete));
-            let is_esc =
-                matches!(key, keyboard::Key::Named(keyboard::key::Named::Escape));
+            let is_delete = matches!(key, keyboard::Key::Named(keyboard::key::Named::Delete));
+            let is_esc = matches!(key, keyboard::Key::Named(keyboard::key::Named::Escape));
             if is_undo {
                 return Some(Message::Undo);
             }

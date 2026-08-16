@@ -1,6 +1,6 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 pub use crate::common::state::{PluginState, SamplerZoneState};
 
