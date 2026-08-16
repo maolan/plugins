@@ -12,6 +12,7 @@ pub struct SampleZone {
     pub end_note: usize,
     pub vel_low: u8,
     pub vel_high: u8,
+    pub group: String,
 }
 
 impl SampleZone {
@@ -27,6 +28,7 @@ impl SampleZone {
             end_note: self.end_note,
             vel_low: self.vel_low,
             vel_high: self.vel_high,
+            group: self.group.clone(),
         }
     }
 
@@ -38,6 +40,11 @@ impl SampleZone {
             end_note: state.end_note,
             vel_low: state.vel_low,
             vel_high: state.vel_high,
+            group: if state.group.is_empty() {
+                String::from("New Group")
+            } else {
+                state.group.clone()
+            },
         }
     }
 }

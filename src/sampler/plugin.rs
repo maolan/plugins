@@ -41,8 +41,13 @@ use crate::common::{copy_str_to_array, param_events::ParamGesture};
 use crate::sampler::{
     dsp::{
         engine::SamplerEngine,
+        group::Group,
         mod_matrix::{ModMatrix, ModSource, ModTarget},
+        part::Part,
+        patch::Patch,
+        sample::Sample,
         voice::LfoParams,
+        zone::{VariantMode, Zone},
     },
     gui::GuiBridge,
     params::{PARAMS, ParamId, sanitize_param_value},
@@ -88,6 +93,7 @@ pub struct SharedState {
     host: AtomicPtr<clap_host>,
     pub params: ParamStore<ParamId>,
     params_version: AtomicU64,
+    zones_version: AtomicU64,
     pending_param_notifications: Vec<AtomicBool>,
     pending_gesture_begin: Vec<AtomicBool>,
     pending_gesture_end: Vec<AtomicBool>,
@@ -102,6 +108,7 @@ impl Default for SharedState {
             host: AtomicPtr::new(null_mut()),
             params: ParamStore::default(),
             params_version: AtomicU64::new(1),
+            zones_version: AtomicU64::new(1),
             pending_param_notifications: (0..ParamId::COUNT)
                 .map(|_| AtomicBool::new(false))
                 .collect(),
@@ -218,6 +225,15 @@ impl SharedState {
     fn params_version(&self) -> u64 {
         self.params_version.load(Ordering::Acquire)
     }
+
+    pub fn bump_zones_version(&self) {
+        self.zones_version.fetch_add(1, Ordering::Release);
+    }
+
+    pub fn zones_version(&self) -> u64 {
+        self.zones_version.load(Ordering::Acquire)
+    }
+
     fn set_gesture_active(&self, id: ParamId, active: bool) {
         self.gesture_active[id.as_index()].store(active, Ordering::Release);
     }
@@ -677,20 +693,100 @@ fn filter_params(store: &ParamStore<ParamId>, ids: FilterParamIds) -> FilterPara
     }
 }
 
+fn build_patch_from_zones(zones: &[SampleZone], sample_rate: f32) -> Patch {
+    let mut groups: std::collections::HashMap<String, Vec<&SampleZone>> =
+        std::collections::HashMap::new();
+    for zone in zones {
+        groups.entry(zone.group.clone()).or_default().push(zone);
+    }
+
+    let mut dsp_groups = Vec::new();
+    for (group_name, group_zones) in groups {
+        let mut dsp_zones = Vec::new();
+        for zone in group_zones {
+            let mut variants = Vec::new();
+            for file in &zone.files {
+                match crate::common::audio_file::decode_file(file) {
+                    Ok(audio) => match audio.into_stereo() {
+                        Ok(stereo) => {
+                            let peak = stereo.peak;
+                            let rms = stereo.rms;
+                            let file_sample_rate = stereo.sample_rate;
+                            let (data_l, data_r) = stereo.into_stereo_buffers();
+                            let frames = data_l.len();
+                            variants.push(Arc::new(Sample {
+                                sample_rate: file_sample_rate,
+                                data_l,
+                                data_r,
+                                frames,
+                                peak,
+                                rms,
+                            }));
+                        }
+                        Err(_) => {
+                            variants.push(Arc::new(Sample::silent(sample_rate)));
+                        }
+                    },
+                    Err(_) => {
+                        variants.push(Arc::new(Sample::silent(sample_rate)));
+                    }
+                }
+            }
+
+            let (sample, variants) = if variants.is_empty() {
+                (Arc::new(Sample::silent(sample_rate)), Vec::new())
+            } else {
+                let sample = variants[0].clone();
+                (sample, variants)
+            };
+
+            let root_key = ((zone.start_note + zone.end_note) / 2).min(127) as u8;
+            let mut dsp_zone = Zone::default();
+            dsp_zone.name = zone.name.clone();
+            dsp_zone.sample = sample;
+            dsp_zone.root_key = root_key;
+            dsp_zone.key_low = zone.start_note as u8;
+            dsp_zone.key_high = zone.end_note as u8;
+            dsp_zone.vel_low = zone.vel_low;
+            dsp_zone.vel_high = zone.vel_high;
+            dsp_zone.variant_mode = VariantMode::RoundRobin;
+            dsp_zone.variants = variants;
+            dsp_zones.push(dsp_zone);
+        }
+
+        let mut group = Group::default();
+        group.name = group_name;
+        group.zones = dsp_zones;
+        dsp_groups.push(group);
+    }
+
+    let mut part = Part::default();
+    part.groups = dsp_groups;
+
+    let mut patch = Patch::default();
+    patch.parts = vec![part];
+    patch
+}
+
 struct AudioProcessor {
     engine: SamplerEngine,
+    sample_rate: f32,
     out_l: Vec<f32>,
     out_r: Vec<f32>,
     last_params_version: u64,
+    last_zones_version: u64,
 }
 
 impl AudioProcessor {
     fn new(sample_rate: f64, max_frames: u32) -> Self {
+        let sample_rate_f = sample_rate as f32;
         Self {
-            engine: SamplerEngine::new(sample_rate as f32, 32),
+            engine: SamplerEngine::new(sample_rate_f, 32),
+            sample_rate: sample_rate_f,
             out_l: vec![0.0; max_frames as usize],
             out_r: vec![0.0; max_frames as usize],
             last_params_version: 0,
+            last_zones_version: 0,
         }
     }
 
@@ -932,6 +1028,14 @@ impl AudioProcessor {
                 self.apply_params(shared);
             }
             self.last_params_version = params_version;
+        }
+
+        let zones_version = shared.zones_version();
+        if zones_version != self.last_zones_version {
+            let zones = shared.zones.load();
+            let patch = build_patch_from_zones(&zones, self.sample_rate);
+            self.engine.set_patch(patch);
+            self.last_zones_version = zones_version;
         }
 
         let events = process.in_events();

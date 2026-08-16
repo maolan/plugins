@@ -11,6 +11,8 @@ pub struct SamplerZoneState {
     pub end_note: usize,
     pub vel_low: u8,
     pub vel_high: u8,
+    #[serde(default)]
+    pub group: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

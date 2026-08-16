@@ -16,7 +16,14 @@ use clap_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::{
     Alignment, Background, Border, Color, Element, Length, Point, Rectangle, Size, Task, Theme,
     alignment::{Horizontal, Vertical},
+    keyboard,
     widget::{button, canvas, checkbox, column, container, mouse_area, pick_list, row, scrollable, text, text_input},
+};
+use symphonia::core::{
+    formats::FormatOptions,
+    io::MediaSourceStream,
+    meta::MetadataOptions,
+    probe::Hint,
 };
 use maolan_widgets::arch_slider::arch_slider;
 use maolan_widgets::slider::Slider;
@@ -106,6 +113,10 @@ pub enum Message {
     StartRenameZone(usize),
     UpdateRenameText(String),
     FinishRenameZone,
+    DeselectZone,
+    DeleteSelectedZone,
+    SelectZoneListItem(ZoneListSelection),
+    Undo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +131,12 @@ pub enum ZoneEdge {
     End,
     Top,
     Bottom,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ZoneListSelection {
+    Zone(usize),
+    Group(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,10 +217,13 @@ struct State {
     browser_entries: Vec<BrowserEntry>,
     dragged_audio_file: Option<PathBuf>,
     hovered_note: Option<usize>,
+    hovered_velocity: Option<u8>,
     drag_y: Option<f32>,
     dragging_zone_edge: Option<(usize, ZoneEdge)>,
     dragging_zone_body: Option<(usize, f32, f32)>,
     editing_zone_name: Option<(usize, String)>,
+    selected: Option<ZoneListSelection>,
+    undo_stack: Vec<Vec<SampleZone>>,
 }
 
 #[derive(Debug, Clone)]
@@ -238,6 +258,58 @@ fn unique_zone_name(zones: &[SampleZone], base: &str) -> String {
     }
 }
 
+fn find_vertical_slot(
+    zones: &[SampleZone],
+    start_note: usize,
+    end_note: usize,
+    velocity: u8,
+) -> (u8, u8) {
+    let mut overlapping: Vec<&SampleZone> = zones
+        .iter()
+        .filter(|zone| zone.start_note <= end_note && zone.end_note >= start_note)
+        .collect();
+
+    if overlapping.is_empty() {
+        return (0, 127);
+    }
+
+    overlapping.sort_by_key(|zone| zone.vel_low);
+
+    let mut gaps = Vec::new();
+    let mut low = 0u8;
+    for zone in &overlapping {
+        if zone.vel_low > low {
+            gaps.push((low, zone.vel_low.saturating_sub(1)));
+        }
+        low = zone.vel_high.saturating_add(1);
+    }
+    if low <= 127 {
+        gaps.push((low, 127));
+    }
+
+    if gaps.is_empty() {
+        return (velocity, velocity);
+    }
+
+    let mut best = gaps[0];
+    let mut best_dist = u16::MAX;
+    for (gap_low, gap_high) in gaps {
+        if velocity >= gap_low && velocity <= gap_high {
+            return (gap_low, gap_high);
+        }
+        let dist = if velocity < gap_low {
+            (gap_low - velocity) as u16
+        } else {
+            (velocity - gap_high) as u16
+        };
+        if dist < best_dist {
+            best_dist = dist;
+            best = (gap_low, gap_high);
+        }
+    }
+    best
+}
+
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
     let browser_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let browser_entries = read_browser_entries(&browser_path);
@@ -257,10 +329,13 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             browser_entries,
             dragged_audio_file: None,
             hovered_note: None,
+            hovered_velocity: None,
             drag_y: None,
             dragging_zone_edge: None,
             dragging_zone_body: None,
             editing_zone_name: None,
+            selected: None,
+            undo_stack: Vec::new(),
         },
         Task::none(),
     )
@@ -309,10 +384,44 @@ fn is_audio_file(path: &PathBuf) -> bool {
     let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
         return false;
     };
-    matches!(
+    if !matches!(
         extension.to_ascii_lowercase().as_str(),
         "wav" | "wave" | "aif" | "aiff" | "flac" | "ogg" | "mp3" | "m4a" | "aac"
-    )
+    ) {
+        return false;
+    }
+    is_mono_or_stereo(path)
+}
+
+fn is_mono_or_stereo(path: &PathBuf) -> bool {
+    let Ok(file) = fs::File::open(path) else {
+        return false;
+    };
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+    let format_opts = FormatOptions::default();
+    let metadata_opts = MetadataOptions::default();
+    let Ok(probed) =
+        symphonia::default::get_probe().format(&hint, mss, &format_opts, &metadata_opts)
+    else {
+        return false;
+    };
+    let format = probed.format;
+    format
+        .tracks()
+        .iter()
+        .filter(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
+        .next()
+        .or_else(|| format.tracks().first())
+        .and_then(|track| track.codec_params.channels)
+        .map(|channels| {
+            let count = channels.count();
+            count == 1 || count == 2
+        })
+        .unwrap_or(false)
 }
 
 fn update(state: &mut State, message: Message) -> Task<Message> {
@@ -394,10 +503,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::BeginAudioFileDrag(path) => {
             state.dragged_audio_file = Some(path);
             state.hovered_note = None;
+            state.hovered_velocity = None;
             state.drag_y = None;
         }
         Message::ZoneNoteHovered(note, velocity, y) => {
             state.hovered_note = Some(note);
+            state.hovered_velocity = Some(velocity);
             state.drag_y = Some(y);
             let mut zones = state.shared.zones.load();
             let mut changed = false;
@@ -445,6 +556,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             if changed {
                 state.shared.zones.store(zones);
+                state.shared.bump_zones_version();
                 state.shared.mark_dirty();
             }
         }
@@ -477,34 +589,80 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     let start_note = note.saturating_sub(half);
                     let end_note = (start_note + width_notes - 1).min(SAMPLE_MAP_NOTES - 1);
                     let start_note = end_note.saturating_sub(width_notes - 1);
+                    let (vel_low, vel_high) =
+                        find_vertical_slot(&zones, start_note, end_note, velocity);
+                    let group = zones
+                        .last()
+                        .map(|zone| zone.group.clone())
+                        .filter(|group| !group.is_empty())
+                        .unwrap_or_else(|| String::from("New Group"));
                     Arc::make_mut(&mut zones).push(SampleZone {
                         name,
                         files: vec![file],
                         start_note,
                         end_note,
-                        vel_low: 0,
-                        vel_high: 127,
+                        vel_low,
+                        vel_high,
+                        group,
                     });
                 }
                 state.shared.zones.store(zones);
+                state.shared.bump_zones_version();
                 state.shared.mark_dirty();
             }
             state.hovered_note = None;
+            state.hovered_velocity = None;
             state.drag_y = None;
             state.dragging_zone_edge = None;
             state.dragging_zone_body = None;
         }
         Message::StartZoneEdgeDrag(index, edge) => {
+            state.selected = Some(ZoneListSelection::Zone(index));
             state.dragging_zone_edge = Some((index, edge));
         }
         Message::StopZoneEdgeDrag => {
             state.dragging_zone_edge = None;
         }
         Message::StartZoneBodyDrag(index, note_offset, velocity_offset) => {
+            state.selected = Some(ZoneListSelection::Zone(index));
             state.dragging_zone_body = Some((index, note_offset, velocity_offset));
         }
         Message::StopZoneBodyDrag => {
             state.dragging_zone_body = None;
+        }
+        Message::DeselectZone => {
+            state.selected = None;
+        }
+        Message::SelectZoneListItem(selection) => {
+            state.selected = Some(selection);
+        }
+        Message::DeleteSelectedZone => {
+            if let Some(selection) = state.selected.take() {
+                let mut zones = state.shared.zones.load();
+                state.undo_stack.push(zones.to_vec());
+                let zones_arc = Arc::make_mut(&mut zones);
+                match selection {
+                    ZoneListSelection::Zone(index) => {
+                        if index < zones_arc.len() {
+                            zones_arc.remove(index);
+                        }
+                    }
+                    ZoneListSelection::Group(group_name) => {
+                        zones_arc.retain(|zone| zone.group != group_name);
+                    }
+                }
+                state.shared.zones.store(zones);
+                state.shared.bump_zones_version();
+                state.shared.mark_dirty();
+            }
+        }
+        Message::Undo => {
+            if let Some(previous_zones) = state.undo_stack.pop() {
+                state.shared.zones.store(Arc::new(previous_zones));
+                state.shared.bump_zones_version();
+                state.shared.mark_dirty();
+                state.selected = None;
+            }
         }
         Message::StartRenameZone(index) => {
             let zones = state.shared.zones.load();
@@ -523,6 +681,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index) {
                     zone.name = name;
                     state.shared.zones.store(zones);
+                    state.shared.bump_zones_version();
                     state.shared.mark_dirty();
                 }
             }
@@ -906,9 +1065,11 @@ struct ZoneEditorData {
     zones: Vec<SampleZone>,
     dragged_audio_file: Option<PathBuf>,
     hovered_note: Option<usize>,
+    hovered_velocity: Option<u8>,
     drag_y: Option<f32>,
     dragging_zone_edge: Option<(usize, ZoneEdge)>,
     dragging_zone_body: Option<(usize, f32, f32)>,
+    selected: Option<ZoneListSelection>,
 }
 
 struct ZoneEditor {
@@ -977,63 +1138,71 @@ impl canvas::Program<Message> for ZoneEditor {
         bounds: Rectangle,
         cursor: maolan_baseview::iced::mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
-        let position = cursor.position_in(bounds)?;
         match event {
-            maolan_baseview::iced::Event::Mouse(mouse_event) => match mouse_event {
-                maolan_baseview::iced::mouse::Event::CursorMoved { .. } => {
-                    let note = note_at_x(position.x, bounds.width);
-                    let velocity = velocity_at_y(position.y, bounds.height - PIANO_ROLL_HEIGHT, bounds.height - PIANO_ROLL_HEIGHT);
-                    Some(canvas::Action::publish(Message::ZoneNoteHovered(
-                        note,
-                        velocity,
-                        position.y + bounds.y,
-                    )))
-                }
-                maolan_baseview::iced::mouse::Event::ButtonPressed(
-                    maolan_baseview::iced::mouse::Button::Left,
-                ) => {
-                    if let Some((index, edge)) = self.edge_hit_test(position, bounds) {
+            maolan_baseview::iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::Delete),
+                ..
+            }) => Some(canvas::Action::publish(Message::DeleteSelectedZone).and_capture()),
+            maolan_baseview::iced::Event::Mouse(mouse_event) => {
+                let position = cursor.position_in(bounds)?;
+                match mouse_event {
+                    maolan_baseview::iced::mouse::Event::CursorMoved { .. } => {
+                        let note = note_at_x(position.x, bounds.width);
+                        let velocity = velocity_at_y(position.y, bounds.height - PIANO_ROLL_HEIGHT, bounds.height - PIANO_ROLL_HEIGHT);
+                        Some(canvas::Action::publish(Message::ZoneNoteHovered(
+                            note,
+                            velocity,
+                            position.y + bounds.y,
+                        )))
+                    }
+                    maolan_baseview::iced::mouse::Event::ButtonPressed(
+                        maolan_baseview::iced::mouse::Button::Left,
+                    ) => {
+                        if let Some((index, edge)) = self.edge_hit_test(position, bounds) {
+                            Some(
+                                canvas::Action::publish(Message::StartZoneEdgeDrag(index, edge))
+                                    .and_capture(),
+                            )
+                        } else if let Some(index) = self.body_hit_test(position, bounds) {
+                            let zone = &self.data.zones[index];
+                            let note_width = bounds.width / SAMPLE_MAP_NOTES as f32;
+                            let grid_height = bounds.height - PIANO_ROLL_HEIGHT;
+                            let velocity_height = grid_height / VELOCITY_COUNT;
+                            let note_offset = (position.x - zone.start_note as f32 * note_width)
+                                / note_width;
+                            let velocity_offset =
+                                ((grid_height - position.y) / velocity_height) - zone.vel_low as f32;
+                            Some(
+                                canvas::Action::publish(Message::StartZoneBodyDrag(
+                                    index,
+                                    note_offset,
+                                    velocity_offset,
+                                ))
+                                .and_capture(),
+                            )
+                        } else if self.data.dragged_audio_file.is_none() {
+                            Some(canvas::Action::publish(Message::DeselectZone).and_capture())
+                        } else {
+                            None
+                        }
+                    }
+                    maolan_baseview::iced::mouse::Event::ButtonReleased(
+                        maolan_baseview::iced::mouse::Button::Left,
+                    ) => {
+                        let note = note_at_x(position.x, bounds.width);
+                        let velocity = velocity_at_y(
+                            position.y,
+                            bounds.height - PIANO_ROLL_HEIGHT,
+                            bounds.height - PIANO_ROLL_HEIGHT,
+                        );
                         Some(
-                            canvas::Action::publish(Message::StartZoneEdgeDrag(index, edge))
+                            canvas::Action::publish(Message::ZoneNoteReleased(note, velocity))
                                 .and_capture(),
                         )
-                    } else if let Some(index) = self.body_hit_test(position, bounds) {
-                        let zone = &self.data.zones[index];
-                        let note_width = bounds.width / SAMPLE_MAP_NOTES as f32;
-                        let grid_height = bounds.height - PIANO_ROLL_HEIGHT;
-                        let velocity_height = grid_height / VELOCITY_COUNT;
-                        let note_offset = (position.x - zone.start_note as f32 * note_width)
-                            / note_width;
-                        let velocity_offset =
-                            ((grid_height - position.y) / velocity_height) - zone.vel_low as f32;
-                        Some(
-                            canvas::Action::publish(Message::StartZoneBodyDrag(
-                                index,
-                                note_offset,
-                                velocity_offset,
-                            ))
-                            .and_capture(),
-                        )
-                    } else {
-                        None
                     }
+                    _ => None,
                 }
-                maolan_baseview::iced::mouse::Event::ButtonReleased(
-                    maolan_baseview::iced::mouse::Button::Left,
-                ) => {
-                    let note = note_at_x(position.x, bounds.width);
-                    let velocity = velocity_at_y(
-                        position.y,
-                        bounds.height - PIANO_ROLL_HEIGHT,
-                        bounds.height - PIANO_ROLL_HEIGHT,
-                    );
-                    Some(
-                        canvas::Action::publish(Message::ZoneNoteReleased(note, velocity))
-                            .and_capture(),
-                    )
-                }
-                _ => None,
-            },
+            }
             _ => None,
         }
     }
@@ -1089,8 +1258,15 @@ impl canvas::Program<Message> for ZoneEditor {
         for (index, zone) in self.data.zones.iter().enumerate() {
             let rect = zone_rect(zone, bounds);
             let path = canvas::Path::rectangle(Point::new(rect.x, rect.y), Size::new(rect.width, rect.height));
+            let selected = self
+                .data
+                .selected
+                .as_ref()
+                .is_some_and(|sel| matches!(sel, ZoneListSelection::Zone(i) if *i == index));
             let color = if self.data.dragging_zone_edge.is_some_and(|(i, _)| i == index) {
                 Color::from_rgb(0.20, 0.28, 0.40)
+            } else if selected {
+                Color::from_rgb(0.24, 0.34, 0.50)
             } else {
                 Color::from_rgb(0.16, 0.23, 0.34)
             };
@@ -1098,8 +1274,12 @@ impl canvas::Program<Message> for ZoneEditor {
             frame.stroke(
                 &path,
                 canvas::Stroke::default()
-                    .with_color(Color::from_rgb(0.22, 0.48, 0.95))
-                    .with_width(1.0),
+                    .with_color(if selected {
+                        Color::from_rgb(0.85, 0.90, 1.0)
+                    } else {
+                        Color::from_rgb(0.22, 0.48, 0.95)
+                    })
+                    .with_width(if selected { 2.0 } else { 1.0 }),
             );
 
             let text = canvas::Text {
@@ -1156,13 +1336,17 @@ impl canvas::Program<Message> for ZoneEditor {
                 let start_note = hovered_note.saturating_sub(half);
                 let end_note = (start_note + preview_width - 1).min(SAMPLE_MAP_NOTES - 1);
                 let start_note = end_note.saturating_sub(preview_width - 1);
+                let velocity = self.data.hovered_velocity.unwrap_or(0);
+                let (vel_low, vel_high) =
+                    find_vertical_slot(&self.data.zones, start_note, end_note, velocity);
                 let preview = SampleZone {
                     name: String::new(),
                     files: Vec::new(),
                     start_note,
                     end_note,
-                    vel_low: 0,
-                    vel_high: 127,
+                    vel_low,
+                    vel_high,
+                    group: String::new(),
                 };
                 let rect = zone_rect(&preview, bounds);
                 let path = canvas::Path::rectangle(Point::new(rect.x, rect.y), Size::new(rect.width, rect.height));
@@ -1260,9 +1444,11 @@ fn sample_map<'a>(state: &'a State) -> Element<'a, Message> {
         zones: state.shared.zones.load().to_vec(),
         dragged_audio_file: state.dragged_audio_file.clone(),
         hovered_note: state.hovered_note,
+        hovered_velocity: state.hovered_velocity,
         drag_y: state.drag_y,
         dragging_zone_edge: state.dragging_zone_edge,
         dragging_zone_body: state.dragging_zone_body,
+        selected: state.selected.clone(),
     };
     canvas(ZoneEditor { data })
         .width(Length::Fill)
@@ -1333,17 +1519,30 @@ fn zone_row<'a>(state: &'a State, index: usize, zone: SampleZone) -> Element<'a,
     .spacing(1)
     .width(Length::Fill);
 
+    let selected = state
+        .selected
+        .as_ref()
+        .is_some_and(|sel| matches!(sel, ZoneListSelection::Zone(i) if *i == index));
+
     let wrapped = if is_editing {
         container(content)
     } else {
-        container(mouse_area(content).on_double_click(Message::StartRenameZone(index)))
+        container(
+            mouse_area(content)
+                .on_press(Message::SelectZoneListItem(ZoneListSelection::Zone(index)))
+                .on_double_click(Message::StartRenameZone(index)),
+        )
     }
     .width(Length::Fill)
     .padding([4, 6])
-    .style(|_theme: &Theme| container::Style {
+    .style(move |_theme: &Theme| container::Style {
         border: Border {
-            color: Color::from_rgb(0.18, 0.18, 0.22),
-            width: 1.0,
+            color: if selected {
+                Color::from_rgb(0.42, 0.60, 0.90)
+            } else {
+                Color::from_rgb(0.18, 0.18, 0.22)
+            },
+            width: if selected { 2.0 } else { 1.0 },
             radius: 3.0.into(),
         },
         ..container::Style::default()
@@ -1353,16 +1552,82 @@ fn zone_row<'a>(state: &'a State, index: usize, zone: SampleZone) -> Element<'a,
 }
 
 fn zones_panel<'a>(state: &'a State) -> Element<'a, Message> {
-    let mut zones = column![].spacing(3).width(Length::Fill);
     let shared_zones = state.shared.zones.load();
-    for (index, zone) in shared_zones.iter().enumerate() {
-        zones = zones.push(zone_row(state, index, zone.clone()));
+
+    let mut groups: Vec<(String, Vec<(usize, SampleZone)>)> = Vec::new();
+    for (index, zone) in shared_zones.iter().cloned().enumerate() {
+        match groups.iter_mut().find(|(name, _)| name == &zone.group) {
+            Some((_, entries)) => entries.push((index, zone)),
+            None => groups.push((zone.group.clone(), vec![(index, zone)])),
+        }
+    }
+
+    let mut panel = column![].spacing(6).width(Length::Fill);
+    for (group_name, entries) in groups {
+        let group_selected = state
+            .selected
+            .as_ref()
+            .is_some_and(|sel| matches!(sel, ZoneListSelection::Group(name) if name == &group_name));
+        let mut zones = column![].spacing(3).width(Length::Fill);
+        for (index, zone) in entries {
+            zones = zones.push(zone_row(state, index, zone));
+        }
+        let group_name_for_press = group_name.clone();
+        let header = mouse_area(
+            container(
+                text(group_name)
+                    .size(10)
+                    .color(Color::from_rgb(0.90, 0.91, 0.94)),
+            )
+            .width(Length::Fill)
+            .padding([5, 6])
+            .style(move |_theme: &Theme| container::Style {
+                background: Some(Background::Color(if group_selected {
+                    Color::from_rgb(0.18, 0.28, 0.45)
+                } else {
+                    Color::from_rgb(0.10, 0.12, 0.16)
+                })),
+                border: Border {
+                    color: if group_selected {
+                        Color::from_rgb(0.45, 0.65, 0.95)
+                    } else {
+                        Color::from_rgb(0.18, 0.20, 0.26)
+                    },
+                    width: 1.0,
+                    radius: 3.0.into(),
+                },
+                ..container::Style::default()
+            }),
+        )
+        .on_press(Message::SelectZoneListItem(ZoneListSelection::Group(
+            group_name_for_press,
+        )));
+        let group_box = container(
+            column![header, zones]
+                .spacing(4)
+                .width(Length::Fill),
+        )
+        .width(Length::Fill)
+        .padding([6, 6])
+        .style(move |_theme: &Theme| container::Style {
+            border: Border {
+                color: if group_selected {
+                    Color::from_rgb(0.45, 0.65, 0.95)
+                } else {
+                    Color::from_rgb(0.22, 0.26, 0.34)
+                },
+                width: if group_selected { 2.0 } else { 1.0 },
+                radius: 4.0.into(),
+            },
+            ..container::Style::default()
+        });
+        panel = panel.push(group_box);
     }
 
     container(
         column![
             section_title("Zones"),
-            scrollable(zones).height(Length::Fill),
+            scrollable(panel).height(Length::Fill),
         ]
         .spacing(8)
         .height(Length::Fill)
@@ -1435,9 +1700,16 @@ fn browser_panel<'a>(state: &'a State) -> Element<'a, Message> {
     container(
         column![
             section_title("Browser"),
-            container(text(state.browser_path.display().to_string()).size(10))
-                .width(Length::Fill)
-                .padding([3, 6]),
+            container(
+                text(state
+                    .browser_path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_else(|| state.browser_path.display().to_string()))
+                .size(10),
+            )
+            .width(Length::Fill)
+            .padding([3, 6]),
             scrollable(entries).height(Length::Fill),
         ]
         .spacing(8)
@@ -1798,10 +2070,42 @@ fn theme(_state: &State) -> Theme {
     Theme::TokyoNight
 }
 
+fn subscription(state: &State) -> maolan_baseview::iced::Subscription<Message> {
+    if state.editing_zone_name.is_some() {
+        return maolan_baseview::iced::Subscription::none();
+    }
+    maolan_baseview::iced::event::listen_with(|event, status, _ids| {
+        if status == maolan_baseview::iced::event::Status::Captured {
+            return None;
+        }
+        if let maolan_baseview::iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            key,
+            modifiers,
+            ..
+        }) = event
+        {
+            let is_undo = matches!(
+                key,
+                keyboard::Key::Character(ref c) if c == "z" && modifiers.command()
+            );
+            let is_delete =
+                matches!(key, keyboard::Key::Named(keyboard::key::Named::Delete));
+            if is_undo {
+                return Some(Message::Undo);
+            }
+            if is_delete {
+                return Some(Message::DeleteSelectedZone);
+            }
+        }
+        None
+    })
+}
+
 fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {
     maolan_baseview::iced::application(move || init(shared.clone()), update, view)
         .font(iced_fonts::LUCIDE_FONT_BYTES)
         .theme(theme)
+        .subscription(subscription)
         .run()
 }
 
