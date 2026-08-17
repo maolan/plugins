@@ -141,7 +141,15 @@ pub struct SampleVoice {
 
     pressure: f32,
 
+    channel_pressure: f32,
+
     timbre: f32,
+
+    channel_volume: f32,
+
+    expression: f32,
+
+    cc10_pan: f32,
 
     pitch_bend_norm: f32,
 
@@ -233,7 +241,11 @@ impl SampleVoice {
             filter2_key_tracking: 0.0,
             mod_wheel: 0.0,
             pressure: 0.0,
+            channel_pressure: 0.0,
             timbre: 0.0,
+            channel_volume: 1.0,
+            expression: 1.0,
+            cc10_pan: 0.0,
             pitch_bend_norm: 0.0,
             pitch_bend_up: 2.0,
             pitch_bend_down: 2.0,
@@ -360,7 +372,11 @@ impl SampleVoice {
             pitch_bend: self.pitch_bend_norm,
             mod_wheel: self.mod_wheel,
             pressure: self.pressure,
+            channel_pressure: self.channel_pressure,
             timbre: self.timbre,
+            channel_volume: self.channel_volume,
+            expression: self.expression,
+            cc10_pan: self.cc10_pan,
             lfo1: 0.0,
             lfo2: 0.0,
             lfo3: 0.0,
@@ -552,8 +568,24 @@ impl SampleVoice {
         self.pressure = value.clamp(0.0, 1.0);
     }
 
+    pub fn set_channel_pressure(&mut self, value: f32) {
+        self.channel_pressure = value.clamp(0.0, 1.0);
+    }
+
     pub fn set_timbre(&mut self, value: f32) {
         self.timbre = value.clamp(0.0, 1.0);
+    }
+
+    pub fn set_channel_volume(&mut self, value: f32) {
+        self.channel_volume = value.clamp(0.0, 1.0);
+    }
+
+    pub fn set_expression(&mut self, value: f32) {
+        self.expression = value.clamp(0.0, 1.0);
+    }
+
+    pub fn set_cc10_pan(&mut self, value: f32) {
+        self.cc10_pan = value.clamp(-1.0, 1.0);
     }
 
     pub fn set_eg2_params(&mut self, attack: f32, decay: f32, sustain: f32, release: f32) {
@@ -761,7 +793,11 @@ impl SampleVoice {
             pitch_bend: self.pitch_bend_norm,
             mod_wheel: self.mod_wheel,
             pressure: self.pressure,
+            channel_pressure: self.channel_pressure,
             timbre: self.timbre,
+            channel_volume: self.channel_volume,
+            expression: self.expression,
+            cc10_pan: self.cc10_pan,
             lfo1: self.lfo1.value(),
             lfo2: self.lfo2.value(),
             lfo3: self.lfo3.value(),
@@ -849,7 +885,11 @@ impl SampleVoice {
                 pitch_bend: self.pitch_bend_norm,
                 mod_wheel: self.mod_wheel,
                 pressure: self.pressure,
+                channel_pressure: self.channel_pressure,
                 timbre: self.timbre,
+                channel_volume: self.channel_volume,
+                expression: self.expression,
+                cc10_pan: self.cc10_pan,
                 lfo1: lfo1_value,
                 lfo2: lfo2_value,
                 lfo3: lfo3_value,

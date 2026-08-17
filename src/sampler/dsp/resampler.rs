@@ -39,6 +39,9 @@ pub fn resample(sample: &Sample, target_sample_rate: f32) -> Arc<Sample> {
         frames: out_frames,
         peak,
         rms,
+        loop_start: sample.loop_start,
+        loop_end: sample.loop_end,
+        cue_points: sample.cue_points.clone(),
     })
 }
 
@@ -55,6 +58,9 @@ mod tests {
             frames: 100,
             peak: 0.5,
             rms: 0.5,
+            loop_start: None,
+            loop_end: None,
+            cue_points: Vec::new(),
         };
 
         let resampled = resample(&sample, 44100.0);
@@ -78,6 +84,9 @@ mod tests {
             frames: 64,
             peak: 1.0,
             rms: 1.0,
+            loop_start: None,
+            loop_end: None,
+            cue_points: Vec::new(),
         };
 
         let resampled = resample(&sample, 48000.0);

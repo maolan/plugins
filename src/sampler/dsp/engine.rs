@@ -367,9 +367,38 @@ impl SamplerEngine {
     pub fn set_cc(&mut self, cc: u8, value: u8) {
         self.cc_values[cc as usize] = value;
         match cc {
-            1 => self.mod_wheel = value as f32 / 127.0,
-            7 => self.channel_volume = value as f32 / 127.0,
-            11 => self.expression = value as f32 / 127.0,
+            1 => {
+                self.mod_wheel = value as f32 / 127.0;
+                for voice in &mut self.voices {
+                    if voice.is_active() {
+                        voice.set_mod_wheel(self.mod_wheel);
+                    }
+                }
+            }
+            7 => {
+                self.channel_volume = value as f32 / 127.0;
+                for voice in &mut self.voices {
+                    if voice.is_active() {
+                        voice.set_channel_volume(self.channel_volume);
+                    }
+                }
+            }
+            10 => {
+                let pan = (value as f32 / 63.5 - 1.0).clamp(-1.0, 1.0);
+                for voice in &mut self.voices {
+                    if voice.is_active() {
+                        voice.set_cc10_pan(pan);
+                    }
+                }
+            }
+            11 => {
+                self.expression = value as f32 / 127.0;
+                for voice in &mut self.voices {
+                    if voice.is_active() {
+                        voice.set_expression(self.expression);
+                    }
+                }
+            }
             64 => self.sustain_pedal = value >= 64,
             _ => {}
         }
@@ -907,7 +936,11 @@ impl SamplerEngine {
         self.voices[index].set_tuning(microtuning);
         self.voices[index].set_mod_wheel(self.mod_wheel);
         self.voices[index].set_pressure(self.note_pressure[args.note as usize]);
+        self.voices[index].set_channel_pressure(self.note_pressure[args.note as usize]);
         self.voices[index].set_timbre(self.note_timbre[args.note as usize]);
+        self.voices[index].set_channel_volume(self.channel_volume);
+        self.voices[index].set_expression(self.expression);
+        self.voices[index].set_cc10_pan((self.cc_values[10] as f32 / 63.5 - 1.0).clamp(-1.0, 1.0));
         self.voices[index].trigger_with_sample(
             args.zone.clone(),
             args.note,

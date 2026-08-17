@@ -1,12 +1,13 @@
 use std::{
     ffi::CStr,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
     thread,
+    time::Duration,
 };
 
 #[cfg(target_os = "windows")]
@@ -21,6 +22,7 @@ use maolan_baseview::iced::{
         button, canvas, checkbox, column, container, mouse_area, pick_list, row, scrollable, text,
         text_input,
     },
+    window,
 };
 use maolan_widgets::arch_slider::arch_slider;
 use maolan_widgets::slider::Slider;
@@ -37,6 +39,8 @@ use crate::{
     },
     sampler::{
         dsp::mod_matrix::ModTarget,
+        load_status::SamplerLoadStatus,
+        loader::{PresetInfo, detect_format},
         params::{PARAMS, ParamId},
         plugin::SharedState,
         state::SampleZone,
@@ -104,6 +108,11 @@ pub enum Message {
     StopSideResize,
     OpenBrowserEntry(PathBuf),
     BeginAudioFileDrag(PathBuf),
+    LoadInstrument(PathBuf),
+    PickInstrumentFile,
+    ReloadInstrument,
+    SelectSf2Preset(PresetInfo),
+    PollLoadStatus,
     ZoneNoteHovered(usize, u8, f32),
     ZoneNoteReleased(usize, u8),
     StartZoneEdgeDrag(usize, ZoneEdge),
@@ -219,6 +228,7 @@ struct State {
     browser_path: PathBuf,
     browser_entries: Vec<BrowserEntry>,
     dragged_audio_file: Option<PathBuf>,
+    status_revision: u64,
     hovered_note: Option<usize>,
     hovered_velocity: Option<u8>,
     drag_y: Option<f32>,
@@ -236,7 +246,14 @@ struct State {
 struct BrowserEntry {
     name: String,
     path: PathBuf,
-    is_dir: bool,
+    kind: BrowserEntryKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserEntryKind {
+    Directory,
+    Audio,
+    Instrument,
 }
 
 fn unique_zone_name(zones: &[SampleZone], base: &str) -> String {
@@ -350,6 +367,7 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             browser_path,
             browser_entries,
             dragged_audio_file: None,
+            status_revision: 0,
             hovered_note: None,
             hovered_velocity: None,
             drag_y: None,
@@ -376,7 +394,7 @@ fn read_browser_entries(path: &PathBuf) -> Vec<BrowserEntry> {
             .parent()
             .map(PathBuf::from)
             .unwrap_or_else(|| path.clone()),
-        is_dir: true,
+        kind: BrowserEntryKind::Directory,
     });
 
     if let Ok(entries) = fs::read_dir(path) {
@@ -385,14 +403,21 @@ fn read_browser_entries(path: &PathBuf) -> Vec<BrowserEntry> {
             let name = entry.file_name().to_string_lossy().to_string();
             let is_dir = entry.file_type().map(|ty| ty.is_dir()).unwrap_or(false);
             let is_audio = is_audio_file(&entry_path);
+            let is_instrument = is_instrument_file(&entry_path);
             let browser_entry = BrowserEntry {
                 name,
                 path: entry_path,
-                is_dir,
+                kind: if is_dir {
+                    BrowserEntryKind::Directory
+                } else if is_instrument {
+                    BrowserEntryKind::Instrument
+                } else {
+                    BrowserEntryKind::Audio
+                },
             };
             if is_dir {
                 dirs.push(browser_entry);
-            } else if is_audio {
+            } else if is_audio || is_instrument {
                 files.push(browser_entry);
             }
         }
@@ -403,6 +428,10 @@ fn read_browser_entries(path: &PathBuf) -> Vec<BrowserEntry> {
     files.sort_by_key(sort_key);
     dirs.extend(files);
     dirs
+}
+
+fn is_instrument_file(path: &Path) -> bool {
+    detect_format(path).is_some()
 }
 
 fn is_audio_file(path: &PathBuf) -> bool {
@@ -523,6 +552,32 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.browser_path = path;
                 state.browser_entries = read_browser_entries(&state.browser_path);
             }
+        }
+        Message::LoadInstrument(path) => {
+            Arc::clone(&state.shared).load_file(path);
+        }
+        Message::PickInstrumentFile => {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Sampler instruments", &["sfz", "sf2"])
+                .pick_file()
+            {
+                Arc::clone(&state.shared).load_file(path);
+            }
+        }
+        Message::ReloadInstrument => {
+            Arc::clone(&state.shared).reload_file();
+        }
+        Message::SelectSf2Preset(preset) => {
+            let presets = state.shared.sf2_presets.lock();
+            if let Some(index) = presets.iter().position(|candidate| candidate == &preset)
+                && let Some(path) = state.shared.instrument_path.lock().clone()
+            {
+                drop(presets);
+                Arc::clone(&state.shared).load_file_with_preset(path, Some(index));
+            }
+        }
+        Message::PollLoadStatus => {
+            state.status_revision = state.status_revision.wrapping_add(1);
         }
         Message::BeginAudioFileDrag(path) => {
             state.dragged_audio_file = Some(path);
@@ -1707,8 +1762,12 @@ fn zones_panel<'a>(state: &'a State) -> Element<'a, Message> {
 }
 
 fn browser_row<'a>(entry: &'a BrowserEntry) -> Element<'a, Message> {
-    let label = if entry.is_dir {
+    let is_dir = entry.kind == BrowserEntryKind::Directory;
+    let is_instrument = entry.kind == BrowserEntryKind::Instrument;
+    let label = if is_dir {
         format!("{}/", entry.name)
+    } else if is_instrument {
+        format!("{} *", entry.name)
     } else {
         entry.name.clone()
     };
@@ -1716,30 +1775,39 @@ fn browser_row<'a>(entry: &'a BrowserEntry) -> Element<'a, Message> {
         .width(Length::Fill)
         .padding([3, 6])
         .style(move |_theme: &Theme| container::Style {
-            background: entry
-                .is_dir
+            background: (is_dir || is_instrument)
                 .then(|| Background::Color(Color::from_rgb(0.105, 0.108, 0.128))),
             border: Border {
-                color: if entry.is_dir {
+                color: if is_dir {
                     Color::from_rgb(0.22, 0.48, 0.95)
+                } else if is_instrument {
+                    Color::from_rgb(0.24, 0.62, 0.46)
                 } else {
                     Color::from_rgb(0.18, 0.18, 0.22)
                 },
                 width: 1.0,
                 radius: 3.0.into(),
             },
-            text_color: Some(if entry.is_dir {
+            text_color: Some(if is_dir {
                 Color::from_rgb(0.82, 0.84, 0.92)
+            } else if is_instrument {
+                Color::from_rgb(0.72, 0.86, 0.78)
             } else {
                 Color::from_rgb(0.62, 0.64, 0.70)
             }),
             ..container::Style::default()
         });
 
-    if entry.is_dir {
+    if is_dir {
         button(content)
             .padding(1)
             .on_press(Message::OpenBrowserEntry(entry.path.clone()))
+            .width(Length::Fill)
+            .into()
+    } else if is_instrument {
+        button(content)
+            .padding(1)
+            .on_press(Message::LoadInstrument(entry.path.clone()))
             .width(Length::Fill)
             .into()
     } else {
@@ -1789,6 +1857,134 @@ fn browser_panel<'a>(state: &'a State) -> Element<'a, Message> {
         ..container::Style::default()
     })
     .into()
+}
+
+fn instrument_panel<'a>(state: &'a State) -> Element<'a, Message> {
+    let status = state.shared.load_status.lock().clone();
+    let path = state.shared.instrument_path.lock().clone();
+    let presets = state.shared.sf2_presets.lock().clone();
+    let selected_preset = *state.shared.selected_sf2_preset.lock();
+    let log = state.shared.load_log.lock().clone();
+
+    let (title, detail, loading, is_error) = match &status {
+        SamplerLoadStatus::Empty => (
+            String::from("No instrument"),
+            String::from("Load an SFZ or SF2 file"),
+            false,
+            false,
+        ),
+        SamplerLoadStatus::Parsing => (
+            String::from("Parsing"),
+            path_display(path.as_ref()),
+            true,
+            false,
+        ),
+        SamplerLoadStatus::LoadingSamples { loaded, total } => (
+            String::from("Loading samples"),
+            format!("{loaded}/{total} samples"),
+            true,
+            false,
+        ),
+        SamplerLoadStatus::Resampling => (
+            String::from("Resampling"),
+            path_display(path.as_ref()),
+            true,
+            false,
+        ),
+        SamplerLoadStatus::Ready {
+            name,
+            sample_count,
+            zone_count,
+        } => (
+            name.clone(),
+            format!("{sample_count} samples / {zone_count} zones"),
+            false,
+            false,
+        ),
+        SamplerLoadStatus::Error(message) => {
+            (String::from("Load error"), message.clone(), false, true)
+        }
+    };
+
+    let mut controls = row![
+        button(text("Load").size(11))
+            .on_press(Message::PickInstrumentFile)
+            .padding([4, 8]),
+        button(text("Reload").size(11))
+            .on_press(Message::ReloadInstrument)
+            .padding([4, 8]),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+
+    if presets.len() > 1 {
+        let selected = selected_preset.and_then(|index| presets.get(index).cloned());
+        controls = controls.push(
+            pick_list(presets, selected, Message::SelectSf2Preset)
+                .placeholder("Preset")
+                .width(Length::Fixed(220.0)),
+        );
+    }
+
+    let progress: Element<'_, Message> = if loading {
+        container(text("Loading...").size(10))
+            .padding([2, 6])
+            .style(|_theme: &Theme| container::Style {
+                background: Some(Background::Color(Color::from_rgb(0.18, 0.20, 0.25))),
+                border: Border {
+                    color: Color::from_rgb(0.36, 0.44, 0.58),
+                    width: 1.0,
+                    radius: 3.0.into(),
+                },
+                ..container::Style::default()
+            })
+            .into()
+    } else {
+        container(text("").size(10))
+            .height(Length::Fixed(18.0))
+            .into()
+    };
+
+    let mut log_column = column![].spacing(2).width(Length::Fill);
+    for line in log.iter().rev().take(8).rev() {
+        log_column = log_column.push(text(line.clone()).size(10));
+    }
+
+    panel_no_title(
+        column![
+            row![
+                column![
+                    text(title).size(14),
+                    text(detail).size(10).style(move |_theme: &Theme| {
+                        if is_error {
+                            text::Style {
+                                color: Some(Color::from_rgb(1.0, 0.38, 0.34)),
+                            }
+                        } else {
+                            text::Style {
+                                color: Some(Color::from_rgb(0.66, 0.68, 0.74)),
+                            }
+                        }
+                    }),
+                ]
+                .spacing(2)
+                .width(Length::Fill),
+                progress,
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+            controls,
+            scrollable(log_column).height(Length::Fixed(58.0)),
+        ]
+        .spacing(8)
+        .into(),
+    )
+}
+
+fn path_display(path: Option<&PathBuf>) -> String {
+    path.and_then(|path| path.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| String::from("Instrument"))
 }
 
 fn knob_row<'a>(items: Vec<Element<'a, Message>>) -> Element<'a, Message> {
@@ -2022,7 +2218,7 @@ fn sampler_editor_view<'a>(state: &'a State, index: usize) -> Element<'a, Messag
         .into(),
     );
 
-    let main_content = column![header, waveform]
+    let main_content = column![instrument_panel(state), header, waveform]
         .spacing(10)
         .width(Length::Fill)
         .height(Length::Fill)
@@ -2292,7 +2488,7 @@ fn view(state: &State) -> Element<'_, Message> {
     .spacing(10)
     .align_y(Alignment::Start);
 
-    let main_content = column![sample_map, top_row, bottom_row,]
+    let main_content = column![instrument_panel(state), sample_map, top_row, bottom_row,]
         .spacing(12)
         .width(Length::Fill)
         .height(Length::Fill)
@@ -2329,9 +2525,14 @@ fn subscription(state: &State) -> maolan_baseview::iced::Subscription<Message> {
     if state.editing_zone_name.is_some() {
         return maolan_baseview::iced::Subscription::none();
     }
-    maolan_baseview::iced::event::listen_with(|event, status, _ids| {
+    let events = maolan_baseview::iced::event::listen_with(|event, status, _ids| {
         if status == maolan_baseview::iced::event::Status::Captured {
             return None;
+        }
+        if let maolan_baseview::iced::Event::Window(window::Event::FileDropped(path)) = &event
+            && is_instrument_file(path)
+        {
+            return Some(Message::LoadInstrument(path.clone()));
         }
         if let maolan_baseview::iced::Event::Keyboard(keyboard::Event::KeyPressed {
             key,
@@ -2356,7 +2557,10 @@ fn subscription(state: &State) -> maolan_baseview::iced::Subscription<Message> {
             }
         }
         None
-    })
+    });
+    let status_poll = maolan_baseview::iced::time::every(Duration::from_millis(120))
+        .map(|_| Message::PollLoadStatus);
+    maolan_baseview::iced::Subscription::batch([events, status_poll])
 }
 
 fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {

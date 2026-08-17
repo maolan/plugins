@@ -36,6 +36,14 @@ pub enum ModSource {
     GroupAnyGated,
 
     GroupVoiceCount,
+
+    ChannelPressure,
+
+    ChannelVolume,
+
+    Expression,
+
+    Cc10Pan,
 }
 
 impl ModSource {
@@ -67,6 +75,10 @@ impl ModSource {
             24 => ModSource::IsReleased,
             25 => ModSource::GroupAnyGated,
             26 => ModSource::GroupVoiceCount,
+            27 => ModSource::ChannelPressure,
+            28 => ModSource::ChannelVolume,
+            29 => ModSource::Expression,
+            30 => ModSource::Cc10Pan,
             _ => ModSource::None,
         }
     }
@@ -157,6 +169,7 @@ pub struct SourceValues {
     pub pitch_bend: f32,
     pub mod_wheel: f32,
     pub pressure: f32,
+    pub channel_pressure: f32,
     pub timbre: f32,
     pub lfo1: f32,
     pub lfo2: f32,
@@ -178,6 +191,9 @@ pub struct SourceValues {
     pub is_released: f32,
     pub group_any_gated: f32,
     pub group_voice_count: f32,
+    pub channel_volume: f32,
+    pub expression: f32,
+    pub cc10_pan: f32,
 }
 
 impl SourceValues {
@@ -189,6 +205,7 @@ impl SourceValues {
             ModSource::PitchBend => self.pitch_bend,
             ModSource::ModWheel => self.mod_wheel,
             ModSource::Pressure => self.pressure,
+            ModSource::ChannelPressure => self.channel_pressure,
             ModSource::Timbre => self.timbre,
             ModSource::Lfo1 => self.lfo1,
             ModSource::Lfo2 => self.lfo2,
@@ -210,6 +227,9 @@ impl SourceValues {
             ModSource::IsReleased => self.is_released,
             ModSource::GroupAnyGated => self.group_any_gated,
             ModSource::GroupVoiceCount => self.group_voice_count,
+            ModSource::ChannelVolume => self.channel_volume,
+            ModSource::Expression => self.expression,
+            ModSource::Cc10Pan => self.cc10_pan,
         }
     }
 }

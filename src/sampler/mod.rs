@@ -1,5 +1,7 @@
 pub mod dsp;
 pub mod gui;
+pub mod load_status;
+pub mod loader;
 pub mod params;
 pub mod plugin;
 pub mod state;

@@ -297,6 +297,26 @@ impl Zone {
             ..Default::default()
         }
     }
+
+    /// Return a `Zone` with SoundFont 2 defaults.
+    ///
+    /// SoundFont uses full key/velocity ranges, 100 % key tracking, and a
+    /// linear velocity curve by default. This is currently the same as
+    /// `Zone::default()`, but the constructor makes the intent explicit when
+    /// translating SF2 instrument zones.
+    pub fn sf2_default() -> Self {
+        Self {
+            key_low: 0,
+            key_high: 127,
+            vel_low: 0,
+            vel_high: 127,
+            key_tracking: 1.0,
+            velocity_curve: CurveType::Linear,
+            pitch_bend_up: 2.0,
+            pitch_bend_down: 2.0,
+            ..Default::default()
+        }
+    }
 }
 
 impl Zone {
@@ -476,6 +496,17 @@ mod tests {
         assert_eq!(counts[0], 2);
         assert_eq!(counts[1], 2);
         assert_eq!(counts[2], 2);
+    }
+
+    #[test]
+    fn test_sf2_default() {
+        let zone = Zone::sf2_default();
+        assert_eq!(zone.key_low, 0);
+        assert_eq!(zone.key_high, 127);
+        assert_eq!(zone.vel_low, 0);
+        assert_eq!(zone.vel_high, 127);
+        assert!((zone.key_tracking - 1.0).abs() < f32::EPSILON);
+        assert_eq!(zone.velocity_curve, CurveType::Linear);
     }
 
     #[test]

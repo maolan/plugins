@@ -21,6 +21,10 @@ pub struct PluginState {
     pub params: Vec<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sampler_zones: Option<Vec<SamplerZoneState>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampler_instrument_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampler_sf2_preset: Option<usize>,
 }
 
 impl PluginState {
@@ -35,6 +39,8 @@ impl PluginState {
             version: Self::CURRENT_VERSION,
             params,
             sampler_zones: None,
+            sampler_instrument_path: None,
+            sampler_sf2_preset: None,
         }
     }
 

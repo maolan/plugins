@@ -32,6 +32,15 @@ pub struct Sample {
     pub peak: f32,
 
     pub rms: f32,
+
+    /// Optional loop start frame, imported from SF2/SFZ.
+    pub loop_start: Option<usize>,
+
+    /// Optional loop end frame, imported from SF2/SFZ.
+    pub loop_end: Option<usize>,
+
+    /// Optional cue points / slice markers, imported from SFZ `cue` opcodes.
+    pub cue_points: Vec<usize>,
 }
 
 impl Sample {
@@ -43,6 +52,44 @@ impl Sample {
             frames: 1,
             peak: 0.0,
             rms: 0.0,
+            loop_start: None,
+            loop_end: None,
+            cue_points: Vec::new(),
+        }
+    }
+
+    /// Build a mono sample from 16-bit PCM data (e.g. SoundFont `smpl` chunks).
+    pub fn from_i16_mono(sample_rate: f32, data: &[i16]) -> Self {
+        if data.is_empty() {
+            return Self::silent(sample_rate);
+        }
+
+        let frames = data.len();
+        let mut data_l = Vec::with_capacity(frames);
+        let mut peak = 0.0_f32;
+        let mut sum_sq = 0.0_f64;
+        for &s in data {
+            let f = s as f32 / 32768.0;
+            data_l.push(f);
+            let abs = f.abs();
+            if abs > peak {
+                peak = abs;
+            }
+            sum_sq += f as f64 * f as f64;
+        }
+        let rms = (sum_sq / frames as f64).sqrt() as f32;
+        let data_r = data_l.clone();
+
+        Self {
+            sample_rate,
+            data_l,
+            data_r,
+            frames,
+            peak,
+            rms,
+            loop_start: None,
+            loop_end: None,
+            cue_points: Vec::new(),
         }
     }
 
@@ -220,6 +267,9 @@ pub fn load_audio(path: &Path) -> Result<Arc<Sample>, LoadError> {
         frames,
         peak,
         rms,
+        loop_start: None,
+        loop_end: None,
+        cue_points: Vec::new(),
     }))
 }
 
@@ -243,6 +293,9 @@ mod tests {
             frames: 3,
             peak: 1.0,
             rms: 0.0,
+            loop_start: None,
+            loop_end: None,
+            cue_points: Vec::new(),
         };
         let (l, r) = s.read(0.5, InterpolationMode::Linear);
         assert!((l - 0.5).abs() < 0.001);
@@ -258,6 +311,9 @@ mod tests {
             frames: 3,
             peak: 1.0,
             rms: 0.0,
+            loop_start: None,
+            loop_end: None,
+            cue_points: Vec::new(),
         };
 
         let (l, _r) = s.read(0.4, InterpolationMode::Zoh);
@@ -276,6 +332,9 @@ mod tests {
             frames: 5,
             peak: 4.0,
             rms: 0.0,
+            loop_start: None,
+            loop_end: None,
+            cue_points: Vec::new(),
         };
         let (l, _r) = s.read_with_increment(0.0, 2.0, InterpolationMode::Zoh);
         assert!(
@@ -293,6 +352,9 @@ mod tests {
             frames: 3,
             peak: 1.0,
             rms: 0.0,
+            loop_start: None,
+            loop_end: None,
+            cue_points: Vec::new(),
         };
         let (l, _r) = s.read_with_increment(0.6, 0.5, InterpolationMode::Zoh);
         assert_eq!(l, 1.0);
@@ -307,11 +369,33 @@ mod tests {
             frames: 64,
             peak: 1.0,
             rms: 1.0,
+            loop_start: None,
+            loop_end: None,
+            cue_points: Vec::new(),
         };
         for phase in [0.0f64, 0.5, 10.5, 31.75] {
             let (l, r) = s.read(phase, InterpolationMode::Sinc);
             assert!((l - 1.0).abs() < 0.001, "sinc DC l at {phase}: {l}");
             assert!((r - 1.0).abs() < 0.001, "sinc DC r at {phase}: {r}");
         }
+    }
+
+    #[test]
+    fn test_from_i16_mono() {
+        let data = vec![0i16, i16::MAX, i16::MIN, 0];
+        let s = Sample::from_i16_mono(22050.0, &data);
+        assert_eq!(s.sample_rate, 22050.0);
+        assert_eq!(s.frames, 4);
+        assert!((s.data_l[1] - 1.0).abs() < 1e-4);
+        assert!((s.data_l[2] + 1.0).abs() < 1e-4);
+        assert_eq!(s.data_l, s.data_r);
+        assert!(s.peak > 0.99);
+    }
+
+    #[test]
+    fn test_from_i16_mono_empty() {
+        let s = Sample::from_i16_mono(48000.0, &[]);
+        assert_eq!(s.frames, 1);
+        assert_eq!(s.data_l[0], 0.0);
     }
 }

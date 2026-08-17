@@ -192,6 +192,9 @@ mod tests {
             frames: 48000,
             peak: 1.0,
             rms: 0.7,
+            loop_start: None,
+            loop_end: None,
+            cue_points: Vec::new(),
         })
     }
 

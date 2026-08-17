@@ -50,6 +50,8 @@ use crate::sampler::{
         zone::Zone,
     },
     gui::GuiBridge,
+    load_status::SamplerLoadStatus,
+    loader::{InstrumentCache, PresetInfo, load_instrument_file_with_preset},
     params::{PARAMS, ParamId, sanitize_param_value},
     state::{AtomicArc, SampleZone},
 };
@@ -94,11 +96,20 @@ pub struct SharedState {
     pub params: ParamStore<ParamId>,
     params_version: AtomicU64,
     zones_version: AtomicU64,
+    patch_version: AtomicU64,
     pending_param_notifications: Vec<AtomicBool>,
     pending_gesture_begin: Vec<AtomicBool>,
     pending_gesture_end: Vec<AtomicBool>,
     gesture_active: [AtomicBool; ParamId::COUNT],
     pub zones: AtomicArc<Vec<SampleZone>>,
+    pub patch: AtomicArc<Patch>,
+    pub load_status: Mutex<SamplerLoadStatus>,
+    pub load_error: Mutex<Option<String>>,
+    pub load_log: Mutex<Vec<String>>,
+    pub instrument_path: Mutex<Option<std::path::PathBuf>>,
+    pub sf2_presets: Mutex<Vec<PresetInfo>>,
+    pub selected_sf2_preset: Mutex<Option<usize>>,
+    instrument_cache: InstrumentCache,
 }
 
 impl Default for SharedState {
@@ -109,6 +120,7 @@ impl Default for SharedState {
             params: ParamStore::default(),
             params_version: AtomicU64::new(1),
             zones_version: AtomicU64::new(1),
+            patch_version: AtomicU64::new(1),
             pending_param_notifications: (0..ParamId::COUNT)
                 .map(|_| AtomicBool::new(false))
                 .collect(),
@@ -120,6 +132,14 @@ impl Default for SharedState {
                 .collect(),
             gesture_active: std::array::from_fn(|_| AtomicBool::new(false)),
             zones: AtomicArc::default(),
+            patch: AtomicArc::default(),
+            load_status: Mutex::new(SamplerLoadStatus::Empty),
+            load_error: Mutex::new(None),
+            load_log: Mutex::new(Vec::new()),
+            instrument_path: Mutex::new(None),
+            sf2_presets: Mutex::new(Vec::new()),
+            selected_sf2_preset: Mutex::new(None),
+            instrument_cache: InstrumentCache::new(),
         }
     }
 }
@@ -234,6 +254,14 @@ impl SharedState {
         self.zones_version.load(Ordering::Acquire)
     }
 
+    pub fn bump_patch_version(&self) {
+        self.patch_version.fetch_add(1, Ordering::Release);
+    }
+
+    pub fn patch_version(&self) -> u64 {
+        self.patch_version.load(Ordering::Acquire)
+    }
+
     fn set_gesture_active(&self, id: ParamId, active: bool) {
         self.gesture_active[id.as_index()].store(active, Ordering::Release);
     }
@@ -246,6 +274,89 @@ impl SharedState {
         self.params.set(id, value);
         self.bump_params_version();
         self.pending_param_notifications[id.as_index()].store(true, Ordering::Release);
+    }
+
+    /// Load an SFZ or SF2 file off the audio thread and atomically publish the
+    /// resulting patch to the engine.
+    pub fn load_file(self: Arc<Self>, path: std::path::PathBuf) {
+        self.load_file_with_preset(path, None);
+    }
+
+    /// Load an SFZ or SF2 file, selecting an SF2 preset by index when supplied.
+    pub fn load_file_with_preset(
+        self: Arc<Self>,
+        path: std::path::PathBuf,
+        preset_index: Option<usize>,
+    ) {
+        *self.load_status.lock() = SamplerLoadStatus::Parsing;
+        self.load_error.lock().take();
+        self.load_log
+            .lock()
+            .push(format!("Loading {}", path.display()));
+        *self.instrument_path.lock() = Some(path.clone());
+        *self.selected_sf2_preset.lock() = preset_index;
+        self.sf2_presets.lock().clear();
+        let sample_rate = self.sample_rate.load(Ordering::Acquire) as f32;
+        let shared = Arc::clone(&self);
+        std::thread::spawn(move || {
+            let status = {
+                let shared = Arc::clone(&shared);
+                move |s| {
+                    shared.load_log.lock().push(load_status_message(&s));
+                    *shared.load_status.lock() = s;
+                }
+            };
+            match load_instrument_file_with_preset(
+                &path,
+                sample_rate,
+                preset_index,
+                &shared.instrument_cache,
+                status,
+            ) {
+                Ok(instrument) => {
+                    shared.patch.store(instrument.patch);
+                    *shared.sf2_presets.lock() = instrument.presets;
+                    *shared.selected_sf2_preset.lock() = instrument.selected_preset;
+                    shared.bump_patch_version();
+                    *shared.load_error.lock() = None;
+                    shared.mark_dirty();
+                }
+                Err(e) => {
+                    *shared.load_status.lock() = SamplerLoadStatus::Error(e.clone());
+                    *shared.load_error.lock() = Some(e.clone());
+                    shared
+                        .load_log
+                        .lock()
+                        .push(format!("Error: {}", path.display()));
+                    shared.load_log.lock().push(e);
+                }
+            }
+        });
+    }
+
+    pub fn reload_file(self: Arc<Self>) {
+        let Some(path) = self.instrument_path.lock().clone() else {
+            return;
+        };
+        let preset_index = *self.selected_sf2_preset.lock();
+        self.load_file_with_preset(path, preset_index);
+    }
+}
+
+fn load_status_message(status: &SamplerLoadStatus) -> String {
+    match status {
+        SamplerLoadStatus::Empty => "No instrument loaded".to_string(),
+        SamplerLoadStatus::Parsing => "Parsing instrument".to_string(),
+        SamplerLoadStatus::LoadingSamples { loaded, total } => {
+            format!("Loading samples {loaded}/{total}")
+        }
+        SamplerLoadStatus::Resampling => "Resampling samples".to_string(),
+        SamplerLoadStatus::Ready {
+            name,
+            sample_count,
+            zone_count,
+        } => format!("Ready: {name} ({sample_count} samples, {zone_count} zones)"),
+        SamplerLoadStatus::Error(message) => format!("Error: {message}"),
     }
 }
 
@@ -721,6 +832,9 @@ fn build_patch_from_zones(zones: &[SampleZone], sample_rate: f32) -> Patch {
                                 frames,
                                 peak,
                                 rms,
+                                loop_start: None,
+                                loop_end: None,
+                                cue_points: Vec::new(),
                             }));
                         }
                         Err(_) => {
@@ -774,6 +888,7 @@ struct AudioProcessor {
     out_r: Vec<f32>,
     last_params_version: u64,
     last_zones_version: u64,
+    last_patch_version: u64,
 }
 
 impl AudioProcessor {
@@ -786,6 +901,7 @@ impl AudioProcessor {
             out_r: vec![0.0; max_frames as usize],
             last_params_version: 0,
             last_zones_version: 0,
+            last_patch_version: 0,
         }
     }
 
@@ -1035,6 +1151,13 @@ impl AudioProcessor {
             let patch = build_patch_from_zones(&zones, self.sample_rate);
             self.engine.set_patch(patch);
             self.last_zones_version = zones_version;
+        }
+
+        let patch_version = shared.patch_version();
+        if patch_version != self.last_patch_version {
+            let patch = shared.patch.load();
+            self.engine.set_patch((*patch).clone());
+            self.last_patch_version = patch_version;
         }
 
         let events = process.in_events();
@@ -1432,6 +1555,13 @@ unsafe extern "C-unwind" fn ext_state_save(
         let mut state = PluginState::from_runtime(&inst.shared.params);
         let zones = inst.shared.zones.load();
         state.sampler_zones = Some(zones.iter().map(SampleZone::to_state).collect());
+        state.sampler_instrument_path = inst
+            .shared
+            .instrument_path
+            .lock()
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned());
+        state.sampler_sf2_preset = *inst.shared.selected_sf2_preset.lock();
         let Ok(bytes) = state.to_bytes() else {
             return false;
         };
@@ -1465,6 +1595,10 @@ unsafe extern "C-unwind" fn ext_state_load(
             .unwrap_or_default();
         inst.shared.zones.store(Arc::new(zones));
         inst.shared.bump_params_version();
+        if let Some(path) = state.sampler_instrument_path {
+            Arc::clone(&inst.shared)
+                .load_file_with_preset(std::path::PathBuf::from(path), state.sampler_sf2_preset);
+        }
         true
     }
 }

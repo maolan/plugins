@@ -45,6 +45,10 @@ impl<'a> ByteReader<'a> {
         Ok(v)
     }
 
+    pub fn read_i16(&mut self) -> Result<i16, String> {
+        self.read_u16().map(|v| v as i16)
+    }
+
     pub fn read_u32(&mut self) -> Result<u32, String> {
         if self.remaining() < 4 {
             return Err("Unexpected EOF".to_string());

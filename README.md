@@ -205,9 +205,33 @@ vibrato predelay, and input/output lowpass filters.
 
 ## Maolan Sampler
 
-A polyphonic sample player with multi-EG modulation, two LFOs, and a multimode filter. Loads samples
-through the GUI and plays them back with velocity-sensitive amplitude, per-note pitch bend, and
-MIDI CC control.
+A production-grade polyphonic sample player supporting **SFZ (v1/v2)** and **SoundFont 2 (SF2.01/SF2.04)** formats alongside standalone WAV/audio files. Features 32 polyphonic voices, multi-EG envelopes, auxiliary LFOs, multimode filter, modulation matrix, and non-blocking background sample parsing and resampling.
+
+### Format & Feature Highlights
+
+- **SFZ v1/v2 Support:**
+  - Header scope precedence (`control` → `global` → `master` → `group` → `region`).
+  - Preprocessing with `#include` directives, `#define` macros, and `#if`/`#else`/`#endif` conditional blocks.
+  - Core opcodes for key/velocity mapping, key fades (`xf*`), tuning, volume, pan, looping (continuous, sustain, one-shot, alternate), playback offset/direction, trigger modes (`attack`, `release`, `first`, `legato`), group choking, keyswitches (`sw_last`, `sw_down`, `sw_up`, `sw_default`), and round-robin / random variants (`seq_length`, `lorand`/`hirand`).
+  - Amp/Filter envelope generators and LFO opcodes mapped directly to group DSP modules.
+- **SoundFont 2 (SF2) Support:**
+  - RIFF `sfbk` structure parser supporting 16-bit PCM and 24-bit PCM (`sm24` / `smpl-24`) audio chunks.
+  - INFO chunk metadata extraction (`INAM`, `ICRD`, `IENG`, etc.).
+  - Generator merging across preset-zone, preset-global, instrument-zone, and instrument-global scopes.
+  - Supported generators: `keyRange`, `velRange`, sample start/end/loop address offsets, `coarseTune`, `fineTune`, `scaleTuning`, `overridingRootKey`, `initialAttenuation` (centibels), `pan`, `exclusiveClass`, `sampleID`, and `sampleModes`.
+  - Default and custom `imod` modulator mapping to internal modulation matrix (Mod Wheel CC1, Channel Volume CC7, Pan CC10, Expression CC11, Velocity, and Key tracking).
+  - Multi-preset selection: Exposes all `(bank, preset)` pairs in loaded SF2 files via the GUI preset dropdown selector.
+- **Background Loading & Engine Isolation:**
+  - File parsing, sample decoding, and sample-rate conversion occur on a background worker thread.
+  - Audio thread stays click-free by atomically swapping loaded patches via `AtomicArc<Patch>`.
+  - Active voices maintain `Arc` references to previous samples to gracefully finish playback when reloads occur.
+  - Integrated LRU caching based on path and file modification timestamp (`mtime`).
+- **GUI Features:**
+  - Drag-and-drop file loading for `.sfz` and `.sf2` files.
+  - Preset picker dropdown for multi-preset SoundFont files.
+  - Real-time progress bar for sample loading and resampling.
+  - Reload button for quick iteration when editing `.sfz` files on disk.
+  - Scrollable load status and error log view.
 
 **Parameters**
 
@@ -218,7 +242,7 @@ MIDI CC control.
 | Amp EG Attack | 0.0 ... 10.0 s | 0.01 | Amplitude envelope attack |
 | Amp EG Decay | 0.0 ... 10.0 s | 0.2 | Amplitude envelope decay |
 | Amp EG Sustain | 0.0 ... 1.0 | 1.0 | Amplitude envelope sustain |
-| Amp EG Release | 0.0 ... 10.0 s | 0.3 | Amplitude envelope release |
+| Amp EG Release | 0.0 ... 1.0 | 0.3 | Amplitude envelope release |
 | Bend Up | 0 ... 24 semitones | 2 | Pitch-bend up range |
 | Bend Down | 0 ... 24 semitones | 2 | Pitch-bend down range |
 | Filter Type | 0 ... 48 | 1 | Multimode filter type |
