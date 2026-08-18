@@ -6,6 +6,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering},
     },
+    thread::JoinHandle,
 };
 
 #[cfg(target_os = "windows")]
@@ -110,6 +111,9 @@ pub struct SharedState {
     pub sf2_presets: Mutex<Vec<PresetInfo>>,
     pub selected_sf2_preset: Mutex<Option<usize>>,
     instrument_cache: InstrumentCache,
+    /// Handle to the background instrument-loader thread, if one is running.
+    /// Kept so the plugin can wait for it to finish before the library is unloaded.
+    load_thread: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Default for SharedState {
@@ -140,6 +144,7 @@ impl Default for SharedState {
             sf2_presets: Mutex::new(Vec::new()),
             selected_sf2_preset: Mutex::new(None),
             instrument_cache: InstrumentCache::new(),
+            load_thread: Mutex::new(None),
         }
     }
 }
@@ -288,6 +293,10 @@ impl SharedState {
         path: std::path::PathBuf,
         preset_index: Option<usize>,
     ) {
+        // Wait for any previous load to finish before starting a new one so we
+        // never have multiple loader threads racing over the same SharedState.
+        self.wait_for_load_thread();
+
         *self.load_status.lock() = SamplerLoadStatus::Parsing;
         self.load_error.lock().take();
         self.load_log
@@ -298,7 +307,7 @@ impl SharedState {
         self.sf2_presets.lock().clear();
         let sample_rate = self.sample_rate.load(Ordering::Acquire) as f32;
         let shared = Arc::clone(&self);
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             let status = {
                 let shared = Arc::clone(&shared);
                 move |s| {
@@ -314,9 +323,13 @@ impl SharedState {
                 status,
             ) {
                 Ok(instrument) => {
-                    shared.patch.store(instrument.patch);
                     *shared.sf2_presets.lock() = instrument.presets;
                     *shared.selected_sf2_preset.lock() = instrument.selected_preset;
+                    let patch = instrument.patch;
+                    shared
+                        .zones
+                        .store(Arc::new(build_zones_from_patch(patch.as_ref())));
+                    shared.patch.store(patch);
                     shared.bump_patch_version();
                     *shared.load_error.lock() = None;
                     shared.mark_dirty();
@@ -332,6 +345,14 @@ impl SharedState {
                 }
             }
         });
+        *self.load_thread.lock() = Some(handle);
+    }
+
+    /// Wait for a running loader thread to finish and clear its handle.
+    fn wait_for_load_thread(&self) {
+        if let Some(handle) = self.load_thread.lock().take() {
+            let _ = handle.join();
+        }
     }
 
     pub fn reload_file(self: Arc<Self>) {
@@ -802,6 +823,26 @@ fn filter_params(store: &ParamStore<ParamId>, ids: FilterParamIds) -> FilterPara
         drive: store.get(ids.drive) as f32,
         enabled: store.get(ids.enabled) >= 0.5,
     }
+}
+
+fn build_zones_from_patch(patch: &Patch) -> Vec<SampleZone> {
+    let mut zones = Vec::new();
+    for part in &patch.parts {
+        for group in &part.groups {
+            for zone in &group.zones {
+                zones.push(SampleZone {
+                    name: zone.name.clone(),
+                    files: Vec::new(),
+                    start_note: zone.key_low as usize,
+                    end_note: zone.key_high as usize,
+                    vel_low: zone.vel_low,
+                    vel_high: zone.vel_high,
+                    group: group.name.clone(),
+                });
+            }
+        }
+    }
+    zones
 }
 
 fn build_patch_from_zones(zones: &[SampleZone], sample_rate: f32) -> Patch {
@@ -1299,6 +1340,12 @@ impl PluginInstance {
 
 impl Drop for PluginInstance {
     fn drop(&mut self) {
+        // The loader thread executes code from this shared library. Make sure
+        // it has finished before the rest of the plugin state is torn down,
+        // otherwise dlclose can unmap the library while the thread is still
+        // running and crash the dynamic linker.
+        self.shared.wait_for_load_thread();
+
         let ptr = self.processor.swap(null_mut(), Ordering::Acquire);
         if !ptr.is_null() {
             unsafe { drop(Box::from_raw(ptr)) };
@@ -1347,6 +1394,12 @@ unsafe extern "C-unwind" fn plugin_deactivate(plugin: *const clap_plugin) {
         inst.drop_retired_processors();
     }
 }
+
+unsafe extern "C-unwind" fn plugin_start_processing(_plugin: *const clap_plugin) -> bool {
+    true
+}
+
+unsafe extern "C-unwind" fn plugin_stop_processing(_plugin: *const clap_plugin) {}
 
 unsafe extern "C-unwind" fn plugin_process(
     plugin: *const clap_plugin,
@@ -1855,8 +1908,8 @@ pub unsafe fn clap_create_plugin(
             destroy: Some(plugin_destroy),
             activate: Some(plugin_activate),
             deactivate: Some(plugin_deactivate),
-            start_processing: None,
-            stop_processing: None,
+            start_processing: Some(plugin_start_processing),
+            stop_processing: Some(plugin_stop_processing),
             reset: None,
             process: Some(plugin_process),
             get_extension: Some(plugin_get_extension),
@@ -1880,5 +1933,50 @@ mod tests {
                 "apply_param_id returned false for {id:?}"
             );
         }
+    }
+
+    #[test]
+    fn build_zones_from_patch_maps_dsp_zones_to_sample_zones() {
+        let patch = Patch {
+            parts: vec![Part {
+                groups: vec![Group {
+                    name: String::from("Kick"),
+                    zones: vec![
+                        Zone::new_round_robin(
+                            String::from("Kick Hard"),
+                            Arc::new(Sample::silent(48_000.0)),
+                            36,
+                            (36, 42),
+                            (100, 127),
+                            Vec::new(),
+                        ),
+                        Zone::new_round_robin(
+                            String::from("Kick Soft"),
+                            Arc::new(Sample::silent(48_000.0)),
+                            36,
+                            (36, 42),
+                            (0, 99),
+                            Vec::new(),
+                        ),
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let zones = build_zones_from_patch(&patch);
+        assert_eq!(zones.len(), 2);
+        assert_eq!(zones[0].name, "Kick Hard");
+        assert_eq!(zones[0].start_note, 36);
+        assert_eq!(zones[0].end_note, 42);
+        assert_eq!(zones[0].vel_low, 100);
+        assert_eq!(zones[0].vel_high, 127);
+        assert_eq!(zones[0].group, "Kick");
+        assert!(zones[0].files.is_empty());
+        assert_eq!(zones[1].name, "Kick Soft");
+        assert_eq!(zones[1].vel_low, 0);
+        assert_eq!(zones[1].vel_high, 99);
     }
 }

@@ -864,12 +864,17 @@ const ADDITIVE_GENERATORS: &[u16] = &[
 
 /// Generators that are defined by the instrument zone and ignored at the
 /// preset zone level.
-const INSTRUMENT_OVERRIDE_GENERATORS: &[u16] = &[
-    GEN_KEY_RANGE,
-    GEN_VEL_RANGE,
-    GEN_SAMPLE_MODES,
-    GEN_OVERRIDING_ROOT_KEY,
-];
+const INSTRUMENT_OVERRIDE_GENERATORS: &[u16] = &[GEN_SAMPLE_MODES, GEN_OVERRIDING_ROOT_KEY];
+
+/// Intersect two note/velocity ranges.
+fn intersect_range(a: (u8, u8), b: (u8, u8)) -> (u8, u8) {
+    (a.0.max(b.0), a.1.min(b.1))
+}
+
+/// Pack a (lo, hi) range into the `i16` amount format used by SF2 generators.
+fn pack_range(range: (u8, u8)) -> i16 {
+    (range.0 as u16 | ((range.1 as u16) << 8)) as i16
+}
 
 /// Generators that are defined by the preset zone and override the instrument
 /// zone value.
@@ -927,6 +932,19 @@ impl GeneratorSet {
                 values.insert(*op, *preset_value);
             }
         }
+
+        // Key and velocity ranges are intersected between the instrument zone
+        // and the preset zone. A drum kit, for example, uses the preset zone's
+        // key range to place an instrument on a single MIDI note while the
+        // instrument zone supplies velocity layers.
+        values.insert(
+            GEN_KEY_RANGE,
+            pack_range(intersect_range(instrument.key_range(), preset.key_range())),
+        );
+        values.insert(
+            GEN_VEL_RANGE,
+            pack_range(intersect_range(instrument.vel_range(), preset.vel_range())),
+        );
 
         // Instrument-override generators are already in `values` from the
         // instrument set; preset values are intentionally ignored.
@@ -1247,15 +1265,38 @@ mod tests {
     }
 
     #[test]
-    fn test_generator_set_instrument_overrides_key_range() {
+    fn test_generator_set_key_range_intersection() {
         let mut inst = GeneratorSet::new();
         inst.set(GEN_KEY_RANGE, (48u16 | (72u16 << 8)) as i16);
 
         let mut preset = GeneratorSet::new();
-        preset.set(GEN_KEY_RANGE, 127u16 as i16);
+        preset.set(GEN_KEY_RANGE, (60u16 | (84u16 << 8)) as i16);
 
         let combined = GeneratorSet::combine_instrument_and_preset(&inst, &preset);
-        assert_eq!(combined.key_range(), (48, 72));
+        assert_eq!(combined.key_range(), (60, 72));
+    }
+
+    #[test]
+    fn test_generator_set_preset_key_range_used_when_instrument_default() {
+        let inst = GeneratorSet::new();
+
+        let mut preset = GeneratorSet::new();
+        preset.set(GEN_KEY_RANGE, (36u16 | (36u16 << 8)) as i16);
+
+        let combined = GeneratorSet::combine_instrument_and_preset(&inst, &preset);
+        assert_eq!(combined.key_range(), (36, 36));
+    }
+
+    #[test]
+    fn test_generator_set_velocity_range_intersection() {
+        let mut inst = GeneratorSet::new();
+        inst.set(GEN_VEL_RANGE, (10u16 | (100u16 << 8)) as i16);
+
+        let mut preset = GeneratorSet::new();
+        preset.set(GEN_VEL_RANGE, (50u16 | (127u16 << 8)) as i16);
+
+        let combined = GeneratorSet::combine_instrument_and_preset(&inst, &preset);
+        assert_eq!(combined.vel_range(), (50, 100));
     }
 
     #[test]
