@@ -25,6 +25,9 @@ use maolan_baseview::iced::{
     window,
 };
 use maolan_widgets::arch_slider::arch_slider;
+use maolan_widgets::piano::{
+    Orientation, draw_octave_into, draw_partial_octave_into, note_at_in_range, octave_note_count,
+};
 use maolan_widgets::slider::Slider;
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 use symphonia::core::{
@@ -129,6 +132,8 @@ pub enum Message {
     OpenSamplerEditor(usize),
     CloseSamplerEditor,
     SelectEditingSample(usize),
+    PianoKeyPressed(u8, u8),
+    PianoKeyReleased(u8),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -240,6 +245,7 @@ struct State {
     editing_zone_index: Option<usize>,
     editing_zone_sample_index: usize,
     editing_audio_file: Option<crate::common::audio_file::AudioFile>,
+    piano_active_note: Option<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -379,6 +385,7 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             editing_zone_index: None,
             editing_zone_sample_index: 0,
             editing_audio_file: None,
+            piano_active_note: None,
         },
         Task::none(),
     )
@@ -636,6 +643,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if changed {
                 state.shared.zones.store(zones);
                 state.shared.bump_zones_version();
+                state.shared.note_names_changed();
                 state.shared.mark_dirty();
             }
         }
@@ -687,6 +695,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 state.shared.zones.store(zones);
                 state.shared.bump_zones_version();
+                state.shared.note_names_changed();
                 state.shared.mark_dirty();
             }
             state.hovered_note = None;
@@ -732,6 +741,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 state.shared.zones.store(zones);
                 state.shared.bump_zones_version();
+                state.shared.note_names_changed();
                 state.shared.mark_dirty();
             }
         }
@@ -739,6 +749,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if let Some(previous_zones) = state.undo_stack.pop() {
                 state.shared.zones.store(Arc::new(previous_zones));
                 state.shared.bump_zones_version();
+                state.shared.note_names_changed();
                 state.shared.mark_dirty();
                 state.selected = None;
             }
@@ -756,6 +767,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::SelectEditingSample(index) => {
             state.editing_zone_sample_index = index;
             load_editing_sample(state);
+        }
+        Message::PianoKeyPressed(note, velocity) => {
+            if let Some(prev) = state.piano_active_note.replace(note) {
+                state.shared.send_note_off(prev);
+            }
+            state.shared.send_note_on(note, velocity);
+        }
+        Message::PianoKeyReleased(note) => {
+            state.piano_active_note = None;
+            state.shared.send_note_off(note);
         }
         Message::StartRenameZone(index) => {
             let zones = state.shared.zones.load();
@@ -1126,6 +1147,54 @@ fn note_at_x(x: f32, width: f32) -> usize {
         .clamp(0.0, SAMPLE_MAP_NOTES as f32 - 1.0) as usize
 }
 
+fn piano_note_at(position: Point, bounds: Rectangle) -> Option<(u8, u8)> {
+    let grid_height = bounds.height - PIANO_ROLL_HEIGHT;
+    if position.y < grid_height || position.y > bounds.height {
+        return None;
+    }
+    let note_width = bounds.width / SAMPLE_MAP_NOTES as f32;
+    for octave in 0..10_u8 {
+        let octave_x = f32::from(octave) * 12.0 * note_width;
+        let octave_width = 12.0 * note_width;
+        if position.x < octave_x || position.x > octave_x + octave_width {
+            continue;
+        }
+        let local_position = Point::new(position.x - octave_x, position.y - grid_height);
+        let local_bounds = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: octave_width,
+            height: PIANO_ROLL_HEIGHT,
+        };
+        if let Some((note_class, velocity)) =
+            note_at_in_range(local_position, local_bounds, Orientation::Degree180, 12)
+        {
+            return Some((octave * 12 + note_class, velocity));
+        }
+    }
+    let partial_x = 10.0 * 12.0 * note_width;
+    let partial_width = 8.0 * note_width;
+    if position.x >= partial_x && position.x <= partial_x + partial_width {
+        let local_position = Point::new(position.x - partial_x, position.y - grid_height);
+        let local_bounds = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: partial_width,
+            height: PIANO_ROLL_HEIGHT,
+        };
+        let note_count = octave_note_count(10);
+        if let Some((note_class, velocity)) = note_at_in_range(
+            local_position,
+            local_bounds,
+            Orientation::Degree180,
+            note_count,
+        ) {
+            return Some((10 * 12 + note_class, velocity));
+        }
+    }
+    None
+}
+
 fn velocity_at_y(y: f32, grid_bottom: f32, grid_height: f32) -> u8 {
     if grid_height <= 0.0 {
         return 0;
@@ -1163,7 +1232,11 @@ struct ZoneEditorData {
     dragging_zone_edge: Option<(usize, ZoneEdge)>,
     dragging_zone_body: Option<(usize, f32, f32)>,
     selected: Option<ZoneListSelection>,
+    piano_active_note: Option<u8>,
 }
+
+#[derive(Default, Debug)]
+struct ZoneEditorState;
 
 struct ZoneEditor {
     data: ZoneEditorData,
@@ -1222,7 +1295,7 @@ impl ZoneEditor {
 }
 
 impl canvas::Program<Message> for ZoneEditor {
-    type State = ();
+    type State = ZoneEditorState;
 
     fn update(
         &self,
@@ -1277,6 +1350,11 @@ impl canvas::Program<Message> for ZoneEditor {
                                 ))
                                 .and_capture(),
                             )
+                        } else if let Some((note, velocity)) = piano_note_at(position, bounds) {
+                            Some(
+                                canvas::Action::publish(Message::PianoKeyPressed(note, velocity))
+                                    .and_capture(),
+                            )
                         } else if self.data.dragged_audio_file.is_none() {
                             Some(canvas::Action::publish(Message::DeselectZone).and_capture())
                         } else {
@@ -1286,16 +1364,28 @@ impl canvas::Program<Message> for ZoneEditor {
                     maolan_baseview::iced::mouse::Event::ButtonReleased(
                         maolan_baseview::iced::mouse::Button::Left,
                     ) => {
-                        let note = note_at_x(position.x, bounds.width);
-                        let velocity = velocity_at_y(
-                            position.y,
-                            bounds.height - PIANO_ROLL_HEIGHT,
-                            bounds.height - PIANO_ROLL_HEIGHT,
-                        );
-                        Some(
-                            canvas::Action::publish(Message::ZoneNoteReleased(note, velocity))
-                                .and_capture(),
-                        )
+                        if let Some(note) = self.data.piano_active_note {
+                            Some(
+                                canvas::Action::publish(Message::PianoKeyReleased(note))
+                                    .and_capture(),
+                            )
+                        } else {
+                            let note = note_at_x(position.x, bounds.width);
+                            let velocity = velocity_at_y(
+                                position.y,
+                                bounds.height - PIANO_ROLL_HEIGHT,
+                                bounds.height - PIANO_ROLL_HEIGHT,
+                            );
+                            Some(
+                                canvas::Action::publish(Message::ZoneNoteReleased(note, velocity))
+                                    .and_capture(),
+                            )
+                        }
+                    }
+                    maolan_baseview::iced::mouse::Event::CursorLeft => {
+                        self.data.piano_active_note.map(|note| {
+                            canvas::Action::publish(Message::PianoKeyReleased(note)).and_capture()
+                        })
                     }
                     _ => None,
                 }
@@ -1318,6 +1408,10 @@ impl canvas::Program<Message> for ZoneEditor {
         let grid_height = height - PIANO_ROLL_HEIGHT;
         let note_width = width / SAMPLE_MAP_NOTES as f32;
         let velocity_height = grid_height / VELOCITY_COUNT;
+        let active_note = self
+            .data
+            .piano_active_note
+            .map(|note| (note / 12, note % 12));
 
         let background = canvas::Path::rectangle(Point::ORIGIN, bounds.size());
         frame.fill(&background, Color::from_rgb(0.075, 0.078, 0.095));
@@ -1470,47 +1564,53 @@ impl canvas::Program<Message> for ZoneEditor {
         );
         frame.fill(&piano_background, Color::from_rgb(0.045, 0.047, 0.058));
 
-        for note in 0..SAMPLE_MAP_NOTES {
-            let x = note as f32 * note_width;
-            let pitch = note % 12;
-            let is_black = matches!(pitch, 1 | 3 | 6 | 8 | 10);
-            let key_height = if is_black {
-                PIANO_ROLL_HEIGHT * 0.65
-            } else {
-                PIANO_ROLL_HEIGHT
+        let names = std::collections::HashMap::new();
+
+        for octave in 0..10 {
+            let octave_x = octave as f32 * 12.0 * note_width;
+            let octave_width = 12.0 * note_width;
+            let octave_bounds = Rectangle {
+                x: octave_x,
+                y: grid_height,
+                width: octave_width,
+                height: PIANO_ROLL_HEIGHT,
             };
-            let key_y = grid_height + PIANO_ROLL_HEIGHT - key_height;
-            let key_rect =
-                canvas::Path::rectangle(Point::new(x, key_y), Size::new(note_width, key_height));
-            frame.fill(
-                &key_rect,
-                if is_black {
-                    Color::from_rgb(0.035, 0.037, 0.045)
-                } else {
-                    Color::from_rgb(0.78, 0.80, 0.84)
-                },
+            let pressed: std::collections::HashSet<u8> = active_note
+                .filter(|(o, _)| *o == octave as u8)
+                .map(|(_, c)| c)
+                .into_iter()
+                .collect();
+            draw_octave_into(
+                &mut frame,
+                octave_bounds,
+                &pressed,
+                octave as u8,
+                &names,
+                Orientation::Degree180,
             );
-            frame.stroke(
-                &key_rect,
-                canvas::Stroke::default()
-                    .with_color(if is_black {
-                        Color::from_rgb(0.015, 0.016, 0.020)
-                    } else {
-                        Color::from_rgb(0.42, 0.43, 0.48)
-                    })
-                    .with_width(1.0),
-            );
-            if pitch == 0 {
-                let label = canvas::Text {
-                    content: format!("C{}", note as i32 / 12 - 1),
-                    position: Point::new(x + 2.0, grid_height + PIANO_ROLL_HEIGHT - 12.0),
-                    color: Color::from_rgb(0.16, 0.17, 0.20),
-                    size: maolan_baseview::iced::Pixels(9.0),
-                    ..canvas::Text::default()
-                };
-                frame.fill_text(label);
-            }
         }
+
+        let partial_x = 10.0 * 12.0 * note_width;
+        let partial_width = 8.0 * note_width;
+        let partial_bounds = Rectangle {
+            x: partial_x,
+            y: grid_height,
+            width: partial_width,
+            height: PIANO_ROLL_HEIGHT,
+        };
+        let pressed: std::collections::HashSet<u8> = active_note
+            .filter(|(o, _)| *o == 10)
+            .map(|(_, c)| c)
+            .into_iter()
+            .collect();
+        draw_partial_octave_into(
+            &mut frame,
+            partial_bounds,
+            &pressed,
+            10,
+            &names,
+            Orientation::Degree180,
+        );
 
         vec![frame.into_geometry()]
     }
@@ -1537,6 +1637,8 @@ impl canvas::Program<Message> for ZoneEditor {
             None => {
                 if self.body_hit_test(position, bounds).is_some() {
                     maolan_baseview::iced::mouse::Interaction::Grab
+                } else if piano_note_at(position, bounds).is_some() {
+                    maolan_baseview::iced::mouse::Interaction::Pointer
                 } else {
                     maolan_baseview::iced::mouse::Interaction::default()
                 }
@@ -1555,6 +1657,7 @@ fn sample_map<'a>(state: &'a State) -> Element<'a, Message> {
         dragging_zone_edge: state.dragging_zone_edge,
         dragging_zone_body: state.dragging_zone_body,
         selected: state.selected.clone(),
+        piano_active_note: state.piano_active_note,
     };
     canvas(ZoneEditor { data })
         .width(Length::Fill)
@@ -2565,7 +2668,7 @@ fn subscription(state: &State) -> maolan_baseview::iced::Subscription<Message> {
 
 fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {
     maolan_baseview::iced::application(move || init(shared.clone()), update, view)
-        .font(iced_fonts::LUCIDE_FONT_BYTES)
+        .font(maolan_widgets::iced_fonts::LUCIDE_FONT_BYTES)
         .theme(theme)
         .subscription(subscription)
         .run()

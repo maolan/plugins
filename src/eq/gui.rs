@@ -3155,7 +3155,7 @@ fn freq_knob(id: ParamId, value_hz: f32) -> Element<'static, Message> {
 
 fn build_app(shared: Arc<SharedState<ParamId>>) -> impl maolan_baseview::iced::Program {
     maolan_baseview::iced::application(move || init(shared.clone()), update, view)
-        .font(iced_fonts::LUCIDE_FONT_BYTES)
+        .font(maolan_widgets::iced_fonts::LUCIDE_FONT_BYTES)
         .theme(theme)
         .run()
 }

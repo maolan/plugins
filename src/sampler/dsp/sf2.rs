@@ -747,6 +747,7 @@ fn build_group_for_instrument(
             }
             let mut zone = Zone::sf2_default();
             let header = &pdta.sample_headers[sample_id];
+            zone.name = header._name.clone();
             let base_sample = &samples[sample_id];
             let pool_start = header.start as i32 + combined.start_offset();
             let pool_end = header.end as i32 + combined.end_offset();
@@ -1594,6 +1595,153 @@ mod tests {
                 .chain(&right)
                 .any(|sample| sample.abs() > 1.0e-6),
             "SF2 fixture should render audible output"
+        );
+    }
+
+    /// Build a minimal SF2 with two instrument zones mapped to two different
+    /// notes, like a tiny drum kit. Used as a regression test to ensure the
+    /// parser creates more than one playable zone and that each note renders
+    /// distinct audio.
+    fn multi_zone_sf2_data() -> Vec<u8> {
+        // Sample 0: a short sine wave at 4 cycles per 64 samples.
+        let smpl0: Vec<u8> = (0..64)
+            .flat_map(|i| {
+                let phase = i as f32 / 64.0 * std::f32::consts::TAU * 4.0;
+                let value = (phase.sin() * i16::MAX as f32 * 0.25) as i16;
+                value.to_le_bytes()
+            })
+            .collect();
+        // Sample 1: a different sine wave at 8 cycles per 64 samples.
+        let smpl1: Vec<u8> = (0..64)
+            .flat_map(|i| {
+                let phase = i as f32 / 64.0 * std::f32::consts::TAU * 8.0;
+                let value = (phase.sin() * i16::MAX as f32 * 0.25) as i16;
+                value.to_le_bytes()
+            })
+            .collect();
+        let smpl: Vec<u8> = smpl0.into_iter().chain(smpl1).collect();
+
+        let key36 = (36u16 | (36u16 << 8)) as i16;
+        let key38 = (38u16 | (38u16 << 8)) as i16;
+
+        let pdta = list_chunk(
+            b"pdta",
+            vec![
+                chunk(
+                    b"phdr",
+                    [phdr_record("Drums", 0, 0, 0), phdr_record("EOP", 0, 0, 1)].concat(),
+                ),
+                chunk(b"pbag", [bag_record(0, 0), bag_record(1, 0)].concat()),
+                chunk(b"pgen", gen_record(GEN_INSTRUMENT, 0)),
+                chunk(b"pmod", Vec::new()),
+                chunk(
+                    b"inst",
+                    [inst_record("DrumKit", 0), inst_record("EOI", 3)].concat(),
+                ),
+                // ibag: bag 0 = global (no sample), bag 1 = sample 0 key 36,
+                // bag 2 = sample 1 key 38.
+                chunk(
+                    b"ibag",
+                    [bag_record(0, 0), bag_record(1, 0), bag_record(3, 0)].concat(),
+                ),
+                chunk(
+                    b"igen",
+                    [
+                        // global
+                        gen_record(GEN_KEY_RANGE, (127u16 << 8) as i16),
+                        // zone 0
+                        gen_record(GEN_KEY_RANGE, key36),
+                        gen_record(GEN_SAMPLE_ID, 0),
+                        // zone 1
+                        gen_record(GEN_KEY_RANGE, key38),
+                        gen_record(GEN_SAMPLE_ID, 1),
+                    ]
+                    .concat(),
+                ),
+                chunk(b"imod", Vec::new()),
+                chunk(
+                    b"shdr",
+                    [
+                        shdr_record("sample0", 0, 64, 0, 0),
+                        shdr_record("sample1", 64, 128, 0, 0),
+                        shdr_record("EOS", 128, 128, 0, 0),
+                    ]
+                    .concat(),
+                ),
+            ],
+        );
+
+        let info = list_chunk(b"INFO", vec![chunk(b"INAM", b"Multi-Zone Test\0".to_vec())]);
+        let sdta = list_chunk(b"sdta", vec![chunk(b"smpl", smpl)]);
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(b"sfbk");
+        payload.extend_from_slice(&info);
+        payload.extend_from_slice(&sdta);
+        payload.extend_from_slice(&pdta);
+
+        let mut out = Vec::new();
+        out.extend_from_slice(b"RIFF");
+        push_u32(&mut out, payload.len() as u32);
+        out.extend_from_slice(&payload);
+        out
+    }
+
+    #[test]
+    fn test_multi_zone_sf2_creates_distinct_zones() {
+        let instrument = parse_sf2_instrument_data(&multi_zone_sf2_data()).unwrap();
+        assert_eq!(instrument.presets.len(), 1);
+        let preset = &instrument.presets[0];
+        assert_eq!(preset.name, "Drums");
+        assert_eq!(preset.patch.parts.len(), 1);
+        assert_eq!(preset.patch.parts[0].groups.len(), 1);
+        let group = &preset.patch.parts[0].groups[0];
+        assert_eq!(group.zones.len(), 2, "expected two zones");
+
+        let zone36 = group
+            .zones
+            .iter()
+            .find(|z| z.contains(36, 100))
+            .expect("zone for note 36");
+        let zone38 = group
+            .zones
+            .iter()
+            .find(|z| z.contains(38, 100))
+            .expect("zone for note 38");
+        assert_eq!(zone36.key_low, 36);
+        assert_eq!(zone36.key_high, 36);
+        assert_eq!(zone36.name, "sample0");
+        assert_eq!(zone38.key_low, 38);
+        assert_eq!(zone38.key_high, 38);
+        assert_eq!(zone38.name, "sample1");
+        assert!(
+            !Arc::ptr_eq(&zone36.sample, &zone38.sample),
+            "zones should reference different samples"
+        );
+    }
+
+    #[test]
+    fn test_multi_zone_sf2_renders_different_audio_per_note() {
+        let instrument = parse_sf2_instrument_data(&multi_zone_sf2_data()).unwrap();
+        let preset = &instrument.presets[0];
+        let mut engine = SamplerEngine::new(48_000.0, 4);
+        engine.set_patch(preset.patch.clone());
+
+        let mut energy = |note: u8| {
+            engine.note_on(note, 100, 0);
+            let mut l = vec![0.0; 64];
+            let mut r = vec![0.0; 64];
+            engine.process_block(&mut l, &mut r);
+            l.iter().map(|s| s * s).sum::<f32>()
+        };
+
+        let energy36 = energy(36);
+        let energy38 = energy(38);
+        assert!(energy36 > 1.0e-12, "note 36 should be audible");
+        assert!(energy38 > 1.0e-12, "note 38 should be audible");
+        assert!(
+            (energy36 - energy38).abs() / (energy36 + energy38).max(1.0e-12) > 0.01,
+            "notes 36 and 38 should render different energy"
         );
     }
 }

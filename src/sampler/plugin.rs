@@ -18,15 +18,16 @@ use clap_clap::{
     ffi::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI,
         CLAP_EVENT_NOTE_EXPRESSION, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EXT_AUDIO_PORTS,
-        CLAP_EXT_GUI, CLAP_EXT_NOTE_PORTS, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_INVALID_ID,
-        CLAP_NOTE_DIALECT_MIDI, CLAP_NOTE_EXPRESSION_BRIGHTNESS, CLAP_NOTE_EXPRESSION_PAN,
-        CLAP_NOTE_EXPRESSION_PRESSURE, CLAP_NOTE_EXPRESSION_TUNING, CLAP_NOTE_EXPRESSION_VOLUME,
-        CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_MONO, CLAP_PLUGIN_FEATURE_STEREO,
-        CLAP_PORT_STEREO, CLAP_PROCESS_CONTINUE, CLAP_VERSION, clap_audio_port_info, clap_host,
-        clap_host_gui, clap_host_params, clap_host_state, clap_id, clap_istream,
-        clap_note_port_info, clap_ostream, clap_plugin, clap_plugin_audio_ports,
-        clap_plugin_descriptor, clap_plugin_gui, clap_plugin_note_ports, clap_plugin_params,
-        clap_plugin_state, clap_process, clap_process_status, clap_window,
+        CLAP_EXT_GUI, CLAP_EXT_NOTE_NAME, CLAP_EXT_NOTE_PORTS, CLAP_EXT_PARAMS, CLAP_EXT_STATE,
+        CLAP_INVALID_ID, CLAP_NOTE_DIALECT_MIDI, CLAP_NOTE_EXPRESSION_BRIGHTNESS,
+        CLAP_NOTE_EXPRESSION_PAN, CLAP_NOTE_EXPRESSION_PRESSURE, CLAP_NOTE_EXPRESSION_TUNING,
+        CLAP_NOTE_EXPRESSION_VOLUME, CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_MONO,
+        CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_STEREO, CLAP_PROCESS_CONTINUE, CLAP_VERSION,
+        clap_audio_port_info, clap_host, clap_host_gui, clap_host_note_name, clap_host_params,
+        clap_host_state, clap_id, clap_istream, clap_note_name, clap_note_port_info, clap_ostream,
+        clap_plugin, clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_gui,
+        clap_plugin_note_name, clap_plugin_note_ports, clap_plugin_params, clap_plugin_state,
+        clap_process, clap_process_status, clap_window,
     },
     process::Process,
     stream::{IStream, OStream},
@@ -114,6 +115,12 @@ pub struct SharedState {
     /// Handle to the background instrument-loader thread, if one is running.
     /// Kept so the plugin can wait for it to finish before the library is unloaded.
     load_thread: Mutex<Option<JoinHandle<()>>>,
+    /// Latest GUI-generated note-on event encoded as `(sequence << 16) | (velocity << 8) | note`.
+    pending_note_on: AtomicU64,
+    /// Latest GUI-generated note-off event encoded as `(sequence << 16) | note`.
+    pending_note_off: AtomicU64,
+    /// Monotonically increasing sequence number for GUI note events.
+    note_sequence: AtomicU64,
 }
 
 impl Default for SharedState {
@@ -145,6 +152,9 @@ impl Default for SharedState {
             selected_sf2_preset: Mutex::new(None),
             instrument_cache: InstrumentCache::new(),
             load_thread: Mutex::new(None),
+            pending_note_on: AtomicU64::new(0),
+            pending_note_off: AtomicU64::new(0),
+            note_sequence: AtomicU64::new(1),
         }
     }
 }
@@ -223,6 +233,51 @@ impl SharedState {
         }
     }
 
+    fn request_process(&self) {
+        let host = self.host.load(Ordering::Acquire);
+        if host.is_null() {
+            return;
+        }
+        unsafe {
+            let Some(request_process) = (*host).request_process else {
+                return;
+            };
+            request_process(host);
+        }
+    }
+
+    pub fn send_note_on(&self, note: u8, velocity: u8) {
+        let seq = self.note_sequence.fetch_add(1, Ordering::Relaxed);
+        let encoded = (seq << 16) | ((velocity as u64) << 8) | (note as u64);
+        self.pending_note_on.store(encoded, Ordering::Release);
+        self.request_process();
+    }
+
+    pub fn send_note_off(&self, note: u8) {
+        let seq = self.note_sequence.fetch_add(1, Ordering::Relaxed);
+        let encoded = (seq << 16) | (note as u64);
+        self.pending_note_off.store(encoded, Ordering::Release);
+        self.request_process();
+    }
+
+    fn drain_pending_note_on(&self) -> Option<(u8, u8)> {
+        let encoded = self.pending_note_on.swap(0, Ordering::Acquire);
+        if encoded == 0 {
+            return None;
+        }
+        let note = (encoded & 0xFF) as u8;
+        let velocity = ((encoded >> 8) & 0xFF) as u8;
+        Some((note, velocity))
+    }
+
+    fn drain_pending_note_off(&self) -> Option<u8> {
+        let encoded = self.pending_note_off.swap(0, Ordering::Acquire);
+        if encoded == 0 {
+            return None;
+        }
+        Some((encoded & 0xFF) as u8)
+    }
+
     pub fn mark_dirty(&self) {
         let host = self.host.load(Ordering::Acquire);
         if host.is_null() {
@@ -265,6 +320,26 @@ impl SharedState {
 
     pub fn patch_version(&self) -> u64 {
         self.patch_version.load(Ordering::Acquire)
+    }
+
+    pub fn note_names_changed(&self) {
+        let host = self.host.load(Ordering::Acquire);
+        if host.is_null() {
+            return;
+        }
+        unsafe {
+            let Some(get_extension) = (*host).get_extension else {
+                return;
+            };
+            let ext = get_extension(host, c"clap.note-name".as_ptr());
+            if ext.is_null() {
+                return;
+            }
+            let note_name = &*(ext as *const clap_host_note_name);
+            if let Some(changed) = note_name.changed {
+                changed(host);
+            }
+        }
     }
 
     fn set_gesture_active(&self, id: ParamId, active: bool) {
@@ -329,8 +404,10 @@ impl SharedState {
                     shared
                         .zones
                         .store(Arc::new(build_zones_from_patch(patch.as_ref())));
+                    shared.bump_zones_version();
                     shared.patch.store(patch);
                     shared.bump_patch_version();
+                    shared.note_names_changed();
                     *shared.load_error.lock() = None;
                     shared.mark_dirty();
                 }
@@ -1201,6 +1278,13 @@ impl AudioProcessor {
             self.last_patch_version = patch_version;
         }
 
+        if let Some((note, velocity)) = shared.drain_pending_note_on() {
+            self.engine.note_on(note, velocity, 0);
+        }
+        if let Some(note) = shared.drain_pending_note_off() {
+            self.engine.note_off(note, 0);
+        }
+
         let events = process.in_events();
         for i in 0..events.size() {
             let header = unsafe { events.get_unchecked(i) };
@@ -1484,6 +1568,77 @@ static EXT_NOTE_PORTS: clap_plugin_note_ports = clap_plugin_note_ports {
     get: Some(ext_note_ports_get),
 };
 
+fn build_note_names(zones: &[SampleZone]) -> Vec<(u8, String)> {
+    let mut names: Vec<(u8, String)> = Vec::new();
+    for zone in zones {
+        let name = if zone.group.is_empty() {
+            zone.name.clone()
+        } else {
+            zone.group.clone()
+        };
+        if name.is_empty() {
+            continue;
+        }
+        let start = zone.start_note.min(zone.end_note).min(127);
+        let end = zone.start_note.max(zone.end_note).min(127);
+        for note in start..=end {
+            let note = note as u8;
+            if let Some(existing) = names.iter_mut().find(|(n, _)| *n == note) {
+                if !existing.1.split('/').any(|part| part.trim() == name) {
+                    existing.1.push_str(" / ");
+                    existing.1.push_str(&name);
+                }
+            } else {
+                names.push((note, name.clone()));
+            }
+        }
+    }
+    names.sort_by_key(|(note, _)| *note);
+    names
+}
+
+unsafe extern "C-unwind" fn ext_note_name_count(plugin: *const clap_plugin) -> u32 {
+    unsafe {
+        if plugin.is_null() {
+            return 0;
+        }
+        let inst = instance(plugin);
+        build_note_names(&inst.shared.zones.load()).len() as u32
+    }
+}
+
+unsafe extern "C-unwind" fn ext_note_name_get(
+    plugin: *const clap_plugin,
+    index: u32,
+    note_name: *mut clap_note_name,
+) -> bool {
+    unsafe {
+        if plugin.is_null() || note_name.is_null() {
+            return false;
+        }
+        let inst = instance(plugin);
+        let names = build_note_names(&inst.shared.zones.load());
+        let Some((note, name)) = names.get(index as usize) else {
+            return false;
+        };
+        let out = &mut *note_name;
+        out.name.fill(0);
+        let bytes = name.as_bytes();
+        let len = bytes.len().min(out.name.len().saturating_sub(1));
+        for (i, &b) in bytes.iter().enumerate().take(len) {
+            out.name[i] = b as c_char;
+        }
+        out.key = *note as i16;
+        out.channel = -1;
+        true
+    }
+}
+
+static EXT_NOTE_NAME: clap_plugin_note_name = clap_plugin_note_name {
+    count: Some(ext_note_name_count),
+    get: Some(ext_note_name_get),
+};
+
 unsafe extern "C-unwind" fn ext_params_count(_plugin: *const clap_plugin) -> u32 {
     ParamId::COUNT as u32
 }
@@ -1647,6 +1802,8 @@ unsafe extern "C-unwind" fn ext_state_load(
             .map(|zones| zones.iter().map(SampleZone::from_state).collect())
             .unwrap_or_default();
         inst.shared.zones.store(Arc::new(zones));
+        inst.shared.bump_zones_version();
+        inst.shared.note_names_changed();
         inst.shared.bump_params_version();
         if let Some(path) = state.sampler_instrument_path {
             Arc::clone(&inst.shared)
@@ -1864,6 +2021,8 @@ unsafe extern "C-unwind" fn plugin_get_extension(
         &EXT_AUDIO_PORTS as *const _ as *const c_void
     } else if id == CLAP_EXT_NOTE_PORTS {
         &EXT_NOTE_PORTS as *const _ as *const c_void
+    } else if id == CLAP_EXT_NOTE_NAME {
+        &EXT_NOTE_NAME as *const _ as *const c_void
     } else if id == CLAP_EXT_PARAMS {
         &EXT_PARAMS as *const _ as *const c_void
     } else if id == CLAP_EXT_STATE {
@@ -1978,5 +2137,43 @@ mod tests {
         assert_eq!(zones[1].name, "Kick Soft");
         assert_eq!(zones[1].vel_low, 0);
         assert_eq!(zones[1].vel_high, 99);
+    }
+
+    #[test]
+    fn build_note_names_publishes_group_names_per_note() {
+        let zones = vec![
+            SampleZone {
+                name: String::from("Kick sample"),
+                files: Vec::new(),
+                start_note: 36,
+                end_note: 36,
+                vel_low: 0,
+                vel_high: 127,
+                group: String::from("Kick"),
+            },
+            SampleZone {
+                name: String::from("Snare sample"),
+                files: Vec::new(),
+                start_note: 38,
+                end_note: 38,
+                vel_low: 0,
+                vel_high: 127,
+                group: String::from("Snare"),
+            },
+            SampleZone {
+                name: String::new(),
+                files: Vec::new(),
+                start_note: 42,
+                end_note: 42,
+                vel_low: 0,
+                vel_high: 127,
+                group: String::from("Hats"),
+            },
+        ];
+        let names = build_note_names(&zones);
+        assert_eq!(names.len(), 3);
+        assert!(names.contains(&(36, "Kick".to_string())));
+        assert!(names.contains(&(38, "Snare".to_string())));
+        assert!(names.contains(&(42, "Hats".to_string())));
     }
 }

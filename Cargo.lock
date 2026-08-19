@@ -1715,6 +1715,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "iced_drop"
+version = "0.2.41"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d65ae3343a07d9e5211df26552b1e2a16e1ff74a9744cb0e9045e6079b899ab"
+dependencies = [
+ "iced",
+ "iced_core",
+ "iced_runtime",
+ "iced_widget",
+]
+
+[[package]]
 name = "iced_fonts"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2412,8 +2424,6 @@ dependencies = [
  "base64 0.23.1",
  "clap-clap",
  "dirs",
- "iced_aw",
- "iced_fonts",
  "libc",
  "libloading 0.9.0",
  "maolan-baseview",
@@ -2445,11 +2455,13 @@ dependencies = [
 
 [[package]]
 name = "maolan-widgets"
-version = "0.0.34"
+version = "0.0.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c6b1dfa10debce93ed13e92e3ddc848cfda7dfca16d529bbe3fdb93e81bf557"
+checksum = "8201881f51e26aff699cf591f5fd243e1ecb3555bd3673263bfcf6684b91ed28"
 dependencies = [
  "iced",
+ "iced_aw",
+ "iced_drop",
  "iced_fonts",
  "serde",
  "symphonia",

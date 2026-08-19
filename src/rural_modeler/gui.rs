@@ -1083,7 +1083,7 @@ fn variation_options(variations: &[SearchVariation]) -> Vec<VariationOption> {
 
 fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {
     maolan_baseview::iced::application(move || init(shared.clone()), update, view)
-        .font(iced_fonts::LUCIDE_FONT_BYTES)
+        .font(maolan_widgets::iced_fonts::LUCIDE_FONT_BYTES)
         .subscription(|_| window::close_events().map(|_| Message::WindowClosed))
         .theme(theme)
         .run()

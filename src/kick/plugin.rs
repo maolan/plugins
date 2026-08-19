@@ -2755,12 +2755,12 @@ mod tests {
         assert!(!names.iter().any(|(note, _)| *note == 35));
     }
 
-    /// Regression test for the user's ~/Tunes/drums kick session. The saved
-    /// state stores "Filter Type" as a FilterType enum value, but the DSP used
-    /// to interpret it with a different scale (0=lowpass, 1=highpass,
-    /// 2=bandpass). For this session that turned a GUI lowpass selection into
-    /// a 20 kHz highpass, leaving only a tiny residual signal. After the fix
-    /// every note in the drum clip must trigger full-scale audible output.
+    /// Regression test for a saved drums kick session. The saved state stores
+    /// "Filter Type" as a FilterType enum value, but the DSP used to interpret
+    /// it with a different scale (0=lowpass, 1=highpass, 2=bandpass). For this
+    /// session that turned a GUI lowpass selection into a 20 kHz highpass,
+    /// leaving only a tiny residual signal. After the fix every note in the
+    /// drum clip must trigger full-scale audible output.
     #[test]
     fn drums_session_filter_type_maps_to_lowpass_not_highpass() {
         use crate::common::filter::FilterType;
