@@ -395,8 +395,8 @@ fn small_knob<'a>(
     .double_click_reset(def.default as f32)
     .on_release(Message::ReleaseParam(id))
     .fill_from_start()
-    .width(Length::Fixed(48.0))
-    .height(Length::Fixed(48.0));
+    .width(Length::Fixed(41.0))
+    .height(Length::Fixed(41.0));
     if assigned {
         slider = slider
             .filled_color(Color::from_rgb(0.82, 0.58, 0.08))
@@ -410,7 +410,7 @@ fn small_knob<'a>(
             .spacing(2)
             .align_x(Alignment::Center),
     )
-    .width(Length::Fixed(56.0))
+    .width(Length::Fixed(50.0))
     .padding(2)
     .style(move |_theme: &Theme| {
         let border_color = if assigned {
@@ -449,7 +449,7 @@ fn small_checkbox<'a>(id: ParamId, label: &'a str, state: &'a State) -> Element<
             .spacing(2)
             .align_x(Alignment::Center),
     )
-    .width(Length::Fixed(56.0))
+    .width(Length::Fixed(50.0))
     .into()
 }
 

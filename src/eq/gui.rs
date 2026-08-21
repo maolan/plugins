@@ -18,7 +18,6 @@ use maolan_baseview::iced::{
         column, container, row, text,
     },
 };
-use maolan_widgets::arch_slider::arch_slider;
 use std::{
     collections::HashSet,
     ffi::CStr,
@@ -3135,22 +3134,19 @@ fn freq_knob(id: ParamId, value_hz: f32) -> Element<'static, Message> {
     let def = PARAMS[id.as_index()];
     let value_norm = freq_to_norm(value_hz);
     let default_norm = freq_to_norm(def.default as f32);
-    let slider = arch_slider(0.0_f32..=1.0_f32, value_norm, move |n| {
-        Message::SetParam(id, norm_to_freq(n))
-    })
-    .double_click_reset(default_norm)
-    .on_release(Message::ReleaseParam(id))
-    .fill_from_start()
-    .width(Length::Fixed(41.0))
-    .height(Length::Fixed(41.0));
 
-    container(
-        column![text("Freq").size(11), slider, text("").size(10)]
-            .spacing(2)
-            .align_x(Alignment::Center),
+    small_knob(
+        SmallKnob {
+            label: "Freq".to_string(),
+            value: value_norm,
+            range: 0.0..=1.0,
+            default: default_norm,
+            step: 0.001,
+            value_text: String::new(),
+        },
+        move |n| Message::SetParam(id, norm_to_freq(n)),
+        Message::ReleaseParam(id),
     )
-    .width(Length::Fixed(50.0))
-    .into()
 }
 
 fn build_app(shared: Arc<SharedState<ParamId>>) -> impl maolan_baseview::iced::Program {

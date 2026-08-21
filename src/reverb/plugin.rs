@@ -205,6 +205,11 @@ impl SharedState {
         }
     }
 
+    pub fn sync_channels_from_params(&self) {
+        let channels = channel_count_from_value(self.params.get(ParamId::Channels));
+        self.channels.store(channels, Ordering::Release);
+    }
+
     fn request_flush(&self) {
         let host = self.host.load(Ordering::Acquire);
         if host.is_null() {
@@ -300,6 +305,10 @@ struct DirtyFlags {
     dry_wet: bool,
 }
 
+fn channel_count_from_value(value: f64) -> u32 {
+    (value.round() as u32).clamp(1, 2)
+}
+
 fn apply_param_id(
     state: &mut AudioProcessor,
     id: ParamId,
@@ -382,6 +391,10 @@ fn apply_param_events_reverb(
                         }
                         let incoming = sanitize(id, param.value());
                         shared.set_param_from_host(id, incoming);
+                        if id == ParamId::Channels {
+                            shared.sync_channels_from_params();
+                            shared.request_audio_ports_rescan();
+                        }
                         if next_idx < changed.len() {
                             changed[next_idx] = Some((id, incoming));
                             next_idx += 1;
@@ -571,7 +584,6 @@ struct PluginInstance {
     processor: AtomicPtr<AudioProcessor>,
     retired_processors: Mutex<Vec<*mut AudioProcessor>>,
     gui_bridge: Mutex<GuiBridge>,
-    channels: AtomicU32,
     bus_id: bus::InstanceId,
     bus_data: bus::PluginSharedData,
 }
@@ -591,7 +603,6 @@ impl PluginInstance {
             processor: AtomicPtr::new(null_mut()),
             retired_processors: Mutex::new(Vec::new()),
             gui_bridge: Mutex::new(GuiBridge::default()),
-            channels: AtomicU32::new(channels),
             bus_id,
             bus_data,
         }
@@ -675,13 +686,7 @@ unsafe extern "C-unwind" fn plugin_deactivate(plugin: *const clap_plugin) {
     }
     instance.active.store(false, Ordering::Release);
 
-    let channels_param = instance.shared.params.get(ParamId::Channels).round() as u32;
-    let new_channels = channels_param.clamp(1, 2);
-    instance.channels.store(new_channels, Ordering::Release);
-    instance
-        .shared
-        .channels
-        .store(new_channels, Ordering::Release);
+    instance.shared.sync_channels_from_params();
 }
 
 unsafe extern "C-unwind" fn plugin_start_processing(_plugin: *const clap_plugin) -> bool {
@@ -729,7 +734,7 @@ unsafe extern "C-unwind" fn ext_audio_ports_count(
         return 0;
     }
     let instance = unsafe { instance(plugin) };
-    instance.channels.load(Ordering::Acquire)
+    instance.shared.channels.load(Ordering::Acquire)
 }
 
 unsafe extern "C-unwind" fn ext_audio_ports_get(
@@ -742,7 +747,7 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
         return false;
     }
     let instance = unsafe { instance(plugin) };
-    let channels = instance.channels.load(Ordering::Acquire);
+    let channels = instance.shared.channels.load(Ordering::Acquire);
     if index >= channels {
         return false;
     }
@@ -927,6 +932,8 @@ unsafe extern "C-unwind" fn ext_state_load(
     };
     state.apply(&instance.shared.params);
     instance.shared.bump_params_version();
+    instance.shared.sync_channels_from_params();
+    instance.shared.request_audio_ports_rescan();
     true
 }
 

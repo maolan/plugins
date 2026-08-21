@@ -16,12 +16,14 @@ use maolan_baseview::iced::{
     alignment::{Horizontal, Vertical},
     widget::{column, container, row, text, toggler},
 };
-use maolan_widgets::arch_slider::arch_slider;
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 
-use crate::delay::{
-    params::{NOTE_DIVISIONS, PARAMS, ParamId},
-    plugin::SharedState,
+use crate::{
+    common::ui::{SmallKnob, small_knob},
+    delay::{
+        params::{NOTE_DIVISIONS, PARAMS, ParamId},
+        plugin::SharedState,
+    },
 };
 
 pub const EDITOR_WIDTH: u32 = 540;
@@ -168,25 +170,20 @@ fn view(state: &State) -> Element<'_, Message> {
     fn knob<'a>(id: ParamId, label: &'a str, state: &'a State) -> Element<'a, Message> {
         let value = state.shared.params.get(id) as f32;
         let def = &PARAMS[id.as_index()];
-        let slider = arch_slider(def.min as f32..=def.max as f32, value, move |v| {
-            Message::SetParam(id, v)
-        })
-        .step(0.01)
-        .double_click_reset(def.default as f32)
-        .on_release(Message::ReleaseParam(id))
-        .fill_from_start()
-        .width(Length::Fixed(86.0))
-        .height(Length::Fixed(86.0));
-
         let value_text = format!("{value:.2}");
 
-        container(
-            column![text(label).size(14), slider, text(value_text).size(13)]
-                .spacing(4)
-                .align_x(Alignment::Center),
+        small_knob(
+            SmallKnob {
+                label: label.to_string(),
+                value,
+                range: def.min as f32..=def.max as f32,
+                default: def.default as f32,
+                step: 0.01,
+                value_text,
+            },
+            move |v| Message::SetParam(id, v),
+            Message::ReleaseParam(id),
         )
-        .width(Length::Fixed(96.0))
-        .into()
     }
 
     fn time_knob<'a>(state: &'a State) -> Element<'a, Message> {
@@ -198,16 +195,6 @@ fn view(state: &State) -> Element<'_, Message> {
         };
         let value = state.shared.params.get(id) as f32;
         let def = &PARAMS[id.as_index()];
-        let slider = arch_slider(def.min as f32..=def.max as f32, value, move |v| {
-            Message::SetParam(id, v)
-        })
-        .step(def.step as f32)
-        .double_click_reset(def.default as f32)
-        .on_release(Message::ReleaseParam(id))
-        .fill_from_start()
-        .width(Length::Fixed(86.0))
-        .height(Length::Fixed(86.0));
-
         let value_text = if id == ParamId::TimeNote {
             let idx = ((value as f64).clamp(0.0, 1.0) * (NOTE_DIVISIONS.len() - 1) as f64).round()
                 as usize;
@@ -218,13 +205,18 @@ fn view(state: &State) -> Element<'_, Message> {
             format!("{value:.0} ms")
         };
 
-        container(
-            column![text(label).size(14), slider, text(value_text).size(13)]
-                .spacing(4)
-                .align_x(Alignment::Center),
+        small_knob(
+            SmallKnob {
+                label: label.to_string(),
+                value,
+                range: def.min as f32..=def.max as f32,
+                default: def.default as f32,
+                step: def.step as f32,
+                value_text,
+            },
+            move |v| Message::SetParam(id, v),
+            Message::ReleaseParam(id),
         )
-        .width(Length::Fixed(96.0))
-        .into()
     }
 
     let channels = state.shared.params.get(ParamId::Channels).round() as u32;

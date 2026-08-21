@@ -22,10 +22,13 @@ use maolan_baseview::iced::{
 use maolan_widgets::arch_slider::arch_slider;
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 
-use crate::rural_modeler::{
-    params::{PARAMS, ParamId},
-    plugin::SharedState,
-    tone3000::{self, AssetKind, PaginatedSearchResults, SearchItem, SearchVariation},
+use crate::{
+    common::ui::{SmallKnob, small_knob},
+    rural_modeler::{
+        params::{PARAMS, ParamId},
+        plugin::SharedState,
+        tone3000::{self, AssetKind, PaginatedSearchResults, SearchItem, SearchVariation},
+    },
 };
 
 pub const EDITOR_WIDTH: u32 = 720;
@@ -989,29 +992,24 @@ fn knob(
     step: f32,
 ) -> Element<'static, Message> {
     let def = PARAMS[id.as_index()];
-    let slider = arch_slider(def.min as f32..=def.max as f32, value, move |v| {
-        Message::SetParam(id, v)
-    })
-    .step(step)
-    .double_click_reset(def.default as f32)
-    .on_release(Message::ReleaseParam(id))
-    .fill_from_start()
-    .width(Length::Fixed(86.0))
-    .height(Length::Fixed(86.0));
-
     let value_text = if units.is_empty() {
         format!("{value:.1}")
     } else {
         format!("{value:.1} {units}")
     };
 
-    container(
-        column![text(label).size(14), slider, text(value_text).size(13)]
-            .spacing(4)
-            .align_x(Alignment::Center),
+    small_knob(
+        SmallKnob {
+            label: label.to_string(),
+            value,
+            range: def.min as f32..=def.max as f32,
+            default: def.default as f32,
+            step,
+            value_text,
+        },
+        move |v| Message::SetParam(id, v),
+        Message::ReleaseParam(id),
     )
-    .width(Length::Fixed(96.0))
-    .into()
 }
 
 struct ToneKnobMode {
@@ -1036,8 +1034,8 @@ fn tone_knob(
     .double_click_reset(def.default as f32)
     .on_release(Message::ReleaseParam(id))
     .fill_from_start()
-    .width(Length::Fixed(86.0))
-    .height(Length::Fixed(86.0));
+    .width(Length::Fixed(41.0))
+    .height(Length::Fixed(41.0));
 
     let value_text = format!("{value:.1}");
     let (slider, mode_dropdown) = if let Some(mode) = mode {
@@ -1061,14 +1059,14 @@ fn tone_knob(
         (slider, None)
     };
 
-    let mut column = column![text(label).size(14), slider, text(value_text).size(13)]
-        .spacing(4)
+    let mut column = column![text(label).size(11), slider, text(value_text).size(10)]
+        .spacing(2)
         .align_x(Alignment::Center);
     if let Some(dropdown) = mode_dropdown {
         column = column.push(dropdown);
     }
 
-    container(column).width(Length::Fixed(96.0)).into()
+    container(column).width(Length::Fixed(50.0)).into()
 }
 
 fn variation_options(variations: &[SearchVariation]) -> Vec<VariationOption> {

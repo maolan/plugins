@@ -16,12 +16,14 @@ use maolan_baseview::iced::{
     alignment::{Horizontal, Vertical},
     widget::{checkbox, column, container, radio, row, scrollable, text},
 };
-use maolan_widgets::arch_slider::arch_slider;
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 
-use crate::widener::{
-    params::{PARAMS, ParamId},
-    plugin::SharedState,
+use crate::{
+    common::ui::{SmallKnob, small_knob},
+    widener::{
+        params::{PARAMS, ParamId},
+        plugin::SharedState,
+    },
 };
 
 pub const EDITOR_WIDTH: u32 = 550;
@@ -139,7 +141,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 .spacing(6)
                 .align_x(Alignment::Center),
             )
-            .width(Length::Fixed(96.0)),
+            .width(Length::Fixed(50.0)),
             container(
                 column![
                     knob("Mid Gain", ParamId::MidGain, p(ParamId::MidGain), "", 1.0),
@@ -150,7 +152,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 .spacing(6)
                 .align_x(Alignment::Center),
             )
-            .width(Length::Fixed(96.0)),
+            .width(Length::Fixed(50.0)),
             container(
                 column![
                     knob(
@@ -167,7 +169,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 .spacing(6)
                 .align_x(Alignment::Center),
             )
-            .width(Length::Fixed(96.0)),
+            .width(Length::Fixed(50.0)),
         ]
         .spacing(16),
     );
@@ -259,25 +261,20 @@ fn knob(
     step: f32,
 ) -> Element<'static, Message> {
     let def = PARAMS[id.as_index()];
-    let slider = arch_slider(def.min as f32..=def.max as f32, value, move |v| {
-        Message::SetParam(id, v)
-    })
-    .step(step)
-    .double_click_reset(def.default as f32)
-    .on_release(Message::ReleaseParam(id))
-    .fill_from_start()
-    .width(Length::Fixed(86.0))
-    .height(Length::Fixed(86.0));
-
     let value_text = pretty_value(id, value, units);
 
-    container(
-        column![text(label).size(14), slider, text(value_text).size(13)]
-            .spacing(4)
-            .align_x(Alignment::Center),
+    small_knob(
+        SmallKnob {
+            label: label.to_string(),
+            value,
+            range: def.min as f32..=def.max as f32,
+            default: def.default as f32,
+            step,
+            value_text,
+        },
+        move |v| Message::SetParam(id, v),
+        Message::ReleaseParam(id),
     )
-    .width(Length::Fixed(96.0))
-    .into()
 }
 
 fn pretty_value(id: ParamId, value: f32, _units: &'static str) -> String {

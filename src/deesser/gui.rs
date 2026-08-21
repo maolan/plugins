@@ -14,14 +14,16 @@ use clap_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{column, container, row, text},
+    widget::{column, container, row},
 };
-use maolan_widgets::arch_slider::arch_slider;
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 
-use crate::deesser::{
-    params::{PARAMS, ParamId},
-    plugin::SharedState,
+use crate::{
+    common::ui::{SmallKnob, small_knob},
+    deesser::{
+        params::{PARAMS, ParamId},
+        plugin::SharedState,
+    },
 };
 
 pub const EDITOR_WIDTH: u32 = 560;
@@ -161,29 +163,24 @@ fn knob(
     step: f32,
 ) -> Element<'static, Message> {
     let def = PARAMS[id.as_index()];
-    let slider = arch_slider(def.min as f32..=def.max as f32, value, move |v| {
-        Message::SetParam(id, v)
-    })
-    .step(step)
-    .double_click_reset(def.default as f32)
-    .on_release(Message::ReleaseParam(id))
-    .fill_from_start()
-    .width(Length::Fixed(86.0))
-    .height(Length::Fixed(86.0));
-
     let value_text = if units.is_empty() {
         format!("{value:.2}")
     } else {
         format!("{value:.1} {units}")
     };
 
-    container(
-        column![text(label).size(14), slider, text(value_text).size(13)]
-            .spacing(4)
-            .align_x(Alignment::Center),
+    small_knob(
+        SmallKnob {
+            label: label.to_string(),
+            value,
+            range: def.min as f32..=def.max as f32,
+            default: def.default as f32,
+            step,
+            value_text,
+        },
+        move |v| Message::SetParam(id, v),
+        Message::ReleaseParam(id),
     )
-    .width(Length::Fixed(96.0))
-    .into()
 }
 
 fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {
