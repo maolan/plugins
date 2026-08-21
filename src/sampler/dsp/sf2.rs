@@ -278,9 +278,12 @@ struct SampleHeader {
     sample_rate: u32,
     original_key: u8,
     correction: i8,
-    _sample_link: u16,
-    _sample_type: u16,
+    sample_link: u16,
+    sample_type: u16,
 }
+
+const SF2_SAMPLE_TYPE_RIGHT: u16 = 2;
+const SF2_SAMPLE_TYPE_LEFT: u16 = 4;
 
 const GEN_START_ADDRS_OFFSET: u16 = 0;
 const GEN_END_ADDRS_OFFSET: u16 = 1;
@@ -490,8 +493,8 @@ impl Pdta {
                             sample_rate,
                             original_key,
                             correction,
-                            _sample_link: sample_link,
-                            _sample_type: sample_type,
+                            sample_link,
+                            sample_type,
                         });
                     }
                 }
@@ -515,62 +518,104 @@ impl Pdta {
 
 fn build_samples(headers: &[SampleHeader], smpl: &[i16], smpl24: &[i8]) -> Vec<Arc<Sample>> {
     let mut samples = Vec::with_capacity(headers.len());
-    let has_smpl24 = !smpl24.is_empty();
     for shdr in headers {
-        let start = shdr.start as usize;
-        let end = shdr.end as usize;
-        if start >= smpl.len() {
-            samples.push(Arc::new(Sample::silent(shdr.sample_rate as f32)));
-            continue;
-        }
-        let actual_end = end.min(smpl.len());
-        let frames = actual_end - start;
-        let mut data_l = Vec::with_capacity(frames);
-
-        for i in 0..frames {
-            let low = smpl[start + i];
-            let value = if has_smpl24 {
-                let high = smpl24.get(start + i).copied().unwrap_or(0) as i16;
-                let combined = ((high as i32) << 16) | (low as u16 as i32);
-                (combined as f32) / 8_388_608.0_f32
-            } else {
-                (low as f32) / 32_768.0_f32
-            };
-            data_l.push(value);
-        }
-
-        let peak = data_l
-            .iter()
-            .map(|s| s.abs())
-            .fold(0.0_f32, |a, b| a.max(b));
-        let rms = if !data_l.is_empty() {
-            (data_l.iter().map(|s| s * s).sum::<f32>() / data_l.len() as f32).sqrt()
+        let linked = if shdr.sample_type == SF2_SAMPLE_TYPE_LEFT {
+            headers
+                .get(shdr.sample_link as usize)
+                .filter(|linked| linked.sample_type == SF2_SAMPLE_TYPE_RIGHT)
         } else {
-            0.0
+            None
         };
-
-        let mut sample = Sample {
-            sample_rate: shdr.sample_rate as f32,
-            data_l: data_l.clone(),
-            data_r: data_l,
-            frames,
-            peak,
-            rms,
-            loop_start: None,
-            loop_end: None,
-            cue_points: Vec::new(),
-        };
-
-        let start_loop = shdr.start_loop as usize;
-        let end_loop = shdr.end_loop as usize;
-        if start_loop < end_loop && start_loop >= start && end_loop <= actual_end {
-            sample.loop_start = Some(start_loop - start);
-            sample.loop_end = Some(end_loop - start);
-        }
-
-        samples.push(Arc::new(sample));
+        samples.push(build_sample(shdr, linked, smpl, smpl24));
     }
     samples
+}
+
+fn sample_is_right_linked(header: &SampleHeader, headers: &[SampleHeader]) -> bool {
+    header.sample_type == SF2_SAMPLE_TYPE_RIGHT
+        && headers
+            .get(header.sample_link as usize)
+            .is_some_and(|linked| linked.sample_type == SF2_SAMPLE_TYPE_LEFT)
+}
+
+fn build_sample(
+    shdr: &SampleHeader,
+    linked: Option<&SampleHeader>,
+    smpl: &[i16],
+    smpl24: &[i8],
+) -> Arc<Sample> {
+    let Some(data_l) = extract_sample_channel(shdr, smpl, smpl24) else {
+        return Arc::new(Sample::silent(shdr.sample_rate as f32));
+    };
+    let data_r = linked
+        .and_then(|linked| extract_sample_channel(linked, smpl, smpl24))
+        .filter(|right| right.len() == data_l.len())
+        .unwrap_or_else(|| data_l.clone());
+    let frames = data_l.len();
+    let peak = data_l
+        .iter()
+        .chain(data_r.iter())
+        .map(|s| s.abs())
+        .fold(0.0_f32, |a, b| a.max(b));
+    let rms = if frames > 0 {
+        let sum = data_l
+            .iter()
+            .chain(data_r.iter())
+            .map(|s| s * s)
+            .sum::<f32>();
+        (sum / (frames * 2) as f32).sqrt()
+    } else {
+        0.0
+    };
+
+    let mut sample = Sample {
+        sample_rate: shdr.sample_rate as f32,
+        data_l,
+        data_r,
+        frames,
+        peak,
+        rms,
+        loop_start: None,
+        loop_end: None,
+        cue_points: Vec::new(),
+    };
+
+    let start = shdr.start as usize;
+    let actual_end = shdr.end.min(smpl.len() as u32) as usize;
+    let start_loop = shdr.start_loop as usize;
+    let end_loop = shdr.end_loop as usize;
+    if start_loop < end_loop && start_loop >= start && end_loop <= actual_end {
+        sample.loop_start = Some(start_loop - start);
+        sample.loop_end = Some(end_loop - start);
+    }
+
+    Arc::new(sample)
+}
+
+fn extract_sample_channel(shdr: &SampleHeader, smpl: &[i16], smpl24: &[i8]) -> Option<Vec<f32>> {
+    let start = shdr.start as usize;
+    let end = shdr.end as usize;
+    if start >= smpl.len() {
+        return None;
+    }
+    let actual_end = end.min(smpl.len());
+    let frames = actual_end - start;
+    let has_smpl24 = !smpl24.is_empty();
+    let mut data = Vec::with_capacity(frames);
+
+    for i in 0..frames {
+        let low = smpl[start + i];
+        let value = if has_smpl24 {
+            let high = smpl24.get(start + i).copied().unwrap_or(0) as i16;
+            let combined = ((high as i32) << 16) | (low as u16 as i32);
+            (combined as f32) / 8_388_608.0_f32
+        } else {
+            (low as f32) / 32_768.0_f32
+        };
+        data.push(value);
+    }
+
+    Some(data)
 }
 
 fn slice_sample(
@@ -745,8 +790,11 @@ fn build_group_for_instrument(
             if sample_id >= samples.len() || sample_id >= pdta.sample_headers.len() {
                 continue;
             }
-            let mut zone = Zone::sf2_default();
             let header = &pdta.sample_headers[sample_id];
+            if sample_is_right_linked(header, &pdta.sample_headers) {
+                continue;
+            }
+            let mut zone = Zone::sf2_default();
             zone.name = header._name.clone();
             let base_sample = &samples[sample_id];
             let pool_start = header.start as i32 + combined.start_offset();
@@ -1319,13 +1367,49 @@ mod tests {
             sample_rate: 44100,
             original_key: 60,
             correction: 0,
-            _sample_link: 0,
-            _sample_type: 0,
+            sample_link: 0,
+            sample_type: 0,
         }];
         let smpl = vec![0i16, i16::MAX, i16::MIN, 0];
         let samples = build_samples(&headers, &smpl, &[]);
         assert!((samples[0].data_l[1] - 1.0).abs() < 1e-4);
         assert!((samples[0].data_l[2] + 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_build_samples_links_sf2_stereo_pair() {
+        let headers = vec![
+            SampleHeader {
+                _name: "left".to_string(),
+                start: 0,
+                end: 4,
+                start_loop: 0,
+                end_loop: 0,
+                sample_rate: 44100,
+                original_key: 60,
+                correction: 0,
+                sample_link: 1,
+                sample_type: SF2_SAMPLE_TYPE_LEFT,
+            },
+            SampleHeader {
+                _name: "right".to_string(),
+                start: 4,
+                end: 8,
+                start_loop: 0,
+                end_loop: 0,
+                sample_rate: 44100,
+                original_key: 60,
+                correction: 0,
+                sample_link: 0,
+                sample_type: SF2_SAMPLE_TYPE_RIGHT,
+            },
+        ];
+        let smpl = vec![1000, 2000, 3000, 4000, -1000, -2000, -3000, -4000];
+        let samples = build_samples(&headers, &smpl, &[]);
+        assert_eq!(samples[0].frames, 4);
+        assert!((samples[0].data_l[1] - 2000.0 / 32768.0).abs() < 1e-6);
+        assert!((samples[0].data_r[1] + 2000.0 / 32768.0).abs() < 1e-6);
+        assert!(sample_is_right_linked(&headers[1], &headers));
     }
 
     fn fixed_name<const N: usize>(name: &str) -> [u8; N] {

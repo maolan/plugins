@@ -2,7 +2,30 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
-pub use crate::common::state::{PluginState, SamplerZoneState};
+pub use crate::common::state::{PluginState, SamplerGroupState, SamplerZoneState};
+
+#[derive(Debug, Clone)]
+pub struct SampleGroup {
+    pub name: String,
+}
+
+impl SampleGroup {
+    pub fn to_state(&self) -> SamplerGroupState {
+        SamplerGroupState {
+            name: self.name.clone(),
+        }
+    }
+
+    pub fn from_state(state: &SamplerGroupState) -> Self {
+        Self {
+            name: if state.name.is_empty() {
+                String::from("New Group")
+            } else {
+                state.name.clone()
+            },
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SampleZone {

@@ -22,7 +22,7 @@ use clap_clap::{
         CLAP_INVALID_ID, CLAP_NOTE_DIALECT_MIDI, CLAP_NOTE_EXPRESSION_BRIGHTNESS,
         CLAP_NOTE_EXPRESSION_PAN, CLAP_NOTE_EXPRESSION_PRESSURE, CLAP_NOTE_EXPRESSION_TUNING,
         CLAP_NOTE_EXPRESSION_VOLUME, CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_MONO,
-        CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_STEREO, CLAP_PROCESS_CONTINUE, CLAP_VERSION,
+        CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION,
         clap_audio_port_info, clap_host, clap_host_gui, clap_host_note_name, clap_host_params,
         clap_host_state, clap_id, clap_istream, clap_note_name, clap_note_port_info, clap_ostream,
         clap_plugin, clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_gui,
@@ -55,7 +55,7 @@ use crate::sampler::{
     load_status::SamplerLoadStatus,
     loader::{InstrumentCache, PresetInfo, load_instrument_file_with_preset},
     params::{PARAMS, ParamId, sanitize_param_value},
-    state::{AtomicArc, SampleZone},
+    state::{AtomicArc, SampleGroup, SampleZone},
 };
 
 const PLUGIN_ID: &[u8] = b"rs.maolan.sampler\0";
@@ -104,6 +104,7 @@ pub struct SharedState {
     pending_gesture_end: Vec<AtomicBool>,
     gesture_active: [AtomicBool; ParamId::COUNT],
     pub zones: AtomicArc<Vec<SampleZone>>,
+    pub groups: AtomicArc<Vec<SampleGroup>>,
     pub patch: AtomicArc<Patch>,
     pub load_status: Mutex<SamplerLoadStatus>,
     pub load_error: Mutex<Option<String>>,
@@ -143,6 +144,7 @@ impl Default for SharedState {
                 .collect(),
             gesture_active: std::array::from_fn(|_| AtomicBool::new(false)),
             zones: AtomicArc::default(),
+            groups: AtomicArc::default(),
             patch: AtomicArc::default(),
             load_status: Mutex::new(SamplerLoadStatus::Empty),
             load_error: Mutex::new(None),
@@ -209,6 +211,26 @@ impl SharedState {
             let gui = &*(ext as *const clap_host_gui);
             if let Some(closed) = gui.closed {
                 closed(host, false);
+            }
+        }
+    }
+
+    pub fn request_audio_ports_rescan(&self) {
+        let host = self.host.load(Ordering::Acquire);
+        if host.is_null() {
+            return;
+        }
+        unsafe {
+            let Some(get_extension) = (*host).get_extension else {
+                return;
+            };
+            let ext = get_extension(host, c"clap.audio-ports".as_ptr());
+            if ext.is_null() {
+                return;
+            }
+            let audio_ports = &*(ext as *const clap_clap::ffi::clap_host_audio_ports);
+            if let Some(rescan) = audio_ports.rescan {
+                rescan(host, clap_clap::ffi::CLAP_AUDIO_PORTS_RESCAN_LIST);
             }
         }
     }
@@ -368,6 +390,23 @@ impl SharedState {
         path: std::path::PathBuf,
         preset_index: Option<usize>,
     ) {
+        self.load_file_with_preset_dirty(path, preset_index, true);
+    }
+
+    fn restore_file_with_preset(
+        self: Arc<Self>,
+        path: std::path::PathBuf,
+        preset_index: Option<usize>,
+    ) {
+        self.load_file_with_preset_dirty(path, preset_index, false);
+    }
+
+    fn load_file_with_preset_dirty(
+        self: Arc<Self>,
+        path: std::path::PathBuf,
+        preset_index: Option<usize>,
+        mark_dirty: bool,
+    ) {
         // Wait for any previous load to finish before starting a new one so we
         // never have multiple loader threads racing over the same SharedState.
         self.wait_for_load_thread();
@@ -404,12 +443,18 @@ impl SharedState {
                     shared
                         .zones
                         .store(Arc::new(build_zones_from_patch(patch.as_ref())));
+                    shared
+                        .groups
+                        .store(Arc::new(build_groups_from_patch(patch.as_ref())));
+                    shared.request_audio_ports_rescan();
                     shared.bump_zones_version();
                     shared.patch.store(patch);
                     shared.bump_patch_version();
                     shared.note_names_changed();
                     *shared.load_error.lock() = None;
-                    shared.mark_dirty();
+                    if mark_dirty {
+                        shared.mark_dirty();
+                    }
                 }
                 Err(e) => {
                     *shared.load_status.lock() = SamplerLoadStatus::Error(e.clone());
@@ -922,70 +967,67 @@ fn build_zones_from_patch(patch: &Patch) -> Vec<SampleZone> {
     zones
 }
 
-fn build_patch_from_zones(zones: &[SampleZone], sample_rate: f32) -> Patch {
-    let mut groups: std::collections::HashMap<String, Vec<&SampleZone>> =
+fn build_groups_from_patch(patch: &Patch) -> Vec<SampleGroup> {
+    let mut groups = Vec::new();
+    for part in &patch.parts {
+        for group in &part.groups {
+            if !groups
+                .iter()
+                .any(|existing: &SampleGroup| existing.name == group.name)
+            {
+                groups.push(SampleGroup {
+                    name: group.name.clone(),
+                });
+            }
+        }
+    }
+    groups
+}
+
+fn normalize_groups(mut groups: Vec<SampleGroup>, zones: &[SampleZone]) -> Vec<SampleGroup> {
+    groups.retain(|group| !group.name.is_empty());
+    for zone in zones {
+        if !groups.iter().any(|group| group.name == zone.group) {
+            groups.push(SampleGroup {
+                name: zone.group.clone(),
+            });
+        }
+    }
+    groups
+}
+
+fn build_patch_from_zones(groups: &[SampleGroup], zones: &[SampleZone], sample_rate: f32) -> Patch {
+    let mut zones_by_group: std::collections::HashMap<String, Vec<&SampleZone>> =
         std::collections::HashMap::new();
     for zone in zones {
-        groups.entry(zone.group.clone()).or_default().push(zone);
+        zones_by_group
+            .entry(zone.group.clone())
+            .or_default()
+            .push(zone);
     }
 
     let mut dsp_groups = Vec::new();
-    for (group_name, group_zones) in groups {
-        let mut dsp_zones = Vec::new();
-        for zone in group_zones {
-            let mut variants = Vec::new();
-            for file in &zone.files {
-                match crate::common::audio_file::decode_file(file) {
-                    Ok(audio) => match audio.into_stereo() {
-                        Ok(stereo) => {
-                            let peak = stereo.peak;
-                            let rms = stereo.rms;
-                            let file_sample_rate = stereo.sample_rate;
-                            let (data_l, data_r) = stereo.into_stereo_buffers();
-                            let frames = data_l.len();
-                            variants.push(Arc::new(Sample {
-                                sample_rate: file_sample_rate,
-                                data_l,
-                                data_r,
-                                frames,
-                                peak,
-                                rms,
-                                loop_start: None,
-                                loop_end: None,
-                                cue_points: Vec::new(),
-                            }));
-                        }
-                        Err(_) => {
-                            variants.push(Arc::new(Sample::silent(sample_rate)));
-                        }
-                    },
-                    Err(_) => {
-                        variants.push(Arc::new(Sample::silent(sample_rate)));
-                    }
-                }
-            }
-
-            let (sample, variants) = if variants.is_empty() {
-                (Arc::new(Sample::silent(sample_rate)), Vec::new())
-            } else {
-                let sample = variants[0].clone();
-                (sample, variants)
-            };
-
-            let root_key = ((zone.start_note + zone.end_note) / 2).min(127) as u8;
-            dsp_zones.push(Zone::new_round_robin(
-                zone.name.clone(),
-                sample,
-                root_key,
-                (zone.start_note as u8, zone.end_note as u8),
-                (zone.vel_low, zone.vel_high),
-                variants,
-            ));
-        }
-
+    for group in groups {
+        let group_name = group.name.clone();
         dsp_groups.push(Group {
             name: group_name,
-            zones: dsp_zones,
+            zones: zones_by_group
+                .remove(&group.name)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|zone| build_dsp_zone(zone, sample_rate))
+                .collect(),
+            ..Default::default()
+        });
+    }
+
+    for (group_name, group_zones) in zones_by_group {
+        dsp_groups.push(Group {
+            name: group_name,
+            zones: group_zones
+                .into_iter()
+                .map(|zone| build_dsp_zone(zone, sample_rate))
+                .collect(),
             ..Default::default()
         });
     }
@@ -999,11 +1041,56 @@ fn build_patch_from_zones(zones: &[SampleZone], sample_rate: f32) -> Patch {
     }
 }
 
+fn build_dsp_zone(zone: &SampleZone, sample_rate: f32) -> Zone {
+    let mut variants = Vec::new();
+    for file in &zone.files {
+        match crate::common::audio_file::decode_file(file) {
+            Ok(audio) => match audio.into_stereo() {
+                Ok(stereo) => {
+                    let peak = stereo.peak;
+                    let rms = stereo.rms;
+                    let file_sample_rate = stereo.sample_rate;
+                    let (data_l, data_r) = stereo.into_stereo_buffers();
+                    let frames = data_l.len();
+                    variants.push(Arc::new(Sample {
+                        sample_rate: file_sample_rate,
+                        data_l,
+                        data_r,
+                        frames,
+                        peak,
+                        rms,
+                        loop_start: None,
+                        loop_end: None,
+                        cue_points: Vec::new(),
+                    }));
+                }
+                Err(_) => variants.push(Arc::new(Sample::silent(sample_rate))),
+            },
+            Err(_) => variants.push(Arc::new(Sample::silent(sample_rate))),
+        }
+    }
+
+    let (sample, variants) = if variants.is_empty() {
+        (Arc::new(Sample::silent(sample_rate)), Vec::new())
+    } else {
+        let sample = variants[0].clone();
+        (sample, variants)
+    };
+    let root_key = ((zone.start_note + zone.end_note) / 2).min(127) as u8;
+    Zone::new_round_robin(
+        zone.name.clone(),
+        sample,
+        root_key,
+        (zone.start_note as u8, zone.end_note as u8),
+        (zone.vel_low, zone.vel_high),
+        variants,
+    )
+}
+
 struct AudioProcessor {
     engine: SamplerEngine,
     sample_rate: f32,
-    out_l: Vec<f32>,
-    out_r: Vec<f32>,
+    group_outputs: Vec<(Vec<f32>, Vec<f32>)>,
     last_params_version: u64,
     last_zones_version: u64,
     last_patch_version: u64,
@@ -1015,8 +1102,10 @@ impl AudioProcessor {
         Self {
             engine: SamplerEngine::new(sample_rate_f, 32),
             sample_rate: sample_rate_f,
-            out_l: vec![0.0; max_frames as usize],
-            out_r: vec![0.0; max_frames as usize],
+            group_outputs: vec![(
+                vec![0.0; max_frames as usize],
+                vec![0.0; max_frames as usize],
+            )],
             last_params_version: 0,
             last_zones_version: 0,
             last_patch_version: 0,
@@ -1108,10 +1197,6 @@ impl AudioProcessor {
 
     fn process(&mut self, shared: &SharedState, process: &mut Process) -> clap_process_status {
         let frames = process.frames_count() as usize;
-        if self.out_l.len() < frames {
-            self.out_l.resize(frames, 0.0);
-            self.out_r.resize(frames, 0.0);
-        }
 
         let mut changed_params: [Option<(ParamId, f64)>; 32] = [None; 32];
         let overflow = apply_param_events_sampler(
@@ -1266,7 +1351,8 @@ impl AudioProcessor {
         let zones_version = shared.zones_version();
         if zones_version != self.last_zones_version {
             let zones = shared.zones.load();
-            let patch = build_patch_from_zones(&zones, self.sample_rate);
+            let groups = shared.groups.load();
+            let patch = build_patch_from_zones(&groups, &zones, self.sample_rate);
             self.engine.set_patch(patch);
             self.last_zones_version = zones_version;
         }
@@ -1365,23 +1451,43 @@ impl AudioProcessor {
             }
         }
 
-        self.engine
-            .process_block(&mut self.out_l[..frames], &mut self.out_r[..frames]);
-
-        if process.audio_outputs_count() >= 1 {
-            let mut out_port = process.audio_outputs(0);
-            let ch_count = out_port.channel_count() as usize;
-            if ch_count >= 1 {
-                let dst = unsafe {
-                    std::slice::from_raw_parts_mut(out_port.data32(0).as_mut_ptr(), frames)
-                };
-                dst.copy_from_slice(&self.out_l[..frames]);
+        let group_output_count = process.audio_outputs_count().div_ceil(2).max(1) as usize;
+        if self.group_outputs.len() < group_output_count {
+            self.group_outputs.resize_with(group_output_count, || {
+                (vec![0.0; frames], vec![0.0; frames])
+            });
+        }
+        for (out_l, out_r) in &mut self.group_outputs[..group_output_count] {
+            if out_l.len() < frames {
+                out_l.resize(frames, 0.0);
             }
-            if ch_count >= 2 {
+            if out_r.len() < frames {
+                out_r.resize(frames, 0.0);
+            }
+        }
+        self.engine
+            .process_group_outputs(&mut self.group_outputs[..group_output_count], frames);
+
+        for port_index in 0..process.audio_outputs_count() {
+            let mut out_port = process.audio_outputs(port_index);
+            let ch_count = out_port.channel_count() as usize;
+            if ch_count == 0 {
+                continue;
+            }
+            for channel in 0..ch_count {
                 let dst = unsafe {
-                    std::slice::from_raw_parts_mut(out_port.data32(1).as_mut_ptr(), frames)
+                    std::slice::from_raw_parts_mut(
+                        out_port.data32(channel as u32).as_mut_ptr(),
+                        frames,
+                    )
                 };
-                dst.copy_from_slice(&self.out_r[..frames]);
+                let group_index = (port_index / 2) as usize;
+                let is_left = port_index.is_multiple_of(2);
+                match (self.group_outputs.get(group_index), channel) {
+                    (Some((out_l, _)), 0) if is_left => dst.copy_from_slice(&out_l[..frames]),
+                    (Some((_, out_r)), 0) => dst.copy_from_slice(&out_r[..frames]),
+                    _ => dst.fill(0.0),
+                }
             }
         }
 
@@ -1505,28 +1611,45 @@ unsafe extern "C-unwind" fn plugin_process(
 }
 
 unsafe extern "C-unwind" fn ext_audio_ports_count(
-    _plugin: *const clap_plugin,
+    plugin: *const clap_plugin,
     is_input: bool,
 ) -> u32 {
-    if is_input { 0 } else { 1 }
+    if is_input {
+        return 0;
+    }
+    let inst = unsafe { instance(plugin) };
+    let groups = inst.shared.groups.load();
+    (groups.len().max(1) * 2) as u32
 }
 
 unsafe extern "C-unwind" fn ext_audio_ports_get(
-    _plugin: *const clap_plugin,
+    plugin: *const clap_plugin,
     index: u32,
     is_input: bool,
     info: *mut clap_audio_port_info,
 ) -> bool {
     unsafe {
-        if is_input || index != 0 {
+        if is_input || info.is_null() {
             return false;
         }
+        let inst = instance(plugin);
+        let groups = inst.shared.groups.load();
+        let group_index = (index / 2) as usize;
+        let output_name = if groups.is_empty() && group_index == 0 {
+            "Main"
+        } else {
+            let Some(group) = groups.get(group_index) else {
+                return false;
+            };
+            group.name.as_str()
+        };
         let info = &mut *info;
-        info.id = 0;
-        info.channel_count = 2;
-        copy_str_to_array("Stereo Out", &mut info.name);
+        info.id = index;
+        info.channel_count = 1;
+        let side = if index.is_multiple_of(2) { "L" } else { "R" };
+        copy_str_to_array(&format!("{output_name} {side}"), &mut info.name);
         info.flags = CLAP_AUDIO_PORT_IS_MAIN;
-        info.port_type = CLAP_PORT_STEREO.as_ptr();
+        info.port_type = CLAP_PORT_MONO.as_ptr();
         info.in_place_pair = CLAP_INVALID_ID;
         true
     }
@@ -1763,6 +1886,8 @@ unsafe extern "C-unwind" fn ext_state_save(
         let mut state = PluginState::from_runtime(&inst.shared.params);
         let zones = inst.shared.zones.load();
         state.sampler_zones = Some(zones.iter().map(SampleZone::to_state).collect());
+        let groups = inst.shared.groups.load();
+        state.sampler_groups = Some(groups.iter().map(SampleGroup::to_state).collect());
         state.sampler_instrument_path = inst
             .shared
             .instrument_path
@@ -1801,13 +1926,21 @@ unsafe extern "C-unwind" fn ext_state_load(
             .as_ref()
             .map(|zones| zones.iter().map(SampleZone::from_state).collect())
             .unwrap_or_default();
+        let groups: Vec<SampleGroup> = state
+            .sampler_groups
+            .as_ref()
+            .map(|groups| groups.iter().map(SampleGroup::from_state).collect())
+            .unwrap_or_default();
+        let groups = normalize_groups(groups, &zones);
         inst.shared.zones.store(Arc::new(zones));
+        inst.shared.groups.store(Arc::new(groups));
+        inst.shared.request_audio_ports_rescan();
         inst.shared.bump_zones_version();
         inst.shared.note_names_changed();
         inst.shared.bump_params_version();
         if let Some(path) = state.sampler_instrument_path {
             Arc::clone(&inst.shared)
-                .load_file_with_preset(std::path::PathBuf::from(path), state.sampler_sf2_preset);
+                .restore_file_with_preset(std::path::PathBuf::from(path), state.sampler_sf2_preset);
         }
         true
     }

@@ -776,6 +776,39 @@ impl SamplerEngine {
         }
     }
 
+    pub fn process_group_outputs(&mut self, outputs: &mut [(Vec<f32>, Vec<f32>)], frames: usize) {
+        for (out_l, out_r) in outputs.iter_mut() {
+            assert!(out_l.len() >= frames);
+            assert!(out_r.len() >= frames);
+            out_l[..frames].fill(0.0);
+            out_r[..frames].fill(0.0);
+        }
+
+        if outputs.is_empty() || !self.voices.iter().any(|v| v.is_active()) {
+            return;
+        }
+
+        for voice in &mut self.voices {
+            if !voice.is_active() {
+                continue;
+            }
+            let group_index = voice.group_index().min(outputs.len().saturating_sub(1));
+            let (out_l, out_r) = &mut outputs[group_index];
+            voice.process_block(&mut out_l[..frames], &mut out_r[..frames]);
+        }
+
+        let main_gain = 10.0f32.powf(self.patch.main_bus.gain_db / 20.0);
+        let effective_gain = main_gain * self.master_gain * self.channel_volume * self.expression;
+        for (out_l, out_r) in outputs.iter_mut() {
+            for sample in &mut out_l[..frames] {
+                *sample *= effective_gain;
+            }
+            for sample in &mut out_r[..frames] {
+                *sample *= effective_gain;
+            }
+        }
+    }
+
     fn trigger_voice_with_hierarchy(&mut self, args: &TriggerArgs, params: VoiceParams) {
         self.trigger_voice_with_sample(
             &TriggerArgs {

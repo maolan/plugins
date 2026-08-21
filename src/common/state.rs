@@ -16,11 +16,18 @@ pub struct SamplerZoneState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SamplerGroupState {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginState {
     pub version: u32,
     pub params: Vec<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sampler_zones: Option<Vec<SamplerZoneState>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampler_groups: Option<Vec<SamplerGroupState>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sampler_instrument_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -39,6 +46,7 @@ impl PluginState {
             version: Self::CURRENT_VERSION,
             params,
             sampler_zones: None,
+            sampler_groups: None,
             sampler_instrument_path: None,
             sampler_sf2_preset: None,
         }

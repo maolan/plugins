@@ -41,12 +41,15 @@ use crate::{
         lfo_assignment::{LfoAssignmentConfig, LfoAssignmentState, ModRouteParamIds},
     },
     sampler::{
-        dsp::mod_matrix::ModTarget,
+        dsp::{
+            group::Group, mod_matrix::ModTarget, part::Part, patch::Patch, sample::load_audio,
+            sfz::export_patch_to_sfz, zone::Zone,
+        },
         load_status::SamplerLoadStatus,
         loader::{PresetInfo, detect_format},
         params::{PARAMS, ParamId},
         plugin::SharedState,
-        state::SampleZone,
+        state::{SampleGroup, SampleZone},
     },
 };
 
@@ -106,6 +109,8 @@ pub enum Message {
     SelectLfo(usize),
     SelectFilter(usize),
     SelectEg(usize),
+    ToggleZonesPanel,
+    ToggleBrowserPanel,
     StartSideResize(SidePanel),
     ResizeSidePanel(f32),
     StopSideResize,
@@ -114,6 +119,7 @@ pub enum Message {
     LoadInstrument(PathBuf),
     PickInstrumentFile,
     ReloadInstrument,
+    ExportSfz,
     SelectSf2Preset(PresetInfo),
     PollLoadStatus,
     ZoneNoteHovered(usize, u8, f32),
@@ -122,6 +128,10 @@ pub enum Message {
     StopZoneEdgeDrag,
     StartZoneBodyDrag(usize, f32, f32),
     StopZoneBodyDrag,
+    CreateZoneListItem(ZoneCreateKind),
+    BeginZoneListDrag(usize),
+    HoverZoneDropGroup(Option<String>),
+    FinishZoneListDrag,
     StartRenameZone(usize),
     UpdateRenameText(String),
     FinishRenameZone,
@@ -134,6 +144,7 @@ pub enum Message {
     SelectEditingSample(usize),
     PianoKeyPressed(u8, u8),
     PianoKeyReleased(u8),
+    PointerReleased,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +165,21 @@ pub enum ZoneEdge {
 pub enum ZoneListSelection {
     Zone(usize),
     Group(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZoneCreateKind {
+    Group,
+    Zone,
+}
+
+impl std::fmt::Display for ZoneCreateKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ZoneCreateKind::Group => write!(f, "Group"),
+            ZoneCreateKind::Zone => write!(f, "Zone"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,6 +252,8 @@ struct State {
     selected_lfo: usize,
     selected_filter: usize,
     selected_eg: usize,
+    zones_visible: bool,
+    browser_visible: bool,
     zones_width: f32,
     browser_width: f32,
     resizing_side: Option<SidePanel>,
@@ -239,6 +267,8 @@ struct State {
     drag_y: Option<f32>,
     dragging_zone_edge: Option<(usize, ZoneEdge)>,
     dragging_zone_body: Option<(usize, f32, f32)>,
+    dragging_zone_list_item: Option<usize>,
+    hovered_zone_drop_group: Option<String>,
     editing_zone_name: Option<(usize, String)>,
     selected: Option<ZoneListSelection>,
     undo_stack: Vec<Vec<SampleZone>>,
@@ -284,6 +314,139 @@ fn unique_zone_name(zones: &[SampleZone], base: &str) -> String {
             return next;
         }
         candidate = next;
+    }
+}
+
+fn unique_group_name(groups: &[SampleGroup], zones: &[SampleZone], base: &str) -> String {
+    let exists = |candidate: &str| {
+        groups.iter().any(|group| group.name == candidate)
+            || zones.iter().any(|zone| zone.group == candidate)
+    };
+    if !exists(base) {
+        return base.to_string();
+    }
+
+    let mut index = 2;
+    loop {
+        let candidate = format!("{base} {index}");
+        if !exists(&candidate) {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
+fn group_for_new_zone(state: &State, groups: &[SampleGroup], zones: &[SampleZone]) -> String {
+    match &state.selected {
+        Some(ZoneListSelection::Group(group)) => group.clone(),
+        Some(ZoneListSelection::Zone(index)) => zones
+            .get(*index)
+            .map(|zone| zone.group.clone())
+            .filter(|group| !group.is_empty())
+            .unwrap_or_else(|| String::from("New Group")),
+        None => groups
+            .last()
+            .map(|group| group.name.clone())
+            .or_else(|| zones.last().map(|zone| zone.group.clone()))
+            .filter(|group| !group.is_empty())
+            .unwrap_or_else(|| String::from("New Group")),
+    }
+}
+
+fn default_new_zone(zones: &[SampleZone], group: String) -> SampleZone {
+    SampleZone {
+        name: unique_zone_name(zones, "New Zone"),
+        files: Vec::new(),
+        start_note: 60,
+        end_note: 60,
+        vel_low: 0,
+        vel_high: 127,
+        group,
+    }
+}
+
+fn default_export_path(state: &State) -> PathBuf {
+    state
+        .shared
+        .instrument_path
+        .lock()
+        .as_ref()
+        .map(|path| path.with_extension("sfz"))
+        .unwrap_or_else(|| PathBuf::from("sampler.sfz"))
+}
+
+fn export_patch_from_state(state: &State) -> Patch {
+    let base_patch = state.shared.patch.load();
+    let editable_zones = state.shared.zones.load();
+    if editable_zones.is_empty() {
+        return (*base_patch).clone();
+    }
+
+    let mut source_zones: Vec<Zone> = base_patch
+        .parts
+        .iter()
+        .flat_map(|part| part.groups.iter())
+        .flat_map(|group| group.zones.iter().cloned())
+        .collect();
+
+    let mut groups: Vec<Group> = state
+        .shared
+        .groups
+        .load()
+        .iter()
+        .map(|group| Group {
+            name: group.name.clone(),
+            ..Default::default()
+        })
+        .collect();
+
+    for editable in editable_zones.iter() {
+        let group_index = match groups.iter().position(|group| group.name == editable.group) {
+            Some(index) => index,
+            None => {
+                groups.push(Group {
+                    name: editable.group.clone(),
+                    ..Default::default()
+                });
+                groups.len() - 1
+            }
+        };
+
+        let mut zone = source_zones
+            .drain(..1)
+            .next()
+            .or_else(|| {
+                editable.files.first().and_then(|path| {
+                    load_audio(path).ok().map(|sample| {
+                        Zone::new_round_robin(
+                            editable.name.clone(),
+                            sample,
+                            ((editable.start_note + editable.end_note) / 2).min(127) as u8,
+                            (editable.start_note as u8, editable.end_note as u8),
+                            (editable.vel_low, editable.vel_high),
+                            Vec::new(),
+                        )
+                    })
+                })
+            })
+            .unwrap_or_default();
+        zone.name = editable.name.clone();
+        zone.key_low = editable.start_note.min(127) as u8;
+        zone.key_high = editable.end_note.min(127) as u8;
+        zone.vel_low = editable.vel_low;
+        zone.vel_high = editable.vel_high;
+        if zone.root_key < zone.key_low || zone.root_key > zone.key_high {
+            zone.root_key = ((editable.start_note + editable.end_note) / 2).min(127) as u8;
+        }
+        groups[group_index].zones.push(zone);
+    }
+
+    Patch {
+        parts: vec![Part {
+            groups,
+            ..base_patch.parts.first().cloned().unwrap_or_default()
+        }],
+        ..(*base_patch).clone()
     }
 }
 
@@ -366,6 +529,8 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             selected_lfo: 0,
             selected_filter: 0,
             selected_eg: 0,
+            zones_visible: true,
+            browser_visible: true,
             zones_width: 138.0,
             browser_width: 138.0,
             resizing_side: None,
@@ -379,6 +544,8 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             drag_y: None,
             dragging_zone_edge: None,
             dragging_zone_body: None,
+            dragging_zone_list_item: None,
+            hovered_zone_drop_group: None,
             editing_zone_name: None,
             selected: None,
             undo_stack: Vec::new(),
@@ -530,6 +697,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::SelectEg(index) => {
             state.selected_eg = index;
         }
+        Message::ToggleZonesPanel => {
+            state.zones_visible = !state.zones_visible;
+            if !state.zones_visible && state.resizing_side == Some(SidePanel::Zones) {
+                state.resizing_side = None;
+                state.resize_last_x = None;
+            }
+        }
+        Message::ToggleBrowserPanel => {
+            state.browser_visible = !state.browser_visible;
+            if !state.browser_visible && state.resizing_side == Some(SidePanel::Browser) {
+                state.resizing_side = None;
+                state.resize_last_x = None;
+            }
+        }
         Message::StartSideResize(side) => {
             state.resizing_side = Some(side);
             state.resize_last_x = None;
@@ -573,6 +754,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ReloadInstrument => {
             Arc::clone(&state.shared).reload_file();
+        }
+        Message::ExportSfz => {
+            let default_path = default_export_path(state);
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("SFZ instrument", &["sfz"])
+                .set_file_name(
+                    default_path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("sampler.sfz"),
+                )
+                .save_file()
+            {
+                let export_patch = export_patch_from_state(state);
+                let result = export_patch_to_sfz(&path, &export_patch);
+                let mut log = state.shared.load_log.lock();
+                match result {
+                    Ok(()) => log.push(format!("Exported {}", path.display())),
+                    Err(error) => log.push(format!("Export failed: {error}")),
+                }
+            }
         }
         Message::SelectSf2Preset(preset) => {
             let presets = state.shared.sf2_presets.lock();
@@ -678,11 +880,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     let start_note = end_note.saturating_sub(width_notes - 1);
                     let (vel_low, vel_high) =
                         find_vertical_slot(&zones, start_note, end_note, velocity);
-                    let group = zones
-                        .last()
-                        .map(|zone| zone.group.clone())
-                        .filter(|group| !group.is_empty())
-                        .unwrap_or_else(|| String::from("New Group"));
+                    let mut groups = state.shared.groups.load();
+                    let group = group_for_new_zone(state, &groups, &zones);
+                    if !groups.iter().any(|candidate| candidate.name == group) {
+                        Arc::make_mut(&mut groups).push(SampleGroup {
+                            name: group.clone(),
+                        });
+                        state.shared.groups.store(groups);
+                        state.shared.request_audio_ports_rescan();
+                    }
                     Arc::make_mut(&mut zones).push(SampleZone {
                         name,
                         files: vec![file],
@@ -718,6 +924,67 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::StopZoneBodyDrag => {
             state.dragging_zone_body = None;
         }
+        Message::CreateZoneListItem(kind) => {
+            let mut zones = state.shared.zones.load();
+            state.undo_stack.push(zones.to_vec());
+            let mut groups = state.shared.groups.load();
+            match kind {
+                ZoneCreateKind::Group => {
+                    let group = unique_group_name(&groups, &zones, "New Group");
+                    Arc::make_mut(&mut groups).push(SampleGroup {
+                        name: group.clone(),
+                    });
+                    state.selected = Some(ZoneListSelection::Group(group));
+                    state.shared.groups.store(groups);
+                    state.shared.request_audio_ports_rescan();
+                }
+                ZoneCreateKind::Zone => {
+                    let group = group_for_new_zone(state, &groups, &zones);
+                    let new_zone = default_new_zone(&zones, group.clone());
+                    if !groups.iter().any(|candidate| candidate.name == group) {
+                        Arc::make_mut(&mut groups).push(SampleGroup { name: group });
+                        state.shared.groups.store(groups);
+                        state.shared.request_audio_ports_rescan();
+                    }
+                    let zones_arc = Arc::make_mut(&mut zones);
+                    zones_arc.push(new_zone);
+                    let new_index = zones_arc.len() - 1;
+                    state.selected = Some(ZoneListSelection::Zone(new_index));
+                    state.shared.zones.store(zones);
+                }
+            }
+            state.shared.bump_zones_version();
+            state.shared.note_names_changed();
+            state.shared.mark_dirty();
+        }
+        Message::BeginZoneListDrag(index) => {
+            state.selected = Some(ZoneListSelection::Zone(index));
+            state.dragging_zone_list_item = Some(index);
+            state.hovered_zone_drop_group = None;
+        }
+        Message::HoverZoneDropGroup(group) => {
+            if state.dragging_zone_list_item.is_some() {
+                state.hovered_zone_drop_group = group;
+            }
+        }
+        Message::FinishZoneListDrag => {
+            if let Some(index) = state.dragging_zone_list_item.take()
+                && let Some(group) = state.hovered_zone_drop_group.take()
+            {
+                let mut zones = state.shared.zones.load();
+                if zones.get(index).is_some_and(|zone| zone.group != group) {
+                    state.undo_stack.push(zones.to_vec());
+                    if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index) {
+                        zone.group = group;
+                    }
+                    state.shared.zones.store(zones);
+                    state.shared.bump_zones_version();
+                    state.shared.note_names_changed();
+                    state.shared.mark_dirty();
+                }
+            }
+            state.hovered_zone_drop_group = None;
+        }
         Message::DeselectZone => {
             state.selected = None;
         }
@@ -736,6 +1003,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         }
                     }
                     ZoneListSelection::Group(group_name) => {
+                        let mut groups = state.shared.groups.load();
+                        Arc::make_mut(&mut groups).retain(|group| group.name != group_name);
+                        state.shared.groups.store(groups);
+                        state.shared.request_audio_ports_rescan();
                         zones_arc.retain(|zone| zone.group != group_name);
                     }
                 }
@@ -777,6 +1048,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::PianoKeyReleased(note) => {
             state.piano_active_note = None;
             state.shared.send_note_off(note);
+        }
+        Message::PointerReleased => {
+            state.resizing_side = None;
+            state.resize_last_x = None;
+            return update(state, Message::FinishZoneListDrag);
         }
         Message::StartRenameZone(index) => {
             let zones = state.shared.zones.load();
@@ -1681,7 +1957,7 @@ fn resize_handle(side: SidePanel) -> Element<'static, Message> {
             }),
     )
     .on_press(Message::StartSideResize(side))
-    .on_release(Message::StopSideResize)
+    .on_release(Message::PointerReleased)
     .into()
 }
 
@@ -1736,13 +2012,15 @@ fn zone_row<'a>(state: &'a State, index: usize, zone: SampleZone) -> Element<'a,
         .selected
         .as_ref()
         .is_some_and(|sel| matches!(sel, ZoneListSelection::Zone(i) if *i == index));
+    let dragging = state.dragging_zone_list_item == Some(index);
 
     let wrapped = if is_editing {
         container(content)
     } else {
         let mut inner = row![
             mouse_area(content)
-                .on_press(Message::SelectZoneListItem(ZoneListSelection::Zone(index)))
+                .on_press(Message::BeginZoneListDrag(index))
+                .on_release(Message::FinishZoneListDrag)
                 .on_double_click(Message::OpenSamplerEditor(index)),
         ]
         .spacing(4)
@@ -1757,6 +2035,7 @@ fn zone_row<'a>(state: &'a State, index: usize, zone: SampleZone) -> Element<'a,
     .width(Length::Fill)
     .padding([4, 6])
     .style(move |_theme: &Theme| container::Style {
+        background: dragging.then(|| Background::Color(Color::from_rgb(0.12, 0.15, 0.20))),
         border: Border {
             color: if selected {
                 Color::from_rgb(0.42, 0.60, 0.90)
@@ -1774,8 +2053,12 @@ fn zone_row<'a>(state: &'a State, index: usize, zone: SampleZone) -> Element<'a,
 
 fn zones_panel<'a>(state: &'a State) -> Element<'a, Message> {
     let shared_zones = state.shared.zones.load();
+    let shared_groups = state.shared.groups.load();
 
     let mut groups: Vec<(String, Vec<(usize, SampleZone)>)> = Vec::new();
+    for group in shared_groups.iter() {
+        groups.push((group.name.clone(), Vec::new()));
+    }
     for (index, zone) in shared_zones.iter().cloned().enumerate() {
         match groups.iter_mut().find(|(name, _)| name == &zone.group) {
             Some((_, entries)) => entries.push((index, zone)),
@@ -1788,14 +2071,20 @@ fn zones_panel<'a>(state: &'a State) -> Element<'a, Message> {
         let group_selected = state.selected.as_ref().is_some_and(
             |sel| matches!(sel, ZoneListSelection::Group(name) if name == &group_name),
         );
+        let group_drop_target = state.dragging_zone_list_item.is_some()
+            && state
+                .hovered_zone_drop_group
+                .as_ref()
+                .is_some_and(|name| name == &group_name);
         let mut zones = column![].spacing(3).width(Length::Fill);
         for (index, zone) in entries {
             zones = zones.push(zone_row(state, index, zone));
         }
         let group_name_for_press = group_name.clone();
+        let group_name_for_header = group_name.clone();
         let header = mouse_area(
             container(
-                text(group_name)
+                text(group_name_for_header)
                     .size(10)
                     .color(Color::from_rgb(0.90, 0.91, 0.94)),
             )
@@ -1822,32 +2111,56 @@ fn zones_panel<'a>(state: &'a State) -> Element<'a, Message> {
         .on_press(Message::SelectZoneListItem(ZoneListSelection::Group(
             group_name_for_press,
         )));
-        let group_box = container(column![header, zones].spacing(4).width(Length::Fill))
+        let group_box_content = container(column![header, zones].spacing(4).width(Length::Fill))
             .width(Length::Fill)
             .padding([6, 6])
             .style(move |_theme: &Theme| container::Style {
+                background: group_drop_target
+                    .then(|| Background::Color(Color::from_rgb(0.11, 0.17, 0.24))),
                 border: Border {
-                    color: if group_selected {
+                    color: if group_drop_target {
+                        Color::from_rgb(0.70, 0.82, 1.0)
+                    } else if group_selected {
                         Color::from_rgb(0.45, 0.65, 0.95)
                     } else {
                         Color::from_rgb(0.22, 0.26, 0.34)
                     },
-                    width: if group_selected { 2.0 } else { 1.0 },
+                    width: if group_selected || group_drop_target {
+                        2.0
+                    } else {
+                        1.0
+                    },
                     radius: 4.0.into(),
                 },
                 ..container::Style::default()
             });
+        let group_name_for_enter = group_name.clone();
+        let group_box = mouse_area(group_box_content)
+            .on_enter(Message::HoverZoneDropGroup(Some(group_name_for_enter)))
+            .on_exit(Message::HoverZoneDropGroup(None))
+            .on_release(Message::FinishZoneListDrag);
         panel = panel.push(group_box);
     }
 
+    let header = row![
+        section_title("Zones"),
+        pick_list(
+            vec![ZoneCreateKind::Group, ZoneCreateKind::Zone],
+            None::<ZoneCreateKind>,
+            Message::CreateZoneListItem,
+        )
+        .placeholder("New")
+        .width(Length::Fixed(78.0)),
+    ]
+    .spacing(6)
+    .width(Length::Fill)
+    .align_y(Alignment::Center);
+
     container(
-        column![
-            section_title("Zones"),
-            scrollable(panel).height(Length::Fill),
-        ]
-        .spacing(8)
-        .height(Length::Fill)
-        .align_x(Alignment::Start),
+        column![header, scrollable(panel).height(Length::Fill),]
+            .spacing(8)
+            .height(Length::Fill)
+            .align_x(Alignment::Start),
     )
     .width(Length::Fixed(state.zones_width))
     .height(Length::Fill)
@@ -2015,6 +2328,9 @@ fn instrument_panel<'a>(state: &'a State) -> Element<'a, Message> {
             .padding([4, 8]),
         button(text("Reload").size(11))
             .on_press(Message::ReloadInstrument)
+            .padding([4, 8]),
+        button(text("Export").size(11))
+            .on_press(Message::ExportSfz)
             .padding([4, 8]),
     ]
     .spacing(6)
@@ -2327,20 +2643,25 @@ fn sampler_editor_view<'a>(state: &'a State, index: usize) -> Element<'a, Messag
         .height(Length::Fill)
         .align_x(Alignment::Start);
 
-    let content_row = row![
-        zones_panel(state),
-        resize_handle(SidePanel::Zones),
-        main_content,
-        resize_handle(SidePanel::Browser),
-        browser_panel(state)
-    ]
-    .spacing(8)
-    .height(Length::Fill)
-    .align_y(Alignment::Start);
+    let mut content_row = row![]
+        .spacing(8)
+        .height(Length::Fill)
+        .align_y(Alignment::Start);
+    if state.zones_visible {
+        content_row = content_row
+            .push(zones_panel(state))
+            .push(resize_handle(SidePanel::Zones));
+    }
+    content_row = content_row.push(main_content);
+    if state.browser_visible {
+        content_row = content_row
+            .push(resize_handle(SidePanel::Browser))
+            .push(browser_panel(state));
+    }
 
     let content = mouse_area(container(content_row).padding(16).height(Length::Fill))
         .on_move(|Point { x, .. }| Message::ResizeSidePanel(x))
-        .on_release(Message::StopSideResize);
+        .on_release(Message::PointerReleased);
 
     container(content)
         .width(Length::Fill)
@@ -2591,26 +2912,38 @@ fn view(state: &State) -> Element<'_, Message> {
     .spacing(10)
     .align_y(Alignment::Start);
 
-    let main_content = column![instrument_panel(state), sample_map, top_row, bottom_row,]
+    let main_content = column![instrument_panel(state), sample_map,]
+        .spacing(12)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Alignment::Start);
+    let main_content = main_content
+        .push(top_row)
+        .push(bottom_row)
         .spacing(12)
         .width(Length::Fill)
         .height(Length::Fill)
         .align_x(Alignment::Start);
 
-    let content_row = row![
-        zones_panel(state),
-        resize_handle(SidePanel::Zones),
-        main_content,
-        resize_handle(SidePanel::Browser),
-        browser_panel(state)
-    ]
-    .spacing(8)
-    .height(Length::Fill)
-    .align_y(Alignment::Start);
+    let mut content_row = row![]
+        .spacing(8)
+        .height(Length::Fill)
+        .align_y(Alignment::Start);
+    if state.zones_visible {
+        content_row = content_row
+            .push(zones_panel(state))
+            .push(resize_handle(SidePanel::Zones));
+    }
+    content_row = content_row.push(main_content);
+    if state.browser_visible {
+        content_row = content_row
+            .push(resize_handle(SidePanel::Browser))
+            .push(browser_panel(state));
+    }
 
     let content = mouse_area(container(content_row).padding(16).height(Length::Fill))
         .on_move(|Point { x, .. }| Message::ResizeSidePanel(x))
-        .on_release(Message::StopSideResize);
+        .on_release(Message::PointerReleased);
 
     container(content)
         .width(Length::Fill)
@@ -2645,7 +2978,7 @@ fn subscription(state: &State) -> maolan_baseview::iced::Subscription<Message> {
         {
             let is_undo = matches!(
                 key,
-                keyboard::Key::Character(ref c) if c == "z" && modifiers.command()
+                keyboard::Key::Character(ref c) if c.eq_ignore_ascii_case("z") && modifiers.command()
             );
             let is_delete = matches!(key, keyboard::Key::Named(keyboard::key::Named::Delete));
             let is_esc = matches!(key, keyboard::Key::Named(keyboard::key::Named::Escape));
@@ -2657,6 +2990,14 @@ fn subscription(state: &State) -> maolan_baseview::iced::Subscription<Message> {
             }
             if is_esc {
                 return Some(Message::CloseSamplerEditor);
+            }
+            if !modifiers.command() && !modifiers.control() && !modifiers.alt() {
+                if matches!(key, keyboard::Key::Character(ref c) if c.eq_ignore_ascii_case("z")) {
+                    return Some(Message::ToggleZonesPanel);
+                }
+                if matches!(key, keyboard::Key::Character(ref c) if c.eq_ignore_ascii_case("b")) {
+                    return Some(Message::ToggleBrowserPanel);
+                }
             }
         }
         None

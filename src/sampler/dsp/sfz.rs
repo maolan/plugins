@@ -27,6 +27,8 @@
 //! - **Filters:** `cutoff`, `resonance`, `fil_type` (`lpf`, `hpf`, `bpf`, `brf`, `apf`, `pkf`, `lsh`, `hsh`, `bpk`)
 
 use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -542,6 +544,195 @@ fn tokenize(text: &str) -> Vec<Token> {
     }
 
     tokens
+}
+
+pub fn export_patch_to_sfz(path: &Path, patch: &Patch) -> Result<(), String> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|e| format!("create export directory: {e}"))?;
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("sampler");
+    let sample_dir_name = sanitize_export_name(&format!("{stem}_samples"));
+    let sample_dir = parent.join(&sample_dir_name);
+    fs::create_dir_all(&sample_dir).map_err(|e| format!("create sample directory: {e}"))?;
+
+    let mut output = String::new();
+    output.push_str("// Exported by Maolan Sampler\n");
+    output.push_str("<control>\n");
+    output.push_str(&format!("default_path={sample_dir_name}/\n\n"));
+
+    let mut exported_samples = HashMap::new();
+    let mut sample_index = 1usize;
+    for part in &patch.parts {
+        for group in &part.groups {
+            if group.zones.is_empty() {
+                continue;
+            }
+            if !group.name.is_empty() {
+                output.push_str(&format!("// group: {}\n", group.name));
+            }
+            output.push_str("<group>");
+            if group.gain_db != 0.0 {
+                output.push_str(&format!(
+                    " group_volume={}",
+                    format_export_float(group.gain_db)
+                ));
+            }
+            if group.pan != 0.0 {
+                output.push_str(&format!(
+                    " group_pan={}",
+                    format_export_float(group.pan * 100.0)
+                ));
+            }
+            output.push('\n');
+
+            for zone in &group.zones {
+                let sample_name = export_zone_sample(
+                    &sample_dir,
+                    &mut exported_samples,
+                    &mut sample_index,
+                    &group.name,
+                    zone,
+                )?;
+                output.push_str("<region>");
+                output.push_str(&format!(" sample={sample_name}"));
+                push_export_zone_mapping(&mut output, zone);
+                output.push('\n');
+            }
+            output.push('\n');
+        }
+    }
+
+    fs::write(path, output).map_err(|e| format!("write SFZ {}: {e}", path.display()))
+}
+
+fn export_zone_sample(
+    sample_dir: &Path,
+    exported_samples: &mut HashMap<usize, String>,
+    sample_index: &mut usize,
+    group_name: &str,
+    zone: &Zone,
+) -> Result<String, String> {
+    let key = Arc::as_ptr(&zone.sample) as usize;
+    if let Some(name) = exported_samples.get(&key) {
+        return Ok(name.clone());
+    }
+
+    let file_stem = sanitize_export_name(&format!(
+        "{:03}_{}_{}",
+        *sample_index,
+        group_name,
+        if zone.name.is_empty() {
+            "sample"
+        } else {
+            zone.name.as_str()
+        }
+    ));
+    let file_name = format!("{file_stem}.wav");
+    write_wav_stereo(&sample_dir.join(&file_name), &zone.sample)
+        .map_err(|e| format!("write sample {file_name}: {e}"))?;
+    exported_samples.insert(key, file_name.clone());
+    *sample_index += 1;
+    Ok(file_name)
+}
+
+fn push_export_zone_mapping(output: &mut String, zone: &Zone) {
+    if zone.key_low == zone.key_high && zone.root_key == zone.key_low {
+        output.push_str(&format!(" key={}", zone.key_low));
+    } else {
+        output.push_str(&format!(" lokey={} hikey={}", zone.key_low, zone.key_high));
+        if zone.root_key != 60 {
+            output.push_str(&format!(" pitch_keycenter={}", zone.root_key));
+        }
+    }
+    if zone.vel_low != 0 {
+        output.push_str(&format!(" lovel={}", zone.vel_low));
+    }
+    if zone.vel_high != 127 {
+        output.push_str(&format!(" hivel={}", zone.vel_high));
+    }
+    if zone.gain_db != 0.0 {
+        output.push_str(&format!(" volume={}", format_export_float(zone.gain_db)));
+    }
+    if zone.pan != 0.0 {
+        output.push_str(&format!(" pan={}", format_export_float(zone.pan * 100.0)));
+    }
+    if zone.pitch_offset != 0.0 {
+        output.push_str(&format!(" tune={}", format_export_float(zone.pitch_offset)));
+    }
+    if zone.start_offset != 0 {
+        output.push_str(&format!(" offset={}", zone.start_offset));
+    }
+    if zone.loop_mode != LoopMode::Off {
+        output.push_str(" loop_mode=loop_continuous");
+        output.push_str(&format!(
+            " loop_start={} loop_end={}",
+            zone.loop_start, zone.loop_end
+        ));
+    }
+}
+
+fn write_wav_stereo(path: &Path, sample: &Sample) -> std::io::Result<()> {
+    let channels = 2u16;
+    let bits_per_sample = 32u16;
+    let bytes_per_sample = bits_per_sample / 8;
+    let sample_rate = sample.sample_rate.max(1.0).round() as u32;
+    let frames = sample.data_l.len().min(sample.data_r.len());
+    let byte_rate = sample_rate * channels as u32 * bytes_per_sample as u32;
+    let block_align = channels * bytes_per_sample;
+    let data_size = (frames * channels as usize * bytes_per_sample as usize) as u32;
+    let file_size = 36 + data_size;
+
+    let mut file = File::create(path)?;
+    file.write_all(b"RIFF")?;
+    file.write_all(&file_size.to_le_bytes())?;
+    file.write_all(b"WAVE")?;
+    file.write_all(b"fmt ")?;
+    file.write_all(&16u32.to_le_bytes())?;
+    file.write_all(&3u16.to_le_bytes())?;
+    file.write_all(&channels.to_le_bytes())?;
+    file.write_all(&sample_rate.to_le_bytes())?;
+    file.write_all(&byte_rate.to_le_bytes())?;
+    file.write_all(&block_align.to_le_bytes())?;
+    file.write_all(&bits_per_sample.to_le_bytes())?;
+    file.write_all(b"data")?;
+    file.write_all(&data_size.to_le_bytes())?;
+
+    for i in 0..frames {
+        file.write_all(&sample.data_l[i].to_le_bytes())?;
+        file.write_all(&sample.data_r[i].to_le_bytes())?;
+    }
+    Ok(())
+}
+
+fn sanitize_export_name(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
+            out.push(c);
+        } else if !out.ends_with('_') {
+            out.push('_');
+        }
+    }
+    let out = out.trim_matches('_');
+    if out.is_empty() {
+        String::from("sample")
+    } else {
+        out.to_string()
+    }
+}
+
+fn format_export_float(value: f32) -> String {
+    let mut text = format!("{value:.3}");
+    while text.contains('.') && text.ends_with('0') {
+        text.pop();
+    }
+    if text.ends_with('.') {
+        text.pop();
+    }
+    text
 }
 
 // ---------------------------------------------------------------------------
@@ -1479,5 +1670,53 @@ mod tests {
         assert_eq!(zone.mod_matrix.routes[0].source, ModSource::Velocity);
         assert_eq!(zone.mod_matrix.routes[0].target, ModTarget::Amplitude);
         assert!((zone.mod_matrix.routes[0].depth - 0.25).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_export_patch_writes_f32_wav_samples() {
+        let dir =
+            std::env::temp_dir().join(format!("maolan_sfz_export_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("kit.sfz");
+        let mut zone = Zone::default();
+        zone.name = String::from("kick");
+        zone.key_low = 36;
+        zone.key_high = 36;
+        zone.root_key = 36;
+        zone.sample = Arc::new(Sample {
+            sample_rate: 48_000.0,
+            data_l: vec![0.25, -0.25],
+            data_r: vec![-0.5, 0.5],
+            frames: 2,
+            peak: 0.5,
+            rms: 0.375,
+            loop_start: None,
+            loop_end: None,
+            cue_points: Vec::new(),
+        });
+        let mut group = Group {
+            name: String::from("Drums"),
+            ..Default::default()
+        };
+        group.zones.push(zone);
+        let patch = Patch {
+            parts: vec![Part {
+                groups: vec![group],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        export_patch_to_sfz(&path, &patch).unwrap();
+        let wav = std::fs::read(dir.join("kit_samples/001_Drums_kick.wav")).unwrap();
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(&wav[8..12], b"WAVE");
+        assert_eq!(u16::from_le_bytes([wav[20], wav[21]]), 3);
+        assert_eq!(u16::from_le_bytes([wav[34], wav[35]]), 32);
+        assert_eq!(
+            f32::from_le_bytes([wav[44], wav[45], wav[46], wav[47]]),
+            0.25
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
