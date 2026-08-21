@@ -365,7 +365,14 @@ impl SamplerEngine {
     }
 
     pub fn set_cc(&mut self, cc: u8, value: u8) {
+        let cc = cc.min(127);
+        let value = value.min(127);
         self.cc_values[cc as usize] = value;
+        for voice in &mut self.voices {
+            if voice.is_active() {
+                voice.set_cc(cc, value);
+            }
+        }
         match cc {
             1 => {
                 self.mod_wheel = value as f32 / 127.0;
@@ -428,7 +435,10 @@ impl SamplerEngine {
         }
 
         let cc_values = self.cc_values;
-        let Some((gi, _group, zone)) = part.find_zone(note, velocity, &cc_values) else {
+        let pitch_bend_raw = (self.pitch_bend.clamp(-1.0, 1.0) * 8192.0).round() as i16;
+        let Some((gi, _group, zone)) =
+            part.find_zone(note, velocity, channel, &cc_values, pitch_bend_raw)
+        else {
             return;
         };
         let zone = Arc::new(zone.clone());
@@ -616,8 +626,10 @@ impl SamplerEngine {
                     let next_note = self.select_note_priority();
 
                     let cc_values = self.cc_values;
+                    let pitch_bend_raw = (self.pitch_bend.clamp(-1.0, 1.0) * 8192.0).round() as i16;
                     let retargeted = if let Some((_, part)) = self.patch.find_part(channel) {
-                        if let Some((_gi, group, zone)) = part.find_zone(next_note, 100, &cc_values)
+                        if let Some((_gi, group, zone)) =
+                            part.find_zone(next_note, 100, channel, &cc_values, pitch_bend_raw)
                         {
                             let zone = Arc::new(zone.clone());
                             let portamento = group.portamento;
@@ -827,6 +839,13 @@ impl SamplerEngine {
                 }
             }
         }
+        if args.zone.off_by != 0 {
+            for voice in &mut self.voices {
+                if voice.is_active() && voice.exclusive_group == args.zone.off_by {
+                    voice.force_stop();
+                }
+            }
+        }
 
         let stolen_index = {
             let group_poly = self
@@ -974,6 +993,7 @@ impl SamplerEngine {
         self.voices[index].set_channel_volume(self.channel_volume);
         self.voices[index].set_expression(self.expression);
         self.voices[index].set_cc10_pan((self.cc_values[10] as f32 / 63.5 - 1.0).clamp(-1.0, 1.0));
+        self.voices[index].set_cc_values(self.cc_values);
         self.voices[index].trigger_with_sample(
             args.zone.clone(),
             args.note,
@@ -1041,7 +1061,7 @@ mod tests {
     use crate::sampler::dsp::group::Group;
     use crate::sampler::dsp::part::Part;
     use crate::sampler::dsp::sample::Sample;
-    use crate::sampler::dsp::zone::Zone;
+    use crate::sampler::dsp::zone::{CcCondition, Zone};
 
     fn make_test_patch() -> Patch {
         let mut zone = Zone::default();
@@ -1117,6 +1137,87 @@ mod tests {
         engine.note_on(60, 100, 0);
 
         assert!(engine.voices.iter().any(|v| v.is_active()));
+    }
+
+    #[test]
+    fn test_region_channel_and_cc_conditions_gate_trigger() {
+        let mut patch = make_test_patch();
+        let zone = &mut patch.parts[0].groups[0].zones[0];
+        zone.channel_low = 2;
+        zone.channel_high = 2;
+        zone.cc_conditions = vec![CcCondition {
+            cc: 7,
+            low: 64,
+            high: 127,
+        }];
+
+        let mut engine = SamplerEngine::new(48000.0, 4);
+        engine.set_patch(patch);
+
+        engine.note_on(60, 100, 0);
+        assert_eq!(engine.voices.iter().filter(|v| v.is_active()).count(), 0);
+
+        engine.note_on(60, 100, 1);
+        assert_eq!(engine.voices.iter().filter(|v| v.is_active()).count(), 0);
+
+        engine.set_cc(7, 100);
+        engine.note_on(60, 100, 1);
+        assert_eq!(engine.voices.iter().filter(|v| v.is_active()).count(), 1);
+    }
+
+    #[test]
+    fn test_region_pitch_bend_condition_gates_trigger() {
+        let mut patch = make_test_patch();
+        let zone = &mut patch.parts[0].groups[0].zones[0];
+        zone.pitch_bend_low = 1000;
+        zone.pitch_bend_high = 8192;
+
+        let mut engine = SamplerEngine::new(48000.0, 4);
+        engine.set_patch(patch);
+
+        engine.note_on(60, 100, 0);
+        assert_eq!(engine.voices.iter().filter(|v| v.is_active()).count(), 0);
+
+        engine.set_pitch_bend(0.25);
+        engine.note_on(60, 100, 0);
+        assert_eq!(engine.voices.iter().filter(|v| v.is_active()).count(), 1);
+    }
+
+    #[test]
+    fn test_region_off_by_chokes_matching_group() {
+        let mut patch = Patch::default();
+        let mut sustained_zone = Zone::default();
+        sustained_zone.key_low = 60;
+        sustained_zone.key_high = 60;
+        sustained_zone.sample = Arc::new(Sample::silent(48000.0));
+        let mut choke_zone = Zone::default();
+        choke_zone.key_low = 62;
+        choke_zone.key_high = 62;
+        choke_zone.off_by = 3;
+        choke_zone.sample = Arc::new(Sample::silent(48000.0));
+        let mut group_a = Group {
+            exclusive_group: 3,
+            ..Default::default()
+        };
+        group_a.zones.push(sustained_zone);
+        let mut group_b = Group::default();
+        group_b.zones.push(choke_zone);
+        let mut part = Part::default();
+        part.groups.push(group_a);
+        part.groups.push(group_b);
+        patch.parts = vec![part];
+
+        let mut engine = SamplerEngine::new(48000.0, 4);
+        engine.set_patch(patch);
+        engine.note_on(60, 100, 0);
+        assert_eq!(engine.voices.iter().filter(|v| v.is_active()).count(), 1);
+
+        engine.note_on(62, 100, 0);
+        let active_60 = engine
+            .voices
+            .iter()
+            .any(|voice| voice.is_active() && voice.note == 60);
+        assert!(!active_60);
     }
 
     #[test]
@@ -1621,6 +1722,48 @@ mod tests {
         assert!(
             peak_loud > peak_quiet * 1.5,
             "per-note pressure should increase amplitude"
+        );
+    }
+
+    #[test]
+    fn test_arbitrary_cc_modulates_active_voice_amplitude() {
+        use crate::sampler::dsp::mod_matrix::ModTarget;
+
+        let mut patch = Patch::default();
+        let mut zone = Zone::default();
+        let mut sample = Sample::silent(48000.0);
+        sample.frames = 48000;
+        sample.data_l = vec![1.0f32; 48000];
+        sample.data_r = sample.data_l.clone();
+        zone.sample = Arc::new(sample);
+        zone.key_low = 60;
+        zone.key_high = 72;
+        zone.root_key = 60;
+        zone.mod_matrix
+            .set_cc_route(0, 74, ModTarget::Amplitude, 1.0);
+        let mut group = Group::default();
+        group.zones.push(zone);
+        let mut part = Part::default();
+        part.groups.push(group);
+        patch.parts = vec![part];
+
+        let mut engine = SamplerEngine::new(48000.0, 4);
+        engine.set_patch(patch);
+        engine.note_on(60, 127, 0);
+
+        let mut out_quiet = vec![0.0f32; 64];
+        let mut out_r = vec![0.0f32; 64];
+        engine.process_block(&mut out_quiet, &mut out_r);
+        let peak_quiet = out_quiet.iter().map(|&s| s.abs()).fold(0.0f32, f32::max);
+
+        engine.set_cc(74, 127);
+        let mut out_loud = vec![0.0f32; 64];
+        engine.process_block(&mut out_loud, &mut out_r);
+        let peak_loud = out_loud.iter().map(|&s| s.abs()).fold(0.0f32, f32::max);
+
+        assert!(
+            peak_loud > peak_quiet * 1.5,
+            "arbitrary CC modulation should update active voices"
         );
     }
 

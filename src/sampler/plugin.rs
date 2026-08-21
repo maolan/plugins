@@ -952,15 +952,62 @@ fn build_zones_from_patch(patch: &Patch) -> Vec<SampleZone> {
     for part in &patch.parts {
         for group in &part.groups {
             for zone in &group.zones {
-                zones.push(SampleZone {
-                    name: zone.name.clone(),
-                    files: Vec::new(),
-                    start_note: zone.key_low as usize,
-                    end_note: zone.key_high as usize,
-                    vel_low: zone.vel_low,
-                    vel_high: zone.vel_high,
-                    group: group.name.clone(),
-                });
+                let mut sample_zone = SampleZone::new_basic(
+                    zone.name.clone(),
+                    Vec::new(),
+                    zone.key_low as usize,
+                    zone.key_high as usize,
+                    zone.vel_low,
+                    zone.vel_high,
+                    group.name.clone(),
+                );
+                sample_zone.root_key = zone.root_key;
+                sample_zone.key_fade_low = zone.key_fade_low;
+                sample_zone.key_fade_high = zone.key_fade_high;
+                sample_zone.vel_fade_low = zone.vel_fade_low;
+                sample_zone.vel_fade_high = zone.vel_fade_high;
+                sample_zone.key_fade_in = zone.key_fade_in;
+                sample_zone.key_fade_out = zone.key_fade_out;
+                sample_zone.vel_fade_in = zone.vel_fade_in;
+                sample_zone.vel_fade_out = zone.vel_fade_out;
+                sample_zone.pitch_offset = zone.pitch_offset;
+                sample_zone.key_tracking = zone.key_tracking;
+                sample_zone.velocity_curve = zone.velocity_curve;
+                sample_zone.key_tracking_curve = zone.key_tracking_curve;
+                sample_zone.gain_db = zone.gain_db;
+                sample_zone.pan = zone.pan;
+                sample_zone.width = zone.width;
+                sample_zone.position = zone.position;
+                sample_zone.amp_keytrack_db = zone.amp_keytrack_db;
+                sample_zone.reverse = zone.reverse;
+                sample_zone.play_mode = zone.play_mode;
+                sample_zone.loop_mode = zone.loop_mode;
+                sample_zone.loop_direction = zone.loop_direction;
+                sample_zone.loop_start = zone.loop_start;
+                sample_zone.loop_end = zone.loop_end;
+                sample_zone.loop_count = zone.loop_count;
+                sample_zone.loop_crossfade = zone.loop_crossfade;
+                sample_zone.start_offset = zone.start_offset;
+                sample_zone.offset_random = zone.offset_random;
+                sample_zone.end_offset = zone.end_offset;
+                sample_zone.delay = zone.delay;
+                sample_zone.delay_random = zone.delay_random;
+                sample_zone.pitch_bend_up = zone.pitch_bend_up;
+                sample_zone.pitch_bend_down = zone.pitch_bend_down;
+                sample_zone.variant_mode = zone.variant_mode;
+                sample_zone.channel_low = zone.channel_low;
+                sample_zone.channel_high = zone.channel_high;
+                sample_zone.pitch_bend_low = zone.pitch_bend_low;
+                sample_zone.pitch_bend_high = zone.pitch_bend_high;
+                sample_zone.cc_conditions = zone.cc_conditions.clone();
+                sample_zone.random_low = zone.random_low;
+                sample_zone.random_high = zone.random_high;
+                sample_zone.seq_length = zone.seq_length;
+                sample_zone.seq_position = zone.seq_position;
+                sample_zone.off_by = zone.off_by;
+                sample_zone.mod_matrix = zone.mod_matrix.clone();
+                sample_zone.extra_sfz_opcodes = zone.extra_sfz_opcodes.clone();
+                zones.push(sample_zone);
             }
         }
     }
@@ -975,9 +1022,13 @@ fn build_groups_from_patch(patch: &Patch) -> Vec<SampleGroup> {
                 .iter()
                 .any(|existing: &SampleGroup| existing.name == group.name)
             {
-                groups.push(SampleGroup {
-                    name: group.name.clone(),
-                });
+                let mut sample_group = SampleGroup::new(group.name.clone());
+                sample_group.poly_limit = group.poly_limit;
+                sample_group.exclusive_group = group.exclusive_group;
+                sample_group.gain_db = group.gain_db;
+                sample_group.pan = group.pan;
+                sample_group.extra_sfz_opcodes = group.extra_sfz_opcodes.clone();
+                groups.push(sample_group);
             }
         }
     }
@@ -988,9 +1039,7 @@ fn normalize_groups(mut groups: Vec<SampleGroup>, zones: &[SampleZone]) -> Vec<S
     groups.retain(|group| !group.name.is_empty());
     for zone in zones {
         if !groups.iter().any(|group| group.name == zone.group) {
-            groups.push(SampleGroup {
-                name: zone.group.clone(),
-            });
+            groups.push(SampleGroup::new(zone.group.clone()));
         }
     }
     groups
@@ -1011,6 +1060,11 @@ fn build_patch_from_zones(groups: &[SampleGroup], zones: &[SampleZone], sample_r
         let group_name = group.name.clone();
         dsp_groups.push(Group {
             name: group_name,
+            poly_limit: group.poly_limit,
+            exclusive_group: group.exclusive_group,
+            gain_db: group.gain_db,
+            pan: group.pan,
+            extra_sfz_opcodes: group.extra_sfz_opcodes.clone(),
             zones: zones_by_group
                 .remove(&group.name)
                 .unwrap_or_default()
@@ -1076,15 +1130,60 @@ fn build_dsp_zone(zone: &SampleZone, sample_rate: f32) -> Zone {
         let sample = variants[0].clone();
         (sample, variants)
     };
-    let root_key = ((zone.start_note + zone.end_note) / 2).min(127) as u8;
-    Zone::new_round_robin(
+    let mut dsp_zone = Zone::new_round_robin(
         zone.name.clone(),
         sample,
-        root_key,
+        zone.root_key,
         (zone.start_note as u8, zone.end_note as u8),
         (zone.vel_low, zone.vel_high),
         variants,
-    )
+    );
+    dsp_zone.key_fade_low = zone.key_fade_low;
+    dsp_zone.key_fade_high = zone.key_fade_high;
+    dsp_zone.vel_fade_low = zone.vel_fade_low;
+    dsp_zone.vel_fade_high = zone.vel_fade_high;
+    dsp_zone.key_fade_in = zone.key_fade_in;
+    dsp_zone.key_fade_out = zone.key_fade_out;
+    dsp_zone.vel_fade_in = zone.vel_fade_in;
+    dsp_zone.vel_fade_out = zone.vel_fade_out;
+    dsp_zone.pitch_offset = zone.pitch_offset;
+    dsp_zone.key_tracking = zone.key_tracking;
+    dsp_zone.velocity_curve = zone.velocity_curve;
+    dsp_zone.key_tracking_curve = zone.key_tracking_curve;
+    dsp_zone.gain_db = zone.gain_db;
+    dsp_zone.pan = zone.pan;
+    dsp_zone.width = zone.width;
+    dsp_zone.position = zone.position;
+    dsp_zone.amp_keytrack_db = zone.amp_keytrack_db;
+    dsp_zone.reverse = zone.reverse;
+    dsp_zone.play_mode = zone.play_mode;
+    dsp_zone.loop_mode = zone.loop_mode;
+    dsp_zone.loop_direction = zone.loop_direction;
+    dsp_zone.loop_start = zone.loop_start;
+    dsp_zone.loop_end = zone.loop_end;
+    dsp_zone.loop_count = zone.loop_count;
+    dsp_zone.loop_crossfade = zone.loop_crossfade;
+    dsp_zone.start_offset = zone.start_offset;
+    dsp_zone.offset_random = zone.offset_random;
+    dsp_zone.end_offset = zone.end_offset;
+    dsp_zone.delay = zone.delay;
+    dsp_zone.delay_random = zone.delay_random;
+    dsp_zone.pitch_bend_up = zone.pitch_bend_up;
+    dsp_zone.pitch_bend_down = zone.pitch_bend_down;
+    dsp_zone.variant_mode = zone.variant_mode;
+    dsp_zone.channel_low = zone.channel_low;
+    dsp_zone.channel_high = zone.channel_high;
+    dsp_zone.pitch_bend_low = zone.pitch_bend_low;
+    dsp_zone.pitch_bend_high = zone.pitch_bend_high;
+    dsp_zone.cc_conditions = zone.cc_conditions.clone();
+    dsp_zone.random_low = zone.random_low;
+    dsp_zone.random_high = zone.random_high;
+    dsp_zone.seq_length = zone.seq_length;
+    dsp_zone.seq_position = zone.seq_position;
+    dsp_zone.off_by = zone.off_by;
+    dsp_zone.mod_matrix = zone.mod_matrix.clone();
+    dsp_zone.extra_sfz_opcodes = zone.extra_sfz_opcodes.clone();
+    dsp_zone
 }
 
 struct AudioProcessor {
@@ -2275,33 +2374,33 @@ mod tests {
     #[test]
     fn build_note_names_publishes_group_names_per_note() {
         let zones = vec![
-            SampleZone {
-                name: String::from("Kick sample"),
-                files: Vec::new(),
-                start_note: 36,
-                end_note: 36,
-                vel_low: 0,
-                vel_high: 127,
-                group: String::from("Kick"),
-            },
-            SampleZone {
-                name: String::from("Snare sample"),
-                files: Vec::new(),
-                start_note: 38,
-                end_note: 38,
-                vel_low: 0,
-                vel_high: 127,
-                group: String::from("Snare"),
-            },
-            SampleZone {
-                name: String::new(),
-                files: Vec::new(),
-                start_note: 42,
-                end_note: 42,
-                vel_low: 0,
-                vel_high: 127,
-                group: String::from("Hats"),
-            },
+            SampleZone::new_basic(
+                String::from("Kick sample"),
+                Vec::new(),
+                36,
+                36,
+                0,
+                127,
+                String::from("Kick"),
+            ),
+            SampleZone::new_basic(
+                String::from("Snare sample"),
+                Vec::new(),
+                38,
+                38,
+                0,
+                127,
+                String::from("Snare"),
+            ),
+            SampleZone::new_basic(
+                String::new(),
+                Vec::new(),
+                42,
+                42,
+                0,
+                127,
+                String::from("Hats"),
+            ),
         ];
         let names = build_note_names(&zones);
         assert_eq!(names.len(), 3);

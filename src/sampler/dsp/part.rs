@@ -53,13 +53,16 @@ impl Part {
         &self,
         note: u8,
         velocity: u8,
+        channel: u8,
         cc_values: &[u8; 128],
+        pitch_bend_raw: i16,
     ) -> Option<(usize, &Group, &Zone)> {
         for (gi, group) in self.groups.iter().enumerate() {
             if !crate::sampler::dsp::group::group_is_active(group, self, cc_values) {
                 continue;
             }
-            if let Some(zone) = group.find_zone(note, velocity) {
+            if let Some(zone) = group.find_zone(note, velocity, channel, cc_values, pitch_bend_raw)
+            {
                 return Some((gi, group, zone));
             }
         }

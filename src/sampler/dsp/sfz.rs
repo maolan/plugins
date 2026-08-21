@@ -35,13 +35,13 @@ use std::sync::Arc;
 use crate::common::filter::{FilterParams, FilterType};
 use crate::common::lfo::{LfoShape, LfoSyncMode, LfoTriggerMode};
 use crate::sampler::dsp::group::{Group, TriggerType};
-use crate::sampler::dsp::mod_matrix::{ModMatrix, ModSource, ModTarget};
+use crate::sampler::dsp::mod_matrix::{ModCurve, ModMatrix, ModSource, ModTarget};
 use crate::sampler::dsp::part::Part;
 use crate::sampler::dsp::patch::Patch;
 use crate::sampler::dsp::sample::{Sample, load_audio};
 use crate::sampler::dsp::voice::LfoParams as SamplerLfoParams;
 use crate::sampler::dsp::zone::{
-    CurveType, LoopDirection, LoopMode, SamplePlayMode, VariantMode, Zone,
+    CcCondition, CurveType, LoopDirection, LoopMode, SamplePlayMode, VariantMode, Zone,
 };
 
 /// Structured error with source location for SFZ parse/load failures.
@@ -562,6 +562,17 @@ pub fn export_patch_to_sfz(path: &Path, patch: &Patch) -> Result<(), String> {
     output.push_str("// Exported by Maolan Sampler\n");
     output.push_str("<control>\n");
     output.push_str(&format!("default_path={sample_dir_name}/\n\n"));
+    let export_curves = collect_export_mod_curves(patch);
+    for (index, curve) in export_curves.iter().enumerate() {
+        output.push_str(&format!("<curve> curve_index={}", index + 1));
+        for (point_index, point) in curve.points.iter().enumerate() {
+            output.push_str(&format!(
+                " v{point_index:03}={}",
+                format_export_float(*point)
+            ));
+        }
+        output.push_str("\n\n");
+    }
 
     let mut exported_samples = HashMap::new();
     let mut sample_index = 1usize;
@@ -574,6 +585,12 @@ pub fn export_patch_to_sfz(path: &Path, patch: &Patch) -> Result<(), String> {
                 output.push_str(&format!("// group: {}\n", group.name));
             }
             output.push_str("<group>");
+            if group.poly_limit != 0 {
+                output.push_str(&format!(" polyphony={}", group.poly_limit));
+            }
+            if group.exclusive_group != 0 {
+                output.push_str(&format!(" group={}", group.exclusive_group));
+            }
             if group.gain_db != 0.0 {
                 output.push_str(&format!(
                     " group_volume={}",
@@ -586,6 +603,7 @@ pub fn export_patch_to_sfz(path: &Path, patch: &Patch) -> Result<(), String> {
                     format_export_float(group.pan * 100.0)
                 ));
             }
+            push_extra_sfz_opcodes(&mut output, &group.extra_sfz_opcodes);
             output.push('\n');
 
             for zone in &group.zones {
@@ -598,7 +616,8 @@ pub fn export_patch_to_sfz(path: &Path, patch: &Patch) -> Result<(), String> {
                 )?;
                 output.push_str("<region>");
                 output.push_str(&format!(" sample={sample_name}"));
-                push_export_zone_mapping(&mut output, zone);
+                push_export_zone_mapping(&mut output, zone, &export_curves);
+                push_extra_sfz_opcodes(&mut output, &zone.extra_sfz_opcodes);
                 output.push('\n');
             }
             output.push('\n');
@@ -638,7 +657,7 @@ fn export_zone_sample(
     Ok(file_name)
 }
 
-fn push_export_zone_mapping(output: &mut String, zone: &Zone) {
+fn push_export_zone_mapping(output: &mut String, zone: &Zone, export_curves: &[ModCurve]) {
     if zone.key_low == zone.key_high && zone.root_key == zone.key_low {
         output.push_str(&format!(" key={}", zone.key_low));
     } else {
@@ -653,24 +672,259 @@ fn push_export_zone_mapping(output: &mut String, zone: &Zone) {
     if zone.vel_high != 127 {
         output.push_str(&format!(" hivel={}", zone.vel_high));
     }
+    if let Some((low, high)) = zone.key_fade_in {
+        output.push_str(&format!(" xfin_lokey={low} xfin_hikey={high}"));
+    } else if zone.key_fade_low != 0 {
+        output.push_str(&format!(" xfin_lokey={}", zone.key_low));
+        output.push_str(&format!(
+            " xfin_hikey={}",
+            zone.key_low.saturating_add(zone.key_fade_low).min(127)
+        ));
+    }
+    if let Some((low, high)) = zone.key_fade_out {
+        output.push_str(&format!(" xfout_lokey={low} xfout_hikey={high}"));
+    } else if zone.key_fade_high != 0 {
+        output.push_str(&format!(
+            " xfout_lokey={}",
+            zone.key_high.saturating_sub(zone.key_fade_high)
+        ));
+        output.push_str(&format!(" xfout_hikey={}", zone.key_high));
+    }
+    if let Some((low, high)) = zone.vel_fade_in {
+        output.push_str(&format!(" xfin_lovel={low} xfin_hivel={high}"));
+    } else if zone.vel_fade_low != 0 {
+        output.push_str(&format!(" xfin_lovel={}", zone.vel_low));
+        output.push_str(&format!(
+            " xfin_hivel={}",
+            zone.vel_low.saturating_add(zone.vel_fade_low).min(127)
+        ));
+    }
+    if let Some((low, high)) = zone.vel_fade_out {
+        output.push_str(&format!(" xfout_lovel={low} xfout_hivel={high}"));
+    } else if zone.vel_fade_high != 0 {
+        output.push_str(&format!(
+            " xfout_lovel={}",
+            zone.vel_high.saturating_sub(zone.vel_fade_high)
+        ));
+        output.push_str(&format!(" xfout_hivel={}", zone.vel_high));
+    }
+    if zone.channel_low != 1 {
+        output.push_str(&format!(" lochan={}", zone.channel_low));
+    }
+    if zone.channel_high != 16 {
+        output.push_str(&format!(" hichan={}", zone.channel_high));
+    }
+    if zone.pitch_bend_low != -8192 {
+        output.push_str(&format!(" lobend={}", zone.pitch_bend_low));
+    }
+    if zone.pitch_bend_high != 8192 {
+        output.push_str(&format!(" hibend={}", zone.pitch_bend_high));
+    }
+    for condition in &zone.cc_conditions {
+        if condition.low != 0 {
+            output.push_str(&format!(" locc{}={}", condition.cc, condition.low));
+        }
+        if condition.high != 127 {
+            output.push_str(&format!(" hicc{}={}", condition.cc, condition.high));
+        }
+    }
     if zone.gain_db != 0.0 {
         output.push_str(&format!(" volume={}", format_export_float(zone.gain_db)));
     }
     if zone.pan != 0.0 {
         output.push_str(&format!(" pan={}", format_export_float(zone.pan * 100.0)));
     }
+    if zone.width != 1.0 {
+        output.push_str(&format!(
+            " width={}",
+            format_export_float(zone.width * 100.0)
+        ));
+    }
+    if zone.position != 0.0 {
+        output.push_str(&format!(
+            " position={}",
+            format_export_float(zone.position * 100.0)
+        ));
+    }
+    if zone.amp_keytrack_db != 0.0 {
+        output.push_str(&format!(
+            " amp_keytrack={}",
+            format_export_float(zone.amp_keytrack_db)
+        ));
+    }
     if zone.pitch_offset != 0.0 {
         output.push_str(&format!(" tune={}", format_export_float(zone.pitch_offset)));
+    }
+    if zone.key_tracking != 1.0 {
+        output.push_str(&format!(
+            " keytracking={}",
+            format_export_float(zone.key_tracking * 100.0)
+        ));
+    }
+    if zone.pitch_bend_up != 2.0 {
+        output.push_str(&format!(
+            " bend_up={}",
+            format_export_float(zone.pitch_bend_up)
+        ));
+    }
+    if zone.pitch_bend_down != 2.0 {
+        output.push_str(&format!(
+            " bend_down={}",
+            format_export_float(zone.pitch_bend_down)
+        ));
     }
     if zone.start_offset != 0 {
         output.push_str(&format!(" offset={}", zone.start_offset));
     }
-    if zone.loop_mode != LoopMode::Off {
-        output.push_str(" loop_mode=loop_continuous");
+    if zone.offset_random != 0 {
+        output.push_str(&format!(" offset_random={}", zone.offset_random));
+    }
+    if zone.end_offset != 0 {
+        output.push_str(&format!(" end={}", zone.end_offset));
+    }
+    if zone.delay != 0.0 {
+        output.push_str(&format!(" delay={}", format_export_float(zone.delay)));
+    }
+    if zone.delay_random != 0.0 {
+        output.push_str(&format!(
+            " delay_random={}",
+            format_export_float(zone.delay_random)
+        ));
+    }
+    if zone.reverse {
+        output.push_str(" direction=reverse");
+    }
+    match zone.play_mode {
+        SamplePlayMode::Normal => {}
+        SamplePlayMode::OneShot => output.push_str(" loop_mode=one_shot"),
+        SamplePlayMode::OnRelease => output.push_str(" trigger=release"),
+    }
+    if zone.loop_mode != LoopMode::Off && zone.play_mode != SamplePlayMode::OneShot {
+        match zone.loop_mode {
+            LoopMode::Off => {}
+            LoopMode::DuringVoice | LoopMode::Count => {
+                output.push_str(" loop_mode=loop_continuous")
+            }
+            LoopMode::WhileGated => output.push_str(" loop_mode=loop_sustain"),
+        }
         output.push_str(&format!(
             " loop_start={} loop_end={}",
             zone.loop_start, zone.loop_end
         ));
+        if zone.loop_crossfade != 0 {
+            output.push_str(&format!(" loop_crossfade={}", zone.loop_crossfade));
+        }
+        if zone.loop_count != 0 {
+            output.push_str(&format!(" loop_count={}", zone.loop_count));
+        }
+        if zone.loop_direction == LoopDirection::Alternate {
+            output.push_str(" loop_direction=alternate");
+        }
+    }
+    if zone.random_low != 0.0 {
+        output.push_str(&format!(" lorand={}", format_export_float(zone.random_low)));
+    }
+    if zone.random_high != 1.0 {
+        output.push_str(&format!(
+            " hirand={}",
+            format_export_float(zone.random_high)
+        ));
+    }
+    if zone.seq_length != 0 {
+        output.push_str(&format!(" seq_length={}", zone.seq_length));
+    }
+    if zone.seq_position != 0 {
+        output.push_str(&format!(" seq_position={}", zone.seq_position));
+    }
+    if zone.off_by != 0 {
+        output.push_str(&format!(" off_by={}", zone.off_by));
+    }
+    push_export_mod_matrix(output, &zone.mod_matrix, export_curves);
+}
+
+fn push_export_mod_matrix(output: &mut String, matrix: &ModMatrix, export_curves: &[ModCurve]) {
+    for route in &matrix.routes {
+        if !route.active || route.source != ModSource::MidiCc {
+            continue;
+        }
+        let Some((name, value)) = sfz_cc_mod_opcode(route.target, route.depth) else {
+            continue;
+        };
+        if value != 0.0 {
+            output.push_str(&format!(
+                " {}{}={}",
+                name,
+                route.source_cc,
+                format_export_float(value)
+            ));
+        }
+        if let Some(curve_index) = export_curve_index(export_curves, &route.source_curve) {
+            output.push_str(&format!(" curvecc{}={curve_index}", route.source_cc));
+        }
+    }
+}
+
+fn collect_export_mod_curves(patch: &Patch) -> Vec<ModCurve> {
+    let mut curves = Vec::new();
+    for route in patch
+        .parts
+        .iter()
+        .flat_map(|part| part.groups.iter())
+        .flat_map(|group| group.zones.iter())
+        .flat_map(|zone| zone.mod_matrix.routes.iter())
+    {
+        if !route.active
+            || route.source != ModSource::MidiCc
+            || sfz_cc_mod_opcode(route.target, route.depth).is_none()
+            || is_linear_mod_curve(&route.source_curve)
+            || export_curve_index(&curves, &route.source_curve).is_some()
+        {
+            continue;
+        }
+        curves.push(route.source_curve);
+    }
+    curves
+}
+
+fn export_curve_index(curves: &[ModCurve], curve: &ModCurve) -> Option<usize> {
+    if is_linear_mod_curve(curve) {
+        return None;
+    }
+    curves
+        .iter()
+        .position(|candidate| same_mod_curve(candidate, curve))
+        .map(|index| index + 1)
+}
+
+fn is_linear_mod_curve(curve: &ModCurve) -> bool {
+    same_mod_curve(curve, &ModCurve::linear())
+}
+
+fn same_mod_curve(a: &ModCurve, b: &ModCurve) -> bool {
+    a.points
+        .iter()
+        .zip(b.points.iter())
+        .all(|(a, b)| (*a - *b).abs() <= 0.000_001)
+}
+
+fn sfz_cc_mod_opcode(target: ModTarget, depth: f32) -> Option<(&'static str, f32)> {
+    match target {
+        ModTarget::Amplitude => Some(("volume_oncc", depth * 100.0)),
+        ModTarget::Pan => Some(("pan_oncc", depth * 100.0)),
+        ModTarget::Pitch => Some(("tune_oncc", depth * 100.0)),
+        ModTarget::FilterCutoff => Some(("cutoff_oncc", depth * 1200.0)),
+        ModTarget::FilterResonance => Some(("resonance_oncc", depth * 100.0)),
+        ModTarget::SampleOffset => Some(("offset_oncc", depth)),
+        ModTarget::Delay => Some(("delay_oncc", depth)),
+        ModTarget::None | ModTarget::SampleStart => None,
+    }
+}
+
+fn push_extra_sfz_opcodes(output: &mut String, opcodes: &[(String, String)]) {
+    for (key, value) in opcodes {
+        if is_non_vendor_sfz_opcode(key) {
+            output.push_str(&format!(" {key}={value}"));
+        }
     }
 }
 
@@ -764,6 +1018,7 @@ fn parse_sfz_text(text: &str, base_dir: &Path) -> Result<Patch, SfzError> {
     let mut group_opcodes: OpcodeMap = OpcodeMap::default();
     let mut master_opcodes: OpcodeMap = OpcodeMap::default();
     let mut current_group: Option<Group> = None;
+    let mut curves: HashMap<i32, ModCurve> = HashMap::new();
 
     let mut i = 0;
     while i < tokens.len() {
@@ -798,7 +1053,7 @@ fn parse_sfz_text(text: &str, base_dir: &Path) -> Result<Patch, SfzError> {
                         let mut region_opcodes = group_opcodes.clone();
                         region_opcodes.extend(&header_opcodes);
 
-                        if let Some(zone) = build_zone(&region_opcodes, base_dir) {
+                        if let Some(zone) = build_zone(&region_opcodes, base_dir, &curves) {
                             if current_group.is_none() {
                                 current_group = Some(Group::default());
                             }
@@ -811,8 +1066,9 @@ fn parse_sfz_text(text: &str, base_dir: &Path) -> Result<Patch, SfzError> {
                         global_opcodes.extend(&header_opcodes);
                     }
                     "curve" => {
-                        // Curves are stored but not applied until a `volume_onccN`
-                        // or similar opcode references them. For now, ignore.
+                        if let Some((index, curve)) = build_mod_curve(&header_opcodes) {
+                            curves.insert(index, curve);
+                        }
                     }
                     "midi" | "effect" | "sample" => {
                         // These headers are reserved for future use.
@@ -852,7 +1108,185 @@ impl OpcodeMap {
         self.map
             .extend(other.map.iter().map(|(k, v)| (k.clone(), v.clone())));
     }
+
+    fn extra_opcodes(&self, handled: &[&str]) -> Vec<(String, String)> {
+        let mut opcodes: Vec<(String, String)> = self
+            .map
+            .iter()
+            .filter(|(key, _)| {
+                !is_handled_sfz_opcode(key, handled) && is_non_vendor_sfz_opcode(key)
+            })
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        opcodes.sort_by(|a, b| a.0.cmp(&b.0));
+        opcodes
+    }
 }
+
+fn is_handled_sfz_opcode(key: &str, handled: &[&str]) -> bool {
+    handled.contains(&key)
+        || cc_opcode_number(key, "locc").is_some()
+        || cc_opcode_number(key, "hicc").is_some()
+        || cc_opcode_number(key, "volume_oncc").is_some()
+        || cc_opcode_number(key, "pan_oncc").is_some()
+        || cc_opcode_number(key, "tune_oncc").is_some()
+        || cc_opcode_number(key, "cutoff_oncc").is_some()
+        || cc_opcode_number(key, "resonance_oncc").is_some()
+        || cc_opcode_number(key, "offset_oncc").is_some()
+        || cc_opcode_number(key, "delay_oncc").is_some()
+        || cc_opcode_number(key, "curvecc").is_some()
+}
+
+pub fn is_non_vendor_sfz_opcode(key: &str) -> bool {
+    !is_vendor_sfz_opcode(key)
+}
+
+fn is_vendor_sfz_opcode(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    const EXACT: &[&str] = &[
+        "script",
+        "include",
+        "hint",
+        "global_label",
+        "master_label",
+        "group_label",
+        "region_label",
+        "polyphony_group",
+        "polyphony_stealing",
+        "off_curve",
+        "off_shape",
+        "off_time",
+        "sostenuto_cc",
+        "sostenuto_lo",
+        "sustain_cc",
+        "sustain_lo",
+        "sw_label",
+        "sw_note_offset",
+        "sw_octave_offset",
+        "loop_end_offset",
+        "loopcount",
+        "loopend",
+        "loopstart",
+        "looptune",
+        "looptype",
+        "offby",
+        "offset_mode",
+    ];
+    if EXACT.contains(&key.as_str()) {
+        return true;
+    }
+    const PREFIXES: &[&str] = &[
+        "hint_",
+        "label_cc",
+        "label_key",
+        "label_output",
+        "set_hdcc",
+        "set_realcc",
+        "sample_dyn_param",
+        "lohdcc",
+        "hihdcc",
+        "delay_curvecc",
+        "delay_beats_curvecc",
+        "delay_beats_random",
+        "delay_beats_oncc",
+    ];
+    PREFIXES.iter().any(|prefix| key.starts_with(prefix))
+}
+
+const GROUP_HANDLED_OPCODES: &[&str] = &[
+    "default_path",
+    "sw_last",
+    "sw_down",
+    "sw_up",
+    "sw_default",
+    "polyphony",
+    "group",
+    "group_volume",
+    "group_pan",
+    "ampeg_attack",
+    "ampeg_decay",
+    "ampeg_sustain",
+    "ampeg_release",
+    "fileg_attack",
+    "fileg_decay",
+    "fileg_sustain",
+    "fileg_release",
+    "amplfo_freq",
+    "amplfo_depth",
+    "amplfo_delay",
+    "amplfo_fade",
+    "fillfo_freq",
+    "fillfo_depth",
+    "fillfo_delay",
+    "fillfo_fade",
+    "pitchlfo_freq",
+    "pitchlfo_depth",
+    "pitchlfo_delay",
+    "pitchlfo_fade",
+    "lfo01_freq",
+    "lfo01_depth",
+    "lfo01_delay",
+    "lfo01_fade",
+    "cutoff",
+    "resonance",
+    "fil_type",
+];
+
+const ZONE_HANDLED_OPCODES: &[&str] = &[
+    "default_path",
+    "sample",
+    "key",
+    "lokey",
+    "hikey",
+    "pitch_keycenter",
+    "keylabel",
+    "lovel",
+    "hivel",
+    "lochan",
+    "hichan",
+    "lobend",
+    "hibend",
+    "velcurve",
+    "xfin_lokey",
+    "xfin_hikey",
+    "xfout_lokey",
+    "xfout_hikey",
+    "xfin_lovel",
+    "xfin_hivel",
+    "xfout_lovel",
+    "xfout_hivel",
+    "tune",
+    "transpose",
+    "keytracking",
+    "bend_up",
+    "bend_down",
+    "volume",
+    "pan",
+    "width",
+    "position",
+    "amp_keytrack",
+    "amp_veltrack",
+    "offset",
+    "offset_random",
+    "end",
+    "delay",
+    "delay_random",
+    "count",
+    "direction",
+    "trigger",
+    "loop_mode",
+    "loop_start",
+    "loop_end",
+    "loop_crossfade",
+    "loop_count",
+    "loop_direction",
+    "seq_length",
+    "seq_position",
+    "lorand",
+    "hirand",
+    "off_by",
+    "off_mode",
+];
 
 fn combine_maps(a: &OpcodeMap, b: &OpcodeMap) -> OpcodeMap {
     let mut out = a.clone();
@@ -903,6 +1337,87 @@ fn get_note(opcodes: &OpcodeMap, key: &str) -> Option<u8> {
         .and_then(|v| OpcodeValue::parse(v).as_note())
 }
 
+fn parse_u7_pair(
+    opcodes: &OpcodeMap,
+    low_key: &str,
+    high_key: &str,
+    default_low: u8,
+    default_high: u8,
+) -> Option<(u8, u8)> {
+    if opcodes.get(low_key).is_none() && opcodes.get(high_key).is_none() {
+        return None;
+    }
+    let low = get_int(opcodes, low_key)
+        .map(|value| value.clamp(0, 127) as u8)
+        .unwrap_or(default_low);
+    let high = get_int(opcodes, high_key)
+        .map(|value| value.clamp(0, 127) as u8)
+        .unwrap_or(default_high);
+    Some((low.min(high), low.max(high)))
+}
+
+fn cc_opcode_number(key: &str, prefix: &str) -> Option<u8> {
+    key.strip_prefix(prefix)
+        .and_then(|number| number.parse::<u8>().ok())
+        .filter(|cc| *cc < 128)
+}
+
+fn parse_cc_conditions(opcodes: &OpcodeMap) -> Vec<CcCondition> {
+    let mut out = Vec::new();
+    for cc in 0..=127u8 {
+        let low = get_int(opcodes, &format!("locc{cc}"))
+            .map(|v| v.clamp(0, 127) as u8)
+            .unwrap_or(0);
+        let high = get_int(opcodes, &format!("hicc{cc}"))
+            .map(|v| v.clamp(0, 127) as u8)
+            .unwrap_or(127);
+        if low != 0 || high != 127 {
+            out.push(CcCondition { cc, low, high });
+        }
+    }
+    out
+}
+
+fn build_mod_curve(opcodes: &OpcodeMap) -> Option<(i32, ModCurve)> {
+    let index = get_int(opcodes, "curve_index")?;
+    let mut defined = [None; 128];
+    for (i, value_slot) in defined.iter_mut().enumerate() {
+        if let Some(value) = get_float(opcodes, &format!("v{i:03}")) {
+            *value_slot = Some(value.clamp(0.0, 1.0));
+        }
+    }
+
+    let mut points = ModCurve::linear().points;
+    let anchors: Vec<(usize, f32)> = defined
+        .iter()
+        .enumerate()
+        .filter_map(|(i, value)| value.map(|value| (i, value)))
+        .collect();
+    if anchors.is_empty() {
+        return Some((index, ModCurve { points }));
+    }
+
+    let (first_i, first_v) = anchors[0];
+    for point in points.iter_mut().take(first_i + 1) {
+        *point = first_v;
+    }
+    for window in anchors.windows(2) {
+        let (start_i, start_v) = window[0];
+        let (end_i, end_v) = window[1];
+        let width = (end_i - start_i).max(1) as f32;
+        for (i, point) in points.iter_mut().enumerate().take(end_i + 1).skip(start_i) {
+            let frac = (i - start_i) as f32 / width;
+            *point = start_v + (end_v - start_v) * frac;
+        }
+    }
+    let (last_i, last_v) = *anchors.last().unwrap();
+    for point in points.iter_mut().skip(last_i) {
+        *point = last_v;
+    }
+
+    Some((index, ModCurve { points }))
+}
+
 // ---------------------------------------------------------------------------
 // Group builder
 // ---------------------------------------------------------------------------
@@ -949,6 +1464,7 @@ fn build_group(opcodes: &OpcodeMap) -> Group {
     group.lfo4 = parse_mod_lfo(opcodes);
 
     group.processor_chain = build_filter_chain(opcodes);
+    group.extra_sfz_opcodes = opcodes.extra_opcodes(GROUP_HANDLED_OPCODES);
 
     group
 }
@@ -1123,7 +1639,11 @@ fn sfz_cents(opcodes: &OpcodeMap, key: &str) -> Option<f32> {
 // Zone builder
 // ---------------------------------------------------------------------------
 
-fn build_zone(opcodes: &OpcodeMap, base_dir: &Path) -> Option<Zone> {
+fn build_zone(
+    opcodes: &OpcodeMap,
+    base_dir: &Path,
+    curves: &HashMap<i32, ModCurve>,
+) -> Option<Zone> {
     let sample_path = opcodes.get("sample")?;
     if sample_path.is_empty() || sample_path == "*" {
         return None;
@@ -1163,24 +1683,63 @@ fn build_zone(opcodes: &OpcodeMap, base_dir: &Path) -> Option<Zone> {
     if let Some(v) = get_int(opcodes, "hivel") {
         zone.vel_high = v.clamp(0, 127) as u8;
     }
+    if let Some(v) = get_int(opcodes, "lochan") {
+        zone.channel_low = v.clamp(1, 16) as u8;
+    }
+    if let Some(v) = get_int(opcodes, "hichan") {
+        zone.channel_high = v.clamp(1, 16) as u8;
+    }
+    if let Some(v) = get_int(opcodes, "lobend") {
+        zone.pitch_bend_low = v.clamp(-8192, 8192) as i16;
+    }
+    if let Some(v) = get_int(opcodes, "hibend") {
+        zone.pitch_bend_high = v.clamp(-8192, 8192) as i16;
+    }
+    zone.cc_conditions = parse_cc_conditions(opcodes);
     if let Some(curve) = opcodes.get("velcurve") {
         zone.velocity_curve = parse_curve_type(curve);
     }
 
     // Key/velocity fades.
-    if let Some(v) = get_int(opcodes, "xfin_lokey") {
-        zone.key_fade_low = zone.key_low.saturating_sub(v.clamp(0, 127) as u8);
+    if let Some((low, high)) = parse_u7_pair(
+        opcodes,
+        "xfin_lokey",
+        "xfin_hikey",
+        zone.key_low,
+        zone.key_low,
+    ) {
+        zone.key_fade_in = Some((low, high));
+        zone.key_fade_low = high.saturating_sub(low);
     }
-    if let Some(v) = get_int(opcodes, "xfin_hikey") {
-        let center = v.clamp(0, 127) as u8;
-        zone.key_fade_low = center.saturating_sub(zone.key_low);
+    if let Some((low, high)) = parse_u7_pair(
+        opcodes,
+        "xfout_lokey",
+        "xfout_hikey",
+        zone.key_high,
+        zone.key_high,
+    ) {
+        zone.key_fade_out = Some((low, high));
+        zone.key_fade_high = high.saturating_sub(low);
     }
-    if let Some(v) = get_int(opcodes, "xfout_lokey") {
-        let center = v.clamp(0, 127) as u8;
-        zone.key_fade_high = zone.key_high.saturating_sub(center);
+    if let Some((low, high)) = parse_u7_pair(
+        opcodes,
+        "xfin_lovel",
+        "xfin_hivel",
+        zone.vel_low,
+        zone.vel_low,
+    ) {
+        zone.vel_fade_in = Some((low, high));
+        zone.vel_fade_low = high.saturating_sub(low);
     }
-    if let Some(v) = get_int(opcodes, "xfout_hikey") {
-        zone.key_fade_high = (v.clamp(0, 127) as u8).saturating_sub(zone.key_high);
+    if let Some((low, high)) = parse_u7_pair(
+        opcodes,
+        "xfout_lovel",
+        "xfout_hivel",
+        zone.vel_high,
+        zone.vel_high,
+    ) {
+        zone.vel_fade_out = Some((low, high));
+        zone.vel_fade_high = high.saturating_sub(low);
     }
 
     // Tuning.
@@ -1208,14 +1767,13 @@ fn build_zone(opcodes: &OpcodeMap, base_dir: &Path) -> Option<Zone> {
         zone.pan = p.clamp(-100.0, 100.0) / 100.0;
     }
     if let Some(w) = get_float(opcodes, "width") {
-        // Not represented directly; store as a hint in the name for now.
-        let _ = w;
+        zone.width = (w / 100.0).clamp(0.0, 2.0);
     }
     if let Some(p) = get_float(opcodes, "position") {
-        let _ = p;
+        zone.position = (p / 100.0).clamp(-1.0, 1.0);
     }
     if let Some(db) = sfz_decibels(opcodes, "amp_keytrack") {
-        let _ = db;
+        zone.amp_keytrack_db = db;
     }
     if let Some(v) = get_float(opcodes, "amp_veltrack") {
         let _ = v;
@@ -1225,8 +1783,17 @@ fn build_zone(opcodes: &OpcodeMap, base_dir: &Path) -> Option<Zone> {
     if let Some(off) = get_int(opcodes, "offset") {
         zone.start_offset = off.max(0) as usize;
     }
+    if let Some(off) = get_int(opcodes, "offset_random") {
+        zone.offset_random = off.max(0) as usize;
+    }
     if let Some(end) = get_int(opcodes, "end") {
-        let _ = end;
+        zone.end_offset = end.max(0) as usize;
+    }
+    if let Some(delay) = sfz_time_seconds(opcodes, "delay") {
+        zone.delay = delay.max(0.0);
+    }
+    if let Some(delay_random) = sfz_time_seconds(opcodes, "delay_random") {
+        zone.delay_random = delay_random.max(0.0);
     }
     if let Some(count) = get_int(opcodes, "count") {
         let _ = count;
@@ -1282,9 +1849,27 @@ fn build_zone(opcodes: &OpcodeMap, base_dir: &Path) -> Option<Zone> {
     if opcodes.get("lorand").is_some() || opcodes.get("hirand").is_some() {
         zone.variant_mode = VariantMode::Random;
     }
+    if let Some(v) = get_float(opcodes, "lorand") {
+        zone.random_low = v.clamp(0.0, 1.0);
+    }
+    if let Some(v) = get_float(opcodes, "hirand") {
+        zone.random_high = v.clamp(0.0, 1.0);
+    }
+    if let Some(v) = get_int(opcodes, "seq_length") {
+        zone.seq_length = v.max(0) as u32;
+    }
+    if let Some(v) = get_int(opcodes, "seq_position") {
+        zone.seq_position = v.max(0) as u32;
+    }
+    if let Some(v) = get_int(opcodes, "off_by") {
+        zone.off_by = v.clamp(0, 255) as u8;
+    }
 
     // Mod matrix (CC modulations and velocity/key tracks).
-    zone.mod_matrix = build_zone_mod_matrix(opcodes);
+    zone.mod_matrix = build_zone_mod_matrix(opcodes, curves);
+    let mut handled = Vec::from(ZONE_HANDLED_OPCODES);
+    handled.extend_from_slice(GROUP_HANDLED_OPCODES);
+    zone.extra_sfz_opcodes = opcodes.extra_opcodes(&handled);
 
     Some(zone)
 }
@@ -1324,7 +1909,7 @@ fn parse_loop_direction(value: &str) -> LoopDirection {
     }
 }
 
-fn build_zone_mod_matrix(opcodes: &OpcodeMap) -> ModMatrix {
+fn build_zone_mod_matrix(opcodes: &OpcodeMap, curves: &HashMap<i32, ModCurve>) -> ModMatrix {
     let mut matrix = ModMatrix::default();
     let mut route = 0;
 
@@ -1346,31 +1931,103 @@ fn build_zone_mod_matrix(opcodes: &OpcodeMap) -> ModMatrix {
     // Key track -> pitch is implicit in Zone::compute_increment, but
     // `pitch_keytrack=0` disables it above.
 
-    // CC modulations: volume_onccN, pan_onccN, tune_onccN, cutoff_onccN, resonance_onccN.
+    // CC modulations: volume/pan/tune/filter plus sample offset and trigger delay.
     for cc in 0..=127 {
         let cc_str = cc.to_string();
-        if let Some(depth) = get_float(opcodes, &format!("volume_oncc{}", cc_str))
-            && route < 16
-        {
-            matrix.set_route(
-                route,
-                ModSource::from_u8(3 + cc as u8), // CCs are not in ModSource yet
-                ModTarget::Amplitude,
-                (depth / 100.0).clamp(-1.0, 1.0),
-            );
-            route += 1;
-        }
+        route = add_cc_mod_route(
+            &mut matrix,
+            route,
+            cc,
+            ModTarget::Amplitude,
+            get_float(opcodes, &format!("volume_oncc{}", cc_str)),
+            100.0,
+            cc_curve(opcodes, curves, cc),
+        );
+        route = add_cc_mod_route(
+            &mut matrix,
+            route,
+            cc,
+            ModTarget::Pan,
+            get_float(opcodes, &format!("pan_oncc{}", cc_str)),
+            100.0,
+            cc_curve(opcodes, curves, cc),
+        );
+        route = add_cc_mod_route(
+            &mut matrix,
+            route,
+            cc,
+            ModTarget::Pitch,
+            get_float(opcodes, &format!("tune_oncc{}", cc_str)),
+            100.0,
+            cc_curve(opcodes, curves, cc),
+        );
+        route = add_cc_mod_route(
+            &mut matrix,
+            route,
+            cc,
+            ModTarget::FilterCutoff,
+            get_float(opcodes, &format!("cutoff_oncc{}", cc_str)),
+            1200.0,
+            cc_curve(opcodes, curves, cc),
+        );
+        route = add_cc_mod_route(
+            &mut matrix,
+            route,
+            cc,
+            ModTarget::FilterResonance,
+            get_float(opcodes, &format!("resonance_oncc{}", cc_str)),
+            100.0,
+            cc_curve(opcodes, curves, cc),
+        );
+        route = add_cc_mod_route(
+            &mut matrix,
+            route,
+            cc,
+            ModTarget::SampleOffset,
+            get_float(opcodes, &format!("offset_oncc{}", cc_str)),
+            1.0,
+            cc_curve(opcodes, curves, cc),
+        );
+        route = add_cc_mod_route(
+            &mut matrix,
+            route,
+            cc,
+            ModTarget::Delay,
+            get_float(opcodes, &format!("delay_oncc{}", cc_str)),
+            1.0,
+            cc_curve(opcodes, curves, cc),
+        );
     }
 
-    // For now, remaining CC modulations are parsed and ignored because
-    // ModSource does not yet model arbitrary MIDI CCs. They are left as
-    // comments here for future extension.
-    let _ = opcodes.get("pan_oncc1");
-    let _ = opcodes.get("tune_oncc1");
-    let _ = opcodes.get("cutoff_oncc1");
-    let _ = opcodes.get("resonance_oncc1");
-
     matrix
+}
+
+fn cc_curve(opcodes: &OpcodeMap, curves: &HashMap<i32, ModCurve>, cc: usize) -> ModCurve {
+    get_int(opcodes, &format!("curvecc{cc}"))
+        .and_then(|index| curves.get(&index).copied())
+        .unwrap_or_default()
+}
+
+fn add_cc_mod_route(
+    matrix: &mut ModMatrix,
+    route: usize,
+    cc: usize,
+    target: ModTarget,
+    depth: Option<f32>,
+    scale: f32,
+    source_curve: ModCurve,
+) -> usize {
+    if route >= matrix.routes.len() {
+        return route;
+    }
+    let Some(depth) = depth else {
+        return route;
+    };
+    if depth == 0.0 {
+        return route;
+    }
+    matrix.set_cc_route_with_curve(route, cc as u8, target, depth / scale, source_curve);
+    route + 1
 }
 
 #[cfg(test)]
@@ -1517,6 +2174,72 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_preserves_non_vendor_extra_opcodes() {
+        let text = r#"
+<group> off_by=7 script=ignored.as delay=0.1
+<region> sample=silent.wav key=60 locc1=10 hicc1=90 hint_foo=bar
+"#;
+        let patch = parse_sfz_text(text, Path::new("/tmp")).unwrap();
+        let group = &patch.parts[0].groups[0];
+        assert!(
+            group
+                .extra_sfz_opcodes
+                .contains(&(String::from("off_by"), String::from("7")))
+        );
+        assert!(
+            group
+                .extra_sfz_opcodes
+                .contains(&(String::from("delay"), String::from("0.1")))
+        );
+        assert!(
+            !group
+                .extra_sfz_opcodes
+                .iter()
+                .any(|(key, _)| key == "script")
+        );
+
+        let zone = &group.zones[0];
+        assert_eq!(zone.cc_conditions.len(), 1);
+        assert_eq!(zone.cc_conditions[0].cc, 1);
+        assert_eq!(zone.cc_conditions[0].low, 10);
+        assert_eq!(zone.cc_conditions[0].high, 90);
+        assert!(
+            !zone
+                .extra_sfz_opcodes
+                .iter()
+                .any(|(key, _)| key == "hint_foo")
+        );
+    }
+
+    #[test]
+    fn test_parse_sfz_region_conditions() {
+        let text = r#"
+<region> sample=silent.wav key=60 lochan=2 hichan=3 lobend=-100 hibend=200 locc7=20 hicc7=90 lorand=0.25 hirand=0.75 seq_length=4 seq_position=2 off_by=9
+"#;
+        let patch = parse_sfz_text(text, Path::new("/tmp")).unwrap();
+        let zone = &patch.parts[0].groups[0].zones[0];
+        assert_eq!(zone.channel_low, 2);
+        assert_eq!(zone.channel_high, 3);
+        assert_eq!(zone.pitch_bend_low, -100);
+        assert_eq!(zone.pitch_bend_high, 200);
+        assert_eq!(zone.cc_conditions.len(), 1);
+        assert_eq!(zone.cc_conditions[0].cc, 7);
+        assert_eq!(zone.cc_conditions[0].low, 20);
+        assert_eq!(zone.cc_conditions[0].high, 90);
+        assert_eq!(zone.random_low, 0.25);
+        assert_eq!(zone.random_high, 0.75);
+        assert_eq!(zone.seq_length, 4);
+        assert_eq!(zone.seq_position, 2);
+        assert_eq!(zone.off_by, 9);
+        assert!(
+            !zone
+                .extra_sfz_opcodes
+                .iter()
+                .any(|(key, _)| key == "locc7" || key == "hicc7")
+        );
+    }
+
+    #[test]
     fn test_preprocess_define() {
         let text = r#"
 #define ROOT 60
@@ -1631,7 +2354,22 @@ mod tests {
         opcodes.insert("bend_down", "700");
         opcodes.insert("volume", "-6");
         opcodes.insert("pan", "-25");
+        opcodes.insert("width", "50");
+        opcodes.insert("position", "25");
+        opcodes.insert("amp_keytrack", "0.5");
+        opcodes.insert("xfin_lokey", "50");
+        opcodes.insert("xfin_hikey", "54");
+        opcodes.insert("xfout_lokey", "68");
+        opcodes.insert("xfout_hikey", "72");
+        opcodes.insert("xfin_lovel", "10");
+        opcodes.insert("xfin_hivel", "30");
+        opcodes.insert("xfout_lovel", "90");
+        opcodes.insert("xfout_hivel", "110");
         opcodes.insert("offset", "128");
+        opcodes.insert("offset_random", "32");
+        opcodes.insert("end", "1024");
+        opcodes.insert("delay", "0.25");
+        opcodes.insert("delay_random", "0.5");
         opcodes.insert("direction", "reverse");
         opcodes.insert("trigger", "release");
         opcodes.insert("loop_mode", "loop_sustain");
@@ -1643,7 +2381,7 @@ mod tests {
         opcodes.insert("seq_length", "4");
         opcodes.insert("amp_veltrack", "25");
 
-        let zone = build_zone(&opcodes, Path::new("/tmp")).unwrap();
+        let zone = build_zone(&opcodes, Path::new("/tmp"), &HashMap::new()).unwrap();
         assert_eq!(zone.name, "missing.wav");
         assert_eq!(zone.key_low, 48);
         assert_eq!(zone.key_high, 72);
@@ -1657,7 +2395,22 @@ mod tests {
         assert_eq!(zone.pitch_bend_down, 700.0);
         assert_eq!(zone.gain_db, -6.0);
         assert_eq!(zone.pan, -0.25);
+        assert_eq!(zone.width, 0.5);
+        assert_eq!(zone.position, 0.25);
+        assert_eq!(zone.amp_keytrack_db, 0.5);
+        assert_eq!(zone.key_fade_in, Some((50, 54)));
+        assert_eq!(zone.key_fade_out, Some((68, 72)));
+        assert_eq!(zone.key_fade_low, 4);
+        assert_eq!(zone.key_fade_high, 4);
+        assert_eq!(zone.vel_fade_in, Some((10, 30)));
+        assert_eq!(zone.vel_fade_out, Some((90, 110)));
+        assert_eq!(zone.vel_fade_low, 20);
+        assert_eq!(zone.vel_fade_high, 20);
         assert_eq!(zone.start_offset, 128);
+        assert_eq!(zone.offset_random, 32);
+        assert_eq!(zone.end_offset, 1024);
+        assert_eq!(zone.delay, 0.25);
+        assert_eq!(zone.delay_random, 0.5);
         assert!(zone.reverse);
         assert_eq!(zone.play_mode, SamplePlayMode::OnRelease);
         assert_eq!(zone.loop_mode, LoopMode::WhileGated);
@@ -1673,6 +2426,90 @@ mod tests {
     }
 
     #[test]
+    fn test_build_zone_maps_cc_mod_opcodes() {
+        let mut opcodes = OpcodeMap::default();
+        opcodes.insert("sample", "missing.wav");
+        opcodes.insert("volume_oncc11", "50");
+        opcodes.insert("pan_oncc1", "-25");
+        opcodes.insert("tune_oncc2", "100");
+        opcodes.insert("cutoff_oncc74", "1200");
+        opcodes.insert("resonance_oncc71", "30");
+        opcodes.insert("offset_oncc72", "256");
+        opcodes.insert("delay_oncc73", "0.125");
+
+        let zone = build_zone(&opcodes, Path::new("/tmp"), &HashMap::new()).unwrap();
+
+        assert!(zone.mod_matrix.routes.iter().any(|route| {
+            route.source == ModSource::MidiCc
+                && route.source_cc == 11
+                && route.target == ModTarget::Amplitude
+                && (route.depth - 0.5).abs() < 0.001
+        }));
+        assert!(zone.mod_matrix.routes.iter().any(|route| {
+            route.source == ModSource::MidiCc
+                && route.source_cc == 1
+                && route.target == ModTarget::Pan
+                && (route.depth + 0.25).abs() < 0.001
+        }));
+        assert!(zone.mod_matrix.routes.iter().any(|route| {
+            route.source == ModSource::MidiCc
+                && route.source_cc == 2
+                && route.target == ModTarget::Pitch
+                && (route.depth - 1.0).abs() < 0.001
+        }));
+        assert!(zone.mod_matrix.routes.iter().any(|route| {
+            route.source == ModSource::MidiCc
+                && route.source_cc == 74
+                && route.target == ModTarget::FilterCutoff
+                && (route.depth - 1.0).abs() < 0.001
+        }));
+        assert!(zone.mod_matrix.routes.iter().any(|route| {
+            route.source == ModSource::MidiCc
+                && route.source_cc == 71
+                && route.target == ModTarget::FilterResonance
+                && (route.depth - 0.3).abs() < 0.001
+        }));
+        assert!(zone.mod_matrix.routes.iter().any(|route| {
+            route.source == ModSource::MidiCc
+                && route.source_cc == 72
+                && route.target == ModTarget::SampleOffset
+                && (route.depth - 256.0).abs() < 0.001
+        }));
+        assert!(zone.mod_matrix.routes.iter().any(|route| {
+            route.source == ModSource::MidiCc
+                && route.source_cc == 73
+                && route.target == ModTarget::Delay
+                && (route.depth - 0.125).abs() < 0.001
+        }));
+        assert!(
+            zone.extra_sfz_opcodes.is_empty(),
+            "handled CC modulation opcodes should not be duplicated as raw extras"
+        );
+    }
+
+    #[test]
+    fn test_parse_sfz_curvecc_shapes_cc_modulation() {
+        let text = r#"
+<curve> curve_index=3 v000=0 v064=0 v127=1
+<region> sample=silent.wav key=60 volume_oncc74=100 curvecc74=3
+"#;
+        let patch = parse_sfz_text(text, Path::new("/tmp")).unwrap();
+        let zone = &patch.parts[0].groups[0].zones[0];
+        let route = zone
+            .mod_matrix
+            .routes
+            .iter()
+            .find(|route| route.source == ModSource::MidiCc && route.source_cc == 74)
+            .unwrap();
+        assert_eq!(route.target, ModTarget::Amplitude);
+        assert!(route.source_curve.apply(64.0 / 127.0).abs() < 0.001);
+        assert!(
+            zone.extra_sfz_opcodes.is_empty(),
+            "curvecc should be handled by the modulation route"
+        );
+    }
+
+    #[test]
     fn test_export_patch_writes_f32_wav_samples() {
         let dir =
             std::env::temp_dir().join(format!("maolan_sfz_export_test_{}", std::process::id()));
@@ -1683,6 +2520,29 @@ mod tests {
         zone.key_low = 36;
         zone.key_high = 36;
         zone.root_key = 36;
+        zone.offset_random = 4;
+        zone.end_offset = 1;
+        zone.width = 0.5;
+        zone.position = 0.25;
+        zone.amp_keytrack_db = 0.5;
+        zone.key_fade_in = Some((34, 36));
+        zone.key_fade_out = Some((38, 40));
+        zone.vel_fade_in = Some((12, 32));
+        zone.vel_fade_out = Some((90, 111));
+        zone.vel_fade_low = 10;
+        zone.vel_fade_high = 20;
+        zone.delay = 0.25;
+        zone.mod_matrix
+            .set_cc_route(0, 74, ModTarget::FilterCutoff, 0.5);
+        zone.mod_matrix.routes[0].source_curve = ModCurve {
+            points: std::array::from_fn(|index| {
+                let x = index as f32 / 127.0;
+                x * x
+            }),
+        };
+        zone.mod_matrix
+            .set_cc_route(1, 72, ModTarget::SampleOffset, 128.0);
+        zone.mod_matrix.set_cc_route(2, 73, ModTarget::Delay, 0.125);
         zone.sample = Arc::new(Sample {
             sample_rate: 48_000.0,
             data_l: vec![0.25, -0.25],
@@ -1708,6 +2568,22 @@ mod tests {
         };
 
         export_patch_to_sfz(&path, &patch).unwrap();
+        let sfz = std::fs::read_to_string(&path).unwrap();
+        assert!(sfz.contains("<curve> curve_index=1"));
+        assert!(sfz.contains(" curvecc74=1"));
+        assert!(sfz.contains("cutoff_oncc74=600"));
+        assert!(sfz.contains("offset_oncc72=128"));
+        assert!(sfz.contains("delay_oncc73=0.125"));
+        assert!(sfz.contains(" width=50"));
+        assert!(sfz.contains(" position=25"));
+        assert!(sfz.contains(" amp_keytrack=0.5"));
+        assert!(sfz.contains(" xfin_lokey=34 xfin_hikey=36"));
+        assert!(sfz.contains(" xfout_lokey=38 xfout_hikey=40"));
+        assert!(sfz.contains(" xfin_lovel=12 xfin_hivel=32"));
+        assert!(sfz.contains(" xfout_lovel=90 xfout_hivel=111"));
+        assert!(sfz.contains(" offset_random=4"));
+        assert!(sfz.contains(" end=1"));
+        assert!(sfz.contains(" delay=0.25"));
         let wav = std::fs::read(dir.join("kit_samples/001_Drums_kick.wav")).unwrap();
         assert_eq!(&wav[0..4], b"RIFF");
         assert_eq!(&wav[8..12], b"WAVE");
@@ -1717,6 +2593,75 @@ mod tests {
             f32::from_le_bytes([wav[44], wav[45], wav[46], wav[47]]),
             0.25
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_export_preserves_non_vendor_extra_opcodes() {
+        let dir = std::env::temp_dir().join(format!(
+            "maolan_sfz_extra_export_test_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("kit.sfz");
+
+        let mut zone = Zone::default();
+        zone.name = String::from("snare");
+        zone.key_low = 38;
+        zone.key_high = 38;
+        zone.root_key = 38;
+        zone.extra_sfz_opcodes = vec![
+            (String::from("locc1"), String::from("10")),
+            (String::from("hint_region"), String::from("ignored")),
+        ];
+        zone.channel_low = 2;
+        zone.channel_high = 3;
+        zone.pitch_bend_low = -100;
+        zone.pitch_bend_high = 200;
+        zone.cc_conditions = vec![CcCondition {
+            cc: 7,
+            low: 20,
+            high: 90,
+        }];
+        zone.random_low = 0.25;
+        zone.random_high = 0.75;
+        zone.seq_length = 4;
+        zone.seq_position = 2;
+        zone.off_by = 9;
+        let mut group = Group {
+            name: String::from("Drums"),
+            ..Default::default()
+        };
+        group.extra_sfz_opcodes = vec![
+            (String::from("off_by"), String::from("7")),
+            (String::from("script"), String::from("ignored.as")),
+        ];
+        group.zones.push(zone);
+        let patch = Patch {
+            parts: vec![Part {
+                groups: vec![group],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        export_patch_to_sfz(&path, &patch).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(" off_by=7"));
+        assert!(text.contains(" locc1=10"));
+        assert!(text.contains(" lochan=2"));
+        assert!(text.contains(" hichan=3"));
+        assert!(text.contains(" lobend=-100"));
+        assert!(text.contains(" hibend=200"));
+        assert!(text.contains(" locc7=20"));
+        assert!(text.contains(" hicc7=90"));
+        assert!(text.contains(" lorand=0.25"));
+        assert!(text.contains(" hirand=0.75"));
+        assert!(text.contains(" seq_length=4"));
+        assert!(text.contains(" seq_position=2"));
+        assert!(text.contains(" off_by=9"));
+        assert!(!text.contains("script="));
+        assert!(!text.contains("hint_region="));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

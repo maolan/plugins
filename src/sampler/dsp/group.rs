@@ -57,6 +57,8 @@ pub struct Group {
 
     pub pan: f32,
 
+    pub extra_sfz_opcodes: Vec<(String, String)>,
+
     pub trigger_type: TriggerType,
 
     pub trigger_note: u8,
@@ -92,6 +94,7 @@ impl Default for Group {
             portamento_curve: 0,
             gain_db: 0.0,
             pan: 0.0,
+            extra_sfz_opcodes: Vec::new(),
             trigger_type: TriggerType::None,
             trigger_note: 0,
             trigger_active: false,
@@ -109,8 +112,17 @@ impl Default for Group {
 }
 
 impl Group {
-    pub fn find_zone(&self, note: u8, velocity: u8) -> Option<&Zone> {
-        self.zones.iter().find(|z| z.contains(note, velocity))
+    pub fn find_zone(
+        &self,
+        note: u8,
+        velocity: u8,
+        channel: u8,
+        cc_values: &[u8; 128],
+        pitch_bend_raw: i16,
+    ) -> Option<&Zone> {
+        self.zones.iter().find(|zone| {
+            zone.contains_with_context(note, velocity, channel, cc_values, pitch_bend_raw)
+        })
     }
 }
 

@@ -42,8 +42,13 @@ use crate::{
     },
     sampler::{
         dsp::{
-            group::Group, mod_matrix::ModTarget, part::Part, patch::Patch, sample::load_audio,
-            sfz::export_patch_to_sfz, zone::Zone,
+            group::Group,
+            mod_matrix::{ModCurve, ModRoute, ModSource, ModTarget},
+            part::Part,
+            patch::Patch,
+            sample::load_audio,
+            sfz::{export_patch_to_sfz, is_non_vendor_sfz_opcode},
+            zone::{CcCondition, LoopMode, SamplePlayMode, Zone},
         },
         load_status::SamplerLoadStatus,
         loader::{PresetInfo, detect_format},
@@ -142,9 +147,285 @@ pub enum Message {
     OpenSamplerEditor(usize),
     CloseSamplerEditor,
     SelectEditingSample(usize),
+    SetEditingZoneValue(ZoneEditField, f32),
+    ToggleEditingZoneReverse(bool),
+    SetEditingZonePlayMode(ZonePlayModeOption),
+    SetEditingZoneLoopMode(ZoneLoopModeOption),
+    AddEditingZoneCcRoute,
+    RemoveEditingZoneCcRoute(usize),
+    SetEditingZoneCcRouteCc(usize, f32),
+    SetEditingZoneCcRouteTarget(usize, CcModTargetOption),
+    SetEditingZoneCcRouteDepth(usize, f32),
+    SetEditingZoneCcRouteCurve(usize, CcCurveOption),
+    AddEditingZoneCcCondition,
+    RemoveEditingZoneCcCondition(usize),
+    SetEditingZoneCcConditionCc(usize, f32),
+    SetEditingZoneCcConditionLow(usize, f32),
+    SetEditingZoneCcConditionHigh(usize, f32),
+    SetSelectedGroupValue(GroupEditField, f32),
+    SetEditingZoneExtraSfz(String),
+    SetSelectedGroupExtraSfz(String),
     PianoKeyPressed(u8, u8),
     PianoKeyReleased(u8),
     PointerReleased,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZoneEditField {
+    StartNote,
+    EndNote,
+    VelLow,
+    VelHigh,
+    RootKey,
+    KeyFadeInLow,
+    KeyFadeInHigh,
+    KeyFadeOutLow,
+    KeyFadeOutHigh,
+    VelFadeInLow,
+    VelFadeInHigh,
+    VelFadeOutLow,
+    VelFadeOutHigh,
+    GainDb,
+    Pan,
+    Width,
+    Position,
+    AmpKeytrack,
+    PitchOffset,
+    KeyTracking,
+    StartOffset,
+    OffsetRandom,
+    EndOffset,
+    LoopStart,
+    LoopEnd,
+    LoopCrossfade,
+    LoopCount,
+    PitchBendUp,
+    PitchBendDown,
+    ChannelLow,
+    ChannelHigh,
+    PitchBendLow,
+    PitchBendHigh,
+    RandomLow,
+    RandomHigh,
+    SeqLength,
+    SeqPosition,
+    OffBy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupEditField {
+    PolyLimit,
+    ExclusiveGroup,
+    GainDb,
+    Pan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CcModTargetOption {
+    Volume,
+    Pan,
+    Tune,
+    Cutoff,
+    Resonance,
+    Offset,
+}
+
+impl CcModTargetOption {
+    fn all() -> [Self; 6] {
+        [
+            Self::Volume,
+            Self::Pan,
+            Self::Tune,
+            Self::Cutoff,
+            Self::Resonance,
+            Self::Offset,
+        ]
+    }
+
+    fn target(self) -> ModTarget {
+        match self {
+            Self::Volume => ModTarget::Amplitude,
+            Self::Pan => ModTarget::Pan,
+            Self::Tune => ModTarget::Pitch,
+            Self::Cutoff => ModTarget::FilterCutoff,
+            Self::Resonance => ModTarget::FilterResonance,
+            Self::Offset => ModTarget::SampleOffset,
+        }
+    }
+
+    fn from_target(target: ModTarget) -> Option<Self> {
+        match target {
+            ModTarget::Amplitude => Some(Self::Volume),
+            ModTarget::Pan => Some(Self::Pan),
+            ModTarget::Pitch => Some(Self::Tune),
+            ModTarget::FilterCutoff => Some(Self::Cutoff),
+            ModTarget::FilterResonance => Some(Self::Resonance),
+            ModTarget::SampleOffset => Some(Self::Offset),
+            ModTarget::None | ModTarget::SampleStart | ModTarget::Delay => None,
+        }
+    }
+}
+
+impl std::fmt::Display for CcModTargetOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Volume => write!(f, "Volume"),
+            Self::Pan => write!(f, "Pan"),
+            Self::Tune => write!(f, "Tune"),
+            Self::Cutoff => write!(f, "Cutoff"),
+            Self::Resonance => write!(f, "Resonance"),
+            Self::Offset => write!(f, "Offset"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CcCurveOption {
+    Linear,
+    Exponential,
+    Logarithmic,
+    SCurve,
+    Custom,
+}
+
+impl CcCurveOption {
+    fn all() -> [Self; 5] {
+        [
+            Self::Linear,
+            Self::Exponential,
+            Self::Logarithmic,
+            Self::SCurve,
+            Self::Custom,
+        ]
+    }
+
+    fn curve(self) -> ModCurve {
+        match self {
+            Self::Linear | Self::Custom => ModCurve::linear(),
+            Self::Exponential => mod_curve_from_fn(|x| x * x),
+            Self::Logarithmic => mod_curve_from_fn(f32::sqrt),
+            Self::SCurve => mod_curve_from_fn(|x| x * x * (3.0 - 2.0 * x)),
+        }
+    }
+
+    fn from_curve(curve: &ModCurve) -> Self {
+        const EPSILON: f32 = 0.001;
+        for option in [
+            Self::Linear,
+            Self::Exponential,
+            Self::Logarithmic,
+            Self::SCurve,
+        ] {
+            let expected = option.curve();
+            if curve
+                .points
+                .iter()
+                .zip(expected.points.iter())
+                .all(|(a, b)| (*a - *b).abs() <= EPSILON)
+            {
+                return option;
+            }
+        }
+        Self::Custom
+    }
+}
+
+impl std::fmt::Display for CcCurveOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Linear => write!(f, "Linear"),
+            Self::Exponential => write!(f, "Exp"),
+            Self::Logarithmic => write!(f, "Log"),
+            Self::SCurve => write!(f, "S"),
+            Self::Custom => write!(f, "Custom"),
+        }
+    }
+}
+
+fn mod_curve_from_fn(f: impl Fn(f32) -> f32) -> ModCurve {
+    let mut points = [0.0; 128];
+    for (index, point) in points.iter_mut().enumerate() {
+        *point = f(index as f32 / 127.0).clamp(0.0, 1.0);
+    }
+    ModCurve { points }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZonePlayModeOption {
+    Attack,
+    OneShot,
+    Release,
+}
+
+impl ZonePlayModeOption {
+    fn all() -> [Self; 3] {
+        [Self::Attack, Self::OneShot, Self::Release]
+    }
+
+    fn from_mode(mode: SamplePlayMode) -> Self {
+        match mode {
+            SamplePlayMode::OneShot => Self::OneShot,
+            SamplePlayMode::OnRelease => Self::Release,
+            SamplePlayMode::Normal => Self::Attack,
+        }
+    }
+
+    fn mode(self) -> SamplePlayMode {
+        match self {
+            Self::Attack => SamplePlayMode::Normal,
+            Self::OneShot => SamplePlayMode::OneShot,
+            Self::Release => SamplePlayMode::OnRelease,
+        }
+    }
+}
+
+impl std::fmt::Display for ZonePlayModeOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Attack => write!(f, "Attack"),
+            Self::OneShot => write!(f, "One Shot"),
+            Self::Release => write!(f, "Release"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZoneLoopModeOption {
+    Off,
+    Continuous,
+    Sustain,
+}
+
+impl ZoneLoopModeOption {
+    fn all() -> [Self; 3] {
+        [Self::Off, Self::Continuous, Self::Sustain]
+    }
+
+    fn from_mode(mode: LoopMode) -> Self {
+        match mode {
+            LoopMode::DuringVoice | LoopMode::Count => Self::Continuous,
+            LoopMode::WhileGated => Self::Sustain,
+            LoopMode::Off => Self::Off,
+        }
+    }
+
+    fn mode(self) -> LoopMode {
+        match self {
+            Self::Off => LoopMode::Off,
+            Self::Continuous => LoopMode::DuringVoice,
+            Self::Sustain => LoopMode::WhileGated,
+        }
+    }
+}
+
+impl std::fmt::Display for ZoneLoopModeOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Off => write!(f, "Off"),
+            Self::Continuous => write!(f, "Continuous"),
+            Self::Sustain => write!(f, "Sustain"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -275,6 +556,7 @@ struct State {
     editing_zone_index: Option<usize>,
     editing_zone_sample_index: usize,
     editing_audio_file: Option<crate::common::audio_file::AudioFile>,
+    extra_sfz_opcode_text: String,
     piano_active_note: Option<u8>,
 }
 
@@ -354,15 +636,15 @@ fn group_for_new_zone(state: &State, groups: &[SampleGroup], zones: &[SampleZone
 }
 
 fn default_new_zone(zones: &[SampleZone], group: String) -> SampleZone {
-    SampleZone {
-        name: unique_zone_name(zones, "New Zone"),
-        files: Vec::new(),
-        start_note: 60,
-        end_note: 60,
-        vel_low: 0,
-        vel_high: 127,
+    SampleZone::new_basic(
+        unique_zone_name(zones, "New Zone"),
+        Vec::new(),
+        60,
+        60,
+        0,
+        127,
         group,
-    }
+    )
 }
 
 fn default_export_path(state: &State) -> PathBuf {
@@ -373,6 +655,60 @@ fn default_export_path(state: &State) -> PathBuf {
         .as_ref()
         .map(|path| path.with_extension("sfz"))
         .unwrap_or_else(|| PathBuf::from("sampler.sfz"))
+}
+
+fn apply_editable_zone_metadata(zone: &mut Zone, editable: &SampleZone) {
+    zone.name = editable.name.clone();
+    zone.key_low = editable.start_note.min(127) as u8;
+    zone.key_high = editable.end_note.min(127) as u8;
+    zone.vel_low = editable.vel_low;
+    zone.vel_high = editable.vel_high;
+    zone.root_key = editable.root_key;
+    zone.key_fade_low = editable.key_fade_low;
+    zone.key_fade_high = editable.key_fade_high;
+    zone.vel_fade_low = editable.vel_fade_low;
+    zone.vel_fade_high = editable.vel_fade_high;
+    zone.key_fade_in = editable.key_fade_in;
+    zone.key_fade_out = editable.key_fade_out;
+    zone.vel_fade_in = editable.vel_fade_in;
+    zone.vel_fade_out = editable.vel_fade_out;
+    zone.pitch_offset = editable.pitch_offset;
+    zone.key_tracking = editable.key_tracking;
+    zone.velocity_curve = editable.velocity_curve;
+    zone.key_tracking_curve = editable.key_tracking_curve;
+    zone.gain_db = editable.gain_db;
+    zone.pan = editable.pan;
+    zone.width = editable.width;
+    zone.position = editable.position;
+    zone.amp_keytrack_db = editable.amp_keytrack_db;
+    zone.reverse = editable.reverse;
+    zone.play_mode = editable.play_mode;
+    zone.loop_mode = editable.loop_mode;
+    zone.loop_direction = editable.loop_direction;
+    zone.loop_start = editable.loop_start;
+    zone.loop_end = editable.loop_end;
+    zone.loop_count = editable.loop_count;
+    zone.loop_crossfade = editable.loop_crossfade;
+    zone.start_offset = editable.start_offset;
+    zone.offset_random = editable.offset_random;
+    zone.end_offset = editable.end_offset;
+    zone.delay = editable.delay;
+    zone.delay_random = editable.delay_random;
+    zone.pitch_bend_up = editable.pitch_bend_up;
+    zone.pitch_bend_down = editable.pitch_bend_down;
+    zone.variant_mode = editable.variant_mode;
+    zone.channel_low = editable.channel_low;
+    zone.channel_high = editable.channel_high;
+    zone.pitch_bend_low = editable.pitch_bend_low;
+    zone.pitch_bend_high = editable.pitch_bend_high;
+    zone.cc_conditions = editable.cc_conditions.clone();
+    zone.random_low = editable.random_low;
+    zone.random_high = editable.random_high;
+    zone.seq_length = editable.seq_length;
+    zone.seq_position = editable.seq_position;
+    zone.off_by = editable.off_by;
+    zone.mod_matrix = editable.mod_matrix.clone();
+    zone.extra_sfz_opcodes = editable.extra_sfz_opcodes.clone();
 }
 
 fn export_patch_from_state(state: &State) -> Patch {
@@ -396,6 +732,11 @@ fn export_patch_from_state(state: &State) -> Patch {
         .iter()
         .map(|group| Group {
             name: group.name.clone(),
+            poly_limit: group.poly_limit,
+            exclusive_group: group.exclusive_group,
+            gain_db: group.gain_db,
+            pan: group.pan,
+            extra_sfz_opcodes: group.extra_sfz_opcodes.clone(),
             ..Default::default()
         })
         .collect();
@@ -430,14 +771,7 @@ fn export_patch_from_state(state: &State) -> Patch {
                 })
             })
             .unwrap_or_default();
-        zone.name = editable.name.clone();
-        zone.key_low = editable.start_note.min(127) as u8;
-        zone.key_high = editable.end_note.min(127) as u8;
-        zone.vel_low = editable.vel_low;
-        zone.vel_high = editable.vel_high;
-        if zone.root_key < zone.key_low || zone.root_key > zone.key_high {
-            zone.root_key = ((editable.start_note + editable.end_note) / 2).min(127) as u8;
-        }
+        apply_editable_zone_metadata(&mut zone, editable);
         groups[group_index].zones.push(zone);
     }
 
@@ -518,6 +852,20 @@ fn find_vertical_slot(
     best
 }
 
+fn clamp_u7(value: f32) -> u8 {
+    value.round().clamp(0.0, 127.0) as u8
+}
+
+fn set_pair_low(pair: &mut Option<(u8, u8)>, low: u8, default: (u8, u8)) {
+    let (_, high) = pair.unwrap_or(default);
+    *pair = Some((low.min(high), high.max(low)));
+}
+
+fn set_pair_high(pair: &mut Option<(u8, u8)>, high: u8, default: (u8, u8)) {
+    let (low, _) = pair.unwrap_or(default);
+    *pair = Some((low.min(high), high.max(low)));
+}
+
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
     let browser_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let browser_entries = read_browser_entries(&browser_path);
@@ -552,6 +900,7 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             editing_zone_index: None,
             editing_zone_sample_index: 0,
             editing_audio_file: None,
+            extra_sfz_opcode_text: String::new(),
             piano_active_note: None,
         },
         Task::none(),
@@ -883,21 +1232,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     let mut groups = state.shared.groups.load();
                     let group = group_for_new_zone(state, &groups, &zones);
                     if !groups.iter().any(|candidate| candidate.name == group) {
-                        Arc::make_mut(&mut groups).push(SampleGroup {
-                            name: group.clone(),
-                        });
+                        Arc::make_mut(&mut groups).push(SampleGroup::new(group.clone()));
                         state.shared.groups.store(groups);
                         state.shared.request_audio_ports_rescan();
                     }
-                    Arc::make_mut(&mut zones).push(SampleZone {
+                    Arc::make_mut(&mut zones).push(SampleZone::new_basic(
                         name,
-                        files: vec![file],
+                        vec![file],
                         start_note,
                         end_note,
                         vel_low,
                         vel_high,
                         group,
-                    });
+                    ));
                 }
                 state.shared.zones.store(zones);
                 state.shared.bump_zones_version();
@@ -931,9 +1278,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             match kind {
                 ZoneCreateKind::Group => {
                     let group = unique_group_name(&groups, &zones, "New Group");
-                    Arc::make_mut(&mut groups).push(SampleGroup {
-                        name: group.clone(),
-                    });
+                    Arc::make_mut(&mut groups).push(SampleGroup::new(group.clone()));
                     state.selected = Some(ZoneListSelection::Group(group));
                     state.shared.groups.store(groups);
                     state.shared.request_audio_ports_rescan();
@@ -942,7 +1287,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     let group = group_for_new_zone(state, &groups, &zones);
                     let new_zone = default_new_zone(&zones, group.clone());
                     if !groups.iter().any(|candidate| candidate.name == group) {
-                        Arc::make_mut(&mut groups).push(SampleGroup { name: group });
+                        Arc::make_mut(&mut groups).push(SampleGroup::new(group));
                         state.shared.groups.store(groups);
                         state.shared.request_audio_ports_rescan();
                     }
@@ -989,6 +1334,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.selected = None;
         }
         Message::SelectZoneListItem(selection) => {
+            match &selection {
+                ZoneListSelection::Group(group_name) => {
+                    let groups = state.shared.groups.load();
+                    state.extra_sfz_opcode_text = groups
+                        .iter()
+                        .find(|group| group.name == *group_name)
+                        .map(|group| format_sfz_opcode_text(&group.extra_sfz_opcodes))
+                        .unwrap_or_default();
+                }
+                ZoneListSelection::Zone(index) => {
+                    let zones = state.shared.zones.load();
+                    state.extra_sfz_opcode_text = zones
+                        .get(*index)
+                        .map(|zone| format_sfz_opcode_text(&zone.extra_sfz_opcodes))
+                        .unwrap_or_default();
+                }
+            }
             state.selected = Some(selection);
         }
         Message::DeleteSelectedZone => {
@@ -1028,16 +1390,486 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::OpenSamplerEditor(index) => {
             state.editing_zone_index = Some(index);
             state.editing_zone_sample_index = 0;
+            let zones = state.shared.zones.load();
+            state.extra_sfz_opcode_text = zones
+                .get(index)
+                .map(|zone| format_sfz_opcode_text(&zone.extra_sfz_opcodes))
+                .unwrap_or_default();
             load_editing_sample(state);
         }
         Message::CloseSamplerEditor => {
             state.editing_zone_index = None;
             state.editing_zone_sample_index = 0;
             state.editing_audio_file = None;
+            state.extra_sfz_opcode_text.clear();
         }
         Message::SelectEditingSample(index) => {
             state.editing_zone_sample_index = index;
             load_editing_sample(state);
+        }
+        Message::SetEditingZoneValue(field, value) => {
+            if let Some(index) = state.editing_zone_index {
+                let mut zones = state.shared.zones.load();
+                if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index) {
+                    match field {
+                        ZoneEditField::StartNote => {
+                            zone.start_note = (value.round() as usize).clamp(0, zone.end_note);
+                        }
+                        ZoneEditField::EndNote => {
+                            zone.end_note = (value.round() as usize).clamp(zone.start_note, 127);
+                        }
+                        ZoneEditField::VelLow => {
+                            zone.vel_low = (value.round() as u8).min(zone.vel_high);
+                        }
+                        ZoneEditField::VelHigh => {
+                            zone.vel_high = (value.round() as u8).max(zone.vel_low).min(127);
+                        }
+                        ZoneEditField::RootKey => {
+                            zone.root_key = (value.round() as u8).min(127);
+                        }
+                        ZoneEditField::KeyFadeInLow => {
+                            set_pair_low(
+                                &mut zone.key_fade_in,
+                                clamp_u7(value),
+                                (
+                                    zone.start_note.min(127) as u8,
+                                    zone.start_note.min(127) as u8,
+                                ),
+                            );
+                            if let Some((low, high)) = zone.key_fade_in {
+                                zone.key_fade_low = high.saturating_sub(low);
+                            }
+                        }
+                        ZoneEditField::KeyFadeInHigh => {
+                            set_pair_high(
+                                &mut zone.key_fade_in,
+                                clamp_u7(value),
+                                (
+                                    zone.start_note.min(127) as u8,
+                                    zone.start_note.min(127) as u8,
+                                ),
+                            );
+                            if let Some((low, high)) = zone.key_fade_in {
+                                zone.key_fade_low = high.saturating_sub(low);
+                            }
+                        }
+                        ZoneEditField::KeyFadeOutLow => {
+                            set_pair_low(
+                                &mut zone.key_fade_out,
+                                clamp_u7(value),
+                                (zone.end_note.min(127) as u8, zone.end_note.min(127) as u8),
+                            );
+                            if let Some((low, high)) = zone.key_fade_out {
+                                zone.key_fade_high = high.saturating_sub(low);
+                            }
+                        }
+                        ZoneEditField::KeyFadeOutHigh => {
+                            set_pair_high(
+                                &mut zone.key_fade_out,
+                                clamp_u7(value),
+                                (zone.end_note.min(127) as u8, zone.end_note.min(127) as u8),
+                            );
+                            if let Some((low, high)) = zone.key_fade_out {
+                                zone.key_fade_high = high.saturating_sub(low);
+                            }
+                        }
+                        ZoneEditField::VelFadeInLow => {
+                            set_pair_low(
+                                &mut zone.vel_fade_in,
+                                clamp_u7(value),
+                                (zone.vel_low, zone.vel_low),
+                            );
+                            if let Some((low, high)) = zone.vel_fade_in {
+                                zone.vel_fade_low = high.saturating_sub(low);
+                            }
+                        }
+                        ZoneEditField::VelFadeInHigh => {
+                            set_pair_high(
+                                &mut zone.vel_fade_in,
+                                clamp_u7(value),
+                                (zone.vel_low, zone.vel_low),
+                            );
+                            if let Some((low, high)) = zone.vel_fade_in {
+                                zone.vel_fade_low = high.saturating_sub(low);
+                            }
+                        }
+                        ZoneEditField::VelFadeOutLow => {
+                            set_pair_low(
+                                &mut zone.vel_fade_out,
+                                clamp_u7(value),
+                                (zone.vel_high, zone.vel_high),
+                            );
+                            if let Some((low, high)) = zone.vel_fade_out {
+                                zone.vel_fade_high = high.saturating_sub(low);
+                            }
+                        }
+                        ZoneEditField::VelFadeOutHigh => {
+                            set_pair_high(
+                                &mut zone.vel_fade_out,
+                                clamp_u7(value),
+                                (zone.vel_high, zone.vel_high),
+                            );
+                            if let Some((low, high)) = zone.vel_fade_out {
+                                zone.vel_fade_high = high.saturating_sub(low);
+                            }
+                        }
+                        ZoneEditField::GainDb => {
+                            zone.gain_db = value.clamp(-96.0, 24.0);
+                        }
+                        ZoneEditField::Pan => {
+                            zone.pan = (value / 100.0).clamp(-1.0, 1.0);
+                        }
+                        ZoneEditField::Width => {
+                            zone.width = (value / 100.0).clamp(0.0, 2.0);
+                        }
+                        ZoneEditField::Position => {
+                            zone.position = (value / 100.0).clamp(-1.0, 1.0);
+                        }
+                        ZoneEditField::AmpKeytrack => {
+                            zone.amp_keytrack_db = value.clamp(-12.0, 12.0);
+                        }
+                        ZoneEditField::PitchOffset => {
+                            zone.pitch_offset = value.clamp(-1200.0, 1200.0);
+                        }
+                        ZoneEditField::KeyTracking => {
+                            zone.key_tracking = (value / 100.0).clamp(0.0, 2.0);
+                        }
+                        ZoneEditField::StartOffset => {
+                            zone.start_offset = value.max(0.0).round() as usize;
+                        }
+                        ZoneEditField::OffsetRandom => {
+                            zone.offset_random = value.max(0.0).round() as usize;
+                        }
+                        ZoneEditField::EndOffset => {
+                            zone.end_offset = value.max(0.0).round() as usize;
+                        }
+                        ZoneEditField::LoopStart => {
+                            zone.loop_start = value.max(0.0).round() as usize;
+                        }
+                        ZoneEditField::LoopEnd => {
+                            zone.loop_end = value.max(0.0).round() as usize;
+                        }
+                        ZoneEditField::LoopCrossfade => {
+                            zone.loop_crossfade = value.max(0.0).round() as usize;
+                        }
+                        ZoneEditField::LoopCount => {
+                            zone.loop_count = value.max(0.0).round() as u32;
+                        }
+                        ZoneEditField::PitchBendUp => {
+                            zone.pitch_bend_up = value.clamp(0.0, 12000.0);
+                        }
+                        ZoneEditField::PitchBendDown => {
+                            zone.pitch_bend_down = value.clamp(0.0, 12000.0);
+                        }
+                        ZoneEditField::ChannelLow => {
+                            zone.channel_low =
+                                value.round().clamp(1.0, f32::from(zone.channel_high)) as u8;
+                        }
+                        ZoneEditField::ChannelHigh => {
+                            zone.channel_high =
+                                value.round().clamp(f32::from(zone.channel_low), 16.0) as u8;
+                        }
+                        ZoneEditField::PitchBendLow => {
+                            zone.pitch_bend_low = value
+                                .round()
+                                .clamp(-8192.0, f32::from(zone.pitch_bend_high))
+                                as i16;
+                        }
+                        ZoneEditField::PitchBendHigh => {
+                            zone.pitch_bend_high =
+                                value.round().clamp(f32::from(zone.pitch_bend_low), 8192.0) as i16;
+                        }
+                        ZoneEditField::RandomLow => {
+                            zone.random_low = value.clamp(0.0, zone.random_high);
+                        }
+                        ZoneEditField::RandomHigh => {
+                            zone.random_high = value.clamp(zone.random_low, 1.0);
+                        }
+                        ZoneEditField::SeqLength => {
+                            zone.seq_length = value.max(0.0).round() as u32;
+                        }
+                        ZoneEditField::SeqPosition => {
+                            zone.seq_position = value.max(0.0).round() as u32;
+                        }
+                        ZoneEditField::OffBy => {
+                            zone.off_by = clamp_u7(value);
+                        }
+                    }
+                    state.shared.zones.store(zones);
+                    state.shared.bump_zones_version();
+                    if matches!(
+                        field,
+                        ZoneEditField::StartNote
+                            | ZoneEditField::EndNote
+                            | ZoneEditField::VelLow
+                            | ZoneEditField::VelHigh
+                    ) {
+                        state.shared.note_names_changed();
+                    }
+                    state.shared.mark_dirty();
+                }
+            }
+        }
+        Message::ToggleEditingZoneReverse(reverse) => {
+            if let Some(index) = state.editing_zone_index {
+                let mut zones = state.shared.zones.load();
+                if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index) {
+                    zone.reverse = reverse;
+                    state.shared.zones.store(zones);
+                    state.shared.bump_zones_version();
+                    state.shared.mark_dirty();
+                }
+            }
+        }
+        Message::SetEditingZonePlayMode(mode) => {
+            if let Some(index) = state.editing_zone_index {
+                let mut zones = state.shared.zones.load();
+                if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index) {
+                    zone.play_mode = mode.mode();
+                    state.shared.zones.store(zones);
+                    state.shared.bump_zones_version();
+                    state.shared.mark_dirty();
+                }
+            }
+        }
+        Message::SetEditingZoneLoopMode(mode) => {
+            if let Some(index) = state.editing_zone_index {
+                let mut zones = state.shared.zones.load();
+                if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index) {
+                    zone.loop_mode = mode.mode();
+                    state.shared.zones.store(zones);
+                    state.shared.bump_zones_version();
+                    state.shared.mark_dirty();
+                }
+            }
+        }
+        Message::AddEditingZoneCcRoute => {
+            if let Some(index) = state.editing_zone_index {
+                let mut zones = state.shared.zones.load();
+                if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index)
+                    && let Some(route) = zone
+                        .mod_matrix
+                        .routes
+                        .iter_mut()
+                        .find(|route| !route.active)
+                {
+                    *route = ModRoute {
+                        source: ModSource::MidiCc,
+                        source_cc: 1,
+                        target: ModTarget::Amplitude,
+                        depth: 0.0,
+                        active: true,
+                        ..ModRoute::default()
+                    };
+                    state.shared.zones.store(zones);
+                    state.shared.bump_zones_version();
+                    state.shared.mark_dirty();
+                }
+            }
+        }
+        Message::RemoveEditingZoneCcRoute(route_index) => {
+            if let Some(index) = state.editing_zone_index {
+                let mut zones = state.shared.zones.load();
+                if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index)
+                    && let Some(route) = zone.mod_matrix.routes.get_mut(route_index)
+                {
+                    *route = ModRoute::default();
+                    state.shared.zones.store(zones);
+                    state.shared.bump_zones_version();
+                    state.shared.mark_dirty();
+                }
+            }
+        }
+        Message::SetEditingZoneCcRouteCc(route_index, value) => {
+            if let Some(index) = state.editing_zone_index {
+                let mut zones = state.shared.zones.load();
+                if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index)
+                    && let Some(route) = zone.mod_matrix.routes.get_mut(route_index)
+                {
+                    route.source = ModSource::MidiCc;
+                    route.source_cc = clamp_u7(value);
+                    route.active = route.target != ModTarget::None;
+                    state.shared.zones.store(zones);
+                    state.shared.bump_zones_version();
+                    state.shared.mark_dirty();
+                }
+            }
+        }
+        Message::SetEditingZoneCcRouteTarget(route_index, target) => {
+            if let Some(index) = state.editing_zone_index {
+                let mut zones = state.shared.zones.load();
+                if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index)
+                    && let Some(route) = zone.mod_matrix.routes.get_mut(route_index)
+                {
+                    route.source = ModSource::MidiCc;
+                    route.target = target.target();
+                    route.active = true;
+                    state.shared.zones.store(zones);
+                    state.shared.bump_zones_version();
+                    state.shared.mark_dirty();
+                }
+            }
+        }
+        Message::SetEditingZoneCcRouteDepth(route_index, value) => {
+            if let Some(index) = state.editing_zone_index {
+                let mut zones = state.shared.zones.load();
+                if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index)
+                    && let Some(route) = zone.mod_matrix.routes.get_mut(route_index)
+                {
+                    route.source = ModSource::MidiCc;
+                    route.depth = cc_mod_depth_from_amount(route.target, value);
+                    route.active = route.target != ModTarget::None;
+                    state.shared.zones.store(zones);
+                    state.shared.bump_zones_version();
+                    state.shared.mark_dirty();
+                }
+            }
+        }
+        Message::SetEditingZoneCcRouteCurve(route_index, curve) => {
+            if curve != CcCurveOption::Custom
+                && let Some(index) = state.editing_zone_index
+            {
+                let mut zones = state.shared.zones.load();
+                if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index)
+                    && let Some(route) = zone.mod_matrix.routes.get_mut(route_index)
+                {
+                    route.source_curve = curve.curve();
+                    route.source = ModSource::MidiCc;
+                    route.active = route.target != ModTarget::None;
+                    state.shared.zones.store(zones);
+                    state.shared.bump_zones_version();
+                    state.shared.mark_dirty();
+                }
+            }
+        }
+        Message::AddEditingZoneCcCondition => {
+            if let Some(index) = state.editing_zone_index {
+                let mut zones = state.shared.zones.load();
+                if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index) {
+                    let cc = (0..=127u8)
+                        .find(|cc| {
+                            !zone
+                                .cc_conditions
+                                .iter()
+                                .any(|condition| condition.cc == *cc)
+                        })
+                        .unwrap_or(0);
+                    zone.cc_conditions.push(CcCondition {
+                        cc,
+                        low: 1,
+                        high: 127,
+                    });
+                    state.shared.zones.store(zones);
+                    state.shared.bump_zones_version();
+                    state.shared.mark_dirty();
+                }
+            }
+        }
+        Message::RemoveEditingZoneCcCondition(condition_index) => {
+            if let Some(index) = state.editing_zone_index {
+                let mut zones = state.shared.zones.load();
+                if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index)
+                    && condition_index < zone.cc_conditions.len()
+                {
+                    zone.cc_conditions.remove(condition_index);
+                    state.shared.zones.store(zones);
+                    state.shared.bump_zones_version();
+                    state.shared.mark_dirty();
+                }
+            }
+        }
+        Message::SetEditingZoneCcConditionCc(condition_index, value) => {
+            if let Some(index) = state.editing_zone_index {
+                let mut zones = state.shared.zones.load();
+                if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index)
+                    && let Some(condition) = zone.cc_conditions.get_mut(condition_index)
+                {
+                    condition.cc = clamp_u7(value);
+                    state.shared.zones.store(zones);
+                    state.shared.bump_zones_version();
+                    state.shared.mark_dirty();
+                }
+            }
+        }
+        Message::SetEditingZoneCcConditionLow(condition_index, value) => {
+            if let Some(index) = state.editing_zone_index {
+                let mut zones = state.shared.zones.load();
+                if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index)
+                    && let Some(condition) = zone.cc_conditions.get_mut(condition_index)
+                {
+                    condition.low = clamp_u7(value).min(condition.high);
+                    state.shared.zones.store(zones);
+                    state.shared.bump_zones_version();
+                    state.shared.mark_dirty();
+                }
+            }
+        }
+        Message::SetEditingZoneCcConditionHigh(condition_index, value) => {
+            if let Some(index) = state.editing_zone_index {
+                let mut zones = state.shared.zones.load();
+                if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index)
+                    && let Some(condition) = zone.cc_conditions.get_mut(condition_index)
+                {
+                    condition.high = clamp_u7(value).max(condition.low);
+                    state.shared.zones.store(zones);
+                    state.shared.bump_zones_version();
+                    state.shared.mark_dirty();
+                }
+            }
+        }
+        Message::SetSelectedGroupValue(field, value) => {
+            if let Some(ZoneListSelection::Group(group_name)) = state.selected.as_ref() {
+                let mut groups = state.shared.groups.load();
+                if let Some(group) = Arc::make_mut(&mut groups)
+                    .iter_mut()
+                    .find(|group| group.name == *group_name)
+                {
+                    match field {
+                        GroupEditField::PolyLimit => {
+                            group.poly_limit = value.max(0.0).round() as usize;
+                        }
+                        GroupEditField::ExclusiveGroup => {
+                            group.exclusive_group = value.round() as u8;
+                        }
+                        GroupEditField::GainDb => {
+                            group.gain_db = value.clamp(-96.0, 24.0);
+                        }
+                        GroupEditField::Pan => {
+                            group.pan = (value / 100.0).clamp(-1.0, 1.0);
+                        }
+                    }
+                    state.shared.groups.store(groups);
+                    state.shared.bump_zones_version();
+                    state.shared.mark_dirty();
+                }
+            }
+        }
+        Message::SetEditingZoneExtraSfz(text) => {
+            state.extra_sfz_opcode_text = text;
+            if let Some(index) = state.editing_zone_index {
+                let mut zones = state.shared.zones.load();
+                if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index) {
+                    zone.extra_sfz_opcodes = parse_sfz_opcode_text(&state.extra_sfz_opcode_text);
+                    state.shared.zones.store(zones);
+                    state.shared.bump_zones_version();
+                    state.shared.mark_dirty();
+                }
+            }
+        }
+        Message::SetSelectedGroupExtraSfz(text) => {
+            state.extra_sfz_opcode_text = text;
+            if let Some(ZoneListSelection::Group(group_name)) = state.selected.as_ref() {
+                let mut groups = state.shared.groups.load();
+                if let Some(group) = Arc::make_mut(&mut groups)
+                    .iter_mut()
+                    .find(|group| group.name == *group_name)
+                {
+                    group.extra_sfz_opcodes = parse_sfz_opcode_text(&state.extra_sfz_opcode_text);
+                    state.shared.groups.store(groups);
+                    state.shared.bump_zones_version();
+                    state.shared.mark_dirty();
+                }
+            }
         }
         Message::PianoKeyPressed(note, velocity) => {
             if let Some(prev) = state.piano_active_note.replace(note) {
@@ -1811,15 +2643,15 @@ impl canvas::Program<Message> for ZoneEditor {
             let velocity = self.data.hovered_velocity.unwrap_or(0);
             let (vel_low, vel_high) =
                 find_vertical_slot(&self.data.zones, start_note, end_note, velocity);
-            let preview = SampleZone {
-                name: String::new(),
-                files: Vec::new(),
+            let preview = SampleZone::new_basic(
+                String::new(),
+                Vec::new(),
                 start_note,
                 end_note,
                 vel_low,
                 vel_high,
-                group: String::new(),
-            };
+                String::new(),
+            );
             let rect = zone_rect(&preview, bounds);
             let path = canvas::Path::rectangle(
                 Point::new(rect.x, rect.y),
@@ -2051,9 +2883,122 @@ fn zone_row<'a>(state: &'a State, index: usize, zone: SampleZone) -> Element<'a,
     wrapped.into()
 }
 
+fn group_slider<'a>(
+    label: &'static str,
+    value: f32,
+    range: std::ops::RangeInclusive<f32>,
+    step: f32,
+    field: GroupEditField,
+    value_text: String,
+) -> Element<'a, Message> {
+    let slider = Slider::new(range, value, move |v| {
+        Message::SetSelectedGroupValue(field, v)
+    })
+    .step(step)
+    .width(Length::Fixed(120.0))
+    .height(Length::Fixed(20.0));
+
+    row![text(label).size(10), slider, text(value_text).size(9)]
+        .spacing(5)
+        .align_y(Alignment::Center)
+        .width(Length::Fill)
+        .into()
+}
+
+fn sanitize_sfz_opcode_key(text: &str) -> String {
+    text.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+fn format_sfz_opcode_text(opcodes: &[(String, String)]) -> String {
+    opcodes
+        .iter()
+        .filter(|(key, _)| is_non_vendor_sfz_opcode(key))
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn parse_sfz_opcode_text(text: &str) -> Vec<(String, String)> {
+    text.split_whitespace()
+        .filter_map(|item| {
+            let (key, value) = item.split_once('=')?;
+            let key = sanitize_sfz_opcode_key(key);
+            if key.is_empty() || !is_non_vendor_sfz_opcode(&key) {
+                return None;
+            }
+            Some((key, value.to_string()))
+        })
+        .collect()
+}
+
+fn selected_group_controls<'a>(
+    state: &'a State,
+    groups: &[SampleGroup],
+) -> Option<Element<'a, Message>> {
+    let group_name = match state.selected.as_ref()? {
+        ZoneListSelection::Group(name) => name,
+        ZoneListSelection::Zone(_) => return None,
+    };
+    let group = groups.iter().find(|group| group.name == *group_name)?;
+
+    Some(panel_no_title(
+        column![
+            text(group.name.clone())
+                .size(11)
+                .color(Color::from_rgb(0.90, 0.91, 0.94)),
+            group_slider(
+                "Poly",
+                group.poly_limit as f32,
+                0.0..=128.0,
+                1.0,
+                GroupEditField::PolyLimit,
+                group.poly_limit.to_string(),
+            ),
+            group_slider(
+                "Excl",
+                group.exclusive_group as f32,
+                0.0..=255.0,
+                1.0,
+                GroupEditField::ExclusiveGroup,
+                group.exclusive_group.to_string(),
+            ),
+            group_slider(
+                "Gain",
+                group.gain_db,
+                -96.0..=24.0,
+                0.1,
+                GroupEditField::GainDb,
+                format!("{:.1} dB", group.gain_db),
+            ),
+            group_slider(
+                "Pan",
+                group.pan * 100.0,
+                -100.0..=100.0,
+                1.0,
+                GroupEditField::Pan,
+                format!("{:.0}", group.pan * 100.0),
+            ),
+            text("SFZ")
+                .size(10)
+                .color(Color::from_rgb(0.68, 0.70, 0.76)),
+            text_input("opcode=value ...", &state.extra_sfz_opcode_text)
+                .on_input(Message::SetSelectedGroupExtraSfz)
+                .size(10)
+                .width(Length::Fill),
+        ]
+        .spacing(4)
+        .width(Length::Fill)
+        .into(),
+    ))
+}
+
 fn zones_panel<'a>(state: &'a State) -> Element<'a, Message> {
     let shared_zones = state.shared.zones.load();
     let shared_groups = state.shared.groups.load();
+    let group_controls = selected_group_controls(state, &shared_groups);
 
     let mut groups: Vec<(String, Vec<(usize, SampleZone)>)> = Vec::new();
     for group in shared_groups.iter() {
@@ -2156,25 +3101,29 @@ fn zones_panel<'a>(state: &'a State) -> Element<'a, Message> {
     .width(Length::Fill)
     .align_y(Alignment::Center);
 
-    container(
-        column![header, scrollable(panel).height(Length::Fill),]
-            .spacing(8)
-            .height(Length::Fill)
-            .align_x(Alignment::Start),
-    )
-    .width(Length::Fixed(state.zones_width))
-    .height(Length::Fill)
-    .padding(8)
-    .style(|_theme: &Theme| container::Style {
-        background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.10))),
-        border: Border {
-            color: Color::from_rgb(0.20, 0.20, 0.24),
-            width: 1.0,
-            radius: 4.0.into(),
-        },
-        ..container::Style::default()
-    })
-    .into()
+    let mut content = column![header]
+        .spacing(8)
+        .height(Length::Fill)
+        .align_x(Alignment::Start);
+    if let Some(group_controls) = group_controls {
+        content = content.push(group_controls);
+    }
+    content = content.push(scrollable(panel).height(Length::Fill));
+
+    container(content)
+        .width(Length::Fixed(state.zones_width))
+        .height(Length::Fill)
+        .padding(8)
+        .style(|_theme: &Theme| container::Style {
+            background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.10))),
+            border: Border {
+                color: Color::from_rgb(0.20, 0.20, 0.24),
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..container::Style::default()
+        })
+        .into()
 }
 
 fn browser_row<'a>(entry: &'a BrowserEntry) -> Element<'a, Message> {
@@ -2585,16 +3534,640 @@ impl<'a> canvas::Program<Message> for WaveformEditor<'a> {
     }
 }
 
+fn zone_slider<'a>(
+    label: &'static str,
+    value: f32,
+    range: std::ops::RangeInclusive<f32>,
+    step: f32,
+    field: ZoneEditField,
+    value_text: String,
+) -> Element<'a, Message> {
+    let slider = Slider::new(range, value, move |v| {
+        Message::SetEditingZoneValue(field, v)
+    })
+    .step(step)
+    .width(Length::Fixed(150.0))
+    .height(Length::Fixed(22.0));
+
+    row![text(label).size(11), slider, text(value_text).size(10)]
+        .spacing(6)
+        .align_y(Alignment::Center)
+        .width(Length::Fill)
+        .into()
+}
+
+fn zone_toggle<'a>(label: &'static str, value: bool) -> Element<'a, Message> {
+    checkbox(value)
+        .label(label)
+        .on_toggle(Message::ToggleEditingZoneReverse)
+        .into()
+}
+
+fn cc_mod_amount(route: &ModRoute) -> f32 {
+    match route.target {
+        ModTarget::Amplitude | ModTarget::Pan | ModTarget::Pitch | ModTarget::FilterResonance => {
+            route.depth * 100.0
+        }
+        ModTarget::FilterCutoff => route.depth * 1200.0,
+        ModTarget::SampleOffset => route.depth,
+        ModTarget::None | ModTarget::SampleStart | ModTarget::Delay => route.depth,
+    }
+}
+
+fn cc_mod_depth_from_amount(target: ModTarget, amount: f32) -> f32 {
+    match target {
+        ModTarget::Amplitude | ModTarget::Pan | ModTarget::Pitch | ModTarget::FilterResonance => {
+            amount / 100.0
+        }
+        ModTarget::FilterCutoff => amount / 1200.0,
+        ModTarget::SampleOffset => amount,
+        ModTarget::None | ModTarget::SampleStart | ModTarget::Delay => amount,
+    }
+}
+
+fn cc_mod_amount_range(target: ModTarget) -> std::ops::RangeInclusive<f32> {
+    match target {
+        ModTarget::Pitch | ModTarget::FilterCutoff => -1200.0..=1200.0,
+        ModTarget::SampleOffset => -48_000.0..=48_000.0,
+        _ => -100.0..=100.0,
+    }
+}
+
+fn cc_mod_amount_text(target: ModTarget, amount: f32) -> String {
+    match target {
+        ModTarget::Pitch | ModTarget::FilterCutoff => format!("{amount:.0} c"),
+        ModTarget::SampleOffset => format!("{amount:.0} fr"),
+        _ => format!("{amount:.1}"),
+    }
+}
+
+fn fade_pair_value(pair: Option<(u8, u8)>, fallback: (u8, u8)) -> (u8, u8) {
+    pair.unwrap_or(fallback)
+}
+
+fn cc_mod_route_row<'a>(index: usize, route: &ModRoute) -> Element<'a, Message> {
+    let target = CcModTargetOption::from_target(route.target);
+    let curve = CcCurveOption::from_curve(&route.source_curve);
+    let amount = cc_mod_amount(route);
+    let amount_range = cc_mod_amount_range(route.target);
+    let amount_text = cc_mod_amount_text(route.target, amount);
+    let cc_slider = Slider::new(0.0..=127.0, route.source_cc as f32, move |value| {
+        Message::SetEditingZoneCcRouteCc(index, value)
+    })
+    .step(1.0)
+    .width(Length::Fixed(92.0))
+    .height(Length::Fixed(20.0));
+    let amount_slider = Slider::new(amount_range, amount, move |value| {
+        Message::SetEditingZoneCcRouteDepth(index, value)
+    })
+    .step(1.0)
+    .width(Length::Fixed(120.0))
+    .height(Length::Fixed(20.0));
+
+    row![
+        text("CC").size(10),
+        cc_slider,
+        text(route.source_cc.to_string()).size(9),
+        pick_list(CcModTargetOption::all(), target, move |target| {
+            Message::SetEditingZoneCcRouteTarget(index, target)
+        },)
+        .width(Length::Fixed(112.0)),
+        pick_list(CcCurveOption::all(), Some(curve), move |curve| {
+            Message::SetEditingZoneCcRouteCurve(index, curve)
+        },)
+        .width(Length::Fixed(92.0)),
+        amount_slider,
+        text(amount_text).size(9),
+        button(text("Del").size(10))
+            .padding([3, 6])
+            .on_press(Message::RemoveEditingZoneCcRoute(index)),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center)
+    .width(Length::Fill)
+    .into()
+}
+
+fn cc_mod_routes_controls<'a>(zone: &SampleZone) -> Element<'a, Message> {
+    let mut routes = column![].spacing(4).width(Length::Fill);
+    let mut count = 0usize;
+    for (index, route) in zone.mod_matrix.routes.iter().enumerate() {
+        if route.active
+            && route.source == ModSource::MidiCc
+            && CcModTargetOption::from_target(route.target).is_some()
+        {
+            routes = routes.push(cc_mod_route_row(index, route));
+            count += 1;
+        }
+    }
+    if count == 0 {
+        routes = routes.push(
+            text("No CC routes")
+                .size(10)
+                .color(Color::from_rgb(0.58, 0.60, 0.66)),
+        );
+    }
+
+    column![
+        row![
+            text("CC Mod")
+                .size(10)
+                .color(Color::from_rgb(0.68, 0.70, 0.76)),
+            button(text("Add").size(10))
+                .padding([3, 8])
+                .on_press(Message::AddEditingZoneCcRoute),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+        routes,
+    ]
+    .spacing(4)
+    .width(Length::Fill)
+    .into()
+}
+
+fn cc_condition_row<'a>(index: usize, condition: &CcCondition) -> Element<'a, Message> {
+    let cc_slider = Slider::new(0.0..=127.0, condition.cc as f32, move |value| {
+        Message::SetEditingZoneCcConditionCc(index, value)
+    })
+    .step(1.0)
+    .width(Length::Fixed(92.0))
+    .height(Length::Fixed(20.0));
+    let low_slider = Slider::new(0.0..=127.0, condition.low as f32, move |value| {
+        Message::SetEditingZoneCcConditionLow(index, value)
+    })
+    .step(1.0)
+    .width(Length::Fixed(92.0))
+    .height(Length::Fixed(20.0));
+    let high_slider = Slider::new(0.0..=127.0, condition.high as f32, move |value| {
+        Message::SetEditingZoneCcConditionHigh(index, value)
+    })
+    .step(1.0)
+    .width(Length::Fixed(92.0))
+    .height(Length::Fixed(20.0));
+
+    row![
+        text("CC").size(10),
+        cc_slider,
+        text(condition.cc.to_string()).size(9),
+        text("Lo").size(10),
+        low_slider,
+        text(condition.low.to_string()).size(9),
+        text("Hi").size(10),
+        high_slider,
+        text(condition.high.to_string()).size(9),
+        button(text("Del").size(10))
+            .padding([3, 6])
+            .on_press(Message::RemoveEditingZoneCcCondition(index)),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center)
+    .width(Length::Fill)
+    .into()
+}
+
+fn cc_conditions_controls<'a>(zone: &SampleZone) -> Element<'a, Message> {
+    let mut conditions = column![].spacing(4).width(Length::Fill);
+    if zone.cc_conditions.is_empty() {
+        conditions = conditions.push(
+            text("No CC conditions")
+                .size(10)
+                .color(Color::from_rgb(0.58, 0.60, 0.66)),
+        );
+    } else {
+        for (index, condition) in zone.cc_conditions.iter().enumerate() {
+            conditions = conditions.push(cc_condition_row(index, condition));
+        }
+    }
+
+    column![
+        row![
+            text("CC Conditions")
+                .size(10)
+                .color(Color::from_rgb(0.68, 0.70, 0.76)),
+            button(text("Add").size(10))
+                .padding([3, 8])
+                .on_press(Message::AddEditingZoneCcCondition),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+        conditions,
+    ]
+    .spacing(4)
+    .width(Length::Fill)
+    .into()
+}
+
+fn editing_zone_controls<'a>(
+    state: &'a State,
+    zone: &SampleZone,
+    sample_frames: usize,
+) -> Element<'a, Message> {
+    let frame_max = sample_frames
+        .max(zone.loop_end)
+        .max(zone.start_offset)
+        .max(zone.offset_random)
+        .max(zone.end_offset)
+        .max(zone.loop_crossfade)
+        .max(1) as f32;
+    let play_mode = ZonePlayModeOption::from_mode(zone.play_mode);
+    let loop_mode = ZoneLoopModeOption::from_mode(zone.loop_mode);
+    let key_fade_in = fade_pair_value(
+        zone.key_fade_in,
+        (
+            zone.start_note.min(127) as u8,
+            zone.start_note.min(127) as u8,
+        ),
+    );
+    let key_fade_out = fade_pair_value(
+        zone.key_fade_out,
+        (zone.end_note.min(127) as u8, zone.end_note.min(127) as u8),
+    );
+    let vel_fade_in = fade_pair_value(zone.vel_fade_in, (zone.vel_low, zone.vel_low));
+    let vel_fade_out = fade_pair_value(zone.vel_fade_out, (zone.vel_high, zone.vel_high));
+
+    let mapping = column![
+        zone_slider(
+            "Low Key",
+            zone.start_note as f32,
+            0.0..=127.0,
+            1.0,
+            ZoneEditField::StartNote,
+            zone.start_note.to_string(),
+        ),
+        zone_slider(
+            "High Key",
+            zone.end_note as f32,
+            0.0..=127.0,
+            1.0,
+            ZoneEditField::EndNote,
+            zone.end_note.to_string(),
+        ),
+        zone_slider(
+            "Low Vel",
+            zone.vel_low as f32,
+            0.0..=127.0,
+            1.0,
+            ZoneEditField::VelLow,
+            zone.vel_low.to_string(),
+        ),
+        zone_slider(
+            "High Vel",
+            zone.vel_high as f32,
+            0.0..=127.0,
+            1.0,
+            ZoneEditField::VelHigh,
+            zone.vel_high.to_string(),
+        ),
+        zone_slider(
+            "Root",
+            zone.root_key as f32,
+            0.0..=127.0,
+            1.0,
+            ZoneEditField::RootKey,
+            zone.root_key.to_string(),
+        ),
+        zone_slider(
+            "Key Trk",
+            zone.key_tracking * 100.0,
+            0.0..=200.0,
+            1.0,
+            ZoneEditField::KeyTracking,
+            format!("{:.0}%", zone.key_tracking * 100.0),
+        ),
+    ]
+    .spacing(4)
+    .width(Length::Fixed(235.0));
+
+    let playback = column![
+        zone_slider(
+            "Gain",
+            zone.gain_db,
+            -96.0..=24.0,
+            0.1,
+            ZoneEditField::GainDb,
+            format!("{:.1} dB", zone.gain_db),
+        ),
+        zone_slider(
+            "Pan",
+            zone.pan * 100.0,
+            -100.0..=100.0,
+            1.0,
+            ZoneEditField::Pan,
+            format!("{:.0}", zone.pan * 100.0),
+        ),
+        zone_slider(
+            "Width",
+            zone.width * 100.0,
+            0.0..=200.0,
+            1.0,
+            ZoneEditField::Width,
+            format!("{:.0}", zone.width * 100.0),
+        ),
+        zone_slider(
+            "Position",
+            zone.position * 100.0,
+            -100.0..=100.0,
+            1.0,
+            ZoneEditField::Position,
+            format!("{:.0}", zone.position * 100.0),
+        ),
+        zone_slider(
+            "Amp Key",
+            zone.amp_keytrack_db,
+            -12.0..=12.0,
+            0.1,
+            ZoneEditField::AmpKeytrack,
+            format!("{:.1}", zone.amp_keytrack_db),
+        ),
+        zone_slider(
+            "Tune",
+            zone.pitch_offset,
+            -1200.0..=1200.0,
+            1.0,
+            ZoneEditField::PitchOffset,
+            format!("{:.0} c", zone.pitch_offset),
+        ),
+        zone_slider(
+            "Offset",
+            zone.start_offset as f32,
+            0.0..=frame_max,
+            1.0,
+            ZoneEditField::StartOffset,
+            zone.start_offset.to_string(),
+        ),
+        zone_slider(
+            "Offset R",
+            zone.offset_random as f32,
+            0.0..=frame_max,
+            1.0,
+            ZoneEditField::OffsetRandom,
+            zone.offset_random.to_string(),
+        ),
+        zone_slider(
+            "End",
+            zone.end_offset as f32,
+            0.0..=frame_max,
+            1.0,
+            ZoneEditField::EndOffset,
+            if zone.end_offset == 0 {
+                String::from("full")
+            } else {
+                zone.end_offset.to_string()
+            },
+        ),
+        row![
+            text("Trigger").size(11),
+            pick_list(
+                ZonePlayModeOption::all(),
+                Some(play_mode),
+                Message::SetEditingZonePlayMode,
+            )
+            .width(Length::Fixed(120.0)),
+            zone_toggle("Reverse", zone.reverse),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    ]
+    .spacing(4)
+    .width(Length::Fixed(300.0));
+
+    let fades = column![
+        zone_slider(
+            "Key In L",
+            key_fade_in.0 as f32,
+            0.0..=127.0,
+            1.0,
+            ZoneEditField::KeyFadeInLow,
+            key_fade_in.0.to_string(),
+        ),
+        zone_slider(
+            "Key In H",
+            key_fade_in.1 as f32,
+            0.0..=127.0,
+            1.0,
+            ZoneEditField::KeyFadeInHigh,
+            key_fade_in.1.to_string(),
+        ),
+        zone_slider(
+            "Key Out L",
+            key_fade_out.0 as f32,
+            0.0..=127.0,
+            1.0,
+            ZoneEditField::KeyFadeOutLow,
+            key_fade_out.0.to_string(),
+        ),
+        zone_slider(
+            "Key Out H",
+            key_fade_out.1 as f32,
+            0.0..=127.0,
+            1.0,
+            ZoneEditField::KeyFadeOutHigh,
+            key_fade_out.1.to_string(),
+        ),
+        zone_slider(
+            "Vel In L",
+            vel_fade_in.0 as f32,
+            0.0..=127.0,
+            1.0,
+            ZoneEditField::VelFadeInLow,
+            vel_fade_in.0.to_string(),
+        ),
+        zone_slider(
+            "Vel In H",
+            vel_fade_in.1 as f32,
+            0.0..=127.0,
+            1.0,
+            ZoneEditField::VelFadeInHigh,
+            vel_fade_in.1.to_string(),
+        ),
+        zone_slider(
+            "Vel Out L",
+            vel_fade_out.0 as f32,
+            0.0..=127.0,
+            1.0,
+            ZoneEditField::VelFadeOutLow,
+            vel_fade_out.0.to_string(),
+        ),
+        zone_slider(
+            "Vel Out H",
+            vel_fade_out.1 as f32,
+            0.0..=127.0,
+            1.0,
+            ZoneEditField::VelFadeOutHigh,
+            vel_fade_out.1.to_string(),
+        ),
+    ]
+    .spacing(4)
+    .width(Length::Fixed(235.0));
+
+    let loop_controls = column![
+        row![
+            text("Loop").size(11),
+            pick_list(
+                ZoneLoopModeOption::all(),
+                Some(loop_mode),
+                Message::SetEditingZoneLoopMode,
+            )
+            .width(Length::Fixed(120.0)),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+        zone_slider(
+            "Start",
+            zone.loop_start as f32,
+            0.0..=frame_max,
+            1.0,
+            ZoneEditField::LoopStart,
+            zone.loop_start.to_string(),
+        ),
+        zone_slider(
+            "End",
+            zone.loop_end as f32,
+            0.0..=frame_max,
+            1.0,
+            ZoneEditField::LoopEnd,
+            zone.loop_end.to_string(),
+        ),
+        zone_slider(
+            "Xfade",
+            zone.loop_crossfade as f32,
+            0.0..=frame_max,
+            1.0,
+            ZoneEditField::LoopCrossfade,
+            zone.loop_crossfade.to_string(),
+        ),
+        zone_slider(
+            "Count",
+            zone.loop_count as f32,
+            0.0..=128.0,
+            1.0,
+            ZoneEditField::LoopCount,
+            zone.loop_count.to_string(),
+        ),
+        zone_slider(
+            "Bend Up",
+            zone.pitch_bend_up,
+            0.0..=12000.0,
+            1.0,
+            ZoneEditField::PitchBendUp,
+            format!("{:.0} c", zone.pitch_bend_up),
+        ),
+        zone_slider(
+            "Bend Down",
+            zone.pitch_bend_down,
+            0.0..=12000.0,
+            1.0,
+            ZoneEditField::PitchBendDown,
+            format!("{:.0} c", zone.pitch_bend_down),
+        ),
+    ]
+    .spacing(4)
+    .width(Length::Fixed(235.0));
+
+    let conditions = column![
+        zone_slider(
+            "Chan Lo",
+            zone.channel_low as f32,
+            1.0..=16.0,
+            1.0,
+            ZoneEditField::ChannelLow,
+            zone.channel_low.to_string(),
+        ),
+        zone_slider(
+            "Chan Hi",
+            zone.channel_high as f32,
+            1.0..=16.0,
+            1.0,
+            ZoneEditField::ChannelHigh,
+            zone.channel_high.to_string(),
+        ),
+        zone_slider(
+            "Bend Lo",
+            zone.pitch_bend_low as f32,
+            -8192.0..=8192.0,
+            1.0,
+            ZoneEditField::PitchBendLow,
+            zone.pitch_bend_low.to_string(),
+        ),
+        zone_slider(
+            "Bend Hi",
+            zone.pitch_bend_high as f32,
+            -8192.0..=8192.0,
+            1.0,
+            ZoneEditField::PitchBendHigh,
+            zone.pitch_bend_high.to_string(),
+        ),
+        zone_slider(
+            "Rand Lo",
+            zone.random_low,
+            0.0..=1.0,
+            0.01,
+            ZoneEditField::RandomLow,
+            format!("{:.2}", zone.random_low),
+        ),
+        zone_slider(
+            "Rand Hi",
+            zone.random_high,
+            0.0..=1.0,
+            0.01,
+            ZoneEditField::RandomHigh,
+            format!("{:.2}", zone.random_high),
+        ),
+        zone_slider(
+            "Seq Len",
+            zone.seq_length as f32,
+            0.0..=128.0,
+            1.0,
+            ZoneEditField::SeqLength,
+            zone.seq_length.to_string(),
+        ),
+        zone_slider(
+            "Seq Pos",
+            zone.seq_position as f32,
+            0.0..=128.0,
+            1.0,
+            ZoneEditField::SeqPosition,
+            zone.seq_position.to_string(),
+        ),
+        zone_slider(
+            "Off By",
+            zone.off_by as f32,
+            0.0..=127.0,
+            1.0,
+            ZoneEditField::OffBy,
+            zone.off_by.to_string(),
+        ),
+    ]
+    .spacing(4)
+    .width(Length::Fixed(235.0));
+
+    panel_no_title(
+        column![
+            row![mapping, playback, fades, loop_controls]
+                .spacing(12)
+                .align_y(Alignment::Start),
+            row![conditions].spacing(12).align_y(Alignment::Start),
+            cc_conditions_controls(zone),
+            cc_mod_routes_controls(zone),
+            text("SFZ")
+                .size(10)
+                .color(Color::from_rgb(0.68, 0.70, 0.76)),
+            text_input("opcode=value ...", &state.extra_sfz_opcode_text)
+                .on_input(Message::SetEditingZoneExtraSfz)
+                .size(10)
+                .width(Length::Fill),
+        ]
+        .spacing(6)
+        .width(Length::Fill)
+        .into(),
+    )
+}
+
 fn sampler_editor_view<'a>(state: &'a State, index: usize) -> Element<'a, Message> {
     let zones = state.shared.zones.load();
-    let zone = zones.get(index).cloned().unwrap_or_else(|| SampleZone {
-        name: String::new(),
-        files: Vec::new(),
-        start_note: 0,
-        end_note: 0,
-        vel_low: 0,
-        vel_high: 0,
-        group: String::new(),
+    let zone = zones.get(index).cloned().unwrap_or_else(|| {
+        SampleZone::new_basic(String::new(), Vec::new(), 0, 0, 0, 0, String::new())
     });
 
     let sample_labels: Vec<String> = zone
@@ -2614,7 +4187,7 @@ fn sampler_editor_view<'a>(state: &'a State, index: usize) -> Element<'a, Messag
         button(text("← Back").size(11))
             .on_press(Message::CloseSamplerEditor)
             .padding([4, 8]),
-        text(zone.name).size(14),
+        text(zone.name.clone()).size(14),
         pick_list(sample_labels, selected_label, move |label: String| {
             let index = labels_for_pick_list
                 .iter()
@@ -2636,8 +4209,14 @@ fn sampler_editor_view<'a>(state: &'a State, index: usize) -> Element<'a, Messag
         .height(Length::Fill)
         .into(),
     );
+    let sample_frames = state
+        .editing_audio_file
+        .as_ref()
+        .map(crate::common::audio_file::AudioFile::frames)
+        .unwrap_or(0);
+    let controls = editing_zone_controls(state, &zone, sample_frames);
 
-    let main_content = column![instrument_panel(state), header, waveform]
+    let main_content = column![instrument_panel(state), header, controls, waveform]
         .spacing(10)
         .width(Length::Fill)
         .height(Length::Fill)

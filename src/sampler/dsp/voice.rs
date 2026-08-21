@@ -60,6 +60,14 @@ fn phase_from_index(index: f64) -> u64 {
     (index * PHASE_ONE_F).round() as u64
 }
 
+fn normalized_cc_values(values: &[u8; 128]) -> [f32; 128] {
+    let mut normalized = [0.0; 128];
+    for (dst, src) in normalized.iter_mut().zip(values.iter()) {
+        *dst = *src as f32 / 127.0;
+    }
+    normalized
+}
+
 pub struct SampleVoice {
     sample_rate: f32,
     zone: Option<Arc<Zone>>,
@@ -76,6 +84,8 @@ pub struct SampleVoice {
     reverse: bool,
 
     waiting_for_release: bool,
+
+    delay_samples_remaining: usize,
 
     loop_phase_forward: bool,
     loops_remaining: u32,
@@ -151,6 +161,8 @@ pub struct SampleVoice {
 
     cc10_pan: f32,
 
+    cc_values: [u8; 128],
+
     pitch_bend_norm: f32,
 
     pitch_bend_up: f32,
@@ -196,6 +208,7 @@ impl SampleVoice {
             pan_r: 0.707_106_77,
             reverse: false,
             waiting_for_release: false,
+            delay_samples_remaining: 0,
             loop_phase_forward: true,
             loops_remaining: 0,
             released: false,
@@ -246,6 +259,7 @@ impl SampleVoice {
             channel_volume: 1.0,
             expression: 1.0,
             cc10_pan: 0.0,
+            cc_values: [0; 128],
             pitch_bend_norm: 0.0,
             pitch_bend_up: 2.0,
             pitch_bend_down: 2.0,
@@ -281,6 +295,18 @@ impl SampleVoice {
         self.reverse = zone.reverse;
         self.released = false;
         self.waiting_for_release = false;
+        let trigger_sources = self.trigger_source_values();
+        let delay_mod = zone
+            .mod_matrix
+            .compute(ModTarget::Delay, &trigger_sources)
+            .max(0.0);
+        let random_delay = if zone.delay_random > 0.0 {
+            rand::random_range(0.0..zone.delay_random)
+        } else {
+            0.0
+        };
+        self.delay_samples_remaining =
+            ((zone.delay.max(0.0) + delay_mod + random_delay) * self.sample_rate).round() as usize;
         self.loop_phase_forward = true;
         self.loops_remaining = zone.loop_count;
         self.exclusive_group = exclusive_group;
@@ -354,7 +380,11 @@ impl SampleVoice {
         sample: Arc<crate::sampler::dsp::sample::Sample>,
     ) {
         self.sample = Some(sample.clone());
-        let frames = sample.frames;
+        let frames = zone.effective_end_frame(sample.frames);
+        if frames == 0 {
+            self.active = false;
+            return;
+        }
         let semitones = if self.pitch_bend_norm >= 0.0 {
             self.pitch_bend_norm * self.pitch_bend_up
         } else {
@@ -366,7 +396,32 @@ impl SampleVoice {
             zone.compute_increment_with_bend(note, self.sample_rate, semitones)
         };
 
-        let sources = SourceValues {
+        let sources = self.trigger_source_values();
+        let start_mod = zone.mod_matrix.compute(ModTarget::SampleStart, &sources) * frames as f32
+            + zone.mod_matrix.compute(ModTarget::SampleOffset, &sources);
+        let random_offset = if zone.offset_random > 0 {
+            rand::random_range(0..=zone.offset_random) as isize
+        } else {
+            0
+        };
+        let max_offset = frames.saturating_sub(1);
+        let mod_offset = start_mod.round() as isize + random_offset;
+        let start_offset =
+            (zone.start_offset as isize + mod_offset).clamp(0, max_offset as isize) as usize;
+
+        if self.reverse {
+            let start_idx = frames.saturating_sub(1 + start_offset.min(frames.saturating_sub(1)));
+            self.phase = phase_from_index(start_idx as f64);
+            self.increment = f64_to_fixed(-inc);
+        } else {
+            let start_idx = start_offset.min(frames.saturating_sub(1));
+            self.phase = phase_from_index(start_idx as f64);
+            self.increment = f64_to_fixed(inc);
+        }
+    }
+
+    fn trigger_source_values(&self) -> SourceValues {
+        SourceValues {
             velocity: self.velocity as f32 / 127.0,
             key_track: (self.note as f32 - 60.0) / 60.0,
             pitch_bend: self.pitch_bend_norm,
@@ -377,6 +432,7 @@ impl SampleVoice {
             channel_volume: self.channel_volume,
             expression: self.expression,
             cc10_pan: self.cc10_pan,
+            cc_values: normalized_cc_values(&self.cc_values),
             lfo1: 0.0,
             lfo2: 0.0,
             lfo3: 0.0,
@@ -397,21 +453,6 @@ impl SampleVoice {
             is_released: 0.0,
             group_any_gated: 0.0,
             group_voice_count: 0.0,
-        };
-        let start_mod = zone.mod_matrix.compute(ModTarget::SampleStart, &sources);
-        let max_offset = frames.saturating_sub(1);
-        let mod_offset = (start_mod * frames as f32).round() as isize;
-        let start_offset =
-            (zone.start_offset as isize + mod_offset).clamp(0, max_offset as isize) as usize;
-
-        if self.reverse {
-            let start_idx = frames.saturating_sub(1 + start_offset.min(frames.saturating_sub(1)));
-            self.phase = phase_from_index(start_idx as f64);
-            self.increment = f64_to_fixed(-inc);
-        } else {
-            let start_idx = start_offset.min(frames.saturating_sub(1));
-            self.phase = phase_from_index(start_idx as f64);
-            self.increment = f64_to_fixed(inc);
         }
     }
 
@@ -473,7 +514,12 @@ impl SampleVoice {
         if let Some(zone) = self.zone.as_ref()
             && zone.play_mode == SamplePlayMode::OneShot
         {
-            let frames = zone.sample.frames;
+            let sample_frames = self
+                .sample
+                .as_ref()
+                .map(|sample| sample.frames)
+                .unwrap_or(zone.sample.frames);
+            let frames = zone.effective_end_frame(sample_frames);
             let phase_f64 = phase_to_f64(self.phase);
             if self.reverse {
                 if phase_f64 <= 0.0 {
@@ -586,6 +632,14 @@ impl SampleVoice {
 
     pub fn set_cc10_pan(&mut self, value: f32) {
         self.cc10_pan = value.clamp(-1.0, 1.0);
+    }
+
+    pub fn set_cc(&mut self, cc: u8, value: u8) {
+        self.cc_values[cc.min(127) as usize] = value.min(127);
+    }
+
+    pub fn set_cc_values(&mut self, values: [u8; 128]) {
+        self.cc_values = values;
     }
 
     pub fn set_eg2_params(&mut self, attack: f32, decay: f32, sustain: f32, release: f32) {
@@ -768,12 +822,22 @@ impl SampleVoice {
             return;
         }
 
+        if self.delay_samples_remaining > 0 {
+            let delayed = self.delay_samples_remaining.min(out_l.len());
+            self.delay_samples_remaining -= delayed;
+            if delayed == out_l.len() {
+                return;
+            }
+            self.process_block(&mut out_l[delayed..], &mut out_r[delayed..]);
+            return;
+        }
+
         let zone = match self.zone.clone() {
             Some(z) => z,
             None => return,
         };
         let sample = self.sample.clone().unwrap_or_else(|| zone.sample.clone());
-        let frames = sample.frames;
+        let frames = zone.effective_end_frame(sample.frames);
         if frames == 0 {
             self.active = false;
             return;
@@ -798,6 +862,7 @@ impl SampleVoice {
             channel_volume: self.channel_volume,
             expression: self.expression,
             cc10_pan: self.cc10_pan,
+            cc_values: normalized_cc_values(&self.cc_values),
             lfo1: self.lfo1.value(),
             lfo2: self.lfo2.value(),
             lfo3: self.lfo3.value(),
@@ -890,6 +955,7 @@ impl SampleVoice {
                 channel_volume: self.channel_volume,
                 expression: self.expression,
                 cc10_pan: self.cc10_pan,
+                cc_values: normalized_cc_values(&self.cc_values),
                 lfo1: lfo1_value,
                 lfo2: lfo2_value,
                 lfo3: lfo3_value,
@@ -930,7 +996,7 @@ impl SampleVoice {
                 + self.global_mod_matrix.compute(ModTarget::Pan, &sources);
             let amp_factor = 1.0 + amp_mod;
             let (mod_pan_l, mod_pan_r) = crate::common::gain_pan::pan_gains(
-                (zone.pan + self.hierarchy_pan + pan_mod).clamp(-1.0, 1.0),
+                (zone.pan + zone.position + self.hierarchy_pan + pan_mod).clamp(-1.0, 1.0),
             );
             let effective_inc = if self.loop_phase_forward {
                 current_inc_f64
@@ -964,6 +1030,13 @@ impl SampleVoice {
                         sr = sr * fade as f32 + hr * (1.0 - fade) as f32;
                     }
                 }
+            }
+
+            if zone.width != 1.0 {
+                let mid = (sl + sr) * 0.5;
+                let side = (sl - sr) * 0.5 * zone.width.max(0.0);
+                sl = mid + side;
+                sr = mid - side;
             }
 
             let mut vl = sl * env * self.amplitude * amp_factor;
@@ -1058,6 +1131,19 @@ impl SampleVoice {
                 -current_inc_f64
             };
             self.advance_phase(&zone, frames, f64_to_fixed(advance_inc));
+
+            if zone.play_mode == SamplePlayMode::OneShot {
+                let phase_f64 = phase_to_f64(self.phase);
+                let past_end = if self.reverse {
+                    phase_f64 <= 0.0
+                } else {
+                    phase_f64 >= frames.saturating_sub(1) as f64
+                };
+                if past_end {
+                    self.active = false;
+                    break;
+                }
+            }
 
             if env <= 0.0001 {
                 if zone.play_mode == SamplePlayMode::OneShot {
@@ -1221,6 +1307,126 @@ mod tests {
             "expected stable low-pitch increment, got {}",
             voice.increment()
         );
+    }
+
+    #[test]
+    fn test_end_offset_stops_one_shot_playback_early() {
+        let mut zone = Zone::default();
+        zone.play_mode = SamplePlayMode::OneShot;
+        zone.end_offset = 3;
+        let mut sample = Sample::silent(48000.0);
+        sample.frames = 16;
+        sample.data_l = vec![1.0f32; 16];
+        sample.data_r = sample.data_l.clone();
+        zone.sample = Arc::new(sample);
+        zone.root_key = 60;
+
+        let mut voice = SampleVoice::new(48000.0);
+        voice.trigger(Arc::new(zone), 60, 127, 0);
+
+        let mut out_l = vec![0.0f32; 16];
+        let mut out_r = vec![0.0f32; 16];
+        voice.process_block(&mut out_l, &mut out_r);
+
+        assert!(!voice.is_active(), "voice should stop at SFZ end frame");
+        assert!(out_l.iter().take(4).any(|&s| s != 0.0));
+    }
+
+    #[test]
+    fn test_delay_postpones_voice_playback() {
+        let mut zone = Zone::default();
+        zone.delay = 1.0 / 48000.0;
+        let mut sample = Sample::silent(48000.0);
+        sample.frames = 16;
+        sample.data_l = vec![1.0f32; 16];
+        sample.data_r = sample.data_l.clone();
+        zone.sample = Arc::new(sample);
+        zone.root_key = 60;
+
+        let mut voice = SampleVoice::new(48000.0);
+        voice.trigger(Arc::new(zone), 60, 127, 0);
+
+        let mut out_l = vec![0.0f32; 4];
+        let mut out_r = vec![0.0f32; 4];
+        voice.process_block(&mut out_l, &mut out_r);
+
+        assert_eq!(out_l[0], 0.0);
+        assert!(out_l[1..].iter().any(|&sample| sample != 0.0));
+    }
+
+    #[test]
+    fn test_delay_oncc_postpones_voice_playback() {
+        let mut zone = Zone::default();
+        zone.mod_matrix
+            .set_cc_route(0, 74, ModTarget::Delay, 1.0 / 48000.0);
+        let mut sample = Sample::silent(48000.0);
+        sample.frames = 16;
+        sample.data_l = vec![1.0f32; 16];
+        sample.data_r = sample.data_l.clone();
+        zone.sample = Arc::new(sample);
+        zone.root_key = 60;
+
+        let mut voice = SampleVoice::new(48000.0);
+        voice.set_cc(74, 127);
+        voice.trigger(Arc::new(zone), 60, 127, 0);
+
+        let mut out_l = vec![0.0f32; 4];
+        let mut out_r = vec![0.0f32; 4];
+        voice.process_block(&mut out_l, &mut out_r);
+
+        assert_eq!(out_l[0], 0.0);
+        assert!(out_l[1..].iter().any(|&sample| sample != 0.0));
+    }
+
+    #[test]
+    fn test_offset_oncc_moves_sample_start() {
+        let mut zone = Zone::default();
+        zone.mod_matrix
+            .set_cc_route(0, 74, ModTarget::SampleOffset, 2.0);
+        let mut sample = Sample::silent(48000.0);
+        sample.frames = 16;
+        sample.data_l = (0..16).map(|i| i as f32).collect();
+        sample.data_r = sample.data_l.clone();
+        zone.sample = Arc::new(sample);
+        zone.root_key = 60;
+
+        let mut voice = SampleVoice::new(48000.0);
+        voice.set_cc(74, 127);
+        voice.trigger(Arc::new(zone), 60, 127, 0);
+
+        let mut out_l = vec![0.0f32; 1];
+        let mut out_r = vec![0.0f32; 1];
+        voice.process_block(&mut out_l, &mut out_r);
+
+        assert!(
+            out_l[0] > 1.0,
+            "offset_oncc should start near frame 2, got {}",
+            out_l[0]
+        );
+    }
+
+    #[test]
+    fn test_width_and_position_shape_stereo_output() {
+        let mut zone = Zone::default();
+        zone.width = 0.0;
+        zone.position = 1.0;
+        let mut sample = Sample::silent(48000.0);
+        sample.frames = 16;
+        sample.data_l = vec![1.0f32; 16];
+        sample.data_r = vec![0.0f32; 16];
+        zone.sample = Arc::new(sample);
+        zone.root_key = 60;
+
+        let mut voice = SampleVoice::new(48000.0);
+        voice.trigger(Arc::new(zone), 60, 127, 0);
+
+        let mut out_l = vec![0.0f32; 4];
+        let mut out_r = vec![0.0f32; 4];
+        voice.process_block(&mut out_l, &mut out_r);
+
+        let left_peak = out_l.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        let right_peak = out_r.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(right_peak > left_peak);
     }
 
     #[test]

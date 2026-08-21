@@ -44,6 +44,8 @@ pub enum ModSource {
     Expression,
 
     Cc10Pan,
+
+    MidiCc,
 }
 
 impl ModSource {
@@ -79,6 +81,7 @@ impl ModSource {
             28 => ModSource::ChannelVolume,
             29 => ModSource::Expression,
             30 => ModSource::Cc10Pan,
+            31 => ModSource::MidiCc,
             _ => ModSource::None,
         }
     }
@@ -95,6 +98,8 @@ pub enum ModTarget {
     FilterResonance,
     Pan,
     SampleStart,
+    SampleOffset,
+    Delay,
 }
 
 impl ModTarget {
@@ -106,14 +111,52 @@ impl ModTarget {
             4 => ModTarget::FilterResonance,
             5 => ModTarget::Pan,
             6 => ModTarget::SampleStart,
+            7 => ModTarget::SampleOffset,
+            8 => ModTarget::Delay,
             _ => ModTarget::None,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct ModCurve {
+    pub points: [f32; 128],
+}
+
+impl ModCurve {
+    pub fn linear() -> Self {
+        let mut points = [0.0; 128];
+        for (i, point) in points.iter_mut().enumerate() {
+            *point = i as f32 / 127.0;
+        }
+        Self { points }
+    }
+
+    pub fn apply(&self, value: f32) -> f32 {
+        let scaled = value.clamp(0.0, 1.0) * 127.0;
+        let low = scaled.floor() as usize;
+        let high = scaled.ceil() as usize;
+        if low == high {
+            return self.points[low.min(127)];
+        }
+        let frac = scaled - low as f32;
+        let a = self.points[low.min(127)];
+        let b = self.points[high.min(127)];
+        a + (b - a) * frac
+    }
+}
+
+impl Default for ModCurve {
+    fn default() -> Self {
+        Self::linear()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct ModRoute {
     pub source: ModSource,
+    pub source_cc: u8,
+    pub source_curve: ModCurve,
     pub target: ModTarget,
 
     pub depth: f32,
@@ -125,6 +168,8 @@ impl Default for ModRoute {
     fn default() -> Self {
         Self {
             source: ModSource::None,
+            source_cc: 0,
+            source_curve: ModCurve::linear(),
             target: ModTarget::None,
             depth: 0.0,
             active: false,
@@ -142,9 +187,35 @@ impl ModMatrix {
         if index < self.routes.len() {
             self.routes[index] = ModRoute {
                 source,
+                source_cc: 0,
+                source_curve: ModCurve::linear(),
                 target,
                 depth: depth.clamp(-1.0, 1.0),
                 active: source != ModSource::None && target != ModTarget::None,
+            };
+        }
+    }
+
+    pub fn set_cc_route(&mut self, index: usize, cc: u8, target: ModTarget, depth: f32) {
+        self.set_cc_route_with_curve(index, cc, target, depth, ModCurve::linear());
+    }
+
+    pub fn set_cc_route_with_curve(
+        &mut self,
+        index: usize,
+        cc: u8,
+        target: ModTarget,
+        depth: f32,
+        source_curve: ModCurve,
+    ) {
+        if index < self.routes.len() {
+            self.routes[index] = ModRoute {
+                source: ModSource::MidiCc,
+                source_cc: cc.min(127),
+                source_curve,
+                target,
+                depth,
+                active: target != ModTarget::None,
             };
         }
     }
@@ -155,14 +226,17 @@ impl ModMatrix {
             if !route.active || route.target != target {
                 continue;
             }
-            let source_val = source_values.get(route.source);
+            let mut source_val = source_values.get(route.source, route.source_cc);
+            if route.source == ModSource::MidiCc {
+                source_val = route.source_curve.apply(source_val);
+            }
             total += source_val * route.depth;
         }
         total
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct SourceValues {
     pub velocity: f32,
     pub key_track: f32,
@@ -194,10 +268,49 @@ pub struct SourceValues {
     pub channel_volume: f32,
     pub expression: f32,
     pub cc10_pan: f32,
+    pub cc_values: [f32; 128],
+}
+
+impl Default for SourceValues {
+    fn default() -> Self {
+        Self {
+            velocity: 0.0,
+            key_track: 0.0,
+            pitch_bend: 0.0,
+            mod_wheel: 0.0,
+            pressure: 0.0,
+            channel_pressure: 0.0,
+            timbre: 0.0,
+            lfo1: 0.0,
+            lfo2: 0.0,
+            lfo3: 0.0,
+            lfo4: 0.0,
+            lfo5: 0.0,
+            lfo6: 0.0,
+            eg1: 0.0,
+            eg2: 0.0,
+            eg3: 0.0,
+            eg4: 0.0,
+            eg5: 0.0,
+            random: 0.0,
+            sample_and_hold: 0.0,
+            variant_fraction: 0.0,
+            playback_position: 0.0,
+            loop_fraction: 0.0,
+            is_gated: 0.0,
+            is_released: 0.0,
+            group_any_gated: 0.0,
+            group_voice_count: 0.0,
+            channel_volume: 0.0,
+            expression: 0.0,
+            cc10_pan: 0.0,
+            cc_values: [0.0; 128],
+        }
+    }
 }
 
 impl SourceValues {
-    pub fn get(&self, source: ModSource) -> f32 {
+    pub fn get(&self, source: ModSource, source_cc: u8) -> f32 {
         match source {
             ModSource::None => 0.0,
             ModSource::Velocity => self.velocity,
@@ -230,6 +343,7 @@ impl SourceValues {
             ModSource::ChannelVolume => self.channel_volume,
             ModSource::Expression => self.expression,
             ModSource::Cc10Pan => self.cc10_pan,
+            ModSource::MidiCc => self.cc_values[source_cc as usize],
         }
     }
 }
@@ -284,6 +398,43 @@ mod tests {
         };
         let start_mod = matrix.compute(ModTarget::SampleStart, &sources);
         assert!((start_mod - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_midi_cc_source_uses_route_cc_number() {
+        let mut matrix = ModMatrix::default();
+        matrix.set_cc_route(0, 74, ModTarget::FilterCutoff, 0.5);
+
+        let mut cc_values = [0.0; 128];
+        cc_values[74] = 0.8;
+        cc_values[1] = 0.1;
+        let sources = SourceValues {
+            cc_values,
+            ..SourceValues::default()
+        };
+
+        let cutoff_mod = matrix.compute(ModTarget::FilterCutoff, &sources);
+        assert!((cutoff_mod - 0.4).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_midi_cc_source_curve_shapes_route() {
+        let mut curve = ModCurve::linear();
+        curve.points[64] = 0.0;
+        curve.points[127] = 1.0;
+
+        let mut matrix = ModMatrix::default();
+        matrix.set_cc_route_with_curve(0, 74, ModTarget::Amplitude, 1.0, curve);
+
+        let mut cc_values = [0.0; 128];
+        cc_values[74] = 64.0 / 127.0;
+        let sources = SourceValues {
+            cc_values,
+            ..SourceValues::default()
+        };
+
+        let amp_mod = matrix.compute(ModTarget::Amplitude, &sources);
+        assert!(amp_mod.abs() < 0.001);
     }
 
     #[test]
