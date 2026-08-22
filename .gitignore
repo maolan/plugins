@@ -1,5 +1,6 @@
 target
 logs/
 .worktrees/
+dist/
 .codex
 *.exe

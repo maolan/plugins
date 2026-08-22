@@ -23,7 +23,7 @@ OVERRIDE_VERSION=""
 TARGET_DIR=""
 
 usage() {
-    sed -n '2,14p' "$0" | sed 's/^# //'
+    sed -n '4,17p' "$0" | sed 's/^# //'
     exit 0
 }
 
@@ -121,7 +121,7 @@ if [[ -f "${CARGO_HOME:-$HOME/.cargo}/env" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Build release plugin library
+# 3. Build release plugin library
 # ---------------------------------------------------------------------------
 echo ""
 echo "[3/6] Building release plugin library..."
@@ -152,7 +152,7 @@ fi
 echo "Build completed successfully."
 
 # ---------------------------------------------------------------------------
-# 5. Prepare Debian package staging area
+# 4. Prepare Debian package staging area
 # ---------------------------------------------------------------------------
 echo ""
 echo "[4/6] Preparing Debian package structure..."
@@ -168,6 +168,7 @@ mkdir -p "$STAGING_DIR/usr/share/doc/$PKG_NAME"
 cp "$PLUGIN_LIB" "$STAGING_DIR/usr/lib/clap/"
 strip "$STAGING_DIR/usr/lib/clap/libmaolan_plugins.so"
 chmod 755 "$STAGING_DIR/usr/lib/clap/libmaolan_plugins.so"
+ln -sf libmaolan_plugins.so "$STAGING_DIR/usr/lib/clap/Maolan.clap"
 
 # Documentation
 cp "$SOURCE_DIR/README.md" "$STAGING_DIR/usr/share/doc/$PKG_NAME/"
@@ -199,7 +200,7 @@ License: BSD-2-Clause
 EOF
 
 # ---------------------------------------------------------------------------
-# 6. Build the .deb package
+# 5. Build the .deb package
 # ---------------------------------------------------------------------------
 echo ""
 echo "[5/6] Building .deb package..."
@@ -207,7 +208,7 @@ mkdir -p "$OUTPUT_DIR"
 fakeroot dpkg-deb --build "$STAGING_DIR" "$OUTPUT_DIR/$DEB_NAME"
 
 # ---------------------------------------------------------------------------
-# 7. Verify the package
+# 6. Verify the package
 # ---------------------------------------------------------------------------
 echo ""
 echo "[6/6] Verifying package..."

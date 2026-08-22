@@ -2,8 +2,18 @@
 ; Run with: makensis.exe installer.nsi
 ; Requires all binaries and DLLs to be staged in C:\maolan-staging\plugins
 
+Unicode true
+
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
+
+!ifndef MAOLAN_VERSION
+!define MAOLAN_VERSION "0.0.3"
+!endif
+
+!ifndef MAOLAN_PRODUCT_VERSION
+!define MAOLAN_PRODUCT_VERSION "${MAOLAN_VERSION}.0"
+!endif
 
 ;--------------------------------
 ; General
@@ -17,10 +27,10 @@ RequestExecutionLevel user
 ;--------------------------------
 ; Version Info
 ;--------------------------------
-VIProductVersion "0.0.3.0"
+VIProductVersion "${MAOLAN_PRODUCT_VERSION}"
 VIAddVersionKey "ProductName" "Maolan Plugins"
-VIAddVersionKey "ProductVersion" "0.0.3"
-VIAddVersionKey "FileVersion" "0.0.3"
+VIAddVersionKey "ProductVersion" "${MAOLAN_VERSION}"
+VIAddVersionKey "FileVersion" "${MAOLAN_VERSION}"
 VIAddVersionKey "FileDescription" "Maolan CLAP Audio Plugins"
 VIAddVersionKey "LegalCopyright" "BSD-2-Clause"
 
@@ -75,7 +85,7 @@ Section "Install"
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MaolanPlugins" \
         "UninstallString" "$\"$INSTDIR\Uninstall-Maolan-Plugins.exe$\""
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MaolanPlugins" \
-        "DisplayVersion" "0.0.3"
+        "DisplayVersion" "${MAOLAN_VERSION}"
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MaolanPlugins" \
         "Publisher" "Maolan Team"
     WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MaolanPlugins" \
@@ -92,7 +102,7 @@ SectionEnd
 ; Uninstaller Section
 ;--------------------------------
 Section "Uninstall"
-    Delete "$INSTDIR\maolan_plugins.dll"
+    Delete "$INSTDIR\Maolan.clap"
     Delete "$INSTDIR\Uninstall-Maolan-Plugins.exe"
 
     Delete "$SMPROGRAMS\Maolan Plugins\Uninstall.lnk"

@@ -4,15 +4,15 @@ $ErrorActionPreference = "Stop"
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-$target    = "x86_64-pc-windows-msvc"
-$targetDir = "C:\cargo-target"
-$nsisPath  = "C:\nsis-3.10\makensis.exe"
+$target   = "x86_64-pc-windows-msvc"
+$nsisPath = "C:\nsis-3.10\makensis.exe"
 $staging   = "C:\maolan-staging\plugins"
+$sourceDir = Split-Path $PSScriptRoot -Parent
 
 # ---------------------------------------------------------------------------
 # Version from Cargo.toml
 # ---------------------------------------------------------------------------
-$cargoToml = Join-Path (Split-Path $PSScriptRoot -Parent) "Cargo.toml"
+$cargoToml = Join-Path $sourceDir "Cargo.toml"
 $pkgVersion = "0.0.0"
 if (Test-Path $cargoToml) {
     $versionLine = Select-String -Path $cargoToml -Pattern '^version\s*=\s*"(.+)"' | Select-Object -First 1
@@ -29,7 +29,7 @@ $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Pri
 $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     Write-Warning "This script is NOT running as Administrator."
-    Write-Warning "Most installations (VS Build Tools, LLVM, NSIS to C:\) require elevation."
+    Write-Warning "Most installations (VS Build Tools, NSIS to C:\) require elevation."
     Write-Warning "If installs fail, run PowerShell as Administrator or execute from an RDP/VNC session."
     Write-Host ""
 }
@@ -60,32 +60,6 @@ function Ensure-Git {
     }
     Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/NORESTART" -Wait
     $env:PATH = "$env:ProgramFiles\Git\cmd;$env:PATH"
-}
-
-function Ensure-CMake {
-    $cmakePath = "C:\cmake\bin\cmake.exe"
-    if (Test-Path $cmakePath) {
-        Write-Host "CMake already installed."
-        $env:PATH = "C:\cmake\bin;$env:PATH"
-        return
-    }
-    if (Test-Command "cmake") {
-        Write-Host "CMake already installed."
-        return
-    }
-    Write-Host "Installing CMake..."
-    $zip = "$env:TEMP\cmake.zip"
-    Invoke-WebRequest -Uri "https://github.com/Kitware/CMake/releases/download/v3.31.5/cmake-3.31.5-windows-x86_64.zip" -OutFile $zip
-    Expand-Archive -Path $zip -DestinationPath "C:\" -Force
-    # The zip extracts to a nested folder; move it up
-    $nested = "C:\cmake-3.31.5-windows-x86_64"
-    if (Test-Path $nested) {
-        Rename-Item -Path $nested -NewName "cmake" -Force
-    }
-    $env:PATH = "C:\cmake\bin;$env:PATH"
-    if (-not (Test-Path $cmakePath)) {
-        Write-Error "CMake installation failed. Expected cmake.exe at $cmakePath"
-    }
 }
 
 function Ensure-VSBuildTools {
@@ -145,7 +119,16 @@ function Ensure-Rust {
     if (-not (Test-Path $installer)) {
         Invoke-WebRequest -Uri "https://win.rustup.rs/x86_64" -OutFile $installer
     }
-    & $installer -y --default-toolchain stable --target $target
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $installer -y --default-toolchain stable --target $target 2>&1 | ForEach-Object { Write-Host $_ }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Rust installation failed with exit code $LASTEXITCODE"
+        }
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
 }
 
@@ -158,7 +141,7 @@ function Ensure-NSIS {
     $zip = "$env:TEMP\nsis-3.10.zip"
     $curl = "$env:SystemRoot\System32\curl.exe"
     if (Test-Path $curl) {
-        & $curl -L -o $zip "https://prdownloads.sourceforge.net/nsis/nsis-3.10.zip"
+        & $curl -s -L -o $zip "https://prdownloads.sourceforge.net/nsis/nsis-3.10.zip"
     } else {
         Invoke-WebRequest -Uri "https://prdownloads.sourceforge.net/nsis/nsis-3.10.zip" -OutFile $zip -MaximumRedirection 5
     }
@@ -176,49 +159,14 @@ function Ensure-NSIS {
     }
 }
 
-function Ensure-LLVM {
-    $llvmPaths = @(
-        "C:\LLVM\bin"
-        "$env:ProgramFiles\LLVM\bin"
-        "$env:ProgramFiles(x86)\LLVM\bin"
-    )
-    foreach ($path in $llvmPaths) {
-        if (Test-Path "$path\libclang.dll") {
-            $env:LIBCLANG_PATH = $path
-            Write-Host "Found libclang at $path"
-            return
-        }
-    }
-    Write-Host "Installing LLVM..."
-    $installer = "$env:TEMP\LLVM-installer.exe"
-    if (-not (Test-Path $installer)) {
-        Invoke-WebRequest -Uri "https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-win64.exe" -OutFile $installer
-    }
-    Start-Process -FilePath $installer -ArgumentList "/S" -Wait
-    # Some installers need a moment to finish writing files even after the process exits
-    for ($i = 0; $i -lt 10; $i++) {
-        foreach ($path in $llvmPaths) {
-            if (Test-Path "$path\libclang.dll") {
-                $env:LIBCLANG_PATH = $path
-                Write-Host "Found libclang at $path after installation"
-                return
-            }
-        }
-        Start-Sleep -Seconds 2
-    }
-    Write-Error "LLVM installation completed but libclang.dll was not found."
-}
-
 # ---------------------------------------------------------------------------
 # Main flow
 # ---------------------------------------------------------------------------
 Ensure-VSBuildTools
 Import-VSEnv
-Ensure-CMake
 Ensure-Rust
 Ensure-NSIS
 Ensure-Git
-Ensure-LLVM
 
 # ---------------------------------------------------------------------------
 # VC++ Redistributable
@@ -234,13 +182,11 @@ if (-not (Test-Path $vcRedist)) {
 # Build
 # ---------------------------------------------------------------------------
 Write-Host "Cleaning old build artifacts..."
-Push-Location $PSScriptRoot
-cargo clean --target-dir $targetDir
-Pop-Location
+Push-Location $sourceDir
+cargo clean
 
 Write-Host "Building maolan-plugins (release)..."
-Push-Location $PSScriptRoot
-cargo build --release --target $target --target-dir $targetDir
+cargo build --release --target $target
 Pop-Location
 
 # ---------------------------------------------------------------------------
@@ -248,7 +194,8 @@ Pop-Location
 # ---------------------------------------------------------------------------
 Write-Host "Staging files to $staging..."
 New-Item -ItemType Directory -Force $staging | Out-Null
-Copy-Item "$targetDir\$target\release\maolan_plugins.dll" $staging -Force
+$binDir = Join-Path $sourceDir "target\$target\release"
+Copy-Item (Join-Path $binDir "maolan_plugins.dll") (Join-Path $staging "Maolan.clap") -Force
 Copy-Item $vcRedist $staging -Force
 
 # ---------------------------------------------------------------------------
@@ -259,36 +206,23 @@ Write-Host "Building installer..."
 $nsiTemp = "$env:TEMP\maolan-plugins-installer"
 New-Item -ItemType Directory -Force $nsiTemp | Out-Null
 Copy-Item "$PSScriptRoot\installer.nsi" "$nsiTemp\installer.nsi" -Force
-Copy-Item (Join-Path (Split-Path $PSScriptRoot -Parent) "LICENSE") "$nsiTemp\LICENSE" -Force -ErrorAction SilentlyContinue
+Copy-Item (Join-Path $sourceDir "LICENSE") "$nsiTemp\LICENSE" -Force -ErrorAction SilentlyContinue
+$versionMatch = [regex]::Match($pkgVersion, '^(\d+)\.(\d+)\.(\d+)')
+if ($versionMatch.Success) {
+    $productVersion = "$($versionMatch.Groups[1].Value).$($versionMatch.Groups[2].Value).$($versionMatch.Groups[3].Value).0"
+} else {
+    Write-Warning "Package version '$pkgVersion' is not a numeric semver; using 0.0.0.0 for installer file metadata."
+    $productVersion = "0.0.0.0"
+}
 Push-Location $nsiTemp
-& $nsisPath "$nsiTemp\installer.nsi"
+& $nsisPath "/INPUTCHARSET" "UTF8" "/DMAOLAN_VERSION=$pkgVersion" "/DMAOLAN_PRODUCT_VERSION=$productVersion" "$nsiTemp\installer.nsi"
 Pop-Location
-$distDir = Join-Path (Split-Path $PSScriptRoot -Parent) "dist"
+$distDir = Join-Path $sourceDir "dist"
 New-Item -ItemType Directory -Force $distDir | Out-Null
 $outFile = "maolan-plugins-$pkgVersion.windows.amd64.exe"
-$maxRetries = 5
-$sleepSec = 2
-$copied = $false
-for ($i = 0; $i -lt $maxRetries; $i++) {
-    try {
-        Copy-Item "$nsiTemp\maolan-plugins-setup.exe" "$distDir\$outFile" -Force -ErrorAction Stop
-        $copied = $true
-        break
-    } catch {
-        if ($i -eq $maxRetries - 1) {
-            $altFile = "$outFile.new"
-            Copy-Item "$nsiTemp\maolan-plugins-setup.exe" "$distDir\$altFile" -Force
-            Write-Warning "Could not overwrite $outFile (locked by another process). Wrote installer to $distDir\$altFile"
-        } else {
-            Start-Sleep -Seconds $sleepSec
-        }
-    }
-}
-
-if ($copied -and (Test-Path "$distDir\$outFile")) {
+Copy-Item "$nsiTemp\maolan-plugins-setup.exe" "$distDir\$outFile" -Force -ErrorAction SilentlyContinue
+if (Test-Path "$distDir\$outFile") {
     Write-Host "Done: $(Resolve-Path "$distDir\$outFile")"
-} elseif (-not $copied) {
-    Write-Warning "Installer build completed but $outFile could not be updated because it is locked."
 } else {
     Write-Error "Installer build failed. $outFile was not created."
 }

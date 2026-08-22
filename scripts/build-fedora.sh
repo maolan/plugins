@@ -25,7 +25,7 @@ OVERRIDE_VERSION=""
 TARGET_DIR=""
 
 usage() {
-    sed -n '2,14p' "$0" | sed 's/^# //'
+    sed -n '4,17p' "$0" | sed 's/^# //'
     exit 0
 }
 
@@ -113,10 +113,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Build release plugin library
+# 3. Build release plugin library
 # ---------------------------------------------------------------------------
 echo ""
-echo "[4/6] Building release plugin library..."
+echo "[3/6] Building release plugin library..."
 cd "$SOURCE_DIR"
 
 CARGO_ARGS=("--release")
@@ -144,10 +144,10 @@ fi
 echo "Build completed successfully."
 
 # ---------------------------------------------------------------------------
-# 5. Prepare RPM package staging area
+# 4. Prepare RPM package staging area
 # ---------------------------------------------------------------------------
 echo ""
-echo "[5/6] Preparing RPM package structure..."
+echo "[4/6] Preparing RPM package structure..."
 
 SPEC_DIR="$(mktemp -d)"
 trap "rm -rf '$SPEC_DIR'" EXIT
@@ -162,6 +162,7 @@ mkdir -p "$STAGING_DIR/usr/share/doc/$PKG_NAME"
 cp "$PLUGIN_LIB" "$STAGING_DIR/usr/lib/clap/"
 strip "$STAGING_DIR/usr/lib/clap/libmaolan_plugins.so"
 chmod 755 "$STAGING_DIR/usr/lib/clap/libmaolan_plugins.so"
+ln -sf libmaolan_plugins.so "$STAGING_DIR/usr/lib/clap/Maolan.clap"
 
 # Documentation
 cp "$SOURCE_DIR/README.md" "$STAGING_DIR/usr/share/doc/$PKG_NAME/"
@@ -202,6 +203,7 @@ tar xzf %{SOURCE0}
 %files
 %defattr(-,root,root,-)
 /usr/lib/clap/libmaolan_plugins.so
+/usr/lib/clap/Maolan.clap
 %doc /usr/share/doc/maolan-plugins/README.md
 %license /usr/share/doc/maolan-plugins/LICENSE
 
@@ -211,15 +213,15 @@ tar xzf %{SOURCE0}
 EOF
 
 # ---------------------------------------------------------------------------
-# 6. Build the .rpm package
+# 5. Build the .rpm package
 # ---------------------------------------------------------------------------
 echo ""
-echo "[6/6] Building .rpm package..."
+echo "[5/6] Building .rpm package..."
 cd "$SPEC_DIR"
 rpmbuild --define "_topdir $SPEC_DIR" --bb "$SPEC_DIR/SPECS/maolan-plugins.spec"
 
 # ---------------------------------------------------------------------------
-# 7. Copy result to output directory
+# 6. Copy result to output directory
 # ---------------------------------------------------------------------------
 mkdir -p "$OUTPUT_DIR"
 
