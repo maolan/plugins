@@ -644,7 +644,7 @@ dependencies = [
 [[package]]
 name = "clap-clap"
 version = "0.5.0"
-source = "git+https://github.com/mekanix/clap-clap?branch=feature%2Ffile-reference#6306dd1d8040757ae8618646a5d53dfcccfb2422"
+source = "git+https://github.com/mekanix/clap-clap?branch=feature%2Ffile-reference#8d38923f192658940869b900a4ea870401807bce"
 
 [[package]]
 name = "clipboard-win"

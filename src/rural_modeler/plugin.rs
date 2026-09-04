@@ -1,6 +1,7 @@
 use std::{
     ffi::{CStr, c_char, c_void},
     io::{Read, Write},
+    path::{Path, PathBuf},
     ptr::{NonNull, null, null_mut},
     sync::{
         Arc,
@@ -11,17 +12,17 @@ use std::{
 use clap_clap::{
     events::{InputEvents, OutputEvents},
     ffi::{
-        CLAP_AUDIO_PORT_IS_MAIN, CLAP_EXT_AUDIO_PORTS, CLAP_EXT_FILE_REFERENCE, CLAP_EXT_GUI,
-        CLAP_EXT_LATENCY, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL, CLAP_INVALID_ID,
-        CLAP_PARAM_REQUIRES_PROCESS, CLAP_PLUGIN_FEATURE_AUDIO_EFFECT,
+        CLAP_AUDIO_PORT_IS_MAIN, CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI, CLAP_EXT_LATENCY,
+        CLAP_EXT_PARAMS, CLAP_EXT_RESOURCE_DIRECTORY, CLAP_EXT_STATE, CLAP_EXT_TAIL,
+        CLAP_INVALID_ID, CLAP_PARAM_REQUIRES_PROCESS, CLAP_PLUGIN_FEATURE_AUDIO_EFFECT,
         CLAP_PLUGIN_FEATURE_DISTORTION, CLAP_PLUGIN_FEATURE_GATE, CLAP_PLUGIN_FEATURE_MONO,
         CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_WIN32,
         CLAP_WINDOW_API_X11, clap_audio_port_info, clap_gui_resize_hints, clap_host, clap_host_gui,
         clap_host_latency, clap_host_params, clap_host_state, clap_id, clap_istream, clap_ostream,
         clap_param_info, clap_plugin, clap_plugin_audio_ports, clap_plugin_descriptor,
-        clap_plugin_factory, clap_plugin_file_reference, clap_plugin_gui, clap_plugin_latency,
-        clap_plugin_params, clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status,
-        clap_window,
+        clap_plugin_factory, clap_plugin_gui, clap_plugin_latency, clap_plugin_params,
+        clap_plugin_resource_directory, clap_plugin_state, clap_plugin_tail, clap_process,
+        clap_process_status, clap_window,
     },
     process::Process,
     stream::{IStream, OStream},
@@ -98,6 +99,7 @@ pub struct SharedState {
     pub params: ParamStore,
     pub model_path: RwLock<String>,
     pub ir_path: RwLock<String>,
+    pub resource_dir: RwLock<Option<String>>,
     pub model_metadata: RwLock<Option<ModelMetadata>>,
     pub last_error: RwLock<Option<String>>,
     pending_model: AtomicPtr<ResamplingNamModel>,
@@ -118,6 +120,7 @@ impl Default for SharedState {
             params: ParamStore::default(),
             model_path: RwLock::new(String::new()),
             ir_path: RwLock::new(String::new()),
+            resource_dir: RwLock::new(None),
             model_metadata: RwLock::new(None),
             last_error: RwLock::new(None),
             pending_model: AtomicPtr::new(null_mut()),
@@ -1146,72 +1149,193 @@ static STATE_EXT: clap_plugin_state = clap_plugin_state {
     load: Some(ext_state_load),
 };
 
-unsafe extern "C-unwind" fn ext_file_reference_count(_plugin: *const clap_plugin) -> u32 {
-    // RuralModeler has two fixed file-reference slots: index 0 for the NAM
-    // model and index 1 for the impulse response. Keeping the indices stable
-    // lets the host update paths reliably even when one of the slots is empty.
-    2
+/// Returns true when `path` is absolute and lies inside the resource
+/// directory `dir`.
+fn resource_file_in_dir(dir: &Path, path: &Path) -> bool {
+    path.is_absolute() && path.starts_with(dir)
 }
 
-unsafe extern "C-unwind" fn ext_file_reference_get(
+/// Computes the path of `path` relative to the resource directory `dir`,
+/// or `None` when `path` is outside `dir`.
+fn relative_resource_path(dir: &Path, path: &Path) -> Option<String> {
+    path.strip_prefix(dir)
+        .ok()
+        .map(|rel| rel.to_string_lossy().into_owned())
+}
+
+/// Picks a collision-free file name inside the resource directory for a file
+/// named `file_name`. When the plain name is already taken by a different
+/// file, `stem-N.ext` names (N starting at 1) are tried until one is free.
+/// `is_taken` reports whether a given name already exists at the destination.
+fn collision_free_resource_name(file_name: &str, mut is_taken: impl FnMut(&str) -> bool) -> String {
+    if !is_taken(file_name) {
+        return file_name.to_string();
+    }
+    let stem = Path::new(file_name)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| file_name.to_string());
+    let extension = Path::new(file_name)
+        .extension()
+        .map(|ext| ext.to_string_lossy().into_owned());
+    for n in 1..u32::MAX {
+        let candidate = match &extension {
+            Some(extension) => format!("{stem}-{n}.{extension}"),
+            None => format!("{stem}-{n}"),
+        };
+        if !is_taken(&candidate) {
+            return candidate;
+        }
+    }
+    file_name.to_string()
+}
+
+/// Returns the absolute model and IR paths that currently live inside the
+/// shared resource directory (model first, then IR).
+fn resource_files(shared: &SharedState) -> Vec<String> {
+    let Some(dir) = shared.resource_dir.read().clone() else {
+        return Vec::new();
+    };
+    let dir = Path::new(&dir);
+    let mut files = Vec::new();
+    for path in [
+        shared.model_path.read().clone(),
+        shared.ir_path.read().clone(),
+    ] {
+        if path.is_empty() {
+            continue;
+        }
+        if resource_file_in_dir(dir, Path::new(&path)) {
+            files.push(path);
+        }
+    }
+    files
+}
+
+unsafe extern "C-unwind" fn ext_resource_directory_set_directory(
+    plugin: *const clap_plugin,
+    path: *const c_char,
+    is_shared: bool,
+) {
+    if plugin.is_null() {
+        return;
+    }
+    let instance = unsafe { instance(plugin) };
+    let dir = if path.is_null() {
+        None
+    } else {
+        let path = unsafe { CStr::from_ptr(path) };
+        match path.to_str() {
+            Ok(path) if !path.is_empty() => Some(path.to_string()),
+            _ => None,
+        }
+    };
+    tracing::info!(
+        ?dir,
+        is_shared,
+        "RuralModeler resource_directory set_directory"
+    );
+    *instance.shared.resource_dir.write() = dir;
+}
+
+unsafe extern "C-unwind" fn ext_resource_directory_collect(plugin: *const clap_plugin, all: bool) {
+    if plugin.is_null() {
+        return;
+    }
+    let instance = unsafe { instance(plugin) };
+    let Some(dir) = instance.shared.resource_dir.read().clone() else {
+        return;
+    };
+    let dir = Path::new(&dir);
+    let sources = [
+        instance.shared.model_path.read().clone(),
+        instance.shared.ir_path.read().clone(),
+    ];
+    for (index, source) in sources.iter().enumerate() {
+        if source.is_empty() {
+            continue;
+        }
+        let source_path = Path::new(source);
+        if !source_path.is_absolute() {
+            continue;
+        }
+        if resource_file_in_dir(dir, source_path) {
+            continue;
+        }
+        let Some(file_name) = source_path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let destination_name = if dir.join(file_name).exists()
+            && std::fs::canonicalize(dir.join(file_name)).ok()
+                != std::fs::canonicalize(source_path).ok()
+        {
+            collision_free_resource_name(file_name, |name| dir.join(name).exists())
+        } else {
+            file_name.to_string()
+        };
+        let destination: PathBuf = dir.join(destination_name);
+        if let Err(err) = std::fs::copy(source_path, &destination) {
+            tracing::warn!(%source, ?destination, %err, "RuralModeler resource_directory collect: copy failed");
+            continue;
+        }
+        let new_path = destination.to_string_lossy().into_owned();
+        tracing::info!(%source, %new_path, all, "RuralModeler resource_directory collect: copied file");
+        match index {
+            0 => instance.shared.restore_model_path_and_load(new_path),
+            _ => instance.shared.restore_ir_path_and_load(new_path),
+        }
+    }
+}
+
+unsafe extern "C-unwind" fn ext_resource_directory_get_files_count(
+    plugin: *const clap_plugin,
+) -> u32 {
+    if plugin.is_null() {
+        return 0;
+    }
+    let instance = unsafe { instance(plugin) };
+    resource_files(&instance.shared).len() as u32
+}
+
+unsafe extern "C-unwind" fn ext_resource_directory_get_file_path(
     plugin: *const clap_plugin,
     index: u32,
     path: *mut c_char,
     path_size: u32,
-) -> bool {
+) -> i32 {
     if plugin.is_null() || path.is_null() || path_size == 0 {
-        return false;
+        return -1;
     }
     let instance = unsafe { instance(plugin) };
-    let target = match index {
-        0 => instance.shared.model_path.read().clone(),
-        1 => instance.shared.ir_path.read().clone(),
-        _ => return false,
+    let files = resource_files(&instance.shared);
+    let Some(target) = files.get(index as usize) else {
+        return -1;
     };
-
-    let cstring = match std::ffi::CString::new(target) {
+    let Some(dir) = instance.shared.resource_dir.read().clone() else {
+        return -1;
+    };
+    let Some(relative) = relative_resource_path(Path::new(&dir), Path::new(target)) else {
+        return -1;
+    };
+    let cstring = match std::ffi::CString::new(relative) {
         Ok(s) => s,
-        Err(_) => return false,
+        Err(_) => return -1,
     };
     let bytes = cstring.as_bytes_with_nul();
     if bytes.len() > path_size as usize {
-        return false;
+        return -1;
     }
     unsafe {
         std::ptr::copy_nonoverlapping(bytes.as_ptr() as *const c_char, path, bytes.len());
     }
-    true
+    bytes.len() as i32
 }
 
-unsafe extern "C-unwind" fn ext_file_reference_update_path(
-    plugin: *const clap_plugin,
-    index: u32,
-    path: *const c_char,
-) -> bool {
-    if plugin.is_null() || path.is_null() {
-        return false;
-    }
-    let path = unsafe { CStr::from_ptr(path) };
-    let path = match path.to_str() {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    let instance = unsafe { instance(plugin) };
-    match index {
-        0 => instance
-            .shared
-            .restore_model_path_and_load(path.to_string()),
-        1 => instance.shared.restore_ir_path_and_load(path.to_string()),
-        _ => return false,
-    }
-    true
-}
-
-static FILE_REFERENCE_EXT: clap_plugin_file_reference = clap_plugin_file_reference {
-    count: Some(ext_file_reference_count),
-    get: Some(ext_file_reference_get),
-    get_hash: None,
-    update_path: Some(ext_file_reference_update_path),
+static RESOURCE_DIRECTORY_EXT: clap_plugin_resource_directory = clap_plugin_resource_directory {
+    set_directory: Some(ext_resource_directory_set_directory),
+    collect: Some(ext_resource_directory_collect),
+    get_files_count: Some(ext_resource_directory_get_files_count),
+    get_file_path: Some(ext_resource_directory_get_file_path),
 };
 
 unsafe extern "C-unwind" fn ext_latency_get(_plugin: *const clap_plugin) -> u32 {
@@ -1465,8 +1589,8 @@ unsafe extern "C-unwind" fn plugin_get_extension(
         &raw const PARAMS_EXT as *const _ as *const c_void
     } else if id == CLAP_EXT_STATE {
         &raw const STATE_EXT as *const _ as *const c_void
-    } else if id == CLAP_EXT_FILE_REFERENCE {
-        &raw const FILE_REFERENCE_EXT as *const _ as *const c_void
+    } else if id == CLAP_EXT_RESOURCE_DIRECTORY {
+        &raw const RESOURCE_DIRECTORY_EXT as *const _ as *const c_void
     } else if id == CLAP_EXT_LATENCY {
         &raw const LATENCY_EXT as *const _ as *const c_void
     } else if id == CLAP_EXT_TAIL {
@@ -1555,7 +1679,10 @@ pub unsafe fn create_plugin(
 
 #[cfg(test)]
 mod tests {
-    use super::{ModelMetadata, SharedState, initial_resource_paths};
+    use super::{
+        ModelMetadata, SharedState, collision_free_resource_name, initial_resource_paths,
+        relative_resource_path, resource_file_in_dir, resource_files,
+    };
     use clap_clap::ffi::{CLAP_EXT_GUI, CLAP_VERSION};
     use clap_clap::ffi::{clap_host, clap_host_gui};
     use std::{
@@ -1723,6 +1850,93 @@ mod tests {
         assert!(
             shared.last_error.read().is_some(),
             "expected IR load failure to set error"
+        );
+    }
+
+    #[test]
+    fn resource_file_in_dir_requires_absolute_path_inside_dir() {
+        let dir = std::path::Path::new("/session/resources");
+        assert!(resource_file_in_dir(
+            dir,
+            std::path::Path::new("/session/resources/model.nam")
+        ));
+        assert!(resource_file_in_dir(
+            dir,
+            std::path::Path::new("/session/resources/sub/ir.wav")
+        ));
+        assert!(!resource_file_in_dir(
+            dir,
+            std::path::Path::new("/session/other/model.nam")
+        ));
+        assert!(!resource_file_in_dir(
+            dir,
+            std::path::Path::new("model.nam")
+        ));
+    }
+
+    #[test]
+    fn relative_resource_path_strips_resource_dir_prefix() {
+        let dir = std::path::Path::new("/session/resources");
+        assert_eq!(
+            relative_resource_path(dir, std::path::Path::new("/session/resources/model.nam")),
+            Some("model.nam".to_string())
+        );
+        assert_eq!(
+            relative_resource_path(dir, std::path::Path::new("/session/resources/sub/ir.wav")),
+            Some("sub/ir.wav".to_string())
+        );
+        assert_eq!(
+            relative_resource_path(dir, std::path::Path::new("/elsewhere/ir.wav")),
+            None
+        );
+    }
+
+    #[test]
+    fn collision_free_resource_name_keeps_free_name() {
+        assert_eq!(
+            collision_free_resource_name("model.nam", |_| false),
+            "model.nam"
+        );
+    }
+
+    #[test]
+    fn collision_free_resource_name_appends_counter_until_free() {
+        let taken = |name: &str| name == "model.nam" || name == "model-1.nam";
+        assert_eq!(
+            collision_free_resource_name("model.nam", taken),
+            "model-2.nam"
+        );
+    }
+
+    #[test]
+    fn collision_free_resource_name_handles_missing_extension() {
+        let taken = |name: &str| name == "model";
+        assert_eq!(collision_free_resource_name("model", taken), "model-1");
+    }
+
+    #[test]
+    fn resource_files_only_counts_absolute_paths_inside_resource_dir() {
+        let shared = SharedState::default();
+        assert!(resource_files(&shared).is_empty());
+
+        *shared.resource_dir.write() = Some("/session/resources".to_string());
+        *shared.model_path.write() = "/session/resources/model.nam".to_string();
+        *shared.ir_path.write() = "/library/ir.wav".to_string();
+        assert_eq!(
+            resource_files(&shared),
+            vec!["/session/resources/model.nam"]
+        );
+
+        *shared.ir_path.write() = "relative/ir.wav".to_string();
+        assert_eq!(
+            resource_files(&shared),
+            vec!["/session/resources/model.nam"]
+        );
+
+        *shared.ir_path.write() = "/session/resources/ir.wav".to_string();
+        assert_eq!(
+            resource_files(&shared),
+            vec!["/session/resources/model.nam", "/session/resources/ir.wav"]
         );
     }
 
