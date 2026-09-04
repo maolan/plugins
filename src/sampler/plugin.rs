@@ -19,27 +19,29 @@ use clap_clap::{
     ffi::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI,
         CLAP_EVENT_NOTE_EXPRESSION, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EXT_AUDIO_PORTS,
-        CLAP_EXT_GUI, CLAP_EXT_NOTE_NAME, CLAP_EXT_NOTE_PORTS, CLAP_EXT_PARAMS, CLAP_EXT_STATE,
-        CLAP_INVALID_ID, CLAP_NOTE_DIALECT_MIDI, CLAP_NOTE_EXPRESSION_BRIGHTNESS,
-        CLAP_NOTE_EXPRESSION_PAN, CLAP_NOTE_EXPRESSION_PRESSURE, CLAP_NOTE_EXPRESSION_TUNING,
-        CLAP_NOTE_EXPRESSION_VOLUME, CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_MONO,
-        CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION,
-        clap_audio_port_info, clap_host, clap_host_gui, clap_host_note_name, clap_host_params,
-        clap_host_state, clap_id, clap_istream, clap_note_name, clap_note_port_info, clap_ostream,
-        clap_plugin, clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_gui,
-        clap_plugin_note_name, clap_plugin_note_ports, clap_plugin_params, clap_plugin_state,
-        clap_process, clap_process_status, clap_window,
+        CLAP_EXT_GUI, CLAP_EXT_NOTE_NAME, CLAP_EXT_NOTE_PORTS, CLAP_EXT_PARAMS,
+        CLAP_EXT_RESOURCE_DIRECTORY, CLAP_EXT_STATE, CLAP_INVALID_ID, CLAP_NOTE_DIALECT_MIDI,
+        CLAP_NOTE_EXPRESSION_BRIGHTNESS, CLAP_NOTE_EXPRESSION_PAN, CLAP_NOTE_EXPRESSION_PRESSURE,
+        CLAP_NOTE_EXPRESSION_TUNING, CLAP_NOTE_EXPRESSION_VOLUME, CLAP_PLUGIN_FEATURE_INSTRUMENT,
+        CLAP_PLUGIN_FEATURE_MONO, CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_MONO,
+        CLAP_PROCESS_CONTINUE, CLAP_VERSION, clap_audio_port_info, clap_host, clap_host_gui,
+        clap_host_note_name, clap_host_params, clap_host_state, clap_id, clap_istream,
+        clap_note_name, clap_note_port_info, clap_ostream, clap_plugin, clap_plugin_audio_ports,
+        clap_plugin_descriptor, clap_plugin_gui, clap_plugin_note_name, clap_plugin_note_ports,
+        clap_plugin_params, clap_plugin_resource_directory, clap_plugin_state, clap_process,
+        clap_process_status, clap_window,
     },
     process::Process,
     stream::{IStream, OStream},
 };
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use portable_atomic::AtomicF32;
 use portable_atomic::AtomicF64;
 
 use crate::common::filter::{FilterParams, FilterSubtype, FilterType};
 use crate::common::lfo::{LfoShape, LfoSyncMode, LfoTriggerMode};
 use crate::common::param_store::ParamStore;
+use crate::common::resource_directory::resource_file_in_dir;
 use crate::common::state::PluginState;
 use crate::common::{copy_str_to_array, param_events::ParamGesture};
 use crate::sampler::{
@@ -49,7 +51,8 @@ use crate::sampler::{
         mod_matrix::{ModMatrix, ModSource, ModTarget},
         part::Part,
         patch::Patch,
-        sample::Sample,
+        sample::{Sample, load_audio},
+        sfz::{export_patch_to_sfz, sanitize_export_name},
         voice::LfoParams,
         zone::Zone,
     },
@@ -66,6 +69,9 @@ const PLUGIN_VENDOR: &[u8] = b"Maolan\0";
 const PLUGIN_URL: &[u8] = b"\0";
 const PLUGIN_VERSION: &[u8] = b"0.1.0\0";
 const PLUGIN_DESCRIPTION: &[u8] = b"Polyphonic sample player\0";
+
+/// Process-wide counter handing out unique instance ids for bundle naming.
+static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const FEATURE_INSTRUMENT: *const c_char = CLAP_PLUGIN_FEATURE_INSTRUMENT.as_ptr();
 const FEATURE_MONO: *const c_char = CLAP_PLUGIN_FEATURE_MONO.as_ptr();
@@ -114,6 +120,12 @@ pub struct SharedState {
     pub instrument_path: Mutex<Option<std::path::PathBuf>>,
     pub sf2_presets: Mutex<Vec<PresetInfo>>,
     pub selected_sf2_preset: Mutex<Option<usize>>,
+    /// Session resource directory pushed by the host through
+    /// `clap.resource-directory/1`, `None` until the host sets one.
+    pub resource_dir: RwLock<Option<String>>,
+    /// Process-unique id used to make resource-directory bundle names
+    /// collision-safe across plugin instances.
+    instance_id: u64,
     instrument_cache: InstrumentCache,
     /// Handle to the background instrument-loader thread, if one is running.
     /// Kept so the plugin can wait for it to finish before the library is unloaded.
@@ -156,6 +168,8 @@ impl Default for SharedState {
             instrument_path: Mutex::new(None),
             sf2_presets: Mutex::new(Vec::new()),
             selected_sf2_preset: Mutex::new(None),
+            resource_dir: RwLock::new(None),
+            instance_id: INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed),
             instrument_cache: InstrumentCache::new(),
             load_thread: Mutex::new(None),
             pending_note_on: AtomicU64::new(0),
@@ -1215,6 +1229,161 @@ pub(crate) fn build_groups_from_patch(patch: &Patch) -> Vec<SampleGroup> {
 
 pub(crate) const MAX_SAMPLER_BUSES: usize = 32;
 
+/// Copies the GUI-editable metadata of a `SampleZone` onto a DSP `Zone`.
+fn apply_editable_zone_metadata(zone: &mut Zone, editable: &SampleZone) {
+    zone.name = editable.name.clone();
+    zone.files = editable.files.clone();
+    zone.key_low = editable.start_note.min(127) as u8;
+    zone.key_high = editable.end_note.min(127) as u8;
+    zone.vel_low = editable.vel_low;
+    zone.vel_high = editable.vel_high;
+    zone.root_key = editable.root_key;
+    zone.key_fade_low = editable.key_fade_low;
+    zone.key_fade_high = editable.key_fade_high;
+    zone.vel_fade_low = editable.vel_fade_low;
+    zone.vel_fade_high = editable.vel_fade_high;
+    zone.key_fade_in = editable.key_fade_in;
+    zone.key_fade_out = editable.key_fade_out;
+    zone.vel_fade_in = editable.vel_fade_in;
+    zone.vel_fade_out = editable.vel_fade_out;
+    zone.pitch_offset = editable.pitch_offset;
+    zone.key_tracking = editable.key_tracking;
+    zone.velocity_curve = editable.velocity_curve;
+    zone.key_tracking_curve = editable.key_tracking_curve;
+    zone.gain_db = editable.gain_db;
+    zone.pan = editable.pan;
+    zone.output = editable.output;
+    zone.width = editable.width;
+    zone.position = editable.position;
+    zone.amp_keytrack_db = editable.amp_keytrack_db;
+    zone.reverse = editable.reverse;
+    zone.play_mode = editable.play_mode;
+    zone.loop_mode = editable.loop_mode;
+    zone.loop_direction = editable.loop_direction;
+    zone.loop_start = editable.loop_start;
+    zone.loop_end = editable.loop_end;
+    zone.loop_count = editable.loop_count;
+    zone.loop_crossfade = editable.loop_crossfade;
+    zone.start_offset = editable.start_offset;
+    zone.offset_random = editable.offset_random;
+    zone.end_offset = editable.end_offset;
+    zone.delay = editable.delay;
+    zone.delay_random = editable.delay_random;
+    zone.pitch_bend_up = editable.pitch_bend_up;
+    zone.pitch_bend_down = editable.pitch_bend_down;
+    zone.variant_mode = editable.variant_mode;
+    zone.channel_low = editable.channel_low;
+    zone.channel_high = editable.channel_high;
+    zone.pitch_bend_low = editable.pitch_bend_low;
+    zone.pitch_bend_high = editable.pitch_bend_high;
+    zone.cc_conditions = editable.cc_conditions.clone();
+    zone.random_low = editable.random_low;
+    zone.random_high = editable.random_high;
+    zone.seq_length = editable.seq_length;
+    zone.seq_position = editable.seq_position;
+    zone.off_by = editable.off_by;
+    zone.off_mode = editable.off_mode;
+    zone.amp_veltrack = editable.amp_veltrack;
+    zone.count = editable.count;
+    zone.mod_matrix = editable.mod_matrix.clone();
+    zone.extra_sfz_opcodes = editable.extra_sfz_opcodes.clone();
+}
+
+/// Builds the patch that represents the current instrument state, merging the
+/// GUI-editable zone/group metadata on top of the loaded patch. Shared by the
+/// GUI SFZ export and the `clap.resource-directory/1` collect handler so both
+/// always export exactly the same patch.
+pub(crate) fn build_export_patch(shared: &SharedState) -> Patch {
+    let base_patch = shared.patch.load();
+    let editable_zones = shared.zones.load();
+    if editable_zones.is_empty() {
+        return (*base_patch).clone();
+    }
+
+    let mut source_zones: Vec<Zone> = base_patch
+        .parts
+        .iter()
+        .flat_map(|part| part.groups.iter())
+        .flat_map(|group| group.zones.iter().cloned())
+        .collect();
+
+    let mut groups: Vec<Group> = shared
+        .groups
+        .load()
+        .iter()
+        .map(|group| Group {
+            name: group.name.clone(),
+            poly_limit: group.poly_limit,
+            exclusive_group: group.exclusive_group,
+            gain_db: group.gain_db,
+            pan: group.pan,
+            output: group.output,
+            extra_sfz_opcodes: group.extra_sfz_opcodes.clone(),
+            sw_last: group.sw_last,
+            sw_down: group.sw_down,
+            sw_up: group.sw_up,
+            sw_previous: group.sw_previous,
+            sw_lolast: group.sw_lolast,
+            sw_hilast: group.sw_hilast,
+            sw_default: group.sw_default,
+            sw_label: group.sw_label.clone(),
+            eg1_params: group.eg1_params,
+            eg2_params: group.eg2_params,
+            lfo1_params: group.lfo1_params,
+            lfo2_params: group.lfo2_params,
+            lfo3_params: group.lfo3_params,
+            lfo4_params: group.lfo4_params,
+            filter_params: group.filter_params,
+            mod_matrix: group.mod_matrix.clone(),
+            ..Default::default()
+        })
+        .collect();
+
+    for editable in editable_zones.iter() {
+        let group_index = match groups.iter().position(|group| group.name == editable.group) {
+            Some(index) => index,
+            None => {
+                groups.push(Group {
+                    name: editable.group.clone(),
+                    ..Default::default()
+                });
+                groups.len() - 1
+            }
+        };
+
+        let mut zone = source_zones
+            .drain(..1)
+            .next()
+            .or_else(|| {
+                editable.files.first().and_then(|path| {
+                    load_audio(path).ok().map(|sample| {
+                        let mut zone = Zone::new_round_robin(
+                            editable.name.clone(),
+                            sample,
+                            ((editable.start_note + editable.end_note) / 2).min(127) as u8,
+                            (editable.start_note as u8, editable.end_note as u8),
+                            (editable.vel_low, editable.vel_high),
+                            Vec::new(),
+                        );
+                        zone.files = editable.files.clone();
+                        zone
+                    })
+                })
+            })
+            .unwrap_or_default();
+        apply_editable_zone_metadata(&mut zone, editable);
+        groups[group_index].zones.push(zone);
+    }
+
+    Patch {
+        parts: vec![Part {
+            groups,
+            ..base_patch.parts.first().cloned().unwrap_or_default()
+        }],
+        ..(*base_patch).clone()
+    }
+}
+
 pub(crate) fn required_output_bus_count(groups: &[SampleGroup], zones: &[SampleZone]) -> usize {
     let max_group = groups.iter().map(|g| g.output as usize).max().unwrap_or(0);
     let max_zone = zones.iter().map(|z| z.output as usize).max().unwrap_or(0);
@@ -2252,6 +2421,196 @@ static EXT_STATE: clap_plugin_state = clap_plugin_state {
     load: Some(ext_state_load),
 };
 
+/// Bundle base name for the `clap.resource-directory/1` collect handler: the
+/// sanitized stem of the loaded instrument file (mirroring the GUI export
+/// dialog's default name), suffixed with the unique instance id so concurrent
+/// plugin instances never overwrite each other's bundles in the shared
+/// resource directory.
+fn collect_bundle_name(instrument_path: &std::path::Path, instance_id: u64) -> String {
+    let base = instrument_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .map(sanitize_export_name)
+        .unwrap_or_else(|| String::from("sampler"));
+    format!("{base}-{instance_id}")
+}
+
+/// Builds the ordered list of bundle file paths relative to the resource
+/// directory: the SFZ itself first, then the (sorted) sample WAVs of its
+/// `<stem>_samples/` directory.
+fn bundle_file_list(sfz_name: &str, sample_names: &mut Vec<String>) -> Vec<String> {
+    sample_names.sort();
+    let stem = sfz_name.strip_suffix(".sfz").unwrap_or(sfz_name);
+    let mut files = vec![sfz_name.to_string()];
+    for name in sample_names {
+        files.push(format!("{stem}_samples/{name}"));
+    }
+    files
+}
+
+/// Returns the paths of the current instrument bundle relative to the shared
+/// resource directory: the SFZ plus the entries of its `<stem>_samples/`
+/// directory, in a deterministic order. Empty when no bundle lives inside the
+/// resource directory.
+fn resource_files(shared: &SharedState) -> Vec<String> {
+    let Some(dir) = shared.resource_dir.read().clone() else {
+        return Vec::new();
+    };
+    let dir = std::path::Path::new(&dir);
+    let Some(instrument_path) = shared.instrument_path.lock().clone() else {
+        return Vec::new();
+    };
+    if !resource_file_in_dir(dir, &instrument_path) {
+        return Vec::new();
+    }
+    let Some(sfz_name) = instrument_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
+    else {
+        return Vec::new();
+    };
+    let stem = sfz_name.strip_suffix(".sfz").unwrap_or(&sfz_name);
+    let samples_dir = instrument_path.with_file_name(format!("{stem}_samples"));
+    let mut sample_names = match std::fs::read_dir(&samples_dir) {
+        Ok(entries) => entries
+            .flatten()
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    bundle_file_list(&sfz_name, &mut sample_names)
+}
+
+unsafe extern "C-unwind" fn ext_resource_directory_set_directory(
+    plugin: *const clap_plugin,
+    path: *const c_char,
+    is_shared: bool,
+) {
+    if plugin.is_null() {
+        return;
+    }
+    let inst = unsafe { instance(plugin) };
+    let dir = if path.is_null() {
+        None
+    } else {
+        let path = unsafe { CStr::from_ptr(path) };
+        match path.to_str() {
+            Ok(path) if !path.is_empty() => Some(path.to_string()),
+            _ => None,
+        }
+    };
+    tracing::info!(?dir, is_shared, "Sampler resource_directory set_directory");
+    *inst.shared.resource_dir.write() = dir;
+}
+
+unsafe extern "C-unwind" fn ext_resource_directory_collect(plugin: *const clap_plugin, all: bool) {
+    if plugin.is_null() {
+        return;
+    }
+    let inst = unsafe { instance(plugin) };
+    let shared = &inst.shared;
+    let Some(dir) = shared.resource_dir.read().clone() else {
+        tracing::info!("Sampler resource_directory collect: no resource directory set");
+        return;
+    };
+    let dir = std::path::Path::new(&dir);
+    let Some(instrument_path) = shared.instrument_path.lock().clone() else {
+        tracing::info!("Sampler resource_directory collect: no instrument loaded");
+        return;
+    };
+    if shared
+        .patch
+        .load()
+        .parts
+        .iter()
+        .all(|part| part.groups.iter().all(|group| group.zones.is_empty()))
+    {
+        tracing::info!("Sampler resource_directory collect: current patch has no zones");
+        return;
+    }
+
+    let bundle_name = collect_bundle_name(&instrument_path, shared.instance_id);
+    let bundle_path = dir.join(format!("{bundle_name}.sfz"));
+    let patch = build_export_patch(shared);
+
+    // The samples directory carries this instance's own id in its name, so it
+    // can only be a previous export of this very instance. Remove it to keep
+    // stale WAVs from accumulating when the patch shrinks between collects.
+    let samples_dir = dir.join(format!("{bundle_name}_samples"));
+    if samples_dir.is_dir()
+        && let Err(err) = std::fs::remove_dir_all(&samples_dir)
+    {
+        tracing::warn!(
+            ?samples_dir,
+            %err,
+            "Sampler resource_directory collect: failed to clear previous samples directory"
+        );
+        return;
+    }
+
+    if let Err(err) = export_patch_to_sfz(&bundle_path, &patch) {
+        tracing::warn!(
+            ?bundle_path,
+            %err,
+            "Sampler resource_directory collect: export failed"
+        );
+        return;
+    }
+    tracing::info!(
+        ?bundle_path,
+        all,
+        "Sampler resource_directory collect: exported bundle"
+    );
+    Arc::clone(shared).restore_file_with_preset(bundle_path, None);
+}
+
+unsafe extern "C-unwind" fn ext_resource_directory_get_files_count(
+    plugin: *const clap_plugin,
+) -> u32 {
+    if plugin.is_null() {
+        return 0;
+    }
+    let inst = unsafe { instance(plugin) };
+    resource_files(&inst.shared).len() as u32
+}
+
+unsafe extern "C-unwind" fn ext_resource_directory_get_file_path(
+    plugin: *const clap_plugin,
+    index: u32,
+    path: *mut c_char,
+    path_size: u32,
+) -> i32 {
+    if plugin.is_null() || path.is_null() || path_size == 0 {
+        return -1;
+    }
+    let inst = unsafe { instance(plugin) };
+    let files = resource_files(&inst.shared);
+    let Some(target) = files.get(index as usize) else {
+        return -1;
+    };
+    let cstring = match std::ffi::CString::new(target.as_str()) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    let bytes = cstring.as_bytes_with_nul();
+    if bytes.len() > path_size as usize {
+        return -1;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr() as *const c_char, path, bytes.len());
+    }
+    bytes.len() as i32
+}
+
+static RESOURCE_DIRECTORY_EXT: clap_plugin_resource_directory = clap_plugin_resource_directory {
+    set_directory: Some(ext_resource_directory_set_directory),
+    collect: Some(ext_resource_directory_collect),
+    get_files_count: Some(ext_resource_directory_get_files_count),
+    get_file_path: Some(ext_resource_directory_get_file_path),
+};
+
 unsafe extern "C-unwind" fn ext_gui_is_api_supported(
     _plugin: *const clap_plugin,
     api: *const c_char,
@@ -2461,6 +2820,8 @@ unsafe extern "C-unwind" fn plugin_get_extension(
         &EXT_PARAMS as *const _ as *const c_void
     } else if id == CLAP_EXT_STATE {
         &EXT_STATE as *const _ as *const c_void
+    } else if id == CLAP_EXT_RESOURCE_DIRECTORY {
+        &RESOURCE_DIRECTORY_EXT as *const _ as *const c_void
     } else if id == CLAP_EXT_GUI {
         &GUI_EXT as *const _ as *const c_void
     } else {
@@ -2665,5 +3026,104 @@ mod tests {
         assert!(names.contains(&(36, "Kick".to_string())));
         assert!(names.contains(&(38, "Snare".to_string())));
         assert!(names.contains(&(42, "Hats".to_string())));
+    }
+
+    #[test]
+    fn collect_bundle_name_sanitizes_stem_and_appends_instance_id() {
+        assert_eq!(
+            collect_bundle_name(std::path::Path::new("/kits/A/Piano.sfz"), 3),
+            "Piano-3"
+        );
+        assert_eq!(
+            collect_bundle_name(std::path::Path::new("/kits/My Grand!.sfz"), 12),
+            "My_Grand-12"
+        );
+    }
+
+    #[test]
+    fn collect_bundle_name_falls_back_to_sampler_without_stem() {
+        assert_eq!(
+            collect_bundle_name(std::path::Path::new("/"), 1),
+            "sampler-1"
+        );
+        assert_eq!(
+            collect_bundle_name(std::path::Path::new("/kits/no_extension"), 2),
+            "no_extension-2"
+        );
+    }
+
+    #[test]
+    fn bundle_file_list_places_sfz_first_and_sorts_samples() {
+        let mut samples = vec![
+            String::from("003_b.wav"),
+            String::from("001_a.wav"),
+            String::from("002_c.wav"),
+        ];
+        assert_eq!(
+            bundle_file_list("Piano-3.sfz", &mut samples),
+            vec![
+                String::from("Piano-3.sfz"),
+                String::from("Piano-3_samples/001_a.wav"),
+                String::from("Piano-3_samples/002_c.wav"),
+                String::from("Piano-3_samples/003_b.wav"),
+            ]
+        );
+    }
+
+    #[test]
+    fn resource_files_is_empty_when_instrument_lives_outside_resource_dir() {
+        let shared = SharedState::default();
+        *shared.resource_dir.write() = Some(String::from("/session/data"));
+        *shared.instrument_path.lock() = Some(std::path::PathBuf::from("/kits/Piano.sfz"));
+        assert!(resource_files(&shared).is_empty());
+
+        let shared = SharedState::default();
+        *shared.instrument_path.lock() = Some(std::path::PathBuf::from("/session/data/Piano.sfz"));
+        assert!(resource_files(&shared).is_empty());
+    }
+
+    #[test]
+    fn resource_files_enumerates_exported_bundle_relative_to_resource_dir() {
+        let dir =
+            std::env::temp_dir().join(format!("maolan_sampler_bundle_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut zone = Zone::new_round_robin(
+            String::from("kick"),
+            Arc::new(Sample::silent(48_000.0)),
+            36,
+            (36, 36),
+            (0, 127),
+            Vec::new(),
+        );
+        zone.files = vec![std::path::PathBuf::from("kick.wav")];
+        let mut group = Group {
+            name: String::from("Drums"),
+            ..Default::default()
+        };
+        group.zones.push(zone);
+        let patch = Patch {
+            parts: vec![Part {
+                groups: vec![group],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let bundle_path = dir.join("Piano-7.sfz");
+        export_patch_to_sfz(&bundle_path, &patch).unwrap();
+
+        let shared = SharedState::default();
+        *shared.resource_dir.write() = Some(dir.to_string_lossy().into_owned());
+        *shared.instrument_path.lock() = Some(bundle_path);
+        assert_eq!(
+            resource_files(&shared),
+            vec![
+                String::from("Piano-7.sfz"),
+                String::from("Piano-7_samples/001_Drums_kick.wav"),
+            ]
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

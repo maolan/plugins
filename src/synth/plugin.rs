@@ -1,6 +1,7 @@
 use std::{
     ffi::{CStr, c_char, c_void},
     io::{Read, Write},
+    path::{Path, PathBuf},
     ptr::{NonNull, null, null_mut},
     sync::{
         Arc, OnceLock,
@@ -14,25 +15,29 @@ use clap_clap::{
     ffi::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI,
         CLAP_EVENT_NOTE_EXPRESSION, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EXT_AUDIO_PORTS,
-        CLAP_EXT_GUI, CLAP_EXT_NOTE_PORTS, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL,
-        CLAP_INVALID_ID, CLAP_NOTE_DIALECT_MIDI, CLAP_NOTE_EXPRESSION_BRIGHTNESS,
-        CLAP_NOTE_EXPRESSION_PAN, CLAP_NOTE_EXPRESSION_PRESSURE, CLAP_NOTE_EXPRESSION_TUNING,
-        CLAP_NOTE_EXPRESSION_VOLUME, CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_MONO,
-        CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_STEREO, CLAP_PROCESS_CONTINUE, CLAP_VERSION,
-        CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info, clap_gui_resize_hints,
-        clap_host, clap_host_gui, clap_host_params, clap_host_state, clap_id, clap_istream,
-        clap_note_port_info, clap_ostream, clap_param_info, clap_plugin, clap_plugin_audio_ports,
-        clap_plugin_descriptor, clap_plugin_gui, clap_plugin_note_ports, clap_plugin_params,
+        CLAP_EXT_GUI, CLAP_EXT_NOTE_PORTS, CLAP_EXT_PARAMS, CLAP_EXT_RESOURCE_DIRECTORY,
+        CLAP_EXT_STATE, CLAP_EXT_TAIL, CLAP_INVALID_ID, CLAP_NOTE_DIALECT_MIDI,
+        CLAP_NOTE_EXPRESSION_BRIGHTNESS, CLAP_NOTE_EXPRESSION_PAN, CLAP_NOTE_EXPRESSION_PRESSURE,
+        CLAP_NOTE_EXPRESSION_TUNING, CLAP_NOTE_EXPRESSION_VOLUME, CLAP_PLUGIN_FEATURE_INSTRUMENT,
+        CLAP_PLUGIN_FEATURE_MONO, CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_STEREO,
+        CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11,
+        clap_audio_port_info, clap_gui_resize_hints, clap_host, clap_host_gui, clap_host_params,
+        clap_host_state, clap_id, clap_istream, clap_note_port_info, clap_ostream, clap_param_info,
+        clap_plugin, clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_gui,
+        clap_plugin_note_ports, clap_plugin_params, clap_plugin_resource_directory,
         clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status, clap_window,
     },
     process::Process,
     stream::{IStream, OStream},
 };
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use portable_atomic::{AtomicF32, AtomicF64};
 
 use crate::common::copy_str_to_array;
 use crate::common::param_events::ParamGesture;
+use crate::common::resource_directory::{
+    export_destination_name, relative_resource_path, resource_file_in_dir,
+};
 use crate::common::{bus, fft, wavetable::Wavetable, wavetable_factory::FACTORY_COUNT};
 use crate::synth::{
     dsp::{
@@ -101,6 +106,8 @@ pub struct SharedState {
     pub custom_wavetables: [Mutex<Option<Arc<Wavetable>>>; 3],
     /// Persisted custom wavetable file paths (per oscillator).
     pub custom_wavetable_paths: [Mutex<Option<String>>; 3],
+    /// Directory the host asked us to copy external resources into.
+    pub resource_dir: RwLock<Option<String>>,
 }
 
 impl Default for SharedState {
@@ -134,6 +141,7 @@ impl Default for SharedState {
             host: AtomicPtr::new(null_mut()),
             custom_wavetables: [const { Mutex::new(None) }; 3],
             custom_wavetable_paths: [const { Mutex::new(None) }; 3],
+            resource_dir: RwLock::new(None),
         }
     }
 }
@@ -3367,6 +3375,22 @@ static PARAMS_EXT: clap_plugin_params = clap_plugin_params {
     flush: Some(ext_params_flush),
 };
 
+/// Resolve a stored wavetable path for loading. Absolute paths are used
+/// verbatim. Relative paths are resolved against the shared resource
+/// directory when one is set and the file exists there (sessions store
+/// resource-relative paths), falling back to the raw relative path.
+fn resolve_wavetable_load_path(shared: &SharedState, path: &str) -> PathBuf {
+    let raw = PathBuf::from(path);
+    if raw.is_absolute() {
+        return raw;
+    }
+    let Some(dir) = shared.resource_dir.read().clone() else {
+        return raw;
+    };
+    let resolved = Path::new(&dir).join(&raw);
+    if resolved.is_file() { resolved } else { raw }
+}
+
 unsafe extern "C-unwind" fn ext_state_save(
     plugin: *const clap_plugin,
     stream: *const clap_ostream,
@@ -3413,8 +3437,8 @@ unsafe extern "C-unwind" fn ext_state_load(
         if osc_index >= 3 {
             continue;
         }
-        let path_buf = std::path::Path::new(path);
-        match Wavetable::from_file_any(path_buf) {
+        let path_buf = resolve_wavetable_load_path(&inst.shared, path);
+        match Wavetable::from_file_any(&path_buf) {
             Ok(wavetable) => {
                 inst.shared.set_custom_wavetable(
                     osc_index,
@@ -3441,6 +3465,150 @@ unsafe extern "C-unwind" fn ext_state_load(
 static STATE_EXT: clap_plugin_state = clap_plugin_state {
     save: Some(ext_state_save),
     load: Some(ext_state_load),
+};
+
+/// Returns the absolute custom wavetable paths that currently live inside the
+/// shared resource directory, in oscillator order.
+fn resource_files(shared: &SharedState) -> Vec<String> {
+    let Some(dir) = shared.resource_dir.read().clone() else {
+        return Vec::new();
+    };
+    let dir = Path::new(&dir);
+    let mut files = Vec::new();
+    for slot in &shared.custom_wavetable_paths {
+        let Some(path) = slot.lock().clone() else {
+            continue;
+        };
+        if path.is_empty() {
+            continue;
+        }
+        if resource_file_in_dir(dir, Path::new(&path)) {
+            files.push(path);
+        }
+    }
+    files
+}
+
+unsafe extern "C-unwind" fn ext_resource_directory_set_directory(
+    plugin: *const clap_plugin,
+    path: *const c_char,
+    is_shared: bool,
+) {
+    if plugin.is_null() {
+        return;
+    }
+    let inst = unsafe { instance(plugin) };
+    let dir = if path.is_null() {
+        None
+    } else {
+        let path = unsafe { CStr::from_ptr(path) };
+        match path.to_str() {
+            Ok(path) if !path.is_empty() => Some(path.to_string()),
+            _ => None,
+        }
+    };
+    tracing::info!(?dir, is_shared, "Synth resource_directory set_directory");
+    *inst.shared.resource_dir.write() = dir;
+}
+
+unsafe extern "C-unwind" fn ext_resource_directory_collect(plugin: *const clap_plugin, all: bool) {
+    if plugin.is_null() {
+        return;
+    }
+    let inst = unsafe { instance(plugin) };
+    let Some(dir) = inst.shared.resource_dir.read().clone() else {
+        return;
+    };
+    let dir = Path::new(&dir);
+    for index in 0..3 {
+        let Some(source) = inst.shared.custom_wavetable_paths[index].lock().clone() else {
+            continue;
+        };
+        if source.is_empty() {
+            continue;
+        }
+        let source_path = Path::new(&source);
+        if !source_path.is_absolute() {
+            continue;
+        }
+        if resource_file_in_dir(dir, source_path) {
+            continue;
+        }
+        let Some(file_name) = source_path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(destination_name) = export_destination_name(dir, file_name, source_path) else {
+            tracing::info!(%source, "Synth resource_directory collect: file already in resource directory");
+            continue;
+        };
+        let destination: PathBuf = dir.join(destination_name);
+        if let Err(err) = std::fs::copy(source_path, &destination) {
+            tracing::warn!(%source, ?destination, %err, "Synth resource_directory collect: copy failed");
+            continue;
+        }
+        let new_path = destination.to_string_lossy().into_owned();
+        tracing::info!(%source, %new_path, all, "Synth resource_directory collect: copied file");
+        match Wavetable::from_file_any(&destination) {
+            Ok(wavetable) => {
+                inst.shared
+                    .set_custom_wavetable(index, Some(Arc::new(wavetable)), Some(new_path))
+            }
+            Err(err) => {
+                tracing::warn!(%new_path, %err, "Synth resource_directory collect: failed to load copied wavetable");
+            }
+        }
+    }
+}
+
+unsafe extern "C-unwind" fn ext_resource_directory_get_files_count(
+    plugin: *const clap_plugin,
+) -> u32 {
+    if plugin.is_null() {
+        return 0;
+    }
+    let inst = unsafe { instance(plugin) };
+    resource_files(&inst.shared).len() as u32
+}
+
+unsafe extern "C-unwind" fn ext_resource_directory_get_file_path(
+    plugin: *const clap_plugin,
+    index: u32,
+    path: *mut c_char,
+    path_size: u32,
+) -> i32 {
+    if plugin.is_null() || path.is_null() || path_size == 0 {
+        return -1;
+    }
+    let inst = unsafe { instance(plugin) };
+    let files = resource_files(&inst.shared);
+    let Some(target) = files.get(index as usize) else {
+        return -1;
+    };
+    let Some(dir) = inst.shared.resource_dir.read().clone() else {
+        return -1;
+    };
+    let Some(relative) = relative_resource_path(Path::new(&dir), Path::new(target)) else {
+        return -1;
+    };
+    let cstring = match std::ffi::CString::new(relative) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    let bytes = cstring.as_bytes_with_nul();
+    if bytes.len() > path_size as usize {
+        return -1;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr() as *const c_char, path, bytes.len());
+    }
+    bytes.len() as i32
+}
+
+static RESOURCE_DIRECTORY_EXT: clap_plugin_resource_directory = clap_plugin_resource_directory {
+    set_directory: Some(ext_resource_directory_set_directory),
+    collect: Some(ext_resource_directory_collect),
+    get_files_count: Some(ext_resource_directory_get_files_count),
+    get_file_path: Some(ext_resource_directory_get_file_path),
 };
 
 unsafe extern "C-unwind" fn ext_tail_get(_plugin: *const clap_plugin) -> u32 {
@@ -3650,6 +3818,8 @@ unsafe extern "C-unwind" fn plugin_get_extension(
         &raw const PARAMS_EXT as *const _ as *const c_void
     } else if id == CLAP_EXT_STATE {
         &raw const STATE_EXT as *const _ as *const c_void
+    } else if id == CLAP_EXT_RESOURCE_DIRECTORY {
+        &raw const RESOURCE_DIRECTORY_EXT as *const _ as *const c_void
     } else if id == CLAP_EXT_TAIL {
         &raw const TAIL_EXT as *const _ as *const c_void
     } else if id == CLAP_EXT_GUI {
@@ -3711,7 +3881,10 @@ pub unsafe fn clap_create_plugin(
 
 #[cfg(test)]
 mod tests {
-    use super::{ParamDirtyFlags, ParamStore, apply_param_id_to_voice_params};
+    use super::{
+        ParamDirtyFlags, ParamStore, SharedState, apply_param_id_to_voice_params,
+        resolve_wavetable_load_path, resource_files,
+    };
     use crate::synth::dsp::VoiceParams;
     use crate::synth::params::ParamId;
     #[test]
@@ -3723,5 +3896,58 @@ mod tests {
             let handled = apply_param_id_to_voice_params(&mut params, &store, id, 0.0, &mut dirty);
             assert!(handled, "ParamId {:?} is not handled by dispatcher", id);
         }
+    }
+
+    #[test]
+    fn resource_files_only_counts_absolute_paths_inside_resource_dir() {
+        let shared = SharedState::default();
+        assert!(resource_files(&shared).is_empty());
+
+        *shared.resource_dir.write() = Some("/session/resources".to_string());
+        *shared.custom_wavetable_paths[0].lock() = Some("/session/resources/a.wav".to_string());
+        *shared.custom_wavetable_paths[1].lock() = Some("/library/b.wav".to_string());
+        *shared.custom_wavetable_paths[2].lock() = Some("relative/c.wav".to_string());
+        assert_eq!(
+            resource_files(&shared),
+            vec!["/session/resources/a.wav".to_string()]
+        );
+
+        *shared.custom_wavetable_paths[1].lock() = Some("/session/resources/b.wav".to_string());
+        assert_eq!(
+            resource_files(&shared),
+            vec![
+                "/session/resources/a.wav".to_string(),
+                "/session/resources/b.wav".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_wavetable_load_path_keeps_absolute_paths() {
+        let shared = SharedState::default();
+        *shared.resource_dir.write() = Some("/session/resources".to_string());
+        assert_eq!(
+            resolve_wavetable_load_path(&shared, "/library/custom.wav"),
+            std::path::PathBuf::from("/library/custom.wav")
+        );
+    }
+
+    #[test]
+    fn resolve_wavetable_load_path_falls_back_to_raw_relative_path() {
+        let shared = SharedState::default();
+        *shared.resource_dir.write() = Some("/session/resources".to_string());
+        assert_eq!(
+            resolve_wavetable_load_path(&shared, "missing.wav"),
+            std::path::PathBuf::from("missing.wav")
+        );
+    }
+
+    #[test]
+    fn resolve_wavetable_load_path_without_resource_dir_keeps_relative_path() {
+        let shared = SharedState::default();
+        assert_eq!(
+            resolve_wavetable_load_path(&shared, "missing.wav"),
+            std::path::PathBuf::from("missing.wav")
+        );
     }
 }

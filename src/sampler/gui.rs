@@ -44,19 +44,16 @@ use crate::{
     },
     sampler::{
         dsp::{
-            group::Group,
             mod_matrix::{ModCurve, ModRoute, ModSource, ModTarget},
-            part::Part,
             patch::Patch,
-            sample::load_audio,
             sfz::{export_patch_to_sfz, is_non_vendor_sfz_opcode},
             voice::LfoParams,
-            zone::{CcCondition, CurveType, LoopMode, OffMode, SamplePlayMode, Zone},
+            zone::{CcCondition, CurveType, LoopMode, OffMode, SamplePlayMode},
         },
         load_status::SamplerLoadStatus,
         loader::{PresetInfo, detect_format},
         params::{PARAMS, ParamId},
-        plugin::SharedState,
+        plugin::{SharedState, build_export_patch},
         state::{SampleGroup, SampleZone},
     },
 };
@@ -805,155 +802,8 @@ fn default_export_path(state: &State) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("sampler.sfz"))
 }
 
-fn apply_editable_zone_metadata(zone: &mut Zone, editable: &SampleZone) {
-    zone.name = editable.name.clone();
-    zone.files = editable.files.clone();
-    zone.key_low = editable.start_note.min(127) as u8;
-    zone.key_high = editable.end_note.min(127) as u8;
-    zone.vel_low = editable.vel_low;
-    zone.vel_high = editable.vel_high;
-    zone.root_key = editable.root_key;
-    zone.key_fade_low = editable.key_fade_low;
-    zone.key_fade_high = editable.key_fade_high;
-    zone.vel_fade_low = editable.vel_fade_low;
-    zone.vel_fade_high = editable.vel_fade_high;
-    zone.key_fade_in = editable.key_fade_in;
-    zone.key_fade_out = editable.key_fade_out;
-    zone.vel_fade_in = editable.vel_fade_in;
-    zone.vel_fade_out = editable.vel_fade_out;
-    zone.pitch_offset = editable.pitch_offset;
-    zone.key_tracking = editable.key_tracking;
-    zone.velocity_curve = editable.velocity_curve;
-    zone.key_tracking_curve = editable.key_tracking_curve;
-    zone.gain_db = editable.gain_db;
-    zone.pan = editable.pan;
-    zone.output = editable.output;
-    zone.width = editable.width;
-    zone.position = editable.position;
-    zone.amp_keytrack_db = editable.amp_keytrack_db;
-    zone.reverse = editable.reverse;
-    zone.play_mode = editable.play_mode;
-    zone.loop_mode = editable.loop_mode;
-    zone.loop_direction = editable.loop_direction;
-    zone.loop_start = editable.loop_start;
-    zone.loop_end = editable.loop_end;
-    zone.loop_count = editable.loop_count;
-    zone.loop_crossfade = editable.loop_crossfade;
-    zone.start_offset = editable.start_offset;
-    zone.offset_random = editable.offset_random;
-    zone.end_offset = editable.end_offset;
-    zone.delay = editable.delay;
-    zone.delay_random = editable.delay_random;
-    zone.pitch_bend_up = editable.pitch_bend_up;
-    zone.pitch_bend_down = editable.pitch_bend_down;
-    zone.variant_mode = editable.variant_mode;
-    zone.channel_low = editable.channel_low;
-    zone.channel_high = editable.channel_high;
-    zone.pitch_bend_low = editable.pitch_bend_low;
-    zone.pitch_bend_high = editable.pitch_bend_high;
-    zone.cc_conditions = editable.cc_conditions.clone();
-    zone.random_low = editable.random_low;
-    zone.random_high = editable.random_high;
-    zone.seq_length = editable.seq_length;
-    zone.seq_position = editable.seq_position;
-    zone.off_by = editable.off_by;
-    zone.off_mode = editable.off_mode;
-    zone.amp_veltrack = editable.amp_veltrack;
-    zone.count = editable.count;
-    zone.mod_matrix = editable.mod_matrix.clone();
-    zone.extra_sfz_opcodes = editable.extra_sfz_opcodes.clone();
-}
-
 fn export_patch_from_state(state: &State) -> Patch {
-    let base_patch = state.shared.patch.load();
-    let editable_zones = state.shared.zones.load();
-    if editable_zones.is_empty() {
-        return (*base_patch).clone();
-    }
-
-    let mut source_zones: Vec<Zone> = base_patch
-        .parts
-        .iter()
-        .flat_map(|part| part.groups.iter())
-        .flat_map(|group| group.zones.iter().cloned())
-        .collect();
-
-    let mut groups: Vec<Group> = state
-        .shared
-        .groups
-        .load()
-        .iter()
-        .map(|group| Group {
-            name: group.name.clone(),
-            poly_limit: group.poly_limit,
-            exclusive_group: group.exclusive_group,
-            gain_db: group.gain_db,
-            pan: group.pan,
-            output: group.output,
-            extra_sfz_opcodes: group.extra_sfz_opcodes.clone(),
-            sw_last: group.sw_last,
-            sw_down: group.sw_down,
-            sw_up: group.sw_up,
-            sw_previous: group.sw_previous,
-            sw_lolast: group.sw_lolast,
-            sw_hilast: group.sw_hilast,
-            sw_default: group.sw_default,
-            sw_label: group.sw_label.clone(),
-            eg1_params: group.eg1_params,
-            eg2_params: group.eg2_params,
-            lfo1_params: group.lfo1_params,
-            lfo2_params: group.lfo2_params,
-            lfo3_params: group.lfo3_params,
-            lfo4_params: group.lfo4_params,
-            filter_params: group.filter_params,
-            mod_matrix: group.mod_matrix.clone(),
-            ..Default::default()
-        })
-        .collect();
-
-    for editable in editable_zones.iter() {
-        let group_index = match groups.iter().position(|group| group.name == editable.group) {
-            Some(index) => index,
-            None => {
-                groups.push(Group {
-                    name: editable.group.clone(),
-                    ..Default::default()
-                });
-                groups.len() - 1
-            }
-        };
-
-        let mut zone = source_zones
-            .drain(..1)
-            .next()
-            .or_else(|| {
-                editable.files.first().and_then(|path| {
-                    load_audio(path).ok().map(|sample| {
-                        let mut zone = Zone::new_round_robin(
-                            editable.name.clone(),
-                            sample,
-                            ((editable.start_note + editable.end_note) / 2).min(127) as u8,
-                            (editable.start_note as u8, editable.end_note as u8),
-                            (editable.vel_low, editable.vel_high),
-                            Vec::new(),
-                        );
-                        zone.files = editable.files.clone();
-                        zone
-                    })
-                })
-            })
-            .unwrap_or_default();
-        apply_editable_zone_metadata(&mut zone, editable);
-        groups[group_index].zones.push(zone);
-    }
-
-    Patch {
-        parts: vec![Part {
-            groups,
-            ..base_patch.parts.first().cloned().unwrap_or_default()
-        }],
-        ..(*base_patch).clone()
-    }
+    build_export_patch(&state.shared)
 }
 
 fn patch_zone_sample(

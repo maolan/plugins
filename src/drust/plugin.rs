@@ -1,9 +1,10 @@
 use std::{
     ffi::{CStr, c_char, c_void},
+    path::{Path, PathBuf},
     ptr::{NonNull, null, null_mut},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicPtr, Ordering},
+        atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering},
     },
 };
 
@@ -12,20 +13,22 @@ use clap_clap::{
     ffi::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_CHOKE,
         CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_VALUE, CLAP_EXT_NOTE_NAME,
-        CLAP_NOTE_DIALECT_MIDI, CLAP_PARAM_REQUIRES_PROCESS, CLAP_PLUGIN_FEATURE_INSTRUMENT,
-        CLAP_PLUGIN_FEATURE_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION, clap_audio_port_info,
-        clap_gui_resize_hints, clap_host, clap_id, clap_input_events, clap_istream, clap_note_name,
-        clap_note_port_info, clap_ostream, clap_output_events, clap_param_info, clap_plugin,
-        clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_factory, clap_plugin_gui,
-        clap_plugin_latency, clap_plugin_note_name, clap_plugin_note_ports, clap_plugin_params,
-        clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status, clap_window,
+        CLAP_EXT_RESOURCE_DIRECTORY, CLAP_NOTE_DIALECT_MIDI, CLAP_PARAM_REQUIRES_PROCESS,
+        CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_MONO, CLAP_PROCESS_CONTINUE,
+        CLAP_VERSION, clap_audio_port_info, clap_gui_resize_hints, clap_host, clap_id,
+        clap_input_events, clap_istream, clap_note_name, clap_note_port_info, clap_ostream,
+        clap_output_events, clap_param_info, clap_plugin, clap_plugin_audio_ports,
+        clap_plugin_descriptor, clap_plugin_factory, clap_plugin_gui, clap_plugin_latency,
+        clap_plugin_note_name, clap_plugin_note_ports, clap_plugin_params,
+        clap_plugin_resource_directory, clap_plugin_state, clap_plugin_tail, clap_process,
+        clap_process_status, clap_window,
     },
     process::Process,
     stream::{IStream, OStream},
 };
 use parking_lot::Mutex;
 
-use crate::common::{bus, fft};
+use crate::common::{bus, fft, resource_directory};
 use crate::drust::{
     download,
     engine::{DrumGizmoEngine, EventType, MAX_CHANNELS, VoiceEvent, limiter::Limiter},
@@ -41,6 +44,10 @@ const PLUGIN_VENDOR: &[u8] = b"maolan\0";
 const PLUGIN_URL: &[u8] = b"\0";
 const PLUGIN_VERSION: &[u8] = b"0.1.0\0";
 const PLUGIN_DESCRIPTION: &[u8] = b"Drum sampler CLAP plugin\0";
+
+/// Process-unique plugin instance ids, used to make resource-directory
+/// bundle names collision-safe across plugin instances.
+static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const FEATURE_INSTRUMENT: *const c_char = CLAP_PLUGIN_FEATURE_INSTRUMENT.as_ptr();
 const FEATURE_MONO: *const c_char = CLAP_PLUGIN_FEATURE_MONO.as_ptr();
@@ -300,6 +307,9 @@ struct PluginInstance {
     note_names: Mutex<Vec<(u8, String)>>,
     bus_id: bus::InstanceId,
     bus_data: bus::PluginSharedData,
+    /// Unique id for this plugin instance, used in resource-directory
+    /// bundle names.
+    instance_id: u64,
 }
 
 impl PluginInstance {
@@ -321,6 +331,7 @@ impl PluginInstance {
             note_names: Mutex::new(Vec::new()),
             bus_id,
             bus_data,
+            instance_id: INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed),
         }
     }
 
@@ -899,6 +910,211 @@ unsafe extern "C-unwind" fn ext_tail_get(_plugin: *const clap_plugin) -> u32 {
     0
 }
 
+/// Bundle directory name for the `clap.resource-directory/1` collect handler:
+/// the sanitized name of the source kit directory, suffixed with the unique
+/// instance id so concurrent plugin instances never overwrite each other's
+/// kits in the shared resource directory.
+fn collect_bundle_name(kit_dir: &Path, instance_id: u64) -> String {
+    let base = kit_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(resource_directory::sanitize_resource_name)
+        .unwrap_or_else(|| String::from("kit"));
+    format!("{base}-{instance_id}")
+}
+
+/// Returns the paths of all files in the loaded kit's directory tree,
+/// relative to the shared resource directory, sorted lexicographically for
+/// determinism. Empty when no kit lives inside the resource directory.
+fn resource_files(shared: &SharedState) -> Vec<String> {
+    let Some(dir) = shared.resource_dir.read().clone() else {
+        return Vec::new();
+    };
+    let dir = Path::new(&dir);
+    let kit_path = PathBuf::from(shared.kit_path.read().clone());
+    if !resource_directory::resource_file_in_dir(dir, &kit_path) {
+        return Vec::new();
+    }
+    let Some(kit_dir) = kit_path.parent() else {
+        return Vec::new();
+    };
+    let mut files = Vec::new();
+    resource_directory::collect_files_relative(dir, kit_dir, &mut files);
+    files.sort();
+    files
+}
+
+unsafe extern "C-unwind" fn ext_resource_directory_set_directory(
+    plugin: *const clap_plugin,
+    path: *const c_char,
+    is_shared: bool,
+) {
+    if plugin.is_null() {
+        return;
+    }
+    let inst = unsafe { instance(plugin) };
+    let dir = if path.is_null() {
+        None
+    } else {
+        let path = unsafe { CStr::from_ptr(path) };
+        match path.to_str() {
+            Ok(path) if !path.is_empty() => Some(path.to_string()),
+            _ => None,
+        }
+    };
+    tracing::info!(?dir, is_shared, "Drust resource_directory set_directory");
+    *inst.shared.resource_dir.write() = dir;
+}
+
+unsafe extern "C-unwind" fn ext_resource_directory_collect(plugin: *const clap_plugin, all: bool) {
+    if plugin.is_null() {
+        return;
+    }
+    let inst = unsafe { instance(plugin) };
+    let shared = &inst.shared;
+    let Some(dir) = shared.resource_dir.read().clone() else {
+        tracing::info!("Drust resource_directory collect: no resource directory set");
+        return;
+    };
+    let dir = Path::new(&dir);
+    let kit_path = shared.kit_path.read().clone();
+    if kit_path.is_empty() {
+        tracing::info!("Drust resource_directory collect: no kit loaded");
+        return;
+    }
+    let kit_path = PathBuf::from(kit_path);
+    if !kit_path.is_absolute() {
+        tracing::info!(
+            ?kit_path,
+            "Drust resource_directory collect: kit path is not absolute"
+        );
+        return;
+    }
+    let Some(source_kit_dir) = kit_path.parent() else {
+        tracing::info!(
+            ?kit_path,
+            "Drust resource_directory collect: invalid kit path"
+        );
+        return;
+    };
+
+    // A kit is a self-contained directory tree (XML plus audio files, in
+    // possibly nested subdirectories), all referenced relative to the kit
+    // directory, so collect copies the whole tree.
+    let target_kit_dir = dir.join(collect_bundle_name(source_kit_dir, inst.instance_id));
+
+    // The bundle name carries this instance's own id, so an existing target
+    // directory can only be a previous collect of this very instance. Remove
+    // it to keep stale files from accumulating between collects.
+    if target_kit_dir.is_dir()
+        && let Err(err) = std::fs::remove_dir_all(&target_kit_dir)
+    {
+        tracing::warn!(
+            ?target_kit_dir,
+            %err,
+            "Drust resource_directory collect: failed to clear previous kit directory"
+        );
+        return;
+    }
+
+    if let Err(err) = resource_directory::copy_dir_recursive(source_kit_dir, &target_kit_dir) {
+        tracing::warn!(
+            ?source_kit_dir,
+            ?target_kit_dir,
+            %err,
+            "Drust resource_directory collect: kit copy failed"
+        );
+        let _ = std::fs::remove_dir_all(&target_kit_dir);
+        return;
+    }
+
+    let midimap_path = shared.midimap_path.read().clone();
+    if !midimap_path.is_empty() {
+        let midimap = PathBuf::from(&midimap_path);
+        if midimap.is_absolute() && midimap.starts_with(source_kit_dir) {
+            // The midimap was copied with the tree; point the persisted path
+            // at the corresponding file under the new kit directory.
+            if let Ok(relative) = midimap.strip_prefix(source_kit_dir) {
+                let new_midimap = target_kit_dir.join(relative);
+                tracing::info!(
+                    %midimap_path,
+                    ?new_midimap,
+                    "Drust resource_directory collect: relocated midimap into kit directory"
+                );
+                *shared.midimap_path.write() = new_midimap.to_string_lossy().into_owned();
+            }
+        } else {
+            tracing::warn!(
+                %midimap_path,
+                "Drust resource_directory collect: midimap is outside the kit directory and is not collected"
+            );
+        }
+    }
+
+    // Kits are not always literally named "drumkit.xml"; preserve the XML
+    // file name inside the copied tree.
+    let Some(xml_name) = kit_path.file_name() else {
+        tracing::info!(
+            ?kit_path,
+            "Drust resource_directory collect: invalid kit path"
+        );
+        return;
+    };
+    let new_kit_path = target_kit_dir.join(xml_name);
+    tracing::info!(
+        ?new_kit_path,
+        all,
+        "Drust resource_directory collect: switching kit to collected copy"
+    );
+    inst.restore_kit(new_kit_path.to_string_lossy().into_owned());
+}
+
+unsafe extern "C-unwind" fn ext_resource_directory_get_files_count(
+    plugin: *const clap_plugin,
+) -> u32 {
+    if plugin.is_null() {
+        return 0;
+    }
+    let inst = unsafe { instance(plugin) };
+    resource_files(&inst.shared).len() as u32
+}
+
+unsafe extern "C-unwind" fn ext_resource_directory_get_file_path(
+    plugin: *const clap_plugin,
+    index: u32,
+    path: *mut c_char,
+    path_size: u32,
+) -> i32 {
+    if plugin.is_null() || path.is_null() || path_size == 0 {
+        return -1;
+    }
+    let inst = unsafe { instance(plugin) };
+    let files = resource_files(&inst.shared);
+    let Some(target) = files.get(index as usize) else {
+        return -1;
+    };
+    let cstring = match std::ffi::CString::new(target.as_str()) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    let bytes = cstring.as_bytes_with_nul();
+    if bytes.len() > path_size as usize {
+        return -1;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr() as *const c_char, path, bytes.len());
+    }
+    bytes.len() as i32
+}
+
+static RESOURCE_DIRECTORY_EXT: clap_plugin_resource_directory = clap_plugin_resource_directory {
+    set_directory: Some(ext_resource_directory_set_directory),
+    collect: Some(ext_resource_directory_collect),
+    get_files_count: Some(ext_resource_directory_get_files_count),
+    get_file_path: Some(ext_resource_directory_get_file_path),
+};
+
 unsafe extern "C-unwind" fn ext_gui_is_api_supported(
     _plugin: *const clap_plugin,
     api: *const c_char,
@@ -1169,6 +1385,8 @@ unsafe extern "C-unwind" fn plugin_get_extension(
         &raw const GUI_EXT as *const _ as *const c_void
     } else if id == CLAP_EXT_NOTE_NAME {
         &raw const NOTE_NAME_EXT as *const _ as *const c_void
+    } else if id == CLAP_EXT_RESOURCE_DIRECTORY {
+        &raw const RESOURCE_DIRECTORY_EXT as *const _ as *const c_void
     } else {
         null()
     }
@@ -1249,5 +1467,92 @@ fn copy_str_to_array<const N: usize>(source: &str, target: &mut [c_char; N]) {
     target.fill(0);
     for (dst, src) in target.iter_mut().zip(source.as_bytes().iter().copied()) {
         *dst = src as c_char;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SharedState, collect_bundle_name, resource_files};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn collect_bundle_name_sanitizes_dir_name_and_appends_instance_id() {
+        assert_eq!(
+            collect_bundle_name(Path::new("/kits/My Rock Kit"), 3),
+            "My_Rock_Kit-3"
+        );
+        assert_eq!(collect_bundle_name(Path::new("/kits/808!"), 12), "808-12");
+    }
+
+    #[test]
+    fn collect_bundle_name_falls_back_to_kit_without_dir_name() {
+        assert_eq!(collect_bundle_name(Path::new("/"), 1), "kit-1");
+        assert_eq!(
+            collect_bundle_name(Path::new("/tmp/no_extension"), 2),
+            "no_extension-2"
+        );
+    }
+
+    #[test]
+    fn resource_files_is_empty_when_kit_lives_outside_resource_dir() {
+        let shared = SharedState::default();
+        *shared.resource_dir.write() = Some(String::from("/session/data"));
+        *shared.kit_path.write() = String::from("/kits/Rock/drumkit.xml");
+        assert!(resource_files(&shared).is_empty());
+
+        let shared = SharedState::default();
+        *shared.kit_path.write() = String::from("/session/data/Rock/drumkit.xml");
+        assert!(resource_files(&shared).is_empty());
+    }
+
+    #[test]
+    fn resource_files_enumerates_kit_tree_sorted_relative_to_resource_dir() {
+        let dir = std::env::temp_dir().join(format!(
+            "maolan_drust_resource_files_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let kit_dir = dir.join("Rock-7");
+        std::fs::create_dir_all(kit_dir.join("samples/kick")).unwrap();
+        std::fs::write(kit_dir.join("drumkit.xml"), b"<kit>").unwrap();
+        std::fs::write(kit_dir.join("samples/kick/kick.wav"), b"kick").unwrap();
+        std::fs::write(kit_dir.join("midimap.xml"), b"<map>").unwrap();
+        std::fs::write(dir.join("unrelated.txt"), b"other").unwrap();
+
+        let shared = SharedState::default();
+        *shared.resource_dir.write() = Some(dir.to_string_lossy().into_owned());
+        *shared.kit_path.write() = kit_dir.join("drumkit.xml").to_string_lossy().into_owned();
+        assert_eq!(
+            resource_files(&shared),
+            vec![
+                String::from("Rock-7/drumkit.xml"),
+                String::from("Rock-7/midimap.xml"),
+                String::from("Rock-7/samples/kick/kick.wav"),
+            ]
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resource_files_uses_kit_dir_of_nonstandard_xml_name() {
+        let dir: PathBuf = std::env::temp_dir().join(format!(
+            "maolan_drust_resource_files_xml_name_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let kit_dir = dir.join("Fusion-2");
+        std::fs::create_dir_all(&kit_dir).unwrap();
+        std::fs::write(kit_dir.join("My Kit.xml"), b"<kit>").unwrap();
+
+        let shared = SharedState::default();
+        *shared.resource_dir.write() = Some(dir.to_string_lossy().into_owned());
+        *shared.kit_path.write() = kit_dir.join("My Kit.xml").to_string_lossy().into_owned();
+        assert_eq!(
+            resource_files(&shared),
+            vec![String::from("Fusion-2/My Kit.xml")]
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

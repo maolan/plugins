@@ -23,6 +23,9 @@ pub struct SharedState {
     pub active_channels: AtomicU32,
     pub state_id: RwLock<String>,
     pub loading_progress: AtomicU8,
+    /// Session resource directory pushed by the host through
+    /// `clap.resource-directory/1`, `None` until the host sets one.
+    pub resource_dir: RwLock<Option<String>>,
 }
 
 impl Default for SharedState {
@@ -42,6 +45,7 @@ impl Default for SharedState {
             active_channels: AtomicU32::new(0),
             state_id: RwLock::new(String::new()),
             loading_progress: AtomicU8::new(0),
+            resource_dir: RwLock::new(None),
         }
     }
 }

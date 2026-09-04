@@ -1089,22 +1089,7 @@ pub(crate) fn write_wav_stereo(path: &Path, sample: &Sample) -> std::io::Result<
     Ok(())
 }
 
-fn sanitize_export_name(name: &str) -> String {
-    let mut out = String::new();
-    for c in name.chars() {
-        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
-            out.push(c);
-        } else if !out.ends_with('_') {
-            out.push('_');
-        }
-    }
-    let out = out.trim_matches('_');
-    if out.is_empty() {
-        String::from("sample")
-    } else {
-        out.to_string()
-    }
-}
+pub(crate) use crate::common::resource_directory::sanitize_resource_name as sanitize_export_name;
 
 fn format_export_float(value: f32) -> String {
     let mut text = format!("{value:.3}");

@@ -30,6 +30,9 @@ use clap_clap::{
 use parking_lot::{Mutex, RwLock};
 use portable_atomic::AtomicF64;
 
+use crate::common::resource_directory::{
+    export_destination_name, relative_resource_path, resource_file_in_dir,
+};
 use crate::common::{
     SharedStateExt, apply_param_events, copy_str_to_array, emit_pending_param_events_to_host,
 };
@@ -1149,47 +1152,6 @@ static STATE_EXT: clap_plugin_state = clap_plugin_state {
     load: Some(ext_state_load),
 };
 
-/// Returns true when `path` is absolute and lies inside the resource
-/// directory `dir`.
-fn resource_file_in_dir(dir: &Path, path: &Path) -> bool {
-    path.is_absolute() && path.starts_with(dir)
-}
-
-/// Computes the path of `path` relative to the resource directory `dir`,
-/// or `None` when `path` is outside `dir`.
-fn relative_resource_path(dir: &Path, path: &Path) -> Option<String> {
-    path.strip_prefix(dir)
-        .ok()
-        .map(|rel| rel.to_string_lossy().into_owned())
-}
-
-/// Picks a collision-free file name inside the resource directory for a file
-/// named `file_name`. When the plain name is already taken by a different
-/// file, `stem-N.ext` names (N starting at 1) are tried until one is free.
-/// `is_taken` reports whether a given name already exists at the destination.
-fn collision_free_resource_name(file_name: &str, mut is_taken: impl FnMut(&str) -> bool) -> String {
-    if !is_taken(file_name) {
-        return file_name.to_string();
-    }
-    let stem = Path::new(file_name)
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_else(|| file_name.to_string());
-    let extension = Path::new(file_name)
-        .extension()
-        .map(|ext| ext.to_string_lossy().into_owned());
-    for n in 1..u32::MAX {
-        let candidate = match &extension {
-            Some(extension) => format!("{stem}-{n}.{extension}"),
-            None => format!("{stem}-{n}"),
-        };
-        if !is_taken(&candidate) {
-            return candidate;
-        }
-    }
-    file_name.to_string()
-}
-
 /// Returns the absolute model and IR paths that currently live inside the
 /// shared resource directory (model first, then IR).
 fn resource_files(shared: &SharedState) -> Vec<String> {
@@ -1265,13 +1227,9 @@ unsafe extern "C-unwind" fn ext_resource_directory_collect(plugin: *const clap_p
         let Some(file_name) = source_path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        let destination_name = if dir.join(file_name).exists()
-            && std::fs::canonicalize(dir.join(file_name)).ok()
-                != std::fs::canonicalize(source_path).ok()
-        {
-            collision_free_resource_name(file_name, |name| dir.join(name).exists())
-        } else {
-            file_name.to_string()
+        let Some(destination_name) = export_destination_name(dir, file_name, source_path) else {
+            tracing::info!(%source, "RuralModeler resource_directory collect: file already in resource directory");
+            continue;
         };
         let destination: PathBuf = dir.join(destination_name);
         if let Err(err) = std::fs::copy(source_path, &destination) {
@@ -1679,10 +1637,7 @@ pub unsafe fn create_plugin(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ModelMetadata, SharedState, collision_free_resource_name, initial_resource_paths,
-        relative_resource_path, resource_file_in_dir, resource_files,
-    };
+    use super::{ModelMetadata, SharedState, initial_resource_paths, resource_files};
     use clap_clap::ffi::{CLAP_EXT_GUI, CLAP_VERSION};
     use clap_clap::ffi::{clap_host, clap_host_gui};
     use std::{
@@ -1851,67 +1806,6 @@ mod tests {
             shared.last_error.read().is_some(),
             "expected IR load failure to set error"
         );
-    }
-
-    #[test]
-    fn resource_file_in_dir_requires_absolute_path_inside_dir() {
-        let dir = std::path::Path::new("/session/resources");
-        assert!(resource_file_in_dir(
-            dir,
-            std::path::Path::new("/session/resources/model.nam")
-        ));
-        assert!(resource_file_in_dir(
-            dir,
-            std::path::Path::new("/session/resources/sub/ir.wav")
-        ));
-        assert!(!resource_file_in_dir(
-            dir,
-            std::path::Path::new("/session/other/model.nam")
-        ));
-        assert!(!resource_file_in_dir(
-            dir,
-            std::path::Path::new("model.nam")
-        ));
-    }
-
-    #[test]
-    fn relative_resource_path_strips_resource_dir_prefix() {
-        let dir = std::path::Path::new("/session/resources");
-        assert_eq!(
-            relative_resource_path(dir, std::path::Path::new("/session/resources/model.nam")),
-            Some("model.nam".to_string())
-        );
-        assert_eq!(
-            relative_resource_path(dir, std::path::Path::new("/session/resources/sub/ir.wav")),
-            Some("sub/ir.wav".to_string())
-        );
-        assert_eq!(
-            relative_resource_path(dir, std::path::Path::new("/elsewhere/ir.wav")),
-            None
-        );
-    }
-
-    #[test]
-    fn collision_free_resource_name_keeps_free_name() {
-        assert_eq!(
-            collision_free_resource_name("model.nam", |_| false),
-            "model.nam"
-        );
-    }
-
-    #[test]
-    fn collision_free_resource_name_appends_counter_until_free() {
-        let taken = |name: &str| name == "model.nam" || name == "model-1.nam";
-        assert_eq!(
-            collision_free_resource_name("model.nam", taken),
-            "model-2.nam"
-        );
-    }
-
-    #[test]
-    fn collision_free_resource_name_handles_missing_extension() {
-        let taken = |name: &str| name == "model";
-        assert_eq!(collision_free_resource_name("model", taken), "model-1");
     }
 
     #[test]

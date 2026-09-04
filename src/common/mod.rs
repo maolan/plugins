@@ -26,6 +26,7 @@ pub mod phasor;
 pub mod pitch;
 pub mod random_eval;
 pub mod resampler;
+pub mod resource_directory;
 pub mod sample_cache;
 pub mod settings;
 pub mod shm;
