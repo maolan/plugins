@@ -108,6 +108,8 @@ pub struct SharedState {
     pub custom_wavetable_paths: [Mutex<Option<String>>; 3],
     /// Directory the host asked us to copy external resources into.
     pub resource_dir: RwLock<Option<String>>,
+    /// Report of the last Surge XT preset import (GUI display + logging).
+    pub surge_report: Mutex<crate::synth::surge::Report>,
 }
 
 impl Default for SharedState {
@@ -142,6 +144,7 @@ impl Default for SharedState {
             custom_wavetables: [const { Mutex::new(None) }; 3],
             custom_wavetable_paths: [const { Mutex::new(None) }; 3],
             resource_dir: RwLock::new(None),
+            surge_report: Mutex::new(crate::synth::surge::Report::default()),
         }
     }
 }
@@ -237,6 +240,23 @@ impl SharedState {
 
     pub fn set_param_from_host(&self, id: ParamId, value: f64) {
         self.set_param_internal(id, value, false);
+    }
+
+    /// Import a Surge XT `.fxp` preset: converted parameters are applied to the
+    /// store (no per-param host notifications; one version bump at the end) and
+    /// the import report is kept for the GUI and the log.
+    pub fn load_surge_preset(&self, path: &Path) -> Result<(), String> {
+        let result = crate::synth::surge::load_preset(path)?;
+        for (id, value) in &result.values {
+            self.set_param_from_host(*id, *value);
+        }
+        let report = result.report.to_display_string();
+        if !report.is_empty() {
+            tracing::warn!("[surge] import report for '{}':\n{report}", result.name);
+        }
+        *self.surge_report.lock() = result.report;
+        self.bump_params_version();
+        Ok(())
     }
 
     pub fn visual_lfo_mod_value(&self, lfo_index: usize, target: ModTarget) -> f32 {

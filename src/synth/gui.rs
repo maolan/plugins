@@ -32,6 +32,7 @@ use crate::{
         dsp::{ClassicWaveform, LfoShape, ModTarget, ModernSubWaveform, OscType},
         params::{ParamDef, ParamId, param_def},
         plugin::SharedState,
+        surge::{self, PresetInfo},
     },
 };
 
@@ -95,6 +96,9 @@ pub enum Message {
     SelectMisc(usize),
     SelectRouting(usize),
     PickWavetableFile(usize),
+    SelectSurgeCategory(String),
+    LoadSurgePreset(String),
+    ToggleSurgeReport,
 }
 
 struct State {
@@ -107,9 +111,16 @@ struct State {
     selected_eg: usize,
     selected_misc: usize,
     selected_routing: usize,
+    surge_presets: Vec<PresetInfo>,
+    surge_category: Option<String>,
+    surge_preset: Option<String>,
+    surge_error: Option<String>,
+    show_surge_report: bool,
 }
 
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
+    let surge_presets = surge::scan_presets();
+    let surge_category = surge_presets.first().map(|preset| preset.category.clone());
     (
         State {
             shared,
@@ -121,6 +132,11 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             selected_eg: 0,
             selected_misc: 0,
             selected_routing: 0,
+            surge_presets,
+            surge_category,
+            surge_preset: None,
+            surge_error: None,
+            show_surge_report: false,
         },
         Task::none(),
     )
@@ -205,6 +221,32 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .set_param_outbound_only(id, FACTORY_COUNT as f64);
                 }
             }
+        }
+        Message::SelectSurgeCategory(category) => {
+            state.surge_category = Some(category);
+            state.surge_preset = None;
+        }
+        Message::LoadSurgePreset(name) => {
+            let category = state.surge_category.clone();
+            let preset = state.surge_presets.iter().find(|preset| {
+                preset.name == name && category.as_deref() == Some(preset.category.as_str())
+            });
+            match preset {
+                Some(preset) => match state.shared.load_surge_preset(&preset.path) {
+                    Ok(()) => {
+                        state.surge_preset = Some(name);
+                        state.surge_error = None;
+                        state.show_surge_report = true;
+                    }
+                    Err(error) => {
+                        state.surge_error = Some(error);
+                    }
+                },
+                None => state.surge_error = Some(format!("preset not found: {name}")),
+            }
+        }
+        Message::ToggleSurgeReport => {
+            state.show_surge_report = !state.show_surge_report;
         }
     }
     Task::none()
@@ -879,6 +921,86 @@ fn lfo_tab_button(label: &'static str, index: usize, state: &State) -> Element<'
         .into()
 }
 
+/// Surge XT preset browser and import report, rendered above the main top
+/// bar.
+fn surge_preset_bar<'a>(state: &'a State) -> Element<'a, Message> {
+    let mut categories: Vec<String> = state
+        .surge_presets
+        .iter()
+        .map(|preset| preset.category.clone())
+        .collect();
+    categories.sort();
+    categories.dedup();
+    let category_pick = maolan_baseview::iced::widget::pick_list(
+        categories,
+        state.surge_category.clone(),
+        Message::SelectSurgeCategory,
+    )
+    .placeholder("Category")
+    .width(Length::Fixed(160.0));
+
+    let preset_names: Vec<String> = state
+        .surge_presets
+        .iter()
+        .filter(|preset| Some(preset.category.as_str()) == state.surge_category.as_deref())
+        .map(|preset| preset.name.clone())
+        .collect();
+    let preset_pick = maolan_baseview::iced::widget::pick_list(
+        preset_names,
+        state.surge_preset.clone(),
+        Message::LoadSurgePreset,
+    )
+    .placeholder("Surge XT preset")
+    .width(Length::Fixed(200.0));
+
+    let report = state.shared.surge_report.lock();
+    let mut status = String::new();
+    if let Some(error) = &state.surge_error {
+        status = format!("load failed: {error}");
+    } else if !report.is_empty() {
+        let skipped = report.skipped.len();
+        let errors = report.errors.len();
+        let notes = report.notes.len();
+        status = format!("import report: {skipped} skipped, {errors} errors, {notes} notes");
+    }
+    drop(report);
+
+    let report_button = button(text("Report").size(11)).on_press(Message::ToggleSurgeReport);
+    let status_text = text(status).size(11);
+
+    container(
+        row![
+            text("Surge XT").size(12),
+            category_pick,
+            preset_pick,
+            report_button,
+            status_text,
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+    )
+    .padding(4)
+    .into()
+}
+
+/// Scrollable import report for the last Surge preset load.
+fn surge_report_panel<'a>(state: &'a State) -> Element<'a, Message> {
+    let report = state.shared.surge_report.lock();
+    let body = if let Some(error) = &state.surge_error {
+        format!("load failed: {error}")
+    } else {
+        report.to_display_string()
+    };
+    let element: Element<'a, Message> = if body.trim().is_empty() {
+        text("no import issues").size(11).into()
+    } else {
+        maolan_baseview::iced::widget::scrollable(text(body).size(11))
+            .height(Length::Fixed(120.0))
+            .into()
+    };
+    container(element).padding(4).into()
+}
+
 fn view(state: &State) -> Element<'_, Message> {
     let fm_panel = panel_no_title(knob_row(vec![
         param_control(ParamId::OscFmMode, "Mode", state),
@@ -1306,10 +1428,18 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(12)
         .align_y(Alignment::Start);
 
-    let content = column![top_bar, main_content]
-        .spacing(12)
-        .padding(16)
-        .align_x(Alignment::Start);
+    let surge_bar = surge_preset_bar(state);
+    let content = if state.show_surge_report {
+        column![surge_bar, surge_report_panel(state), top_bar, main_content]
+            .spacing(12)
+            .padding(16)
+            .align_x(Alignment::Start)
+    } else {
+        column![surge_bar, top_bar, main_content]
+            .spacing(12)
+            .padding(16)
+            .align_x(Alignment::Start)
+    };
 
     container(content)
         .width(Length::Fill)
