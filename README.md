@@ -11,18 +11,22 @@ theme.
 | Plugin | ID | I/O | Description |
 |--------|-----|-----|-------------|
 | **Drust** | `rs.maolan.drust` | 8× Stereo | DrumGizmo-inspired drum sampler |
-| **Maolan Kick** | `rs.maolan.kick` | 16× Mono | Percussive synthesizer with layered oscillators and noise |
+| **Maolan Chorus** | `rs.maolan.chorus` | Stereo | Multi-voice stereo chorus with modulated delay lines |
 | **Maolan Compressor** | `rs.maolan.compressor` | Mono / Stereo | 4-band multiband compressor with lookahead and sidechain boost |
 | **Maolan DeEsser** | `rs.maolan.deesser` | Stereo | Sibilance reduction processor |
 | **Maolan Delay** | `rs.maolan.delay` | Mono / Stereo | Delay with ms / note-sync modes and smooth chasing |
 | **Maolan EQ** | `rs.maolan.equalizer` | Mono / Stereo | Parametric EQ with peaking biquad filters |
+| **Maolan Formant** | `rs.maolan.formant` | Stereo | Vowel formant filter using three bandpass biquads |
+| **Maolan Kick** | `rs.maolan.kick` | 16× Mono | Percussive synthesizer with layered oscillators and noise |
 | **Maolan Limiter** | `rs.maolan.limiter` | Stereo | Adaptive clipper/limiter with Vintage and Modern variants |
 | **Maolan Monitoring** | `rs.maolan.monitoring` | Stereo | Monitoring toolbox with 17 reference modes |
+| **Maolan Phaser** | `rs.maolan.phaser` | Stereo | Modulated all-pass cascade phaser with feedback |
 | **Maolan Reverb** | `rs.maolan.reverb` | Mono / Stereo | Stereo reverb |
 | **Maolan Sampler** | `rs.maolan.sampler` | Stereo | Polyphonic sample player |
 | **Maolan Saturator** | `rs.maolan.saturator` | Stereo | Waveshape saturation with sine-based distortion |
 | **Maolan Synth** | `rs.maolan.synth` | Stereo | Polyphonic synthesizer inspired by Surge XT |
 | **Maolan Stereo** | `rs.maolan.stereo` | Stereo | Stereo width processor |
+| **Maolan Vocoder** | `rs.maolan.vocoder` | Stereo | 24-band filter-bank vocoder |
 | **Maolan Widener** | `rs.maolan.widener` | Stereo | Multiband stereo width processor |
 | **Rural Modeler** | `rs.maolan.ruralmodeler` | Mono | Neural Amp Modeler with IR convolution |
 
@@ -104,6 +108,73 @@ removed.
 | Depth | 0.0 ... 1.0 | 0.5 | Maximum reduction amount |
 | Filter | 0.0 ... 1.0 | 0.5 | IIR smoothing amount |
 | Monitor | 0 / 1 | 0 | Output delta (removed signal) when enabled |
+
+---
+
+## Maolan Chorus
+
+Multi-voice stereo chorus based on the Mire Chorus design. Uses modulated delay lines with linear
+interpolation; even voices read from the left channel and odd voices from the right channel.
+
+**Parameters**
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Mod Depth | 0.0 ... 10.0 ms | 5.0 | LFO delay modulation depth |
+| Mod Rate | 0.1 ... 5.0 Hz | 0.5 | LFO rate |
+| Dry/Wet | 0.0 ... 1.0 | 0.5 | Mix balance |
+| Voices | 2 ... 16 | 8 | Number of chorus voices |
+
+---
+
+## Maolan Formant
+
+Vowel formant filter based on the Mire Formant design. Uses three constant-Q bandpass biquads per
+channel tuned to the A, E, I, O, and U vowel tables. The Vowel control crossfades between adjacent
+vowels for continuous timbre changes.
+
+**Parameters**
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Vowel (A-E-I-O-U) | 0.0 ... 4.0 | 0.0 | Vowel selector with interpolation |
+| Sharpness (Q) | 2.0 ... 40.0 | 2.0 | Bandpass filter Q |
+| Output Gain | −60.0 ... 20.0 dB | 0.0 | Output gain |
+
+---
+
+## Maolan Phaser
+
+Modulated all-pass cascade phaser based on the Mire Phaser design. The LFO modulates the center
+frequency of up to 12 first-order all-pass stages. Feedback can be taken from the previous output or
+from a short delay line.
+
+**Parameters**
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| LFO Rate | 0.01 ... 2.0 Hz | 0.1 | LFO rate |
+| LFO Depth | 0.0 ... 1.0 | 0.5 | LFO modulation depth |
+| Manual (Center) | 0.0 ... 1.0 | 0.5 | Manual center position |
+| Feedback | −0.98 ... 0.98 | 0.0 | Feedback amount |
+| Feedback Delay On | 0 / 1 | 0 | Use delay-line feedback instead of previous output |
+| Delay Time | 0.0 ... 20.0 ms | 1.0 | Feedback delay time |
+| Stages (All-pass) | 1 ... 12 | 12 | Number of all-pass stages |
+
+---
+
+## Maolan Vocoder
+
+24-band filter-bank vocoder based on the Mire Vocoder design. Each band has its own envelope
+follower that shapes the band-limited signal before summing. Includes a spectral-shift control to
+transpose the filter bank.
+
+**Parameters**
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Spectral Shift | 0.5 ... 4.0 | 0.5 | Filter-bank frequency shift multiplier |
+| Dry/Wet | 0.0 ... 1.0 | 1.0 | Mix balance |
 
 ---
 

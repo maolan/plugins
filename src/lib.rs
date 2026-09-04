@@ -10,15 +10,18 @@ use clap_clap::ffi::{
     clap_plugin_entry, clap_plugin_factory,
 };
 
+pub mod chorus;
 pub mod common;
 pub mod compressor;
 pub mod deesser;
 pub mod delay;
 pub mod drust;
 pub mod eq;
+pub mod formant;
 pub mod kick;
 pub mod limiter;
 pub mod monitoring;
+pub mod phaser;
 pub mod reverb;
 pub mod rural_modeler;
 pub mod sampler;
@@ -27,7 +30,9 @@ pub mod simd;
 pub mod stereo;
 pub mod synth;
 pub mod tuner;
+pub mod vocoder;
 pub mod vumeter;
+pub mod wah;
 pub mod widener;
 
 type DescriptorFn = unsafe fn() -> *const clap_plugin_descriptor;
@@ -38,7 +43,7 @@ struct PluginApi {
     create: CreateFn,
 }
 
-static PLUGINS: [PluginApi; 17] = [
+static PLUGINS: [PluginApi; 22] = [
     PluginApi {
         descriptor: eq::clap_descriptor_ptr,
         create: eq::clap_create_plugin,
@@ -104,8 +109,28 @@ static PLUGINS: [PluginApi; 17] = [
         create: tuner::clap_create_plugin,
     },
     PluginApi {
+        descriptor: wah::clap_descriptor_ptr,
+        create: wah::clap_create_plugin,
+    },
+    PluginApi {
         descriptor: sampler::clap_descriptor_ptr,
         create: sampler::clap_create_plugin,
+    },
+    PluginApi {
+        descriptor: chorus::clap_descriptor_ptr,
+        create: chorus::clap_create_plugin,
+    },
+    PluginApi {
+        descriptor: phaser::clap_descriptor_ptr,
+        create: phaser::clap_create_plugin,
+    },
+    PluginApi {
+        descriptor: formant::clap_descriptor_ptr,
+        create: formant::clap_create_plugin,
+    },
+    PluginApi {
+        descriptor: vocoder::clap_descriptor_ptr,
+        create: vocoder::clap_create_plugin,
     },
 ];
 
