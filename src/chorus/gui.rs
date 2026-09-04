@@ -19,8 +19,13 @@ use maolan_baseview::iced::{
 };
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 
-use crate::chorus::params::ParamId;
-use crate::chorus::plugin::SharedState;
+use crate::{
+    chorus::{
+        params::{PARAMS, ParamId},
+        plugin::SharedState,
+    },
+    common::ui::{SmallKnob, small_knob},
+};
 
 pub const EDITOR_WIDTH: u32 = 320;
 pub const EDITOR_HEIGHT: u32 = 240;
@@ -66,40 +71,65 @@ impl HasWindowHandle for ParentWindowHandle {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum Message {
+    ParamChanged(ParamId, f32),
+    ParamReleased(ParamId),
+    Poll,
+}
+
 struct State {
     shared: Arc<SharedState>,
+    active_gestures: Vec<bool>,
 }
 
-fn init(shared: Arc<SharedState>) -> (State, Task<()>) {
-    (State { shared }, Task::none())
+fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
+    (
+        State {
+            shared,
+            active_gestures: vec![false; ParamId::COUNT],
+        },
+        Task::none(),
+    )
 }
 
-fn update(_state: &mut State, _message: ()) -> Task<()> {
+fn update(state: &mut State, message: Message) -> Task<Message> {
+    match message {
+        Message::ParamChanged(id, value) => {
+            let idx = id.as_index();
+            if !state.active_gestures[idx] {
+                state.active_gestures[idx] = true;
+                state.shared.mark_gesture_begin_pending(id);
+            }
+            state.shared.set_param_outbound_only(id, value as f64);
+        }
+        Message::ParamReleased(id) => {
+            let idx = id.as_index();
+            if state.active_gestures[idx] {
+                state.active_gestures[idx] = false;
+                state.shared.mark_gesture_end_pending(id);
+            }
+        }
+        Message::Poll => {}
+    }
     Task::none()
 }
 
-fn view(state: &State) -> Element<'_, ()> {
-    let depth = state.shared.params.get(ParamId::Depth);
-    let rate = state.shared.params.get(ParamId::Rate);
-    let dry_wet = state.shared.params.get(ParamId::DryWet);
-    let voices = state.shared.params.get(ParamId::Voices);
-
+fn view(state: &State) -> Element<'_, Message> {
     let title = text("Maolan Chorus").size(18);
-
-    let param_row = |name: &'static str, value: String| {
-        row![text(name).size(13), text(value).size(13),]
-            .spacing(12)
-            .align_y(Alignment::Center)
-    };
 
     let content = column![
         title,
-        param_row("Mod Depth", format!("{depth:.1} ms")),
-        param_row("Mod Rate", format!("{rate:.2} Hz")),
-        param_row("Dry/Wet", format!("{:.0}%", dry_wet * 100.0)),
-        param_row("Voices", format!("{voices:.0}")),
+        row![
+            knob(ParamId::Depth, "Depth", state),
+            knob(ParamId::Rate, "Rate", state),
+            knob(ParamId::DryWet, "Dry/Wet", state),
+            knob(ParamId::Voices, "Voices", state),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
     ]
-    .spacing(10)
+    .spacing(16)
     .align_x(Alignment::Center);
 
     container(content)
@@ -111,13 +141,37 @@ fn view(state: &State) -> Element<'_, ()> {
         .into()
 }
 
+fn knob<'a>(id: ParamId, label: &'a str, state: &'a State) -> Element<'a, Message> {
+    let value = state.shared.params.get(id) as f32;
+    let def = PARAMS[id.as_index()];
+    let value_text = match id {
+        ParamId::Depth => format!("{value:.1} ms"),
+        ParamId::Rate => format!("{value:.2} Hz"),
+        ParamId::DryWet => format!("{:.0}%", value * 100.0),
+        ParamId::Voices => format!("{value:.0}"),
+    };
+
+    small_knob(
+        SmallKnob {
+            label: label.to_string(),
+            value,
+            range: def.min as f32..=def.max as f32,
+            default: def.default as f32,
+            step: def.step as f32,
+            value_text,
+        },
+        move |v| Message::ParamChanged(id, v),
+        Message::ParamReleased(id),
+    )
+}
+
 fn theme(_state: &State) -> Theme {
     Theme::TokyoNight
 }
 
 fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {
     maolan_baseview::iced::application(move || init(shared.clone()), update, view)
-        .subscription(|_state| maolan_baseview::iced::poll_events())
+        .subscription(|_state| maolan_baseview::iced::poll_events().map(|_| Message::Poll))
         .theme(theme)
         .run()
 }

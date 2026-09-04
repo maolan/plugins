@@ -15,14 +15,19 @@ use clap_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{column, container, row, text},
+    widget::{column, container, row, text, toggler},
 };
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 
-use crate::phaser::params::ParamId;
-use crate::phaser::plugin::SharedState;
+use crate::{
+    common::ui::{SmallKnob, small_knob},
+    phaser::{
+        params::{PARAMS, ParamId},
+        plugin::SharedState,
+    },
+};
 
-pub const EDITOR_WIDTH: u32 = 320;
+pub const EDITOR_WIDTH: u32 = 360;
 pub const EDITOR_HEIGHT: u32 = 280;
 
 pub fn preferred_api() -> &'static CStr {
@@ -66,49 +71,81 @@ impl HasWindowHandle for ParentWindowHandle {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum Message {
+    ParamChanged(ParamId, f32),
+    ParamReleased(ParamId),
+    BoolParamChanged(ParamId, bool),
+    Poll,
+}
+
 struct State {
     shared: Arc<SharedState>,
+    active_gestures: Vec<bool>,
 }
 
-fn init(shared: Arc<SharedState>) -> (State, Task<()>) {
-    (State { shared }, Task::none())
+fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
+    (
+        State {
+            shared,
+            active_gestures: vec![false; ParamId::COUNT],
+        },
+        Task::none(),
+    )
 }
 
-fn update(_state: &mut State, _message: ()) -> Task<()> {
+fn update(state: &mut State, message: Message) -> Task<Message> {
+    match message {
+        Message::ParamChanged(id, value) => {
+            let idx = id.as_index();
+            if !state.active_gestures[idx] {
+                state.active_gestures[idx] = true;
+                state.shared.mark_gesture_begin_pending(id);
+            }
+            state.shared.set_param_outbound_only(id, value as f64);
+        }
+        Message::ParamReleased(id) => {
+            let idx = id.as_index();
+            if state.active_gestures[idx] {
+                state.active_gestures[idx] = false;
+                state.shared.mark_gesture_end_pending(id);
+            }
+        }
+        Message::BoolParamChanged(id, value) => {
+            state.shared.mark_gesture_begin_pending(id);
+            state
+                .shared
+                .set_param_outbound_only(id, if value { 1.0 } else { 0.0 });
+            state.shared.mark_gesture_end_pending(id);
+            state.shared.mark_dirty();
+        }
+        Message::Poll => {}
+    }
     Task::none()
 }
 
-fn view(state: &State) -> Element<'_, ()> {
-    let lfo_rate = state.shared.params.get(ParamId::LfoRate);
-    let lfo_depth = state.shared.params.get(ParamId::LfoDepth);
-    let manual = state.shared.params.get(ParamId::Manual);
-    let feedback = state.shared.params.get(ParamId::Feedback);
-    let delay_on = state.shared.params.get(ParamId::FeedbackDelayOn);
-    let delay_time = state.shared.params.get(ParamId::DelayTime);
-    let stages = state.shared.params.get(ParamId::Stages);
-
+fn view(state: &State) -> Element<'_, Message> {
     let title = text("Maolan Phaser").size(18);
-
-    let param_row = |name: &str, value: String| {
-        row![text(name.to_string()).size(13), text(value).size(13),]
-            .spacing(12)
-            .align_y(Alignment::Center)
-    };
 
     let content = column![
         title,
-        param_row("LFO Rate", format!("{lfo_rate:.2} Hz")),
-        param_row("LFO Depth", format!("{lfo_depth:.2}")),
-        param_row("Manual", format!("{manual:.2}")),
-        param_row("Feedback", format!("{feedback:.2}")),
-        param_row(
-            "Feedback Delay",
-            (if delay_on > 0.5 { "On" } else { "Off" }).to_string()
-        ),
-        param_row("Delay Time", format!("{delay_time:.1} ms")),
-        param_row("Stages", format!("{stages:.0}")),
+        row![
+            knob(ParamId::LfoRate, "Rate", state),
+            knob(ParamId::LfoDepth, "Depth", state),
+            knob(ParamId::Manual, "Manual", state),
+            knob(ParamId::Feedback, "Feedback", state),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+        row![
+            delay_switch(state),
+            knob(ParamId::DelayTime, "Time", state),
+            knob(ParamId::Stages, "Stages", state),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
     ]
-    .spacing(10)
+    .spacing(16)
     .align_x(Alignment::Center);
 
     container(content)
@@ -120,13 +157,61 @@ fn view(state: &State) -> Element<'_, ()> {
         .into()
 }
 
+fn delay_switch(state: &State) -> Element<'_, Message> {
+    let enabled = state.shared.params.get(ParamId::FeedbackDelayOn) >= 0.5;
+    let value_text = if enabled { "On" } else { "Off" };
+
+    container(
+        column![
+            text("Delay").size(11),
+            toggler(enabled).on_toggle(|v| Message::BoolParamChanged(ParamId::FeedbackDelayOn, v)),
+            text(value_text).size(10),
+        ]
+        .spacing(7)
+        .align_x(Alignment::Center),
+    )
+    .width(Length::Fixed(70.0))
+    .into()
+}
+
+fn knob<'a>(id: ParamId, label: &'a str, state: &'a State) -> Element<'a, Message> {
+    let value = state.shared.params.get(id) as f32;
+    let def = PARAMS[id.as_index()];
+    let value_text = match id {
+        ParamId::LfoRate => format!("{value:.2} Hz"),
+        ParamId::LfoDepth | ParamId::Manual | ParamId::Feedback => format!("{value:.2}"),
+        ParamId::FeedbackDelayOn => {
+            if value >= 0.5 {
+                "On".to_string()
+            } else {
+                "Off".to_string()
+            }
+        }
+        ParamId::DelayTime => format!("{value:.1} ms"),
+        ParamId::Stages => format!("{value:.0}"),
+    };
+
+    small_knob(
+        SmallKnob {
+            label: label.to_string(),
+            value,
+            range: def.min as f32..=def.max as f32,
+            default: def.default as f32,
+            step: def.step as f32,
+            value_text,
+        },
+        move |v| Message::ParamChanged(id, v),
+        Message::ParamReleased(id),
+    )
+}
+
 fn theme(_state: &State) -> Theme {
     Theme::TokyoNight
 }
 
 fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {
     maolan_baseview::iced::application(move || init(shared.clone()), update, view)
-        .subscription(|_state| maolan_baseview::iced::poll_events())
+        .subscription(|_state| maolan_baseview::iced::poll_events().map(|_| Message::Poll))
         .theme(theme)
         .run()
 }
