@@ -1121,14 +1121,15 @@ pub struct VintageLadderFilter {
     pub drive: f32,
     pub subtype: FilterSubtype,
     pub feedback_drive: f32,
-    stages: [f32; 4],
-
-    prev_input: f32,
-    g: f32,
-    g2: f32,
-    gg: f32,
-    k: f32,
+    // Huovilainen-style four-pole ladder state (ported from Surge's
+    // sst-filters VintageLadder::Huov reference implementation).
+    stage: [f32; 4],
+    stage_tanh: [f32; 4],
+    delay: [f32; 6],
 }
+
+/// Thermal voltage for the transistor ladder tanh model (1/70 in Surge).
+const VINTAGE_THERMAL: f32 = 1.0 / 70.0;
 
 impl VintageLadderFilter {
     pub fn new(sample_rate: f32) -> Self {
@@ -1139,12 +1140,9 @@ impl VintageLadderFilter {
             drive: 0.0,
             subtype: FilterSubtype::Clean,
             feedback_drive: 0.0,
-            stages: [0.0; 4],
-            prev_input: 0.0,
-            g: 0.0,
-            g2: 0.0,
-            gg: 0.0,
-            k: 0.0,
+            stage: [0.0; 4],
+            stage_tanh: [0.0; 4],
+            delay: [0.0; 6],
         }
     }
 
@@ -1153,8 +1151,9 @@ impl VintageLadderFilter {
     }
 
     pub fn reset(&mut self) {
-        self.stages = [0.0; 4];
-        self.prev_input = 0.0;
+        self.stage = [0.0; 4];
+        self.stage_tanh = [0.0; 4];
+        self.delay = [0.0; 6];
     }
 
     pub fn set_params(&mut self, cutoff: f32, resonance: f32) {
@@ -1162,47 +1161,45 @@ impl VintageLadderFilter {
         self.resonance = resonance;
     }
 
-    pub fn prepare_block(&mut self, _cutoff: f32, _resonance: f32, _block_size: usize) {
-        let fc = (self.cutoff_hz / self.sample_rate).clamp(0.0001, 0.4999);
-        let x = std::f32::consts::PI * fc;
-        let g = 4.0 * std::f32::consts::PI * 1.0e-7 * (1.0 / x - 1.0) + 1.0;
-        self.g = (g - 1.0) / (g + 1.0);
-        self.g2 = self.g * self.g;
-        self.gg = self.g2 * self.g2;
-        self.k = self.resonance * 3.8;
-    }
+    pub fn prepare_block(&mut self, _cutoff: f32, _resonance: f32, _block_size: usize) {}
 
     pub fn process(&mut self, input: f32) -> f32 {
-        let drive = 1.0 + self.drive * 3.0;
+        let fc = (self.cutoff_hz / self.sample_rate).clamp(1.0e-5, 0.49);
+        // Resonance follows Surge's vintageladder normalization (0..1 with
+        // stability margin); higher Maolan resonance values clamp instead of
+        // exploding into unstable self-oscillation.
+        let res = self.resonance.clamp(0.0, 0.9925);
 
-        let in_driven = apply_subtype(input, self.subtype, self.drive);
-
-        let in0 = (self.prev_input + in_driven) * 0.5 * drive;
-        let in1 = in_driven * drive;
-        self.prev_input = in_driven;
-
+        let driven = apply_subtype(input, self.subtype, self.drive);
         let mut out = 0.0f32;
-        let fb_gain = 1.0 + self.feedback_drive * 4.0;
-        for &in_sample in &[in0, in1] {
-            let fb = tanh_sat(self.stages[3] * fb_gain);
-            let mut x = in_sample - self.k * fb;
-            x = tanh_sat(x);
+        // Surge runs the ladder twice per output sample at half the
+        // normalized cutoff (internal 2x oversampling for stability).
+        for _ in 0..2 {
+            let f = fc * 0.5;
+            let f2 = f * f;
+            let f3 = f2 * f;
+            let fcr = 1.8730 * f3 + 0.4955 * f2 - 0.6490 * f + 0.9988;
+            let acr = -3.9364 * f2 + 1.8409 * f + 0.9968;
+            let tune = (1.0 - (-2.0 * std::f32::consts::PI * f * fcr).exp()) / VINTAGE_THERMAL;
+            let resquad = 4.0 * res * acr;
 
-            self.stages[0] = self.g * (x + self.stages[0]) - self.g2 * (x - self.stages[0]);
-            x = tanh_sat(self.stages[0]);
-
-            self.stages[1] = self.g * (x + self.stages[1]) - self.g2 * (x - self.stages[1]);
-            x = tanh_sat(self.stages[1]);
-
-            self.stages[2] = self.g * (x + self.stages[2]) - self.g2 * (x - self.stages[2]);
-            x = tanh_sat(self.stages[2]);
-
-            self.stages[3] = self.gg * self.stages[3] + self.g2 * (x + self.stages[3]);
-            x = self.stages[3];
-
-            out = x;
+            let x = driven - resquad * self.delay[5];
+            self.stage[0] += tune * ((x * VINTAGE_THERMAL).tanh() - self.stage_tanh[0]);
+            for k in 1..4 {
+                self.stage_tanh[k - 1] = (self.stage[k - 1] * VINTAGE_THERMAL).tanh();
+                let target = if k != 3 {
+                    self.stage_tanh[k]
+                } else {
+                    (self.delay[k] * VINTAGE_THERMAL).tanh()
+                };
+                self.stage[k] += tune * (self.stage_tanh[k - 1] - target);
+                self.delay[k] = self.stage[k];
+            }
+            // 0.5 sample delay for phase compensation.
+            self.delay[5] = 0.5 * (self.stage[3] + self.delay[4]);
+            self.delay[4] = self.stage[3];
+            out = self.delay[5];
         }
-
         out
     }
 }

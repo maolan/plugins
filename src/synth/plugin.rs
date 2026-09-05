@@ -474,7 +474,7 @@ fn collect_pending_audio_param_changes_synth(
     overflow
 }
 
-fn build_voice_params(params: &ParamStore) -> VoiceParams {
+pub(crate) fn build_voice_params(params: &ParamStore) -> VoiceParams {
     let mut result = VoiceParams::default();
     build_modulations_params(&mut result, params);
     build_step_seq_params(&mut result, params);

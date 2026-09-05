@@ -508,6 +508,7 @@ fn osc_param(osc: usize, name: &str) -> ParamId {
     use ParamId::*;
     match (osc, name) {
         (0, "type") => Osc1Type,
+        (0, "enabled") => Osc1Enabled,
         (0, "octave") => Osc1Octave,
         (0, "semitone") => Osc1Semitone,
         (0, "fine") => Osc1Fine,
@@ -526,6 +527,7 @@ fn osc_param(osc: usize, name: &str) -> ParamId {
         (0, "fmdepth") => Osc1FmDepth,
         (0, "shaper") => Osc1Shaper,
         (1, "type") => Osc2Type,
+        (1, "enabled") => Osc2Enabled,
         (1, "octave") => Osc2Octave,
         (1, "semitone") => Osc2Semitone,
         (1, "fine") => Osc2Fine,
@@ -543,6 +545,7 @@ fn osc_param(osc: usize, name: &str) -> ParamId {
         (1, "fmdepth") => Osc2FmDepth,
         (1, "shaper") => Osc2Shaper,
         (2, "type") => Osc3Type,
+        (2, "enabled") => Osc3Enabled,
         (2, "octave") => Osc3Octave,
         (2, "semitone") => Osc3Semitone,
         (2, "fine") => Osc3Fine,
@@ -815,16 +818,21 @@ fn convert_globals(
     push: &mut dyn FnMut(ParamId, f64),
     report: &mut Report,
 ) {
-    // Master volume: Surge stores a linear 0..1 amplitude. The scene volume
-    // is a second amplitude in the signal path, so combine both.
-    let global_volume = patch
+    // Master volume is stored in dB (`ct_decibel_attenuation_clipper`, range
+    // -48..0), while the scene volume is a linear amplitude
+    // (`ct_amplitude_clipper`). Convert the master value before combining.
+    let global_db = patch
         .params
         .get("volume")
-        .and_then(|param| param.as_float(true));
-    let scene_volume = get(patch, prefix, "volume").and_then(|param| param.as_float(true));
-    if global_volume.is_some() || scene_volume.is_some() {
-        let combined = global_volume.unwrap_or(1.0) * scene_volume.unwrap_or(1.0);
-        push(ParamId::Volume, clamp01(combined));
+        .and_then(|param| param.as_float(true))
+        .map(f64::from);
+    let scene_volume = get(patch, prefix, "volume")
+        .and_then(|param| param.as_float(true))
+        .map(f64::from);
+    if global_db.is_some() || scene_volume.is_some() {
+        let global_amp = global_db.map(|db| 10f64.powf(db / 20.0)).unwrap_or(1.0);
+        let combined = global_amp * scene_volume.unwrap_or(1.0);
+        push(ParamId::Volume, clamp01(combined as f32));
         if scene_volume.is_some_and(|volume| volume < 1.0) {
             report.note("scene volume folded into master volume");
         }
@@ -917,14 +925,22 @@ fn convert_globals(
         );
     }
     if let Some(param) = get(patch, prefix, "vca_level")
-        && let Some(level) = param.as_float(true)
+        && let Some(db) = param.as_float(true)
     {
-        push(ParamId::VcaLevel, level.clamp(0.0, 2.0) as f64);
+        // ct_decibel (-48..48, 0 = unity): convert to linear gain in our 0..2
+        // range, like level_pfg above.
+        push(
+            ParamId::VcaLevel,
+            10f32.powf(db / 20.0).clamp(0.0, 2.0) as f64,
+        );
     }
     if let Some(param) = get(patch, prefix, "vca_velsense")
-        && let Some(vel) = param.as_float(true)
+        && let Some(db) = param.as_float(true)
     {
-        push(ParamId::VcaVelSense, clamp01(vel));
+        // ct_decibel_attenuation (-48..0, 0 = velocity ignored). Our 0..1
+        // vel sense interpolates between "velocity ignored" (0) and full
+        // tracking (1), so normalize the attenuation depth.
+        push(ParamId::VcaVelSense, clamp01(-db / 48.0));
     }
 }
 
@@ -960,6 +976,12 @@ fn convert_oscillators(
             continue;
         };
         push(osc_param(osc, "type"), our_type as f64);
+        // Surge has no per-oscillator on/off: all three always run and the
+        // mixer mute is the only switch. Maolan's Enabled defaults are off
+        // for osc 2/3, so import every oscillator as enabled and let the
+        // imported mute state (pushed below) carry the off state. A muted
+        // osc still functions as an FM modulator, exactly like Surge.
+        push(osc_param(osc, "enabled"), 1.0);
 
         if (our_type == 3 || our_type == 4) && !wavetable_noted {
             report.note(
@@ -1066,7 +1088,11 @@ fn convert_oscillators(
         }
     }
 
-    // Noise source.
+    // Noise source. Surge's noise channel has no on/off either; import it as
+    // enabled and let NoiseMute carry the off state (Maolan's default is off).
+    if get(patch, prefix, "level_noise").is_some() || get(patch, prefix, "mute_noise").is_some() {
+        push(ParamId::NoiseEnabled, 1.0);
+    }
     if let Some(param) = get(patch, prefix, "level_noise")
         && let Some(level) = param.as_float(true)
     {
@@ -1492,7 +1518,8 @@ fn convert_filters(
         if let Some(param) = get(patch, prefix, &format!("{name}_envmod"))
             && let Some(amount) = param.as_float(true)
         {
-            push(eg_amount_id, clamp_bipolar(amount));
+            // Surge stores semitones (ct_freq_mod, ±96); ours is ±1 at ±96 st.
+            push(eg_amount_id, (amount / 96.0).clamp(-1.0, 1.0) as f64);
         }
         if let Some(param) = get(patch, prefix, &format!("{name}_keytrack"))
             && let Some(track) = param.as_float(true)
@@ -1634,7 +1661,9 @@ fn convert_lfos(
     push: &mut dyn FnMut(ParamId, f64),
     report: &mut Report,
 ) {
-    // Surge units 0..5 are voice LFOs, 6..11 scene LFOs.
+    // Surge units 0..5 are voice LFOs, 6..11 scene LFOs (XML names are
+    // 0-based: a_lfo0_..a_lfo5_, a_lfo6_..a_lfo11_; modrouting source 17 is
+    // ms_lfo1, the first voice LFO).
     let mut stepseq_imported = false;
     for unit in 0..12 {
         let name = format!("lfo{unit}_");
@@ -2107,7 +2136,7 @@ mod tests {
     fn maps_globals_and_name() {
         let xml = format!(
             r#"{HEADER}<parameters>
-            <volume type="2" value="0.800000"/>
+            <volume type="2" value="-6.020600"/>
             <polylimit type="0" value="16"/>
             <scene_active type="0" value="0"/>
             <scenemode type="0" value="0"/>
@@ -2120,8 +2149,8 @@ mod tests {
         );
         let result = load(&xml);
         assert_eq!(result.name, "Test Patch");
-        // 0.8 * 0.5 scene volume folded into master.
-        assert!((value_of(&result, ParamId::Volume).unwrap() - 0.4).abs() < 1e-6);
+        // -6.02 dB master = 0.5 amplitude, times 0.5 scene volume folded in.
+        assert!((value_of(&result, ParamId::Volume).unwrap() - 0.25).abs() < 1e-3);
         assert_eq!(value_of(&result, ParamId::Polyphony), Some(15.0));
         assert_eq!(value_of(&result, ParamId::PitchBendUp), Some(2.0));
         assert_eq!(value_of(&result, ParamId::PitchBendDown), Some(12.0));
@@ -2175,7 +2204,7 @@ mod tests {
             <a_filter1_subtype type="0" value="1"/>
             <a_filter1_cutoff type="2" value="33.000000"/>
             <a_filter1_resonance type="2" value="0.500000"/>
-            <a_filter1_envmod type="2" value="-0.250000"/>
+            <a_filter1_envmod type="2" value="-24.000000"/>
             <a_fb_config type="0" value="0"/>
             <a_f_balance type="2" value="0.100000"/>
             <a_feedback type="2" value="-0.500000"/>
@@ -2192,6 +2221,7 @@ mod tests {
         assert!((value_of(&result, ParamId::F1Cutoff).unwrap() - expected as f64).abs() < 1.0);
         // Resonance 0..1 -> 0..10.
         assert!((value_of(&result, ParamId::F1Resonance).unwrap() - 5.0).abs() < 1e-6);
+        // envmod -24 st (ct_freq_mod) -> -24/96 = -0.25 of our ±96 st scale.
         assert_eq!(value_of(&result, ParamId::F1EgAmount), Some(-0.25));
         assert_eq!(value_of(&result, ParamId::FilterRouting), Some(0.0)); // serial 1
         assert!((value_of(&result, ParamId::FilterBalance).unwrap() - 0.1).abs() < 1e-6);

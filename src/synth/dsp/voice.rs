@@ -1691,7 +1691,6 @@ impl Voice {
 
         if noise_changed {
             self.noise.noise_type = params.noise.noise_type;
-            self.noise.level = params.noise.level;
             self.noise.color = params.noise.color;
             self.noise.color_mode = if params.noise.color_mode == 0 {
                 NoiseColorMode::Tilt
@@ -2041,7 +2040,6 @@ impl Voice {
     pub fn update_noise_params(&mut self, params: &VoiceParams) {
         self.params.noise = params.noise.clone();
         self.noise.noise_type = params.noise.noise_type;
-        self.noise.level = params.noise.level;
         self.noise.color = params.noise.color;
         self.noise.color_mode = if params.noise.color_mode == 0 {
             NoiseColorMode::Tilt

@@ -31,7 +31,6 @@ impl NoiseType {
 pub struct NoiseGenerator {
     sample_rate: f32,
     pub noise_type: NoiseType,
-    pub level: f32,
     pub color: f32,
     pub filter: Filter,
     pub filter_enabled: bool,
@@ -51,7 +50,6 @@ impl NoiseGenerator {
         Self {
             sample_rate,
             noise_type: NoiseType::White,
-            level: 0.0,
             color: 0.5,
             filter: Filter::new(FilterType::Lowpass, sample_rate),
             filter_enabled: false,
@@ -133,7 +131,11 @@ impl NoiseGenerator {
             colored
         };
 
-        filtered * self.level
+        // The synth voice applies `NoiseSettings::level` at mix time (along
+        // with mod-matrix offsets), so the raw generator output must stay at
+        // unity gain here; multiplying again would zero EG-modulated noise
+        // sources whose base level is 0 (e.g. exciter-style Surge patches).
+        filtered
     }
 
     pub fn next_stereo(&mut self) -> (f32, f32) {

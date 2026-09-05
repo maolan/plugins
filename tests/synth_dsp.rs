@@ -99,6 +99,37 @@ fn test_svf_step_response() {
 }
 
 #[test]
+fn test_vintage_ladder_passes_signal() {
+    // Regression: a broken integrator coefficient once made the vintage
+    // ladder output pure silence for any audio-rate cutoff.
+    let mut filter = Filter::new(FilterType::VintageLadder, 48000.0);
+    filter.set_params(523.0, 0.5);
+    filter.prepare_block(523.0, 0.5, 32);
+
+    let mut peak = 0.0f32;
+    for i in 0..4800 {
+        let _ = filter.process(if i % 48 < 24 { 0.5 } else { -0.5 });
+        peak = peak.max(filter.process(0.0).abs());
+    }
+    assert!(peak > 1.0e-3, "vintage ladder is silent, peak={peak}");
+}
+
+#[test]
+fn test_vintage_ladder_stability() {
+    let mut filter = Filter::new(FilterType::VintageLadder, 48000.0);
+    filter.set_params(12000.0, 2.0);
+    filter.prepare_block(12000.0, 2.0, 32);
+
+    let mut max_val = 0.0f32;
+    for _ in 0..4096 {
+        let out = filter.process(0.5);
+        max_val = max_val.max(out.abs());
+        assert!(out.is_finite(), "vintage ladder NaN/INF");
+    }
+    assert!(max_val < 10.0, "vintage ladder unstable: {max_val}");
+}
+
+#[test]
 fn test_synth_no_nan_after_trigger() {
     let mut engine = SynthEngine::new(48000.0, 8);
     engine.params = VoiceParams::default();

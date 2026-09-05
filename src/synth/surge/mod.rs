@@ -57,7 +57,9 @@ fn preset_dirs() -> Vec<PathBuf> {
 }
 
 /// Recursively scan the preset directories for `.fxp` files, sorted by
-/// category then name.
+/// category then name. Categories are prefixed with the root directory name
+/// (`patches_factory/…`, `patches_3rdparty/…`) so the two Surge trees never
+/// collide.
 pub fn scan_presets() -> Vec<PresetInfo> {
     let mut presets = Vec::new();
     for dir in preset_dirs() {
@@ -69,18 +71,7 @@ pub fn scan_presets() -> Vec<PresetInfo> {
             if path.is_dir() {
                 scan_dir(&path, &dir, &mut presets);
             } else if path.extension().is_some_and(|ext| ext == "fxp") {
-                presets.push(PresetInfo {
-                    name: path
-                        .file_stem()
-                        .map(|stem| stem.to_string_lossy().into_owned())
-                        .unwrap_or_default(),
-                    category: path
-                        .parent()
-                        .and_then(|parent| parent.strip_prefix(&dir).ok())
-                        .map(|rel| rel.to_string_lossy().into_owned())
-                        .unwrap_or_default(),
-                    path,
-                });
+                push_preset(&mut presets, path, &dir);
             }
         }
     }
@@ -92,6 +83,31 @@ pub fn scan_presets() -> Vec<PresetInfo> {
     presets
 }
 
+fn push_preset(presets: &mut Vec<PresetInfo>, path: PathBuf, root: &Path) {
+    let relative = path
+        .parent()
+        .and_then(|parent| parent.strip_prefix(root).ok())
+        .map(|rel| rel.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let root_name = root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let category = if relative.is_empty() {
+        root_name
+    } else {
+        format!("{root_name}/{relative}")
+    };
+    presets.push(PresetInfo {
+        name: path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        category,
+        path,
+    });
+}
+
 fn scan_dir(dir: &Path, root: &Path, presets: &mut Vec<PresetInfo>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -101,18 +117,7 @@ fn scan_dir(dir: &Path, root: &Path, presets: &mut Vec<PresetInfo>) {
         if path.is_dir() {
             scan_dir(&path, root, presets);
         } else if path.extension().is_some_and(|ext| ext == "fxp") {
-            presets.push(PresetInfo {
-                name: path
-                    .file_stem()
-                    .map(|stem| stem.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-                category: path
-                    .parent()
-                    .and_then(|parent| parent.strip_prefix(root).ok())
-                    .map(|rel| rel.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-                path,
-            });
+            push_preset(presets, path, root);
         }
     }
 }
@@ -145,11 +150,12 @@ mod tests {
         unsafe { std::env::remove_var(PRESET_PATH_ENV) };
         let _ = std::fs::remove_dir_all(&root);
 
+        let prefix = root.file_name().unwrap().to_string_lossy();
         assert_eq!(presets.len(), 2);
         assert_eq!(presets[0].name, "Deep");
-        assert_eq!(presets[0].category, "Basses");
+        assert_eq!(presets[0].category, format!("{prefix}/Basses"));
         assert_eq!(presets[1].name, "Wobble");
-        assert_eq!(presets[1].category, "Basses/Sub");
+        assert_eq!(presets[1].category, format!("{prefix}/Basses/Sub"));
     }
 
     /// Manual end-to-end check against the real Surge installation. Run with
