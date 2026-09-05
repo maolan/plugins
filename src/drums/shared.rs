@@ -5,7 +5,7 @@ use clap_clap::ffi::{
 };
 use parking_lot::RwLock;
 
-use crate::drust::params::{ParamId, ParamStore, sanitize_param_value};
+use crate::drums::params::{ParamId, ParamStore, sanitize_param_value};
 
 #[derive(Debug)]
 pub struct SharedState {

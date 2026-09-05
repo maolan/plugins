@@ -1,4 +1,4 @@
-use crate::rural_modeler::dsp::filters::{Biquad, high_shelf, low_shelf, peaking};
+use crate::modeler::dsp::filters::{Biquad, high_shelf, low_shelf, peaking};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToneMode {

@@ -1,4 +1,4 @@
-use crate::drust::params::{ParamId, ParamStore};
+use crate::drums::params::{ParamId, ParamStore};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PluginState {
@@ -37,7 +37,7 @@ impl PluginState {
         active_channels: u32,
     ) -> Self {
         let mut param_values = Vec::new();
-        for def in crate::drust::params::PARAMS.iter() {
+        for def in crate::drums::params::PARAMS.iter() {
             param_values.push((def.id.as_u16(), params.get(def.id)));
         }
         Self {
@@ -54,7 +54,7 @@ impl PluginState {
     pub fn apply(&self, params: &ParamStore) -> (String, String, String, u32) {
         for &(raw, value) in &self.params {
             if let Some(id) = ParamId::from_raw(raw as u32) {
-                params.set(id, crate::drust::params::sanitize_param_value(id, value));
+                params.set(id, crate::drums::params::sanitize_param_value(id, value));
             }
         }
         (

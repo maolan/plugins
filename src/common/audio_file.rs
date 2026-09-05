@@ -12,7 +12,7 @@ use symphonia::core::{
 
 /// An audio file decoded into non-interleaved `f32` channels.
 ///
-/// This is the shared representation used by Drust, Sampler, and any future
+/// This is the shared representation used by Drums, Sampler, and any future
 /// sample-based plugins. It is intentionally simple: a list of channel buffers,
 /// sample rate, and basic loudness statistics.
 #[derive(Debug, Clone)]
@@ -50,7 +50,7 @@ impl AudioFile {
 
     /// Return a new `AudioFile` containing only the requested source channels.
     ///
-    /// This is used by Drust to load individual microphone channels from a
+    /// This is used by Drums to load individual microphone channels from a
     /// multi-channel drum sample.
     pub fn extract_channels(&self, channels_to_extract: &[usize]) -> Result<Self, LoadError> {
         if channels_to_extract.is_empty() {

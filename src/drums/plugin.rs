@@ -29,7 +29,7 @@ use clap_clap::{
 use parking_lot::Mutex;
 
 use crate::common::{bus, fft, resource_directory};
-use crate::drust::{
+use crate::drums::{
     download,
     engine::{DrumGizmoEngine, EventType, MAX_CHANNELS, VoiceEvent, limiter::Limiter},
     gui::GuiBridge,
@@ -38,8 +38,8 @@ use crate::drust::{
     state::PluginState,
 };
 
-const PLUGIN_ID: &[u8] = b"rs.maolan.drust\0";
-const PLUGIN_NAME: &[u8] = b"Drust\0";
+const PLUGIN_ID: &[u8] = b"rs.maolan.drums\0";
+const PLUGIN_NAME: &[u8] = b"Maolan Drums\0";
 const PLUGIN_VENDOR: &[u8] = b"maolan\0";
 const PLUGIN_URL: &[u8] = b"\0";
 const PLUGIN_VERSION: &[u8] = b"0.1.0\0";
@@ -319,7 +319,7 @@ impl PluginInstance {
         let engine = Arc::new(DrumGizmoEngine::new());
         let bus_id = bus::next_instance_id();
         let mut bus_data =
-            bus::PluginSharedData::new(bus::PluginType::Drust).with_fft(bus::FftData::default());
+            bus::PluginSharedData::new(bus::PluginType::Drums).with_fft(bus::FftData::default());
         bus_data = bus::register(bus_id, bus_data);
         Self {
             shared,
@@ -963,7 +963,7 @@ unsafe extern "C-unwind" fn ext_resource_directory_set_directory(
             _ => None,
         }
     };
-    tracing::info!(?dir, is_shared, "Drust resource_directory set_directory");
+    tracing::info!(?dir, is_shared, "Drums resource_directory set_directory");
     *inst.shared.resource_dir.write() = dir;
 }
 
@@ -974,27 +974,27 @@ unsafe extern "C-unwind" fn ext_resource_directory_collect(plugin: *const clap_p
     let inst = unsafe { instance(plugin) };
     let shared = &inst.shared;
     let Some(dir) = shared.resource_dir.read().clone() else {
-        tracing::info!("Drust resource_directory collect: no resource directory set");
+        tracing::info!("Drums resource_directory collect: no resource directory set");
         return;
     };
     let dir = Path::new(&dir);
     let kit_path = shared.kit_path.read().clone();
     if kit_path.is_empty() {
-        tracing::info!("Drust resource_directory collect: no kit loaded");
+        tracing::info!("Drums resource_directory collect: no kit loaded");
         return;
     }
     let kit_path = PathBuf::from(kit_path);
     if !kit_path.is_absolute() {
         tracing::info!(
             ?kit_path,
-            "Drust resource_directory collect: kit path is not absolute"
+            "Drums resource_directory collect: kit path is not absolute"
         );
         return;
     }
     let Some(source_kit_dir) = kit_path.parent() else {
         tracing::info!(
             ?kit_path,
-            "Drust resource_directory collect: invalid kit path"
+            "Drums resource_directory collect: invalid kit path"
         );
         return;
     };
@@ -1013,7 +1013,7 @@ unsafe extern "C-unwind" fn ext_resource_directory_collect(plugin: *const clap_p
         tracing::warn!(
             ?target_kit_dir,
             %err,
-            "Drust resource_directory collect: failed to clear previous kit directory"
+            "Drums resource_directory collect: failed to clear previous kit directory"
         );
         return;
     }
@@ -1023,7 +1023,7 @@ unsafe extern "C-unwind" fn ext_resource_directory_collect(plugin: *const clap_p
             ?source_kit_dir,
             ?target_kit_dir,
             %err,
-            "Drust resource_directory collect: kit copy failed"
+            "Drums resource_directory collect: kit copy failed"
         );
         let _ = std::fs::remove_dir_all(&target_kit_dir);
         return;
@@ -1040,14 +1040,14 @@ unsafe extern "C-unwind" fn ext_resource_directory_collect(plugin: *const clap_p
                 tracing::info!(
                     %midimap_path,
                     ?new_midimap,
-                    "Drust resource_directory collect: relocated midimap into kit directory"
+                    "Drums resource_directory collect: relocated midimap into kit directory"
                 );
                 *shared.midimap_path.write() = new_midimap.to_string_lossy().into_owned();
             }
         } else {
             tracing::warn!(
                 %midimap_path,
-                "Drust resource_directory collect: midimap is outside the kit directory and is not collected"
+                "Drums resource_directory collect: midimap is outside the kit directory and is not collected"
             );
         }
     }
@@ -1057,7 +1057,7 @@ unsafe extern "C-unwind" fn ext_resource_directory_collect(plugin: *const clap_p
     let Some(xml_name) = kit_path.file_name() else {
         tracing::info!(
             ?kit_path,
-            "Drust resource_directory collect: invalid kit path"
+            "Drums resource_directory collect: invalid kit path"
         );
         return;
     };
@@ -1065,7 +1065,7 @@ unsafe extern "C-unwind" fn ext_resource_directory_collect(plugin: *const clap_p
     tracing::info!(
         ?new_kit_path,
         all,
-        "Drust resource_directory collect: switching kit to collected copy"
+        "Drums resource_directory collect: switching kit to collected copy"
     );
     inst.restore_kit(new_kit_path.to_string_lossy().into_owned());
 }
@@ -1124,7 +1124,7 @@ unsafe extern "C-unwind" fn ext_gui_is_api_supported(
         return false;
     }
     let api = unsafe { CStr::from_ptr(api) };
-    crate::drust::gui::is_api_supported(api, is_floating)
+    crate::drums::gui::is_api_supported(api, is_floating)
 }
 
 unsafe extern "C-unwind" fn ext_gui_get_preferred_api(
@@ -1135,7 +1135,7 @@ unsafe extern "C-unwind" fn ext_gui_get_preferred_api(
     if api.is_null() || is_floating.is_null() {
         return false;
     }
-    let preferred = crate::drust::gui::preferred_api();
+    let preferred = crate::drums::gui::preferred_api();
     unsafe {
         *api = preferred.as_ptr();
         *is_floating = false;
@@ -1194,8 +1194,8 @@ unsafe extern "C-unwind" fn ext_gui_get_size(
         return false;
     }
     unsafe {
-        *width = crate::drust::gui::EDITOR_WIDTH;
-        *height = crate::drust::gui::EDITOR_HEIGHT;
+        *width = crate::drums::gui::EDITOR_WIDTH;
+        *height = crate::drums::gui::EDITOR_HEIGHT;
     }
     true
 }
@@ -1242,14 +1242,14 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     let window = unsafe { &*window };
     let api = unsafe { CStr::from_ptr(window.api) };
 
-    let parent = if api == crate::drust::gui::preferred_api() {
+    let parent = if api == crate::drums::gui::preferred_api() {
         #[cfg(unix)]
         {
-            crate::drust::gui::ParentWindowHandle::X11(unsafe { window.clap_window__.x11 })
+            crate::drums::gui::ParentWindowHandle::X11(unsafe { window.clap_window__.x11 })
         }
         #[cfg(target_os = "windows")]
         {
-            crate::drust::gui::ParentWindowHandle::Win32(unsafe { window.clap_window__.win32 })
+            crate::drums::gui::ParentWindowHandle::Win32(unsafe { window.clap_window__.win32 })
         }
     } else {
         return false;
@@ -1508,7 +1508,7 @@ mod tests {
     #[test]
     fn resource_files_enumerates_kit_tree_sorted_relative_to_resource_dir() {
         let dir = std::env::temp_dir().join(format!(
-            "maolan_drust_resource_files_test_{}",
+            "maolan_drums_resource_files_test_{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1537,7 +1537,7 @@ mod tests {
     #[test]
     fn resource_files_uses_kit_dir_of_nonstandard_xml_name() {
         let dir: PathBuf = std::env::temp_dir().join(format!(
-            "maolan_drust_resource_files_xml_name_test_{}",
+            "maolan_drums_resource_files_xml_name_test_{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);

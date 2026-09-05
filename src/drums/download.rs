@@ -31,7 +31,7 @@ fn kit_url(kit_name: &str) -> Option<&'static str> {
 
 fn cache_dir() -> PathBuf {
     let cache_base = dirs::cache_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    cache_base.join("drust")
+    cache_base.join("drums")
 }
 
 fn kit_folder_name(kit_name: &str) -> String {
@@ -183,7 +183,7 @@ pub fn download_kit_with_progress(
         return Ok(xml.to_string_lossy().into_owned());
     }
 
-    let tmp_zip = cache.join(format!("drust-{}.zip", kit_name.to_lowercase()));
+    let tmp_zip = cache.join(format!("drums-{}.zip", kit_name.to_lowercase()));
 
     let response = ureq::get(url)
         .call()

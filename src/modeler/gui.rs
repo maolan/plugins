@@ -24,7 +24,7 @@ use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHan
 
 use crate::{
     common::ui::{SmallKnob, small_knob},
-    rural_modeler::{
+    modeler::{
         params::{PARAMS, ParamId},
         plugin::SharedState,
         tone3000::{self, AssetKind, PaginatedSearchResults, SearchItem, SearchVariation},
@@ -1154,7 +1154,7 @@ impl GuiBridge {
 
         let settings = maolan_baseview::iced::IcedBaseviewSettings {
             window: maolan_baseview::iced::baseview::WindowOpenOptions {
-                title: String::from("Rural Modeler"),
+                title: String::from("Maolan Modeler"),
                 size: maolan_baseview::iced::baseview::Size::new(
                     EDITOR_WIDTH as f64,
                     EDITOR_HEIGHT as f64,
@@ -1192,11 +1192,11 @@ impl GuiBridge {
             let floating_open = self.floating_open.clone();
             floating_open.store(true, Ordering::Release);
             let _ = thread::Builder::new()
-                .name("rural-modeler-gui".to_string())
+                .name("maolan-modeler-gui".to_string())
                 .spawn(move || {
                     let settings = maolan_baseview::iced::IcedBaseviewSettings {
                         window: maolan_baseview::iced::baseview::WindowOpenOptions {
-                            title: String::from("Rural Modeler"),
+                            title: String::from("Maolan Modeler"),
                             size: maolan_baseview::iced::baseview::Size::new(
                                 EDITOR_WIDTH as f64,
                                 EDITOR_HEIGHT as f64,
@@ -1234,7 +1234,7 @@ mod tests {
     fn create_succeeds_for_supported_api() {
         let mut bridge = GuiBridge::default();
         assert!(bridge.create(
-            std::sync::Arc::new(crate::rural_modeler::plugin::SharedState::default()),
+            std::sync::Arc::new(crate::modeler::plugin::SharedState::default()),
             super::preferred_api(),
             false
         ));
@@ -1244,7 +1244,7 @@ mod tests {
     fn create_fails_for_unsupported_api() {
         let mut bridge = GuiBridge::default();
         assert!(!bridge.create(
-            std::sync::Arc::new(crate::rural_modeler::plugin::SharedState::default()),
+            std::sync::Arc::new(crate::modeler::plugin::SharedState::default()),
             c"unsupported",
             false
         ));
@@ -1254,7 +1254,7 @@ mod tests {
     fn create_succeeds_for_floating() {
         let mut bridge = GuiBridge::default();
         assert!(bridge.create(
-            std::sync::Arc::new(crate::rural_modeler::plugin::SharedState::default()),
+            std::sync::Arc::new(crate::modeler::plugin::SharedState::default()),
             super::preferred_api(),
             true
         ));
@@ -1264,13 +1264,13 @@ mod tests {
     fn destroy_resets_created() {
         let mut bridge = GuiBridge::default();
         bridge.create(
-            std::sync::Arc::new(crate::rural_modeler::plugin::SharedState::default()),
+            std::sync::Arc::new(crate::modeler::plugin::SharedState::default()),
             super::preferred_api(),
             false,
         );
         bridge.destroy();
         assert!(!bridge.set_parent(
-            std::sync::Arc::new(crate::rural_modeler::plugin::SharedState::default()),
+            std::sync::Arc::new(crate::modeler::plugin::SharedState::default()),
             #[cfg(unix)]
             super::ParentWindowHandle::X11(0),
             #[cfg(target_os = "windows")]

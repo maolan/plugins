@@ -1,4 +1,4 @@
-use crate::drust::utils::random::LockFreeRandom;
+use crate::drums::utils::random::LockFreeRandom;
 
 #[derive(Debug)]
 pub struct VelocityFilter {

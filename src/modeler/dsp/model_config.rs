@@ -3,8 +3,8 @@ use std::sync::Mutex;
 
 use serde_json::Value;
 
-use crate::rural_modeler::dsp::core::Dsp;
-use crate::rural_modeler::dsp::error::NamError;
+use crate::modeler::dsp::core::Dsp;
+use crate::modeler::dsp::error::NamError;
 
 
 pub trait ModelConfig: std::fmt::Debug + Send {

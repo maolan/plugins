@@ -7,13 +7,13 @@ use crate::common::{
     resampler::ResampleQuality,
 };
 
-/// Drust re-exports the common audio file type under its historical name.
+/// Drums re-exports the common audio file type under its historical name.
 pub type LoadedAudioFile = AudioFile;
 
 /// Load specific channels from an audio file.
 ///
 /// This is a thin wrapper around the common decoder that maps errors to
-/// strings for the existing Drust loading pipeline.
+/// strings for the existing Drums loading pipeline.
 pub fn load_wav_channels(
     path: &Path,
     channels_to_extract: &[usize],
@@ -23,7 +23,7 @@ pub fn load_wav_channels(
 
 /// Resample a single channel buffer from `src_rate` to `dst_rate`.
 ///
-/// Kept as a Drust-facing convenience that uses the common fast resampler.
+/// Kept as a Drums-facing convenience that uses the common fast resampler.
 pub fn resample_buffer(input: &[f32], src_rate: f64, dst_rate: f64) -> Vec<f32> {
     if (src_rate - dst_rate).abs() < 0.1 {
         return input.to_vec();
@@ -44,7 +44,7 @@ fn resample_buffer_internal(
 /// sample rate.
 pub fn load_kit_audio(
     _kit_dir: &Path,
-    kit: &crate::drust::drumkit::DrumKit,
+    kit: &crate::drums::drumkit::DrumKit,
     host_rate: f32,
 ) -> Result<HashMap<String, LoadedAudioFile>, String> {
     let mut files: HashMap<String, Vec<usize>> = HashMap::new();
@@ -144,7 +144,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("drust-audio-file-test-{nanos}.wav"))
+        std::env::temp_dir().join(format!("drums-audio-file-test-{nanos}.wav"))
     }
 
     #[test]

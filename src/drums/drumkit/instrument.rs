@@ -1,4 +1,4 @@
-use crate::drust::drumkit::sample::Sample;
+use crate::drums::drumkit::sample::Sample;
 
 #[derive(Debug, Clone, Default)]
 pub struct ChannelMap {

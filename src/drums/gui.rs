@@ -19,7 +19,7 @@ use maolan_baseview::iced::{
 };
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 
-use crate::drust::{download, engine::DrumGizmoEngine, params::ParamId, shared::SharedState};
+use crate::drums::{download, engine::DrumGizmoEngine, params::ParamId, shared::SharedState};
 use maolan_widgets::horizontal_slider::horizontal_slider;
 
 pub const EDITOR_WIDTH: u32 = 400;
@@ -204,7 +204,7 @@ fn poll_engine_load_task(shared: Arc<SharedState>, engine: Arc<DrumGizmoEngine>)
                     let num_channels = unsafe { &*kit_ptr }
                         .channels
                         .len()
-                        .min(crate::drust::engine::MAX_CHANNELS);
+                        .min(crate::drums::engine::MAX_CHANNELS);
                     shared
                         .active_channels
                         .store(num_channels as u32, Ordering::Release);
@@ -817,7 +817,7 @@ impl GuiBridge {
 
         let settings = maolan_baseview::iced::IcedBaseviewSettings {
             window: maolan_baseview::iced::baseview::WindowOpenOptions {
-                title: String::from("Drust"),
+                title: String::from("Maolan Drums"),
                 size: maolan_baseview::iced::baseview::Size::new(
                     EDITOR_WIDTH as f64,
                     EDITOR_HEIGHT as f64,
@@ -858,11 +858,11 @@ impl GuiBridge {
             let floating_open = self.floating_open.clone();
             floating_open.store(true, Ordering::Release);
             let _ = thread::Builder::new()
-                .name("drust-gui".to_string())
+                .name("drums-gui".to_string())
                 .spawn(move || {
                     let settings = maolan_baseview::iced::IcedBaseviewSettings {
                         window: maolan_baseview::iced::baseview::WindowOpenOptions {
-                            title: String::from("Drust"),
+                            title: String::from("Maolan Drums"),
                             size: maolan_baseview::iced::baseview::Size::new(
                                 EDITOR_WIDTH as f64,
                                 EDITOR_HEIGHT as f64,

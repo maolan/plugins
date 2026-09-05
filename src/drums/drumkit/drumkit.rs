@@ -1,4 +1,4 @@
-use crate::drust::drumkit::{Channel, Instrument};
+use crate::drums::drumkit::{Channel, Instrument};
 
 #[derive(Debug, Clone, Default)]
 pub struct DrumKit {

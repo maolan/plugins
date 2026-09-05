@@ -8,8 +8,8 @@ use std::{
     },
 };
 
-use crate::drust::drumkit::{DrumKit, Midimap, loader};
-use crate::drust::utils::random::LockFreeRandom;
+use crate::drums::drumkit::{DrumKit, Midimap, loader};
+use crate::drums::utils::random::LockFreeRandom;
 use parking_lot::{Mutex, RwLock};
 use portable_atomic::AtomicF32;
 use rayon::prelude::*;
@@ -37,7 +37,7 @@ pub(crate) fn load_pool() -> &'static rayon::ThreadPool {
             .unwrap_or(1);
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
-            .thread_name(|i| format!("drust-load-{}", i))
+            .thread_name(|i| format!("drums-load-{}", i))
             .build()
             .expect("Failed to build load thread pool")
     })
@@ -83,7 +83,7 @@ pub struct ChannelPlayback {
     pub delay_remaining: usize,
     pub out_index: usize,
     pub pan: f32,
-    pub side: crate::drust::engine::voice::ChannelSide,
+    pub side: crate::drums::engine::voice::ChannelSide,
 
     pub cached_buffer: *const f32,
     pub cached_buffer_len: usize,
@@ -231,7 +231,7 @@ impl Default for DrumGizmoEngine {
 }
 
 fn select_sample_with_diversity(
-    instr: &crate::drust::drumkit::Instrument,
+    instr: &crate::drums::drumkit::Instrument,
     velocity: f32,
     last_index: Option<usize>,
     round_robin_mix: f32,
@@ -716,8 +716,8 @@ impl DrumGizmoEngine {
         }
     }
 
-    pub fn sync_params(&self, params: &crate::drust::params::ParamStore) {
-        use crate::drust::params::ParamId;
+    pub fn sync_params(&self, params: &crate::drums::params::ParamStore) {
+        use crate::drums::params::ParamId;
         *self.enable_resampling.write() = params.get(ParamId::EnableResampling) >= 0.5;
         *self.humanize_amount.write() = params.get(ParamId::HumanizeAmount) as f32;
         *self.round_robin_mix.write() = params.get(ParamId::RoundRobinMix) as f32;
@@ -1380,7 +1380,7 @@ fn cubic_interpolate(y0: f32, y1: f32, y2: f32, y3: f32, t: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::drust::drumkit::Instrument;
+    use crate::drums::drumkit::Instrument;
 
     fn kit_with_instruments(names: &[&str]) -> DrumKit {
         let mut kit = DrumKit::new();

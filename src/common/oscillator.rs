@@ -1277,7 +1277,25 @@ impl SineOsc {
 
 #[cfg(test)]
 mod tests {
-    use super::SineOsc;
+    use super::{OscType, Oscillator, SineOsc};
+    use crate::common::wavetable::Wavetable;
+    use std::sync::Arc;
+
+    fn sine_wavetable() -> Wavetable {
+        let size = 2048;
+        let table: Vec<f32> = (0..size)
+            .map(|i| (2.0 * std::f32::consts::PI * i as f32 / size as f32).sin())
+            .collect();
+        let mut wt = Wavetable {
+            size,
+            n_tables: 1,
+            size_po2: size.trailing_zeros() as usize,
+            frames: vec![table],
+            ..Default::default()
+        };
+        wt.build_mipmaps();
+        wt
+    }
 
     #[test]
     fn sine_default_filters_do_not_shift_initial_cycles() {
@@ -1300,6 +1318,71 @@ mod tests {
                 mean.abs() < 0.02,
                 "cycle {cycle} has unexpected DC shift: {mean}"
             );
+        }
+    }
+
+    #[test]
+    fn stereo_filters_persist_across_sample_rate_change() {
+        for ty in [OscType::Sine, OscType::Window] {
+            let mut osc = Oscillator::new(ty, 48000.0);
+            osc.set_freq_hz(440.0);
+            osc.set_unison(3, 0.5);
+            match &mut osc {
+                Oscillator::Sine(o) => {
+                    o.set_lowcut(150.0);
+                    o.set_highcut(6000.0);
+                }
+                Oscillator::Window(o) => {
+                    o.set_lowcut(150.0);
+                    o.set_highcut(6000.0);
+                }
+                _ => unreachable!(),
+            }
+            if ty == OscType::Window {
+                osc.set_wavetable(Some(Arc::new(sine_wavetable())));
+            }
+
+            osc.set_sample_rate(96000.0);
+
+            let mut channels_differ = false;
+            for _ in 0..1024 {
+                let (l, r) = osc.next(0.0, 0.0, 0.0);
+                assert!(l.is_finite() && r.is_finite(), "{ty:?} non-finite output");
+                if (l - r).abs() > 1e-6 {
+                    channels_differ = true;
+                }
+            }
+            assert!(channels_differ, "{ty:?} L/R channels should differ");
+        }
+    }
+
+    #[test]
+    fn set_sample_rate_keeps_every_variant_finite() {
+        for ty in [
+            OscType::Classic,
+            OscType::Sine,
+            OscType::Fm2,
+            OscType::Fm3,
+            OscType::Wavetable,
+            OscType::Window,
+            OscType::Modern,
+            OscType::ShNoise,
+            OscType::String,
+            OscType::Alias,
+            OscType::Twist,
+            OscType::AudioInput,
+            OscType::Sample,
+        ] {
+            let mut osc = Oscillator::new(ty, 48000.0);
+            osc.set_freq_hz(220.0);
+            osc.set_sample_rate(44100.0);
+            for _ in 0..256 {
+                let (l, r) = osc.next(0.0, 0.0, 0.0);
+                assert!(
+                    l.is_finite() && r.is_finite(),
+                    "{ty:?} non-finite output after set_sample_rate"
+                );
+            }
         }
     }
 }

@@ -15,15 +15,15 @@ pub mod common;
 pub mod compressor;
 pub mod deesser;
 pub mod delay;
-pub mod drust;
+pub mod drums;
 pub mod eq;
 pub mod formant;
 pub mod kick;
 pub mod limiter;
+pub mod modeler;
 pub mod monitoring;
 pub mod phaser;
 pub mod reverb;
-pub mod rural_modeler;
 pub mod sampler;
 pub mod saturator;
 pub mod simd;
@@ -69,12 +69,12 @@ static PLUGINS: [PluginApi; 22] = [
         create: saturator::clap_create_plugin,
     },
     PluginApi {
-        descriptor: drust::clap_descriptor_ptr,
-        create: drust::clap_create_plugin,
+        descriptor: drums::clap_descriptor_ptr,
+        create: drums::clap_create_plugin,
     },
     PluginApi {
-        descriptor: rural_modeler::clap_descriptor_ptr,
-        create: rural_modeler::clap_create_plugin,
+        descriptor: modeler::clap_descriptor_ptr,
+        create: modeler::clap_create_plugin,
     },
     PluginApi {
         descriptor: reverb::clap_descriptor_ptr,

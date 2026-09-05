@@ -3,7 +3,7 @@ use std::sync::{LazyLock, Mutex};
 
 use serde_json::Value;
 
-use crate::rural_modeler::dsp::error::NamError;
+use crate::modeler::dsp::error::NamError;
 
 pub trait Activation: Send + Sync + std::fmt::Debug {
     fn apply(&self, data: &mut [f32]);

@@ -1,4 +1,4 @@
-use crate::rural_modeler::dsp::error::NamError;
+use crate::modeler::dsp::error::NamError;
 
 pub const LATEST_FULLY_SUPPORTED_NAM_FILE_VERSION: &str = "0.7.0";
 

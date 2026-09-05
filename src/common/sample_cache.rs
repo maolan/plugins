@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 /// A generic cache for decoded audio samples keyed by hash and file path.
 ///
-/// Used by the Sampler and optionally by Drust to avoid loading the same
+/// Used by the Sampler and optionally by Drums to avoid loading the same
 /// audio file more than once per session. The value type `V` is typically
 /// `common::audio_file::AudioFile` or a plugin-specific sample wrapper.
 #[derive(Debug)]

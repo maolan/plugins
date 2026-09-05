@@ -37,7 +37,7 @@ use crate::common::{
     SharedStateExt, apply_param_events, copy_str_to_array, emit_pending_param_events_to_host,
 };
 use crate::common::{bus, fft};
-use crate::rural_modeler::{
+use crate::modeler::{
     dsp::activations::enable_fast_tanh,
     dsp::{
         core::disable_denormals,
@@ -52,9 +52,9 @@ use crate::rural_modeler::{
     state::PluginState,
 };
 
-const PLUGIN_ID: &[u8] = b"rs.maolan.ruralmodeler\0";
-const PLUGIN_NAME: &[u8] = b"Rural Modeler\0";
-const PLUGIN_VENDOR: &[u8] = b"Rural Modeler\0";
+const PLUGIN_ID: &[u8] = b"rs.maolan.modeler\0";
+const PLUGIN_NAME: &[u8] = b"Maolan Modeler\0";
+const PLUGIN_VENDOR: &[u8] = b"maolan\0";
 const PLUGIN_URL: &[u8] = b"\0";
 const PLUGIN_VERSION: &[u8] = b"0.1.0\0";
 const PLUGIN_DESCRIPTION: &[u8] = b"Rust CLAP Neural Amp Modeler\0";
@@ -236,7 +236,7 @@ impl SharedState {
     }
 
     pub fn load_model(&self, path: String, notify_dirty: bool) {
-        tracing::info!(%path, notify_dirty, "RuralModeler load_model");
+        tracing::info!(%path, notify_dirty, "MaolanModeler load_model");
         match NamModel::load(&path) {
             Ok(model) => {
                 let mut wrapper = ResamplingNamModel::new(model, self.sample_rate());
@@ -248,7 +248,7 @@ impl SharedState {
                 *self.model_path.write() = path.clone();
                 *self.model_metadata.write() = Some(metadata);
                 *self.last_error.write() = None;
-                tracing::info!(%path, "RuralModeler load_model success");
+                tracing::info!(%path, "MaolanModeler load_model success");
                 if notify_dirty {
                     self.mark_dirty();
                 }
@@ -266,14 +266,14 @@ impl SharedState {
     }
 
     pub fn load_ir(&self, path: String, notify_dirty: bool) {
-        tracing::info!(%path, notify_dirty, "RuralModeler load_ir");
+        tracing::info!(%path, notify_dirty, "MaolanModeler load_ir");
         match ImpulseResponse::from_wav(&path, self.sample_rate()) {
             Ok(ir) => {
                 self.replace_pending_ir(Some(ir));
                 self.clear_ir_pending.store(false, Ordering::Release);
                 *self.ir_path.write() = path.clone();
                 *self.last_error.write() = None;
-                tracing::info!(%path, "RuralModeler load_ir success");
+                tracing::info!(%path, "MaolanModeler load_ir success");
                 if notify_dirty {
                     self.mark_dirty();
                 }
@@ -350,25 +350,25 @@ impl SharedState {
     fn mark_dirty(&self) {
         let host = self.host.load(Ordering::Acquire);
         if host.is_null() {
-            tracing::warn!("RuralModeler mark_dirty: host is null");
+            tracing::warn!("MaolanModeler mark_dirty: host is null");
             return;
         }
         unsafe {
             let Some(get_extension) = (*host).get_extension else {
-                tracing::warn!("RuralModeler mark_dirty: host get_extension is null");
+                tracing::warn!("MaolanModeler mark_dirty: host get_extension is null");
                 return;
             };
             let ext = get_extension(host, CLAP_EXT_STATE.as_ptr());
             if ext.is_null() {
-                tracing::warn!("RuralModeler mark_dirty: clap.state extension not found");
+                tracing::warn!("MaolanModeler mark_dirty: clap.state extension not found");
                 return;
             }
             let state = &*(ext as *const clap_host_state);
             if let Some(mark_dirty) = state.mark_dirty {
-                tracing::info!("RuralModeler mark_dirty: calling host mark_dirty");
+                tracing::info!("MaolanModeler mark_dirty: calling host mark_dirty");
                 mark_dirty(host);
             } else {
-                tracing::warn!("RuralModeler mark_dirty: host mark_dirty callback is null");
+                tracing::warn!("MaolanModeler mark_dirty: host mark_dirty callback is null");
             }
         }
     }
@@ -616,11 +616,11 @@ impl AudioProcessor {
         self.tone_stack
             .set_treble(shared.params.get(ParamId::ToneTreble) as f32);
         self.tone_stack
-            .set_bass_mode(crate::rural_modeler::dsp::tone_stack::ToneMode::from_u32(
+            .set_bass_mode(crate::modeler::dsp::tone_stack::ToneMode::from_u32(
                 shared.params.get_enum(ParamId::ToneBassMode),
             ));
         self.tone_stack
-            .set_treble_mode(crate::rural_modeler::dsp::tone_stack::ToneMode::from_u32(
+            .set_treble_mode(crate::modeler::dsp::tone_stack::ToneMode::from_u32(
                 shared.params.get_enum(ParamId::ToneTrebleMode),
             ));
 
@@ -712,7 +712,7 @@ impl PluginInstance {
             }
         }
         let bus_id = bus::next_instance_id();
-        let mut bus_data = bus::PluginSharedData::new(bus::PluginType::RuralModeler)
+        let mut bus_data = bus::PluginSharedData::new(bus::PluginType::MaolanModeler)
             .with_fft(bus::FftData::default());
         bus_data = bus::register(bus_id, bus_data);
         Self {
@@ -747,11 +747,11 @@ unsafe fn instance<'a>(plugin: *const clap_plugin) -> &'a mut PluginInstance {
 }
 
 fn initial_resource_paths() -> Option<(Option<String>, Option<String>)> {
-    let model_path = std::env::var("RURAL_MODELER_MODEL")
+    let model_path = std::env::var("MAOLAN_MODELER_MODEL")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
-    let ir_path = std::env::var("RURAL_MODELER_IR")
+    let ir_path = std::env::var("MAOLAN_MODELER_IR")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
@@ -1072,7 +1072,7 @@ unsafe extern "C-unwind" fn ext_state_save(
     let instance = unsafe { instance(plugin) };
     let model_path = instance.shared.model_path.read().clone();
     let ir_path = instance.shared.ir_path.read().clone();
-    tracing::info!(%model_path, %ir_path, "RuralModeler ext_state_save");
+    tracing::info!(%model_path, %ir_path, "MaolanModeler ext_state_save");
     let state = PluginState::from_runtime(&instance.shared.params, model_path, ir_path);
     let Ok(bytes) = state.to_bytes() else {
         return false;
@@ -1086,19 +1086,19 @@ unsafe extern "C-unwind" fn ext_state_load(
     stream: *const clap_istream,
 ) -> bool {
     if plugin.is_null() || stream.is_null() {
-        eprintln!("RuralModeler ext_state_load: null plugin or stream");
+        eprintln!("MaolanModeler ext_state_load: null plugin or stream");
         return false;
     }
     let instance = unsafe { instance(plugin) };
     let mut stream = unsafe { IStream::new_unchecked(stream) };
     let mut bytes = Vec::new();
     if let Err(e) = stream.read_to_end(&mut bytes) {
-        eprintln!("RuralModeler ext_state_load: read_to_end failed: {e}");
+        eprintln!("MaolanModeler ext_state_load: read_to_end failed: {e}");
         return false;
     }
-    eprintln!("RuralModeler ext_state_load: read {} bytes", bytes.len());
+    eprintln!("MaolanModeler ext_state_load: read {} bytes", bytes.len());
     eprintln!(
-        "RuralModeler ext_state_load: first bytes hex: {}",
+        "MaolanModeler ext_state_load: first bytes hex: {}",
         bytes
             .iter()
             .take(64)
@@ -1107,18 +1107,18 @@ unsafe extern "C-unwind" fn ext_state_load(
             .join(" ")
     );
     eprintln!(
-        "RuralModeler ext_state_load: first bytes text: {:?}",
+        "MaolanModeler ext_state_load: first bytes text: {:?}",
         String::from_utf8_lossy(&bytes[..bytes.len().min(128)])
     );
     let state = match PluginState::from_bytes(&bytes) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("RuralModeler ext_state_load: parse failed: {e}");
+            eprintln!("MaolanModeler ext_state_load: parse failed: {e}");
             return false;
         }
     };
     let (model_path, ir_path) = state.apply(&instance.shared.params);
-    eprintln!("RuralModeler ext_state_load: model_path={model_path} ir_path={ir_path}");
+    eprintln!("MaolanModeler ext_state_load: model_path={model_path} ir_path={ir_path}");
     if model_path.is_empty() {
         instance.shared.clear_model();
     } else {
@@ -1129,7 +1129,7 @@ unsafe extern "C-unwind" fn ext_state_load(
     } else {
         instance.shared.restore_ir_path_and_load(ir_path);
     }
-    eprintln!("RuralModeler ext_state_load: done");
+    eprintln!("MaolanModeler ext_state_load: done");
     true
 }
 
@@ -1195,7 +1195,7 @@ unsafe extern "C-unwind" fn ext_resource_directory_set_directory(
     tracing::info!(
         ?dir,
         is_shared,
-        "RuralModeler resource_directory set_directory"
+        "MaolanModeler resource_directory set_directory"
     );
     *instance.shared.resource_dir.write() = dir;
 }
@@ -1228,16 +1228,16 @@ unsafe extern "C-unwind" fn ext_resource_directory_collect(plugin: *const clap_p
             continue;
         };
         let Some(destination_name) = export_destination_name(dir, file_name, source_path) else {
-            tracing::info!(%source, "RuralModeler resource_directory collect: file already in resource directory");
+            tracing::info!(%source, "MaolanModeler resource_directory collect: file already in resource directory");
             continue;
         };
         let destination: PathBuf = dir.join(destination_name);
         if let Err(err) = std::fs::copy(source_path, &destination) {
-            tracing::warn!(%source, ?destination, %err, "RuralModeler resource_directory collect: copy failed");
+            tracing::warn!(%source, ?destination, %err, "MaolanModeler resource_directory collect: copy failed");
             continue;
         }
         let new_path = destination.to_string_lossy().into_owned();
-        tracing::info!(%source, %new_path, all, "RuralModeler resource_directory collect: copied file");
+        tracing::info!(%source, %new_path, all, "MaolanModeler resource_directory collect: copied file");
         match index {
             0 => instance.shared.restore_model_path_and_load(new_path),
             _ => instance.shared.restore_ir_path_and_load(new_path),
@@ -1336,7 +1336,7 @@ unsafe extern "C-unwind" fn ext_gui_is_api_supported(
         return false;
     }
     let api = unsafe { CStr::from_ptr(api) };
-    crate::rural_modeler::gui::is_api_supported(api, is_floating)
+    crate::modeler::gui::is_api_supported(api, is_floating)
 }
 
 unsafe extern "C-unwind" fn ext_gui_get_preferred_api(
@@ -1347,7 +1347,7 @@ unsafe extern "C-unwind" fn ext_gui_get_preferred_api(
     if api.is_null() || is_floating.is_null() {
         return false;
     }
-    let preferred = crate::rural_modeler::gui::preferred_api();
+    let preferred = crate::modeler::gui::preferred_api();
     unsafe {
         *api = preferred.as_ptr();
         *is_floating = false;
@@ -1397,8 +1397,8 @@ unsafe extern "C-unwind" fn ext_gui_get_size(
         return false;
     }
     unsafe {
-        *width = crate::rural_modeler::gui::EDITOR_WIDTH;
-        *height = crate::rural_modeler::gui::EDITOR_HEIGHT;
+        *width = crate::modeler::gui::EDITOR_WIDTH;
+        *height = crate::modeler::gui::EDITOR_HEIGHT;
     }
     true
 }
@@ -1445,7 +1445,7 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     let parent = if api == CLAP_WINDOW_API_X11 {
         #[cfg(unix)]
         {
-            crate::rural_modeler::gui::ParentWindowHandle::X11(unsafe { window.clap_window__.x11 })
+            crate::modeler::gui::ParentWindowHandle::X11(unsafe { window.clap_window__.x11 })
         }
         #[cfg(not(unix))]
         {
@@ -1454,9 +1454,7 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     } else if api == CLAP_WINDOW_API_WIN32 {
         #[cfg(target_os = "windows")]
         {
-            crate::rural_modeler::gui::ParentWindowHandle::Win32(unsafe {
-                window.clap_window__.win32
-            })
+            crate::modeler::gui::ParentWindowHandle::Win32(unsafe { window.clap_window__.win32 })
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1523,7 +1521,7 @@ fn clap_gui_extension_enabled() -> bool {
     #[cfg(target_os = "freebsd")]
     {
         !matches!(
-            std::env::var("RURAL_MODELER_DISABLE_GUI").ok().as_deref(),
+            std::env::var("MAOLAN_MODELER_DISABLE_GUI").ok().as_deref(),
             Some("1") | Some("true") | Some("TRUE") | Some("True")
         )
     }
@@ -1688,25 +1686,25 @@ mod tests {
     #[test]
     fn initial_resource_paths_reads_model_and_ir_env_vars() {
         let _guard = ENV_GUARD.lock().expect("lock env guard");
-        let old_model = std::env::var("RURAL_MODELER_MODEL").ok();
-        let old_ir = std::env::var("RURAL_MODELER_IR").ok();
+        let old_model = std::env::var("MAOLAN_MODELER_MODEL").ok();
+        let old_ir = std::env::var("MAOLAN_MODELER_IR").ok();
 
         unsafe {
-            std::env::set_var("RURAL_MODELER_MODEL", " /tmp/test.nam ");
-            std::env::set_var("RURAL_MODELER_IR", " /tmp/test.wav ");
+            std::env::set_var("MAOLAN_MODELER_MODEL", " /tmp/test.nam ");
+            std::env::set_var("MAOLAN_MODELER_IR", " /tmp/test.wav ");
         }
 
         let paths = initial_resource_paths();
 
         if let Some(value) = old_model {
-            unsafe { std::env::set_var("RURAL_MODELER_MODEL", value) };
+            unsafe { std::env::set_var("MAOLAN_MODELER_MODEL", value) };
         } else {
-            unsafe { std::env::remove_var("RURAL_MODELER_MODEL") };
+            unsafe { std::env::remove_var("MAOLAN_MODELER_MODEL") };
         }
         if let Some(value) = old_ir {
-            unsafe { std::env::set_var("RURAL_MODELER_IR", value) };
+            unsafe { std::env::set_var("MAOLAN_MODELER_IR", value) };
         } else {
-            unsafe { std::env::remove_var("RURAL_MODELER_IR") };
+            unsafe { std::env::remove_var("MAOLAN_MODELER_IR") };
         }
 
         assert_eq!(
@@ -1721,21 +1719,21 @@ mod tests {
     #[test]
     fn initial_resource_paths_returns_none_when_env_vars_missing() {
         let _guard = ENV_GUARD.lock().expect("lock env guard");
-        let old_model = std::env::var("RURAL_MODELER_MODEL").ok();
-        let old_ir = std::env::var("RURAL_MODELER_IR").ok();
+        let old_model = std::env::var("MAOLAN_MODELER_MODEL").ok();
+        let old_ir = std::env::var("MAOLAN_MODELER_IR").ok();
 
         unsafe {
-            std::env::remove_var("RURAL_MODELER_MODEL");
-            std::env::remove_var("RURAL_MODELER_IR");
+            std::env::remove_var("MAOLAN_MODELER_MODEL");
+            std::env::remove_var("MAOLAN_MODELER_IR");
         }
 
         let paths = initial_resource_paths();
 
         if let Some(value) = old_model {
-            unsafe { std::env::set_var("RURAL_MODELER_MODEL", value) };
+            unsafe { std::env::set_var("MAOLAN_MODELER_MODEL", value) };
         }
         if let Some(value) = old_ir {
-            unsafe { std::env::set_var("RURAL_MODELER_IR", value) };
+            unsafe { std::env::set_var("MAOLAN_MODELER_IR", value) };
         }
 
         assert_eq!(paths, None);
@@ -1778,7 +1776,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time must be monotonic")
             .as_nanos();
-        let missing_path = format!("/tmp/rural-modeler-missing-model-{unique}.nam");
+        let missing_path = format!("/tmp/maolan-modeler-missing-model-{unique}.nam");
 
         shared.restore_model_path_and_load(missing_path.clone());
 
@@ -1797,7 +1795,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time must be monotonic")
             .as_nanos();
-        let missing_path = format!("/tmp/rural-modeler-missing-ir-{unique}.wav");
+        let missing_path = format!("/tmp/maolan-modeler-missing-ir-{unique}.wav");
 
         shared.restore_ir_path_and_load(missing_path.clone());
 

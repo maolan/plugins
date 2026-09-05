@@ -2,10 +2,10 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::rural_modeler::dsp::core::Dsp;
-use crate::rural_modeler::dsp::error::NamError;
-use crate::rural_modeler::dsp::nam::{NamModel, ResamplingNamModel};
-use crate::rural_modeler::dsp::version::verify_config_version;
+use crate::modeler::dsp::core::Dsp;
+use crate::modeler::dsp::error::NamError;
+use crate::modeler::dsp::nam::{NamModel, ResamplingNamModel};
+use crate::modeler::dsp::version::verify_config_version;
 
 #[derive(Debug, Clone)]
 pub struct DspData {

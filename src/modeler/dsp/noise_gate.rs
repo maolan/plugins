@@ -1,4 +1,4 @@
-use crate::rural_modeler::dsp::core::amp_to_power_db;
+use crate::modeler::dsp::core::amp_to_power_db;
 
 const MINIMUM_LOUDNESS_DB: f32 = -120.0;
 const MINIMUM_LOUDNESS_POWER: f32 = 1.0e-12;

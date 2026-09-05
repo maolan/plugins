@@ -3,11 +3,11 @@ use std::sync::atomic::Ordering;
 
 use parking_lot::RwLock;
 
-use crate::drust::audio::{AudioFile, ChannelMixer};
-use crate::drust::drumkit::{DrumKit, loader};
-use crate::drust::engine::{ActiveVoice, EventType, Settings, VoiceEvent};
-use crate::drust::midi::MidiMapper;
-use crate::drust::utils::random::Random;
+use crate::drums::audio::{AudioFile, ChannelMixer};
+use crate::drums::drumkit::{DrumKit, loader};
+use crate::drums::engine::{ActiveVoice, EventType, Settings, VoiceEvent};
+use crate::drums::midi::MidiMapper;
+use crate::drums::utils::random::Random;
 
 #[derive(Debug)]
 pub struct DrumGizmoEngine {

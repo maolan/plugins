@@ -1,4 +1,4 @@
-use crate::rural_modeler::dsp::core::Buffer;
+use crate::modeler::dsp::core::Buffer;
 use std::fs::File;
 use std::path::Path;
 use symphonia::core::audio::SampleBuffer;

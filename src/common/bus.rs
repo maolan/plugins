@@ -77,7 +77,7 @@ impl Default for CompressorGrData {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PluginType {
     Eq,
-    Drust,
+    Drums,
     Compressor,
     Deesser,
     Delay,
@@ -87,7 +87,7 @@ pub enum PluginType {
     Stereo,
     Widener,
     Kick,
-    RuralModeler,
+    MaolanModeler,
     Synth,
 }
 
@@ -305,7 +305,7 @@ pub fn get(id: InstanceId) -> Option<PluginSharedData> {
 fn plugin_type_from_u32(v: u32) -> PluginType {
     match v {
         0 => PluginType::Eq,
-        1 => PluginType::Drust,
+        1 => PluginType::Drums,
         2 => PluginType::Compressor,
         3 => PluginType::Deesser,
         4 => PluginType::Delay,
@@ -315,7 +315,7 @@ fn plugin_type_from_u32(v: u32) -> PluginType {
         8 => PluginType::Stereo,
         9 => PluginType::Widener,
         10 => PluginType::Kick,
-        11 => PluginType::RuralModeler,
+        11 => PluginType::MaolanModeler,
         _ => PluginType::Eq,
     }
 }

@@ -5,10 +5,10 @@ use std::{collections::VecDeque, fs, path::Path, sync::Arc};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::rural_modeler::dsp::activations;
-use crate::rural_modeler::dsp::core::{Buffer, SampleRing};
-use crate::rural_modeler::dsp::error::NamError;
-use crate::rural_modeler::dsp::version::verify_config_version;
+use crate::modeler::dsp::activations;
+use crate::modeler::dsp::core::{Buffer, SampleRing};
+use crate::modeler::dsp::error::NamError;
+use crate::modeler::dsp::version::verify_config_version;
 
 #[derive(Debug, Clone, Default)]
 pub struct ModelMetadata {
@@ -1786,7 +1786,7 @@ impl NamModel {
         let mut loaded = Self {
             metadata,
             model,
-            max_buffer_size: crate::rural_modeler::dsp::core::NAM_DEFAULT_MAX_BUFFER_SIZE,
+            max_buffer_size: crate::modeler::dsp::core::NAM_DEFAULT_MAX_BUFFER_SIZE,
             external_sample_rate: None,
         };
         loaded.prewarm(loaded.model.prewarm_samples());
@@ -1844,7 +1844,7 @@ impl NamModel {
     }
 }
 
-impl crate::rural_modeler::dsp::core::Dsp for NamModel {
+impl crate::modeler::dsp::core::Dsp for NamModel {
     fn process_block(&mut self, input: &[f32], output: &mut [f32]) {
         self.process_block(input, output);
     }
@@ -2167,7 +2167,7 @@ impl ResamplingNamModel {
     }
 }
 
-impl crate::rural_modeler::dsp::core::Dsp for ResamplingNamModel {
+impl crate::modeler::dsp::core::Dsp for ResamplingNamModel {
     fn process_block(&mut self, input: &[f32], output: &mut [f32]) {
         self.process_block(input, output);
     }
@@ -2234,7 +2234,7 @@ mod tests {
     use serde_json::json;
 
     use super::{NamError, NamFile, NamModel};
-    use crate::rural_modeler::dsp::activations::{
+    use crate::modeler::dsp::activations::{
         disable_fast_tanh, enable_fast_tanh, is_fast_tanh_enabled,
     };
 

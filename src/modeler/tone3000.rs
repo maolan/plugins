@@ -21,7 +21,7 @@ const DEFAULT_IR_SEARCH_TEMPLATE: &str =
     "{base}/api/v1/tones/search?query={query}&gears=ir&page={page}&page_size={page_size}";
 const DEFAULT_NAM_DOWNLOAD_TEMPLATE: &str = "{base}/api/v1/models?tone_id={id}&page=1&page_size=25";
 const DEFAULT_IR_DOWNLOAD_TEMPLATE: &str = "{base}/api/v1/models?tone_id={id}&page=1&page_size=25";
-const CONFIG_SUBDIR: &str = "rural-modeler";
+const CONFIG_SUBDIR: &str = "maolan-modeler";
 const OAUTH_FILE: &str = "tone3000_oauth.json";
 const LEGACY_API_KEY_FILE: &str = "tone3000_access_token";
 const TOKEN_EXPIRY_SKEW_SECS: u64 = 30;
@@ -288,7 +288,7 @@ fn log_oauth(msg: &str) {
     let path = std::env::var("HOME").ok().and_then(|h| {
         let p = std::path::PathBuf::from(h)
             .join(".config")
-            .join("rural-modeler")
+            .join("maolan-modeler")
             .join("oauth-debug.log");
         std::fs::create_dir_all(p.parent()?).ok();
         Some(p)
@@ -582,7 +582,7 @@ fn config_dir() -> Result<PathBuf, String> {
         .map(|v| v.trim().to_string())
         .ok()
         .filter(|v| !v.is_empty())
-        .ok_or_else(|| "HOME is not set; cannot resolve ~/.config/rural-modeler".to_string())?;
+        .ok_or_else(|| "HOME is not set; cannot resolve ~/.config/maolan-modeler".to_string())?;
     Ok(PathBuf::from(home).join(".config").join(CONFIG_SUBDIR))
 }
 
@@ -802,7 +802,7 @@ fn request_token_refresh(
 fn post_oauth_form(params: &[(&str, &str)]) -> Result<OAuthTokenResponse, String> {
     let url = oauth_token_url();
     let response = match ureq::post(&url)
-        .header("User-Agent", "rural-modeler/0.1")
+        .header("User-Agent", "maolan-modeler/0.1")
         .header("Content-Type", "application/x-www-form-urlencoded")
         .send_form(params.iter().copied())
     {
@@ -971,7 +971,7 @@ pub fn download_to_temp(kind: AssetKind, reference: &str) -> Result<PathBuf, Str
         unix_ms_now(),
         ext
     );
-    let dir = std::env::temp_dir().join("rural-modeler-tone3000");
+    let dir = std::env::temp_dir().join("maolan-modeler-tone3000");
     fs::create_dir_all(&dir).map_err(|e| {
         format!(
             "Failed to create temporary Tone3000 download directory '{}': {e}",
@@ -1051,7 +1051,7 @@ fn get_bytes(url: &str, auth_token: Option<&str>, depth: usize) -> Result<Vec<u8
         .build();
     let agent: ureq::Agent = config.into();
 
-    let mut request = agent.get(url).header("User-Agent", "rural-modeler/0.1");
+    let mut request = agent.get(url).header("User-Agent", "maolan-modeler/0.1");
     if let Some(key) = auth_token {
         request = request
             .header("Authorization", &format!("Bearer {key}"))
