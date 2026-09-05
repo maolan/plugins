@@ -10,55 +10,41 @@ theme.
 
 | Plugin | ID | I/O | Description |
 |--------|-----|-----|-------------|
-| **Drust** | `rs.maolan.drust` | 8× Stereo | DrumGizmo-inspired drum sampler |
 | **Maolan Chorus** | `rs.maolan.chorus` | Stereo | Multi-voice stereo chorus with modulated delay lines |
 | **Maolan Compressor** | `rs.maolan.compressor` | Mono / Stereo | 4-band multiband compressor with lookahead and sidechain boost |
 | **Maolan DeEsser** | `rs.maolan.deesser` | Stereo | Sibilance reduction processor |
 | **Maolan Delay** | `rs.maolan.delay` | Mono / Stereo | Delay with ms / note-sync modes and smooth chasing |
+| **Maolan Drums** | `rs.maolan.drums` | 8× Stereo | DrumGizmo-inspired drum sampler |
 | **Maolan EQ** | `rs.maolan.equalizer` | Mono / Stereo | Parametric EQ with peaking biquad filters |
 | **Maolan Formant** | `rs.maolan.formant` | Stereo | Vowel formant filter using three bandpass biquads |
 | **Maolan Kick** | `rs.maolan.kick` | 16× Mono | Percussive synthesizer with layered oscillators and noise |
 | **Maolan Limiter** | `rs.maolan.limiter` | Stereo | Adaptive clipper/limiter with Vintage and Modern variants |
+| **Maolan Modeler** | `rs.maolan.modeler` | Mono | Neural Amp Modeler with IR convolution |
 | **Maolan Monitoring** | `rs.maolan.monitoring` | Stereo | Monitoring toolbox with 17 reference modes |
 | **Maolan Phaser** | `rs.maolan.phaser` | Stereo | Modulated all-pass cascade phaser with feedback |
 | **Maolan Reverb** | `rs.maolan.reverb` | Mono / Stereo | Stereo reverb |
 | **Maolan Sampler** | `rs.maolan.sampler` | Stereo | Polyphonic sample player |
 | **Maolan Saturator** | `rs.maolan.saturator` | Stereo | Waveshape saturation with sine-based distortion |
-| **Maolan Synth** | `rs.maolan.synth` | Stereo | Polyphonic synthesizer inspired by Surge XT |
 | **Maolan Stereo** | `rs.maolan.stereo` | Stereo | Stereo width processor |
+| **Maolan Synth** | `rs.maolan.synth` | Stereo | Polyphonic synthesizer inspired by Surge XT |
 | **Maolan Vocoder** | `rs.maolan.vocoder` | Stereo | 24-band filter-bank vocoder |
 | **Maolan Widener** | `rs.maolan.widener` | Stereo | Multiband stereo width processor |
-| **Rural Modeler** | `rs.maolan.ruralmodeler` | Mono | Neural Amp Modeler with IR convolution |
 
 ---
 
-## Drust
+## Maolan Chorus
 
-A drum sampler plugin based on DrumGizmo. Supports loading drum kits asynchronously, MIDI note
-triggering with velocity mapping, round-robin sample selection, humanization, and per-output
-channel balancing. Includes a built-in limiter and 16 mono outputs.
+Multi-voice stereo chorus based on the Mire Chorus design. Uses modulated delay lines with linear
+interpolation; even voices read from the left channel and odd voices from the right channel.
 
 **Parameters**
 
 | Parameter | Range | Default | Description |
 |-----------|-------|---------|-------------|
-| Master Gain | −60.0 ... 12.0 dB | 0.0 | Output gain |
-| Enable Resampling | 0 / 1 | 1 | Enable sample-rate conversion |
-| Min Velocity | 0 ... 127 | 0 | Minimum input velocity |
-| Max Velocity | 0 ... 127 | 127 | Maximum input velocity |
-| Resample Quality | 0 ... 3 | 1 | Resampler quality level |
-| Humanize Amount | 0.0 ... 100.0 | 8.0 | Timing humanization |
-| Round Robin Mix | 0.0 ... 1.0 | 0.7 | Round-robin blend |
-| Bleed Amount | 0.0 ... 100.0 | 100.0 | Mic bleed level |
-| Limiter Threshold | −48.0 ... 0.0 dB | −3.0 | Limiter threshold |
-| Normalize Samples | 0 / 1 | 1 | Auto-normalize loaded samples |
-| Random Seed | 0 ... 1000 | 0 | Humanization seed |
-| Voice Limit Max | 1 ... 128 | 128 | Max simultaneous voices |
-| Voice Limit Rampdown | 0.01 ... 2.0 | 0.5 | Voice release rampdown |
-| Balance 1–2 ... 15–16 | −1.0 ... 1.0 | 0.0 | Per-output stereo balance |
-
-**Output channels:** Kick L/R, Snare L/R, HiHat L/R, Toms L/R, Ride L/R, Crash L/R, China/Splash
-L/R, Ambience L/R
+| Mod Depth | 0.0 ... 10.0 ms | 5.0 | LFO delay modulation depth |
+| Mod Rate | 0.1 ... 5.0 Hz | 0.5 | LFO rate |
+| Dry/Wet | 0.0 ... 1.0 | 0.5 | Mix balance |
+| Voices | 2 ... 16 | 8 | Number of chorus voices |
 
 ---
 
@@ -111,73 +97,6 @@ removed.
 
 ---
 
-## Maolan Chorus
-
-Multi-voice stereo chorus based on the Mire Chorus design. Uses modulated delay lines with linear
-interpolation; even voices read from the left channel and odd voices from the right channel.
-
-**Parameters**
-
-| Parameter | Range | Default | Description |
-|-----------|-------|---------|-------------|
-| Mod Depth | 0.0 ... 10.0 ms | 5.0 | LFO delay modulation depth |
-| Mod Rate | 0.1 ... 5.0 Hz | 0.5 | LFO rate |
-| Dry/Wet | 0.0 ... 1.0 | 0.5 | Mix balance |
-| Voices | 2 ... 16 | 8 | Number of chorus voices |
-
----
-
-## Maolan Formant
-
-Vowel formant filter based on the Mire Formant design. Uses three constant-Q bandpass biquads per
-channel tuned to the A, E, I, O, and U vowel tables. The Vowel control crossfades between adjacent
-vowels for continuous timbre changes.
-
-**Parameters**
-
-| Parameter | Range | Default | Description |
-|-----------|-------|---------|-------------|
-| Vowel (A-E-I-O-U) | 0.0 ... 4.0 | 0.0 | Vowel selector with interpolation |
-| Sharpness (Q) | 2.0 ... 40.0 | 2.0 | Bandpass filter Q |
-| Output Gain | −60.0 ... 20.0 dB | 0.0 | Output gain |
-
----
-
-## Maolan Phaser
-
-Modulated all-pass cascade phaser based on the Mire Phaser design. The LFO modulates the center
-frequency of up to 12 first-order all-pass stages. Feedback can be taken from the previous output or
-from a short delay line.
-
-**Parameters**
-
-| Parameter | Range | Default | Description |
-|-----------|-------|---------|-------------|
-| LFO Rate | 0.01 ... 2.0 Hz | 0.1 | LFO rate |
-| LFO Depth | 0.0 ... 1.0 | 0.5 | LFO modulation depth |
-| Manual (Center) | 0.0 ... 1.0 | 0.5 | Manual center position |
-| Feedback | −0.98 ... 0.98 | 0.0 | Feedback amount |
-| Feedback Delay On | 0 / 1 | 0 | Use delay-line feedback instead of previous output |
-| Delay Time | 0.0 ... 20.0 ms | 1.0 | Feedback delay time |
-| Stages (All-pass) | 1 ... 12 | 12 | Number of all-pass stages |
-
----
-
-## Maolan Vocoder
-
-24-band filter-bank vocoder based on the Mire Vocoder design. Each band has its own envelope
-follower that shapes the band-limited signal before summing. Includes a spectral-shift control to
-transpose the filter bank.
-
-**Parameters**
-
-| Parameter | Range | Default | Description |
-|-----------|-------|---------|-------------|
-| Spectral Shift | 0.5 ... 4.0 | 0.5 | Filter-bank frequency shift multiplier |
-| Dry/Wet | 0.0 ... 1.0 | 1.0 | Mix balance |
-
----
-
 ## Maolan Delay
 
 A stereo delay with two time modes: fixed milliseconds or tempo-synced note divisions. Uses
@@ -201,6 +120,36 @@ In **Note** mode the plugin reads the host BPM from the CLAP transport each proc
 
 ---
 
+## Maolan Drums
+
+A drum sampler plugin based on DrumGizmo. Supports loading drum kits asynchronously, MIDI note
+triggering with velocity mapping, round-robin sample selection, humanization, and per-output
+channel balancing. Includes a built-in limiter and 16 mono outputs.
+
+**Parameters**
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Master Gain | −60.0 ... 12.0 dB | 0.0 | Output gain |
+| Enable Resampling | 0 / 1 | 1 | Enable sample-rate conversion |
+| Min Velocity | 0 ... 127 | 0 | Minimum input velocity |
+| Max Velocity | 0 ... 127 | 127 | Maximum input velocity |
+| Resample Quality | 0 ... 3 | 1 | Resampler quality level |
+| Humanize Amount | 0.0 ... 100.0 | 8.0 | Timing humanization |
+| Round Robin Mix | 0.0 ... 1.0 | 0.7 | Round-robin blend |
+| Bleed Amount | 0.0 ... 100.0 | 100.0 | Mic bleed level |
+| Limiter Threshold | −48.0 ... 0.0 dB | −3.0 | Limiter threshold |
+| Normalize Samples | 0 / 1 | 1 | Auto-normalize loaded samples |
+| Random Seed | 0 ... 1000 | 0 | Humanization seed |
+| Voice Limit Max | 1 ... 128 | 128 | Max simultaneous voices |
+| Voice Limit Rampdown | 0.01 ... 2.0 | 0.5 | Voice release rampdown |
+| Balance 1–2 ... 15–16 | −1.0 ... 1.0 | 0.0 | Per-output stereo balance |
+
+**Output channels:** Kick L/R, Snare L/R, HiHat L/R, Toms L/R, Ride L/R, Crash L/R, China/Splash
+L/R, Ambience L/R
+
+---
+
 ## Maolan EQ
 
 A Parametric equalizer using peaking biquad filters. Each band has independent frequency,
@@ -216,6 +165,22 @@ gain, and Q controls.
 | Freq | 20.0 ... 20000.0 Hz | 1000.0 | Band center frequency |
 | Gain | −24.0 ... 24.0 dB | 0.0 | Band gain |
 | Q | 0.1 ... 24.0 | 1.0 | Band Q factor |
+
+---
+
+## Maolan Formant
+
+Vowel formant filter based on the Mire Formant design. Uses three constant-Q bandpass biquads per
+channel tuned to the A, E, I, O, and U vowel tables. The Vowel control crossfades between adjacent
+vowels for continuous timbre changes.
+
+**Parameters**
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Vowel (A-E-I-O-U) | 0.0 ... 4.0 | 0.0 | Vowel selector with interpolation |
+| Sharpness (Q) | 2.0 ... 40.0 | 2.0 | Bandpass filter Q |
+| Output Gain | −60.0 ... 20.0 dB | 0.0 | Output gain |
 
 ---
 
@@ -242,6 +207,33 @@ Adaptive clipper/limiter with two distinct variants.
 
 ---
 
+## Maolan Modeler
+
+A Neural Amp Modeler (NAM) plugin that loads neural network amp models and impulse responses (IRs).
+Features a noise gate, tone stack (Bass/Mid/Treble), input/output calibration, and DC blocking.
+
+**Parameters**
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Input | −20.0 ... 20.0 dB | 0.0 | Input gain |
+| Threshold | −100.0 ... 0.0 dB | −80.0 | Noise-gate threshold |
+| Bass | 0.0 ... 10.0 | 5.0 | Tone-stack bass |
+| Middle | 0.0 ... 10.0 | 5.0 | Tone-stack mid |
+| Treble | 0.0 ... 10.0 | 5.0 | Tone-stack treble |
+| Output | −40.0 ... 40.0 dB | 0.0 | Output gain |
+| Noise Gate Active | 0 / 1 | 1 | Enable noise gate |
+| Tone Stack | 0 / 1 | 1 | Enable tone stack |
+| IR Toggle | 0 / 1 | 1 | Enable impulse response |
+| Calibrate Input | 0 / 1 | 0 | Enable input calibration |
+| Input Calibration Level | −60.0 ... 60.0 dB | 12.0 | Calibration reference |
+| Output Mode | 0=Raw, 1=Normalized, 2=Calibrated | 1 | Output loudness mode |
+
+**Model/IR loading:** Via GUI file picker, or set the environment variables `MAOLAN_MODELER_MODEL`
+and `MAOLAN_MODELER_IR` before starting the host.
+
+---
+
 ## Maolan Monitoring
 
 Monitoring toolbox with 17 reference modes for checking mixes on different playback systems.
@@ -254,6 +246,26 @@ Monitoring toolbox with 17 reference modes for checking mixes on different playb
 
 **Modes:** Out24, Out16, Peaks, Slew, Subs, Mono, Side, Vinyl, Aurat, MonoRat, MonoLat, Phone,
 Cans A, Cans B, Cans C, Cans D, VTrick
+
+---
+
+## Maolan Phaser
+
+Modulated all-pass cascade phaser based on the Mire Phaser design. The LFO modulates the center
+frequency of up to 12 first-order all-pass stages. Feedback can be taken from the previous output or
+from a short delay line.
+
+**Parameters**
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| LFO Rate | 0.01 ... 2.0 Hz | 0.1 | LFO rate |
+| LFO Depth | 0.0 ... 1.0 | 0.5 | LFO modulation depth |
+| Manual (Center) | 0.0 ... 1.0 | 0.5 | Manual center position |
+| Feedback | −0.98 ... 0.98 | 0.0 | Feedback amount |
+| Feedback Delay On | 0 / 1 | 0 | Use delay-line feedback instead of previous output |
+| Delay Time | 0.0 ... 20.0 ms | 1.0 | Feedback delay time |
+| Stages (All-pass) | 1 ... 12 | 12 | Number of all-pass stages |
 
 ---
 
@@ -348,6 +360,22 @@ Simple but effective stereo saturator using sine-wave distortion with an intensi
 
 ---
 
+## Maolan Stereo
+
+Stereo width processor.
+
+**Parameters**
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Width | 0.0 ... 1.0 | 0.5 | Stereo width |
+| Focus | 0.0 ... 1.0 | 0.5 | Focus / center control |
+| Amount | 0.0 ... 1.0 | 1.0 | Effect amount |
+
+Mid/side processing with density controls and delay-based focus.
+
+---
+
 ## Maolan Synth
 
 A polyphonic synthesizer inspired by Surge XT. Features three oscillators with multiple synthesis
@@ -381,19 +409,18 @@ are defined in the plugin parameter list; the table above summarizes the availab
 
 ---
 
-## Maolan Stereo
+## Maolan Vocoder
 
-Stereo width processor.
+24-band filter-bank vocoder based on the Mire Vocoder design. Each band has its own envelope
+follower that shapes the band-limited signal before summing. Includes a spectral-shift control to
+transpose the filter bank.
 
 **Parameters**
 
 | Parameter | Range | Default | Description |
 |-----------|-------|---------|-------------|
-| Width | 0.0 ... 1.0 | 0.5 | Stereo width |
-| Focus | 0.0 ... 1.0 | 0.5 | Focus / center control |
-| Amount | 0.0 ... 1.0 | 1.0 | Effect amount |
-
-Mid/side processing with density controls and delay-based focus.
+| Spectral Shift | 0.5 ... 4.0 | 0.5 | Filter-bank frequency shift multiplier |
+| Dry/Wet | 0.0 ... 1.0 | 1.0 | Mix balance |
 
 ---
 
@@ -418,33 +445,6 @@ crossover filters and mid/side processing per band.
 | X2 | 1000.0 ... 18000.0 Hz | 4000.0 | Mid/high crossover |
 | Strength | 1.0 ... 20.0 ms | 5.0 | Width strength |
 | Monitor Mode | 0=Stereo, 1=Mono, 2=Side | 0 | Output monitor mode |
-
----
-
-## Rural Modeler
-
-A Neural Amp Modeler (NAM) plugin that loads neural network amp models and impulse responses (IRs).
-Features a noise gate, tone stack (Bass/Mid/Treble), input/output calibration, and DC blocking.
-
-**Parameters**
-
-| Parameter | Range | Default | Description |
-|-----------|-------|---------|-------------|
-| Input | −20.0 ... 20.0 dB | 0.0 | Input gain |
-| Threshold | −100.0 ... 0.0 dB | −80.0 | Noise-gate threshold |
-| Bass | 0.0 ... 10.0 | 5.0 | Tone-stack bass |
-| Middle | 0.0 ... 10.0 | 5.0 | Tone-stack mid |
-| Treble | 0.0 ... 10.0 | 5.0 | Tone-stack treble |
-| Output | −40.0 ... 40.0 dB | 0.0 | Output gain |
-| Noise Gate Active | 0 / 1 | 1 | Enable noise gate |
-| Tone Stack | 0 / 1 | 1 | Enable tone stack |
-| IR Toggle | 0 / 1 | 1 | Enable impulse response |
-| Calibrate Input | 0 / 1 | 0 | Enable input calibration |
-| Input Calibration Level | −60.0 ... 60.0 dB | 12.0 | Calibration reference |
-| Output Mode | 0=Raw, 1=Normalized, 2=Calibrated | 1 | Output loudness mode |
-
-**Model/IR loading:** Via GUI file picker, or set the environment variables `RURAL_MODELER_MODEL`
-and `RURAL_MODELER_IR` before starting the host.
 
 ---
 
