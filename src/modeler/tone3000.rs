@@ -18,7 +18,7 @@ const DEFAULT_OAUTH_BASE: &str = "https://www.tone3000.com";
 const DEFAULT_NAM_SEARCH_TEMPLATE: &str =
     "{base}/api/v1/tones/search?query={query}&page={page}&page_size={page_size}";
 const DEFAULT_IR_SEARCH_TEMPLATE: &str =
-    "{base}/api/v1/tones/search?query={query}&gears=ir&page={page}&page_size={page_size}";
+    "{base}/api/v1/tones/search?query={query}&format=ir&page={page}&page_size={page_size}";
 const DEFAULT_NAM_DOWNLOAD_TEMPLATE: &str = "{base}/api/v1/models?tone_id={id}&page=1&page_size=25";
 const DEFAULT_IR_DOWNLOAD_TEMPLATE: &str = "{base}/api/v1/models?tone_id={id}&page=1&page_size=25";
 const CONFIG_SUBDIR: &str = "maolan-modeler";
@@ -53,6 +53,34 @@ pub struct PaginatedSearchResults {
     pub page: u32,
     pub total_pages: u32,
     pub total: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaxonomyKind {
+    Tag,
+    Make,
+    Creator,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaxonomyItem {
+    pub name: String,
+    pub value: String,
+    pub count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SearchFilters {
+    pub tags: Vec<String>,
+    pub makes: Vec<String>,
+    pub creators: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Taxonomies {
+    pub tags: Vec<TaxonomyItem>,
+    pub makes: Vec<TaxonomyItem>,
+    pub creators: Vec<TaxonomyItem>,
 }
 
 #[derive(Debug, Clone)]
@@ -843,6 +871,7 @@ pub fn search(
     page: u32,
     page_size: u32,
     gears: Option<&str>,
+    filters: &SearchFilters,
 ) -> Result<PaginatedSearchResults, String> {
     let config = Config::from_env();
     let encoded = urlencoding::encode(query).into_owned();
@@ -856,6 +885,19 @@ pub fn search(
     {
         url.push_str("&gears=");
         url.push_str(&urlencoding::encode(gears));
+    }
+    match kind {
+        AssetKind::Nam => append_query_param(&mut url, "format", "nam"),
+        AssetKind::Ir => {}
+    }
+    if !filters.tags.is_empty() {
+        append_query_param(&mut url, "tags", &filters.tags.join("_"));
+    }
+    if !filters.makes.is_empty() {
+        append_query_param(&mut url, "makes", &filters.makes.join("_"));
+    }
+    if !filters.creators.is_empty() {
+        append_query_param(&mut url, "creators", &filters.creators.join("_"));
     }
     let mut fallback_urls = Vec::new();
     if let Some(url) = fallback_search_url(kind, &url) {
@@ -902,21 +944,77 @@ pub fn search(
     let value: Value = serde_json::from_slice(&body)
         .map_err(|e| format!("Tone3000 search response is not valid JSON: {e}"))?;
     let (page, total_pages, total) = extract_pagination(&value);
-    let mut results = extract_search_results(&value);
-    for item in &mut results {
-        item.variations = fetch_tone_variations(kind, &config, &item.id);
-        if let Some(url) = &item.picture_url
-            && let Ok(bytes) = get_bytes(url, config.auth_token.as_deref(), 2)
-        {
-            item.picture = Some(bytes);
-        }
-    }
+    let results = extract_search_results(&value);
     Ok(PaginatedSearchResults {
         items: results,
         page,
         total_pages,
         total,
     })
+}
+
+pub fn fetch_picture(url: &str) -> Result<Vec<u8>, String> {
+    let config = Config::from_env();
+    get_bytes(url, config.auth_token.as_deref(), 2)
+}
+
+pub fn load_taxonomies() -> Result<Taxonomies, String> {
+    Ok(Taxonomies {
+        tags: list_taxonomy(TaxonomyKind::Tag, 25, None)?,
+        makes: list_taxonomy(TaxonomyKind::Make, 25, None)?,
+        creators: list_taxonomy(TaxonomyKind::Creator, 10, None)?,
+    })
+}
+
+pub fn search_creators(query: &str) -> Result<Vec<TaxonomyItem>, String> {
+    list_taxonomy(TaxonomyKind::Creator, 10, Some(query))
+}
+
+fn list_taxonomy(
+    kind: TaxonomyKind,
+    page_size: u32,
+    query: Option<&str>,
+) -> Result<Vec<TaxonomyItem>, String> {
+    let config = Config::from_env();
+    let path = match kind {
+        TaxonomyKind::Tag => "tags",
+        TaxonomyKind::Make => "makes",
+        TaxonomyKind::Creator => "users",
+    };
+    let mut url = format!(
+        "{}/api/v1/{path}?sort=tones&page=1&page_size={page_size}",
+        config.base.trim_end_matches('/')
+    );
+    if let Some(query) = query.map(str::trim).filter(|query| !query.is_empty()) {
+        append_query_param(&mut url, "query", query);
+    }
+    let mut fallback_urls = Vec::new();
+    if let Some(url) = host_fallback_url(&url) {
+        fallback_urls.push(url);
+    }
+    let body = match get_bytes(&url, config.auth_token.as_deref(), 2) {
+        Ok(body) => body,
+        Err(primary_err) => {
+            let mut last_error = primary_err.clone();
+            let mut fallback_body = None;
+            for alt_url in fallback_urls {
+                match get_bytes(&alt_url, config.auth_token.as_deref(), 2) {
+                    Ok(body) => {
+                        fallback_body = Some(body);
+                        break;
+                    }
+                    Err(alt_err) => {
+                        last_error =
+                            format!("{last_error}; fallback '{alt_url}' also failed: {alt_err}");
+                    }
+                }
+            }
+            fallback_body.ok_or(last_error)?
+        }
+    };
+    let value: Value = serde_json::from_slice(&body)
+        .map_err(|e| format!("Tone3000 taxonomy response is not valid JSON: {e}"))?;
+    Ok(extract_taxonomy_items(kind, &value))
 }
 
 fn host_fallback_url(url: &str) -> Option<String> {
@@ -927,6 +1025,17 @@ fn host_fallback_url(url: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn append_query_param(url: &mut String, key: &str, value: &str) {
+    if url.contains('?') {
+        url.push('&');
+    } else {
+        url.push('?');
+    }
+    url.push_str(key);
+    url.push('=');
+    url.push_str(&urlencoding::encode(value));
 }
 
 pub fn download_to_temp(kind: AssetKind, reference: &str) -> Result<PathBuf, String> {
@@ -1288,6 +1397,62 @@ fn extract_search_results(value: &Value) -> Vec<SearchItem> {
     Vec::new()
 }
 
+fn extract_taxonomy_items(kind: TaxonomyKind, value: &Value) -> Vec<TaxonomyItem> {
+    let arrays = [
+        value.get("data").and_then(Value::as_array),
+        value.get("items").and_then(Value::as_array),
+        value.get("results").and_then(Value::as_array),
+        value.as_array(),
+    ];
+
+    for arr_opt in arrays {
+        let Some(arr) = arr_opt else {
+            continue;
+        };
+        let mut out = Vec::new();
+        for entry in arr {
+            let value = match kind {
+                TaxonomyKind::Creator => entry.get("username").and_then(Value::as_str),
+                TaxonomyKind::Tag | TaxonomyKind::Make => entry.get("name").and_then(Value::as_str),
+            }
+            .map(str::trim)
+            .filter(|name| !name.is_empty());
+            let Some(value) = value else {
+                continue;
+            };
+
+            let name = match kind {
+                TaxonomyKind::Creator => entry
+                    .get("display_name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|display_name| !display_name.is_empty())
+                    .unwrap_or(value),
+                TaxonomyKind::Tag | TaxonomyKind::Make => value,
+            };
+            let count = entry
+                .get("tones_count")
+                .or_else(|| entry.get("models_count"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32;
+            out.push(TaxonomyItem {
+                name: name.to_string(),
+                value: value.to_string(),
+                count,
+            });
+        }
+        if !out.is_empty() {
+            return out;
+        }
+    }
+    Vec::new()
+}
+
+pub fn fetch_variations(kind: AssetKind, tone_id: &str) -> Vec<SearchVariation> {
+    let config = Config::from_env();
+    fetch_tone_variations(kind, &config, tone_id)
+}
+
 fn fetch_tone_variations(kind: AssetKind, config: &Config, tone_id: &str) -> Vec<SearchVariation> {
     let template = match kind {
         AssetKind::Nam => &config.nam_download_template,
@@ -1552,6 +1717,49 @@ mod tests {
             out[0].picture_url,
             Some("https://cdn.example.com/lead.jpg".to_string())
         );
+    }
+
+    #[test]
+    fn extracts_taxonomy_items_from_documented_payloads() {
+        let tags = json!({
+            "data": [
+                {"id": 1, "name": "clean", "tones_count": 12, "url": "https://tone3000.com/tags/clean"}
+            ],
+            "page": 1,
+            "total_pages": 1,
+            "total": 1
+        });
+        let makes = json!({
+            "data": [
+                {"id": 2, "name": "Fender Twin Reverb", "tones_count": 8, "url": "https://tone3000.com/makes/fender"}
+            ]
+        });
+        let creators = json!({
+            "data": [
+                {
+                    "id": 3,
+                    "username": "tone3000",
+                    "display_name": "TONE3000",
+                    "tones_count": 42,
+                    "models_count": 50
+                }
+            ]
+        });
+
+        let tag_items = extract_taxonomy_items(TaxonomyKind::Tag, &tags);
+        assert_eq!(tag_items[0].name, "clean");
+        assert_eq!(tag_items[0].value, "clean");
+        assert_eq!(tag_items[0].count, 12);
+
+        let make_items = extract_taxonomy_items(TaxonomyKind::Make, &makes);
+        assert_eq!(make_items[0].name, "Fender Twin Reverb");
+        assert_eq!(make_items[0].value, "Fender Twin Reverb");
+        assert_eq!(make_items[0].count, 8);
+
+        let creator_items = extract_taxonomy_items(TaxonomyKind::Creator, &creators);
+        assert_eq!(creator_items[0].name, "TONE3000");
+        assert_eq!(creator_items[0].value, "tone3000");
+        assert_eq!(creator_items[0].count, 42);
     }
 
     #[test]

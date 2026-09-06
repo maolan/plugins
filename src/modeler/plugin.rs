@@ -102,6 +102,10 @@ pub struct SharedState {
     pub params: ParamStore,
     pub model_path: RwLock<String>,
     pub ir_path: RwLock<String>,
+    pub model_display_name: RwLock<String>,
+    pub model_picture_path: RwLock<String>,
+    pub ir_display_name: RwLock<String>,
+    pub ir_picture_path: RwLock<String>,
     pub resource_dir: RwLock<Option<String>>,
     pub model_metadata: RwLock<Option<ModelMetadata>>,
     pub last_error: RwLock<Option<String>>,
@@ -123,6 +127,10 @@ impl Default for SharedState {
             params: ParamStore::default(),
             model_path: RwLock::new(String::new()),
             ir_path: RwLock::new(String::new()),
+            model_display_name: RwLock::new(String::new()),
+            model_picture_path: RwLock::new(String::new()),
+            ir_display_name: RwLock::new(String::new()),
+            ir_picture_path: RwLock::new(String::new()),
             resource_dir: RwLock::new(None),
             model_metadata: RwLock::new(None),
             last_error: RwLock::new(None),
@@ -141,6 +149,40 @@ impl Default for SharedState {
 }
 
 impl SharedState {
+    fn display_name_for_path(path: &str) -> String {
+        Path::new(path)
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| path.to_string())
+    }
+
+    fn set_model_preview(&self, display_name: Option<String>, picture_path: Option<String>) {
+        let display_name = display_name
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| Self::display_name_for_path(&self.model_path.read()));
+        *self.model_display_name.write() = display_name;
+        *self.model_picture_path.write() = picture_path.unwrap_or_default();
+    }
+
+    fn set_ir_preview(&self, display_name: Option<String>, picture_path: Option<String>) {
+        let display_name = display_name
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| Self::display_name_for_path(&self.ir_path.read()));
+        *self.ir_display_name.write() = display_name;
+        *self.ir_picture_path.write() = picture_path.unwrap_or_default();
+    }
+
+    pub fn set_model_picture_path(&self, path: String) {
+        *self.model_picture_path.write() = path;
+    }
+
+    pub fn set_ir_picture_path(&self, path: String) {
+        *self.ir_picture_path.write() = path;
+    }
+
     fn replace_pending_model(&self, model: Option<ResamplingNamModel>) {
         let next = model.map(Box::new).map_or(null_mut(), Box::into_raw);
         let old = self.pending_model.swap(next, Ordering::AcqRel);
@@ -236,6 +278,16 @@ impl SharedState {
     }
 
     pub fn load_model(&self, path: String, notify_dirty: bool) {
+        self.load_model_with_preview(path, notify_dirty, None, None);
+    }
+
+    pub fn load_model_with_preview(
+        &self,
+        path: String,
+        notify_dirty: bool,
+        display_name: Option<String>,
+        picture_path: Option<String>,
+    ) {
         tracing::info!(%path, notify_dirty, "MaolanModeler load_model");
         match NamModel::load(&path) {
             Ok(model) => {
@@ -246,6 +298,7 @@ impl SharedState {
                 self.replace_pending_model(Some(wrapper));
                 self.clear_model_pending.store(false, Ordering::Release);
                 *self.model_path.write() = path.clone();
+                self.set_model_preview(display_name, picture_path);
                 *self.model_metadata.write() = Some(metadata);
                 *self.last_error.write() = None;
                 tracing::info!(%path, "MaolanModeler load_model success");
@@ -261,17 +314,37 @@ impl SharedState {
     }
 
     pub fn restore_model_path_and_load(&self, path: String) {
+        self.restore_model_path_and_load_with_preview(path, None, None);
+    }
+
+    pub fn restore_model_path_and_load_with_preview(
+        &self,
+        path: String,
+        display_name: Option<String>,
+        picture_path: Option<String>,
+    ) {
         *self.model_path.write() = path.clone();
-        self.load_model(path, false);
+        self.load_model_with_preview(path, false, display_name, picture_path);
     }
 
     pub fn load_ir(&self, path: String, notify_dirty: bool) {
+        self.load_ir_with_preview(path, notify_dirty, None, None);
+    }
+
+    pub fn load_ir_with_preview(
+        &self,
+        path: String,
+        notify_dirty: bool,
+        display_name: Option<String>,
+        picture_path: Option<String>,
+    ) {
         tracing::info!(%path, notify_dirty, "MaolanModeler load_ir");
         match ImpulseResponse::from_wav(&path, self.sample_rate()) {
             Ok(ir) => {
                 self.replace_pending_ir(Some(ir));
                 self.clear_ir_pending.store(false, Ordering::Release);
                 *self.ir_path.write() = path.clone();
+                self.set_ir_preview(display_name, picture_path);
                 *self.last_error.write() = None;
                 tracing::info!(%path, "MaolanModeler load_ir success");
                 if notify_dirty {
@@ -285,26 +358,59 @@ impl SharedState {
     }
 
     pub fn restore_ir_path_and_load(&self, path: String) {
-        *self.ir_path.write() = path.clone();
-        self.load_ir(path, false);
+        self.restore_ir_path_and_load_with_preview(path, None, None);
     }
 
-    pub fn clear_model(&self) {
+    pub fn restore_ir_path_and_load_with_preview(
+        &self,
+        path: String,
+        display_name: Option<String>,
+        picture_path: Option<String>,
+    ) {
+        *self.ir_path.write() = path.clone();
+        self.load_ir_with_preview(path, false, display_name, picture_path);
+    }
+
+    fn clear_model_with_dirty(&self, notify_dirty: bool) {
         self.replace_pending_model(None);
         self.clear_model_pending.store(true, Ordering::Release);
         *self.model_path.write() = String::new();
+        *self.model_display_name.write() = String::new();
+        *self.model_picture_path.write() = String::new();
         *self.model_metadata.write() = None;
         *self.last_error.write() = None;
-        self.mark_dirty();
+        if notify_dirty {
+            self.mark_dirty();
+        }
         self.latency_changed();
     }
 
-    pub fn clear_ir(&self) {
+    pub fn clear_model(&self) {
+        self.clear_model_with_dirty(true);
+    }
+
+    pub fn restore_clear_model(&self) {
+        self.clear_model_with_dirty(false);
+    }
+
+    fn clear_ir_with_dirty(&self, notify_dirty: bool) {
         self.replace_pending_ir(None);
         self.clear_ir_pending.store(true, Ordering::Release);
         *self.ir_path.write() = String::new();
+        *self.ir_display_name.write() = String::new();
+        *self.ir_picture_path.write() = String::new();
         *self.last_error.write() = None;
-        self.mark_dirty();
+        if notify_dirty {
+            self.mark_dirty();
+        }
+    }
+
+    pub fn clear_ir(&self) {
+        self.clear_ir_with_dirty(true);
+    }
+
+    pub fn restore_clear_ir(&self) {
+        self.clear_ir_with_dirty(false);
     }
 
     pub fn request_gui_closed(&self) {
@@ -1072,8 +1178,20 @@ unsafe extern "C-unwind" fn ext_state_save(
     let instance = unsafe { instance(plugin) };
     let model_path = instance.shared.model_path.read().clone();
     let ir_path = instance.shared.ir_path.read().clone();
+    let model_display_name = instance.shared.model_display_name.read().clone();
+    let model_picture_path = instance.shared.model_picture_path.read().clone();
+    let ir_display_name = instance.shared.ir_display_name.read().clone();
+    let ir_picture_path = instance.shared.ir_picture_path.read().clone();
     tracing::info!(%model_path, %ir_path, "MaolanModeler ext_state_save");
-    let state = PluginState::from_runtime(&instance.shared.params, model_path, ir_path);
+    let state = PluginState::from_runtime(
+        &instance.shared.params,
+        model_path,
+        ir_path,
+        model_display_name,
+        model_picture_path,
+        ir_display_name,
+        ir_picture_path,
+    );
     let Ok(bytes) = state.to_bytes() else {
         return false;
     };
@@ -1117,17 +1235,32 @@ unsafe extern "C-unwind" fn ext_state_load(
             return false;
         }
     };
-    let (model_path, ir_path) = state.apply(&instance.shared.params);
+    let (
+        model_path,
+        ir_path,
+        model_display_name,
+        model_picture_path,
+        ir_display_name,
+        ir_picture_path,
+    ) = state.apply(&instance.shared.params);
     eprintln!("MaolanModeler ext_state_load: model_path={model_path} ir_path={ir_path}");
     if model_path.is_empty() {
-        instance.shared.clear_model();
+        instance.shared.restore_clear_model();
     } else {
-        instance.shared.restore_model_path_and_load(model_path);
+        instance.shared.restore_model_path_and_load_with_preview(
+            model_path,
+            Some(model_display_name),
+            Some(model_picture_path),
+        );
     }
     if ir_path.is_empty() {
-        instance.shared.clear_ir();
+        instance.shared.restore_clear_ir();
     } else {
-        instance.shared.restore_ir_path_and_load(ir_path);
+        instance.shared.restore_ir_path_and_load_with_preview(
+            ir_path,
+            Some(ir_display_name),
+            Some(ir_picture_path),
+        );
     }
     eprintln!("MaolanModeler ext_state_load: done");
     true
@@ -1163,6 +1296,8 @@ fn resource_files(shared: &SharedState) -> Vec<String> {
     for path in [
         shared.model_path.read().clone(),
         shared.ir_path.read().clone(),
+        shared.model_picture_path.read().clone(),
+        shared.ir_picture_path.read().clone(),
     ] {
         if path.is_empty() {
             continue;
@@ -1212,6 +1347,8 @@ unsafe extern "C-unwind" fn ext_resource_directory_collect(plugin: *const clap_p
     let sources = [
         instance.shared.model_path.read().clone(),
         instance.shared.ir_path.read().clone(),
+        instance.shared.model_picture_path.read().clone(),
+        instance.shared.ir_picture_path.read().clone(),
     ];
     for (index, source) in sources.iter().enumerate() {
         if source.is_empty() {
@@ -1239,8 +1376,26 @@ unsafe extern "C-unwind" fn ext_resource_directory_collect(plugin: *const clap_p
         let new_path = destination.to_string_lossy().into_owned();
         tracing::info!(%source, %new_path, all, "MaolanModeler resource_directory collect: copied file");
         match index {
-            0 => instance.shared.restore_model_path_and_load(new_path),
-            _ => instance.shared.restore_ir_path_and_load(new_path),
+            0 => {
+                let display_name = instance.shared.model_display_name.read().clone();
+                let picture_path = instance.shared.model_picture_path.read().clone();
+                instance.shared.restore_model_path_and_load_with_preview(
+                    new_path,
+                    Some(display_name),
+                    Some(picture_path),
+                );
+            }
+            1 => {
+                let display_name = instance.shared.ir_display_name.read().clone();
+                let picture_path = instance.shared.ir_picture_path.read().clone();
+                instance.shared.restore_ir_path_and_load_with_preview(
+                    new_path,
+                    Some(display_name),
+                    Some(picture_path),
+                );
+            }
+            2 => instance.shared.set_model_picture_path(new_path),
+            _ => instance.shared.set_ir_picture_path(new_path),
         }
     }
 }
@@ -1636,13 +1791,13 @@ pub unsafe fn create_plugin(
 #[cfg(test)]
 mod tests {
     use super::{ModelMetadata, SharedState, initial_resource_paths, resource_files};
-    use clap_clap::ffi::{CLAP_EXT_GUI, CLAP_VERSION};
-    use clap_clap::ffi::{clap_host, clap_host_gui};
+    use clap_clap::ffi::{CLAP_EXT_GUI, CLAP_EXT_STATE, CLAP_VERSION};
+    use clap_clap::ffi::{clap_host, clap_host_gui, clap_host_state};
     use std::{
         ffi::{CStr, c_char, c_void},
         ptr::null,
-        sync::atomic::AtomicBool,
         sync::atomic::Ordering,
+        sync::atomic::{AtomicBool, AtomicU32},
         sync::{LazyLock, Mutex},
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -1652,6 +1807,7 @@ mod tests {
     struct TestGuiHostState {
         closed_called: AtomicBool,
         was_destroyed: AtomicBool,
+        dirty_count: AtomicU32,
     }
 
     static TEST_HOST_GUI_EXT: clap_host_gui = clap_host_gui {
@@ -1660,6 +1816,10 @@ mod tests {
         request_show: None,
         request_hide: None,
         closed: Some(test_host_gui_closed),
+    };
+
+    static TEST_HOST_STATE_EXT: clap_host_state = clap_host_state {
+        mark_dirty: Some(test_host_mark_dirty),
     };
 
     unsafe extern "C-unwind" fn test_host_get_extension(
@@ -1672,6 +1832,8 @@ mod tests {
         let id = unsafe { CStr::from_ptr(extension_id) };
         if id == CLAP_EXT_GUI {
             &raw const TEST_HOST_GUI_EXT as *const _ as *const c_void
+        } else if id == CLAP_EXT_STATE {
+            &raw const TEST_HOST_STATE_EXT as *const _ as *const c_void
         } else {
             null()
         }
@@ -1681,6 +1843,11 @@ mod tests {
         let state = unsafe { &*((*host).host_data as *const TestGuiHostState) };
         state.closed_called.store(true, Ordering::Release);
         state.was_destroyed.store(was_destroyed, Ordering::Release);
+    }
+
+    unsafe extern "C-unwind" fn test_host_mark_dirty(host: *const clap_host) {
+        let state = unsafe { &*((*host).host_data as *const TestGuiHostState) };
+        state.dirty_count.fetch_add(1, Ordering::AcqRel);
     }
 
     #[test]
@@ -1830,6 +1997,49 @@ mod tests {
             resource_files(&shared),
             vec!["/session/resources/model.nam", "/session/resources/ir.wav"]
         );
+
+        *shared.model_picture_path.write() = "/session/resources/model-picture".to_string();
+        assert_eq!(
+            resource_files(&shared),
+            vec![
+                "/session/resources/model.nam",
+                "/session/resources/ir.wav",
+                "/session/resources/model-picture"
+            ]
+        );
+    }
+
+    #[test]
+    fn restore_clears_do_not_mark_host_dirty() {
+        let shared = SharedState::default();
+        let host_state = TestGuiHostState {
+            closed_called: AtomicBool::new(false),
+            was_destroyed: AtomicBool::new(false),
+            dirty_count: AtomicU32::new(0),
+        };
+        let host = clap_host {
+            clap_version: CLAP_VERSION,
+            host_data: (&host_state as *const TestGuiHostState)
+                .cast_mut()
+                .cast::<c_void>(),
+            name: c"test-host".as_ptr(),
+            vendor: c"test".as_ptr(),
+            url: c"https://example.invalid".as_ptr(),
+            version: c"0.0.0".as_ptr(),
+            get_extension: Some(test_host_get_extension),
+            request_restart: None,
+            request_process: None,
+            request_callback: None,
+        };
+        shared.set_host(&host);
+
+        shared.restore_clear_model();
+        shared.restore_clear_ir();
+        assert_eq!(host_state.dirty_count.load(Ordering::Acquire), 0);
+
+        shared.clear_model();
+        shared.clear_ir();
+        assert_eq!(host_state.dirty_count.load(Ordering::Acquire), 2);
     }
 
     #[test]
@@ -1838,6 +2048,7 @@ mod tests {
         let host_state = TestGuiHostState {
             closed_called: AtomicBool::new(false),
             was_destroyed: AtomicBool::new(true),
+            dirty_count: AtomicU32::new(0),
         };
         let host = clap_host {
             clap_version: CLAP_VERSION,

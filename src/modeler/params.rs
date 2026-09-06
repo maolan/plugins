@@ -186,7 +186,7 @@ pub const PARAMS: [ParamDef; ParamId::COUNT] = [
         module: "Calibration",
         min: 0.0,
         max: 1.0,
-        default: 0.0,
+        default: 1.0,
         step: 1.0,
         flags: BOOL_FLAGS,
     },

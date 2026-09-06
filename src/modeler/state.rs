@@ -19,6 +19,14 @@ pub struct PluginState {
     pub model_path: String,
     #[serde(default, rename = "IRPath")]
     pub ir_path: String,
+    #[serde(default, rename = "NAMDisplayName")]
+    pub model_display_name: String,
+    #[serde(default, rename = "NAMPicturePath")]
+    pub model_picture_path: String,
+    #[serde(default, rename = "IRDisplayName")]
+    pub ir_display_name: String,
+    #[serde(default, rename = "IRPicturePath")]
+    pub ir_picture_path: String,
 }
 
 fn default_version() -> String {
@@ -32,12 +40,24 @@ impl Default for PluginState {
             params: BTreeMap::new(),
             model_path: String::new(),
             ir_path: String::new(),
+            model_display_name: String::new(),
+            model_picture_path: String::new(),
+            ir_display_name: String::new(),
+            ir_picture_path: String::new(),
         }
     }
 }
 
 impl PluginState {
-    pub fn from_runtime(params: &ParamStore, model_path: String, ir_path: String) -> Self {
+    pub fn from_runtime(
+        params: &ParamStore,
+        model_path: String,
+        ir_path: String,
+        model_display_name: String,
+        model_picture_path: String,
+        ir_display_name: String,
+        ir_picture_path: String,
+    ) -> Self {
         let mut params_map = BTreeMap::new();
         for def in PARAMS.iter() {
             params_map.insert(def.name.to_string(), params.get(def.id));
@@ -47,10 +67,14 @@ impl PluginState {
             params: params_map,
             model_path,
             ir_path,
+            model_display_name,
+            model_picture_path,
+            ir_display_name,
+            ir_picture_path,
         }
     }
 
-    pub fn apply(self, params: &ParamStore) -> (String, String) {
+    pub fn apply(self, params: &ParamStore) -> (String, String, String, String, String, String) {
         for def in PARAMS.iter() {
             if let Some(&value) = self.params.get(def.name) {
                 params.set(def.id, sanitize_param_value(def.id, value));
@@ -58,7 +82,14 @@ impl PluginState {
                 params.set(def.id, def.default);
             }
         }
-        (self.model_path, self.ir_path)
+        (
+            self.model_path,
+            self.ir_path,
+            self.model_display_name,
+            self.model_picture_path,
+            self.ir_display_name,
+            self.ir_picture_path,
+        )
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {

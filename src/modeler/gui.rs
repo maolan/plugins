@@ -14,9 +14,12 @@ use clap_clap::ffi::CLAP_WINDOW_API_WIN32;
 use clap_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::widget::image::Image;
 use maolan_baseview::iced::{
-    Alignment, Element, Length, Task, Theme,
+    Alignment, Background, Border, Color, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{button, checkbox, column, container, radio, row, scrollable, text, text_input},
+    widget::{
+        button, button::Status, checkbox, column, container, mouse_area, radio, row, scrollable,
+        text, text_input,
+    },
     window,
 };
 use maolan_widgets::arch_slider::arch_slider;
@@ -27,7 +30,10 @@ use crate::{
     modeler::{
         params::{PARAMS, ParamId},
         plugin::SharedState,
-        tone3000::{self, AssetKind, PaginatedSearchResults, SearchItem, SearchVariation},
+        tone3000::{
+            self, AssetKind, PaginatedSearchResults, SearchFilters, SearchItem, SearchVariation,
+            Taxonomies, TaxonomyItem,
+        },
     },
 };
 
@@ -94,6 +100,23 @@ pub enum Message {
     ToneSearchIrs,
     ToneSearchIrsComplete(PaginatedSearchResults),
     ToneSearchIrsFailed(String),
+    TonePictureLoaded(AssetKind, usize, String, Result<Vec<u8>, String>),
+    ToneVariationsLoaded(AssetKind, usize, String, Vec<SearchVariation>),
+    ToneTaxonomiesLoad,
+    ToneTaxonomiesLoaded(Result<Taxonomies, String>),
+    ToneBrowserModeSelected(ToneBrowserMode),
+    ToggleToneTagsMenu,
+    ToneTagToggled(String, bool),
+    ToneTagsClear,
+    ToggleToneModelsMenu,
+    ToneModelFilterToggled(String, bool),
+    ToneModelsClear,
+    ToggleToneCreatorsMenu,
+    ToneCreatorToggled(String, bool),
+    ToneCreatorsClear,
+    ToneCreatorQueryChanged(String),
+    ToneCreatorsSearch,
+    ToneCreatorsLoaded(Result<Vec<TaxonomyItem>, String>),
     ToneModelPagePrev,
     ToneModelPageNext,
     ToneIrPagePrev,
@@ -102,14 +125,15 @@ pub enum Message {
     ToneModelGearFullRig(bool),
     ToneModelGearPedal(bool),
     ToneModelGearOutboard(bool),
-    ToneModelVariationSelected(String),
+    ToneModelVariationSelected(String, String, Option<String>),
     ToneModelDownloaded,
-    ToneIrVariationSelected(String),
+    ToneIrVariationSelected(String, String, Option<String>),
     ToneIrDownloaded,
     ToneOAuthClientIdChanged(String),
     ToneOAuthBrowserLogin,
     ToneOAuthCompleted,
     ToneOAuthClear,
+    ToggleToneSettings,
     ToggleBassModeMenu,
     ToggleTrebleModeMenu,
     WindowClosed,
@@ -121,9 +145,12 @@ struct State {
     error: Option<String>,
     loading: Option<String>,
     tone_oauth_client_id: String,
+    tone_browser_mode: ToneBrowserMode,
     tone_model_query: String,
     tone_model_results: Vec<SearchItem>,
     tone_model_pictures: Vec<Option<maolan_baseview::iced::widget::image::Handle>>,
+    tone_model_picture_paths: Vec<Option<String>>,
+    tone_model_variations_loading: Vec<bool>,
     tone_model_page: u32,
     tone_model_total_pages: u32,
     tone_model_gear_amp: bool,
@@ -131,13 +158,28 @@ struct State {
     tone_model_gear_pedal: bool,
     tone_model_gear_outboard: bool,
     tone_model_selected_variation: Option<String>,
+    tone_tags: Vec<TaxonomyItem>,
+    tone_makes: Vec<TaxonomyItem>,
+    tone_creators: Vec<TaxonomyItem>,
+    tone_creator_query: String,
+    tone_selected_tags: Vec<String>,
+    tone_selected_makes: Vec<String>,
+    tone_selected_creators: Vec<String>,
+    tone_taxonomy_loading: bool,
+    tone_taxonomy_error: Option<String>,
+    tone_tags_menu_open: bool,
+    tone_models_menu_open: bool,
+    tone_creators_menu_open: bool,
     tone_ir_query: String,
     tone_ir_results: Vec<SearchItem>,
     tone_ir_pictures: Vec<Option<maolan_baseview::iced::widget::image::Handle>>,
+    tone_ir_picture_paths: Vec<Option<String>>,
+    tone_ir_variations_loading: Vec<bool>,
     tone_ir_page: u32,
     tone_ir_total_pages: u32,
     tone_ir_selected_variation: Option<String>,
     tone_oauth_authenticated: bool,
+    tone_settings_open: bool,
     bass_mode_menu_open: bool,
     treble_mode_menu_open: bool,
 }
@@ -152,6 +194,12 @@ impl std::fmt::Display for VariationOption {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.title)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToneBrowserMode {
+    Nam,
+    Ir,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,6 +239,27 @@ fn set_error(state: &mut State, error: impl Into<String>) {
     state.error = Some(msg);
 }
 
+fn clear_tone_oauth(state: &mut State) -> Task<Message> {
+    state.error = None;
+    match tone3000::clear_oauth_credentials() {
+        Ok(()) => {
+            state.tone_oauth_authenticated = false;
+            state.tone_oauth_client_id.clear();
+            state.tone_tags.clear();
+            state.tone_makes.clear();
+            state.tone_creators.clear();
+            state.tone_creator_query.clear();
+            state.tone_selected_tags.clear();
+            state.tone_selected_makes.clear();
+            state.tone_selected_creators.clear();
+            state.tone_taxonomy_loading = false;
+            state.tone_taxonomy_error = None;
+        }
+        Err(err) => set_error(state, err),
+    }
+    Task::none()
+}
+
 fn sync_error_from_shared(state: &mut State) {
     let shared_error = state.shared.last_error.read().clone();
     state.error = shared_error;
@@ -211,9 +280,12 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             error: init_error,
             loading: None,
             tone_oauth_client_id,
+            tone_browser_mode: ToneBrowserMode::Nam,
             tone_model_query: String::new(),
             tone_model_results: Vec::new(),
             tone_model_pictures: Vec::new(),
+            tone_model_picture_paths: Vec::new(),
+            tone_model_variations_loading: Vec::new(),
             tone_model_page: 1,
             tone_model_total_pages: 0,
             tone_model_gear_amp: true,
@@ -221,17 +293,36 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             tone_model_gear_pedal: false,
             tone_model_gear_outboard: false,
             tone_model_selected_variation: None,
+            tone_tags: Vec::new(),
+            tone_makes: Vec::new(),
+            tone_creators: Vec::new(),
+            tone_creator_query: String::new(),
+            tone_selected_tags: Vec::new(),
+            tone_selected_makes: Vec::new(),
+            tone_selected_creators: Vec::new(),
+            tone_taxonomy_loading: tone_oauth_authenticated,
+            tone_taxonomy_error: None,
+            tone_tags_menu_open: false,
+            tone_models_menu_open: false,
+            tone_creators_menu_open: false,
             tone_ir_query: String::new(),
             tone_ir_results: Vec::new(),
             tone_ir_pictures: Vec::new(),
+            tone_ir_picture_paths: Vec::new(),
+            tone_ir_variations_loading: Vec::new(),
             tone_ir_page: 1,
             tone_ir_total_pages: 0,
             tone_ir_selected_variation: None,
             tone_oauth_authenticated,
+            tone_settings_open: false,
             bass_mode_menu_open: false,
             treble_mode_menu_open: false,
         },
-        Task::none(),
+        if tone_oauth_authenticated {
+            start_load_taxonomies()
+        } else {
+            Task::none()
+        },
     )
 }
 
@@ -243,7 +334,7 @@ fn build_nam_gears_filter(state: &State) -> Option<String> {
         parts.push("amp");
     }
     if state.tone_model_gear_full_rig {
-        parts.push("full-rig");
+        parts.push("amp-cab");
     }
     if state.tone_model_gear_pedal {
         parts.push("pedal");
@@ -258,29 +349,98 @@ fn build_nam_gears_filter(state: &State) -> Option<String> {
     }
 }
 
-fn start_search_irs(state: &mut State) -> Task<Message> {
-    let query = state.tone_ir_query.trim().to_string();
-    state.tone_ir_results.clear();
-    state.tone_ir_pictures.clear();
-    state.tone_ir_selected_variation = None;
-    state.tone_ir_page = 1;
-    state.tone_ir_total_pages = 0;
-    state.tone_model_results.clear();
-    state.tone_model_pictures.clear();
-    state.tone_model_selected_variation = None;
-    state.tone_model_page = 1;
-    state.tone_model_total_pages = 0;
-    if query.is_empty() {
-        set_error(state, "Tone3000 IR search query is empty");
-        return Task::none();
+fn search_filters(state: &State) -> SearchFilters {
+    SearchFilters {
+        tags: state.tone_selected_tags.clone(),
+        makes: state.tone_selected_makes.clone(),
+        creators: state.tone_selected_creators.clone(),
     }
-    state.loading = Some("Searching IR...".to_string());
-    state.error = None;
-    let page = state.tone_ir_page;
+}
+
+fn file_stem_label(path: &str) -> String {
+    Path::new(path)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| path.to_string())
+}
+
+fn write_tone_picture_to_temp(id: &str, picture: &[u8]) -> Option<String> {
+    if picture.is_empty() {
+        return None;
+    }
+    let safe_id: String = id
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect();
+    let name = if safe_id.is_empty() {
+        "tone3000-picture".to_string()
+    } else {
+        format!("tone3000-picture-{safe_id}")
+    };
+    let path = std::env::temp_dir().join(name);
+    std::fs::write(&path, picture)
+        .ok()
+        .map(|()| path.to_string_lossy().into_owned())
+}
+
+fn start_load_taxonomies() -> Task<Message> {
+    Task::perform(
+        async move {
+            std::thread::spawn(tone3000::load_taxonomies)
+                .join()
+                .unwrap()
+        },
+        Message::ToneTaxonomiesLoaded,
+    )
+}
+
+fn start_search_creators(state: &mut State) -> Task<Message> {
+    let query = state.tone_creator_query.trim().to_string();
+    state.tone_taxonomy_loading = true;
+    state.tone_taxonomy_error = None;
     Task::perform(
         async move {
             std::thread::spawn(move || {
-                tone3000::search(AssetKind::Ir, &query, page, PAGE_SIZE, None)
+                if query.is_empty() {
+                    tone3000::load_taxonomies().map(|taxonomies| taxonomies.creators)
+                } else {
+                    tone3000::search_creators(&query)
+                }
+            })
+            .join()
+            .unwrap()
+        },
+        Message::ToneCreatorsLoaded,
+    )
+}
+
+fn start_search_irs(state: &mut State, reset_page: bool) -> Task<Message> {
+    let query = state.tone_ir_query.trim().to_string();
+    state.tone_ir_results.clear();
+    state.tone_ir_pictures.clear();
+    state.tone_ir_picture_paths.clear();
+    state.tone_ir_variations_loading.clear();
+    state.tone_ir_selected_variation = None;
+    if reset_page {
+        state.tone_ir_page = 1;
+    }
+    state.tone_ir_total_pages = 0;
+    state.tone_model_results.clear();
+    state.tone_model_pictures.clear();
+    state.tone_model_picture_paths.clear();
+    state.tone_model_variations_loading.clear();
+    state.tone_model_selected_variation = None;
+    state.tone_model_page = 1;
+    state.tone_model_total_pages = 0;
+    state.loading = Some("Searching IR...".to_string());
+    state.error = None;
+    let page = state.tone_ir_page;
+    let filters = search_filters(state);
+    Task::perform(
+        async move {
+            std::thread::spawn(move || {
+                tone3000::search(AssetKind::Ir, &query, page, PAGE_SIZE, None, &filters)
             })
             .join()
             .unwrap()
@@ -292,30 +452,82 @@ fn start_search_irs(state: &mut State) -> Task<Message> {
     )
 }
 
-fn start_search_models(state: &mut State) -> Task<Message> {
+fn start_fetch_pictures(kind: AssetKind, items: &[SearchItem]) -> Task<Message> {
+    let tasks = items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            let url = item.picture_url.clone()?;
+            let id = item.id.clone();
+            Some(Task::perform(
+                async move {
+                    std::thread::spawn(move || tone3000::fetch_picture(&url))
+                        .join()
+                        .unwrap()
+                },
+                move |result| Message::TonePictureLoaded(kind, index, id.clone(), result),
+            ))
+        })
+        .collect::<Vec<_>>();
+    Task::batch(tasks)
+}
+
+fn start_fetch_variations(kind: AssetKind, items: &[SearchItem]) -> Task<Message> {
+    let tasks = items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let id = item.id.clone();
+            let message_id = id.clone();
+            Task::perform(
+                async move {
+                    std::thread::spawn(move || tone3000::fetch_variations(kind, &id))
+                        .join()
+                        .unwrap()
+                },
+                move |variations| {
+                    Message::ToneVariationsLoaded(kind, index, message_id.clone(), variations)
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    Task::batch(tasks)
+}
+
+fn start_search_models(state: &mut State, reset_page: bool) -> Task<Message> {
     let query = state.tone_model_query.trim().to_string();
     state.tone_model_results.clear();
     state.tone_model_pictures.clear();
+    state.tone_model_picture_paths.clear();
+    state.tone_model_variations_loading.clear();
     state.tone_model_selected_variation = None;
-    state.tone_model_page = 1;
+    if reset_page {
+        state.tone_model_page = 1;
+    }
     state.tone_model_total_pages = 0;
     state.tone_ir_results.clear();
     state.tone_ir_pictures.clear();
+    state.tone_ir_picture_paths.clear();
+    state.tone_ir_variations_loading.clear();
     state.tone_ir_selected_variation = None;
     state.tone_ir_page = 1;
     state.tone_ir_total_pages = 0;
-    if query.is_empty() {
-        set_error(state, "Tone3000 NAM search query is empty");
-        return Task::none();
-    }
     state.loading = Some("Searching NAM...".to_string());
     state.error = None;
     let page = state.tone_model_page;
     let gears = build_nam_gears_filter(state);
+    let filters = search_filters(state);
     Task::perform(
         async move {
             std::thread::spawn(move || {
-                tone3000::search(AssetKind::Nam, &query, page, PAGE_SIZE, gears.as_deref())
+                tone3000::search(
+                    AssetKind::Nam,
+                    &query,
+                    page,
+                    PAGE_SIZE,
+                    gears.as_deref(),
+                    &filters,
+                )
             })
             .join()
             .unwrap()
@@ -413,71 +625,219 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.tone_ir_page = 1;
             Task::none()
         }
-        Message::ToneSearchModels => start_search_models(state),
+        Message::ToneSearchModels => start_search_models(state, true),
         Message::ToneSearchModelsComplete(results) => {
-            state.tone_model_pictures = results
-                .items
-                .iter()
-                .map(|item| {
-                    item.picture.as_ref().map(|bytes: &Vec<u8>| {
-                        maolan_baseview::iced::widget::image::Handle::from_bytes(bytes.clone())
-                    })
-                })
-                .collect();
+            let picture_task = start_fetch_pictures(AssetKind::Nam, &results.items);
+            let variations_task = start_fetch_variations(AssetKind::Nam, &results.items);
+            state.tone_model_pictures = vec![None; results.items.len()];
+            state.tone_model_picture_paths = vec![None; results.items.len()];
+            state.tone_model_variations_loading = vec![true; results.items.len()];
             state.tone_model_results = results.items;
             state.tone_model_page = results.page;
             state.tone_model_total_pages = results.total_pages;
             state.loading = None;
-            Task::none()
+            Task::batch([picture_task, variations_task])
         }
         Message::ToneSearchModelsFailed(err) => {
             state.loading = None;
             set_error(state, err);
             Task::none()
         }
-        Message::ToneSearchIrs => start_search_irs(state),
+        Message::ToneSearchIrs => start_search_irs(state, true),
         Message::ToneSearchIrsComplete(results) => {
-            state.tone_ir_pictures = results
-                .items
-                .iter()
-                .map(|item| {
-                    item.picture.as_ref().map(|bytes: &Vec<u8>| {
-                        maolan_baseview::iced::widget::image::Handle::from_bytes(bytes.clone())
-                    })
-                })
-                .collect();
+            let picture_task = start_fetch_pictures(AssetKind::Ir, &results.items);
+            let variations_task = start_fetch_variations(AssetKind::Ir, &results.items);
+            state.tone_ir_pictures = vec![None; results.items.len()];
+            state.tone_ir_picture_paths = vec![None; results.items.len()];
+            state.tone_ir_variations_loading = vec![true; results.items.len()];
             state.tone_ir_results = results.items;
             state.tone_ir_page = results.page;
             state.tone_ir_total_pages = results.total_pages;
             state.loading = None;
-            Task::none()
+            Task::batch([picture_task, variations_task])
         }
         Message::ToneSearchIrsFailed(err) => {
             state.loading = None;
             set_error(state, err);
             Task::none()
         }
+        Message::TonePictureLoaded(kind, index, id, result) => {
+            let (items, pictures, picture_paths) = match kind {
+                AssetKind::Nam => (
+                    &state.tone_model_results,
+                    &mut state.tone_model_pictures,
+                    &mut state.tone_model_picture_paths,
+                ),
+                AssetKind::Ir => (
+                    &state.tone_ir_results,
+                    &mut state.tone_ir_pictures,
+                    &mut state.tone_ir_picture_paths,
+                ),
+            };
+            let Some(item) = items.get(index) else {
+                return Task::none();
+            };
+            if item.id != id {
+                return Task::none();
+            }
+            let Ok(bytes) = result else {
+                return Task::none();
+            };
+            if let Some(slot) = pictures.get_mut(index) {
+                *slot = Some(maolan_baseview::iced::widget::image::Handle::from_bytes(
+                    bytes.clone(),
+                ));
+            }
+            if let Some(slot) = picture_paths.get_mut(index) {
+                *slot = write_tone_picture_to_temp(&id, &bytes);
+            }
+            Task::none()
+        }
+        Message::ToneVariationsLoaded(kind, index, id, variations) => {
+            let (items, loading) = match kind {
+                AssetKind::Nam => (
+                    &mut state.tone_model_results,
+                    &mut state.tone_model_variations_loading,
+                ),
+                AssetKind::Ir => (
+                    &mut state.tone_ir_results,
+                    &mut state.tone_ir_variations_loading,
+                ),
+            };
+            let Some(item) = items.get_mut(index) else {
+                return Task::none();
+            };
+            if item.id != id {
+                return Task::none();
+            }
+            item.variations = variations;
+            if let Some(slot) = loading.get_mut(index) {
+                *slot = false;
+            }
+            Task::none()
+        }
+        Message::ToneTaxonomiesLoad => {
+            state.tone_taxonomy_loading = true;
+            state.tone_taxonomy_error = None;
+            start_load_taxonomies()
+        }
+        Message::ToneTaxonomiesLoaded(result) => {
+            state.tone_taxonomy_loading = false;
+            match result {
+                Ok(taxonomies) => {
+                    state.tone_tags = taxonomies.tags;
+                    state.tone_makes = taxonomies.makes;
+                    state.tone_creators = taxonomies.creators;
+                    state.tone_taxonomy_error = None;
+                }
+                Err(err) => state.tone_taxonomy_error = Some(err),
+            }
+            Task::none()
+        }
+        Message::ToneBrowserModeSelected(mode) => {
+            state.tone_browser_mode = mode;
+            Task::none()
+        }
+        Message::ToggleToneTagsMenu => {
+            state.tone_tags_menu_open = !state.tone_tags_menu_open;
+            Task::none()
+        }
+        Message::ToneTagToggled(value, selected) => {
+            if selected {
+                if !state.tone_selected_tags.iter().any(|tag| tag == &value) {
+                    state.tone_selected_tags.push(value);
+                }
+            } else {
+                state.tone_selected_tags.retain(|tag| tag != &value);
+            }
+            Task::none()
+        }
+        Message::ToneTagsClear => {
+            state.tone_selected_tags.clear();
+            state.tone_tags_menu_open = false;
+            Task::none()
+        }
+        Message::ToggleToneModelsMenu => {
+            state.tone_models_menu_open = !state.tone_models_menu_open;
+            Task::none()
+        }
+        Message::ToneModelFilterToggled(value, selected) => {
+            if selected {
+                if !state.tone_selected_makes.iter().any(|make| make == &value) {
+                    state.tone_selected_makes.push(value);
+                }
+            } else {
+                state.tone_selected_makes.retain(|make| make != &value);
+            }
+            Task::none()
+        }
+        Message::ToneModelsClear => {
+            state.tone_selected_makes.clear();
+            state.tone_models_menu_open = false;
+            Task::none()
+        }
+        Message::ToggleToneCreatorsMenu => {
+            state.tone_creators_menu_open = !state.tone_creators_menu_open;
+            Task::none()
+        }
+        Message::ToneCreatorToggled(value, selected) => {
+            if selected {
+                if !state
+                    .tone_selected_creators
+                    .iter()
+                    .any(|creator| creator == &value)
+                {
+                    state.tone_selected_creators.push(value);
+                }
+            } else {
+                state
+                    .tone_selected_creators
+                    .retain(|creator| creator != &value);
+            }
+            Task::none()
+        }
+        Message::ToneCreatorsClear => {
+            state.tone_selected_creators.clear();
+            state.tone_creators_menu_open = false;
+            Task::none()
+        }
+        Message::ToneCreatorQueryChanged(value) => {
+            state.tone_creator_query = value;
+            Task::none()
+        }
+        Message::ToneCreatorsSearch => start_search_creators(state),
+        Message::ToneCreatorsLoaded(result) => {
+            state.tone_taxonomy_loading = false;
+            match result {
+                Ok(creators) => {
+                    state.tone_creators = creators;
+                    state.tone_taxonomy_error = None;
+                }
+                Err(err) => state.tone_taxonomy_error = Some(err),
+            }
+            Task::none()
+        }
         Message::ToneModelPagePrev => {
             if state.tone_model_page > 1 {
                 state.tone_model_page -= 1;
-                return start_search_models(state);
+                return start_search_models(state, false);
             }
             Task::none()
         }
         Message::ToneModelPageNext => {
             state.tone_model_page += 1;
-            start_search_models(state)
+            start_search_models(state, false)
         }
         Message::ToneIrPagePrev => {
             if state.tone_ir_page > 1 {
                 state.tone_ir_page -= 1;
-                return start_search_irs(state);
+                return start_search_irs(state, false);
             }
             Task::none()
         }
         Message::ToneIrPageNext => {
             state.tone_ir_page += 1;
-            start_search_irs(state)
+            start_search_irs(state, false)
         }
         Message::ToneModelGearAmp(value) => {
             state.tone_model_gear_amp = value;
@@ -495,7 +855,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.tone_model_gear_outboard = value;
             Task::none()
         }
-        Message::ToneModelVariationSelected(reference) => {
+        Message::ToneModelVariationSelected(reference, display_name, picture_path) => {
             let reference = reference.trim();
             if reference.is_empty() {
                 set_error(state, "Tone3000 NAM variation reference is empty");
@@ -510,7 +870,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 async move {
                     std::thread::spawn(move || {
                         match tone3000::download_to_temp(AssetKind::Nam, &reference) {
-                            Ok(path) => shared.load_model(path.display().to_string(), true),
+                            Ok(path) => shared.load_model_with_preview(
+                                path.display().to_string(),
+                                true,
+                                Some(display_name),
+                                picture_path,
+                            ),
                             Err(err) => {
                                 *shared.last_error.write() = Some(err);
                             }
@@ -529,6 +894,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
 
         Message::ToneOAuthClientIdChanged(value) => {
+            if value.trim().is_empty() {
+                return clear_tone_oauth(state);
+            }
             state.tone_oauth_client_id = value;
             Task::none()
         }
@@ -555,17 +923,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.loading = None;
             sync_error_from_shared(state);
             state.tone_oauth_authenticated = tone3000::has_valid_oauth_token();
-            Task::none()
-        }
-        Message::ToneOAuthClear => {
-            state.error = None;
-            match tone3000::clear_oauth_credentials() {
-                Ok(()) => {
-                    state.tone_oauth_authenticated = false;
-                    state.tone_oauth_client_id.clear();
-                }
-                Err(err) => set_error(state, err),
+            if state.tone_oauth_authenticated {
+                state.tone_taxonomy_loading = true;
+                state.tone_taxonomy_error = None;
+                start_load_taxonomies()
+            } else {
+                Task::none()
             }
+        }
+        Message::ToneOAuthClear => clear_tone_oauth(state),
+        Message::ToggleToneSettings => {
+            state.tone_settings_open = !state.tone_settings_open;
             Task::none()
         }
         Message::ToggleBassModeMenu => {
@@ -576,7 +944,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.treble_mode_menu_open = !state.treble_mode_menu_open;
             Task::none()
         }
-        Message::ToneIrVariationSelected(reference) => {
+        Message::ToneIrVariationSelected(reference, display_name, picture_path) => {
             let reference = reference.trim();
             if reference.is_empty() {
                 set_error(state, "Tone3000 IR variation reference is empty");
@@ -591,7 +959,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 async move {
                     std::thread::spawn(move || {
                         match tone3000::download_to_temp(AssetKind::Ir, &reference) {
-                            Ok(path) => shared.load_ir(path.display().to_string(), true),
+                            Ok(path) => shared.load_ir_with_preview(
+                                path.display().to_string(),
+                                true,
+                                Some(display_name),
+                                picture_path,
+                            ),
                             Err(err) => {
                                 *shared.last_error.write() = Some(err);
                             }
@@ -617,31 +990,54 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
 
 fn view(state: &State) -> Element<'_, Message> {
     let model_path = state.shared.model_path.read().clone();
+    let model_display_name = state.shared.model_display_name.read().clone();
     let model_label = if model_path.is_empty() {
-        "No model selected".to_string()
+        String::new()
+    } else if model_display_name.trim().is_empty() {
+        file_stem_label(&model_path)
     } else {
-        Path::new(&model_path)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .map(|s| s.to_string())
-            .unwrap_or(model_path)
+        model_display_name
     };
+    let model_picture_path = state.shared.model_picture_path.read().clone();
 
     let ir_path = state.shared.ir_path.read().clone();
+    let ir_display_name = state.shared.ir_display_name.read().clone();
     let ir_label = if ir_path.is_empty() {
-        "No IR selected".to_string()
+        String::new()
+    } else if ir_display_name.trim().is_empty() {
+        file_stem_label(&ir_path)
     } else {
-        Path::new(&ir_path)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .map(|s| s.to_string())
-            .unwrap_or(ir_path)
+        ir_display_name
     };
+    let ir_picture_path = state.shared.ir_picture_path.read().clone();
 
     let p = |id: ParamId| state.shared.params.get(id) as f32;
     let b = |id: ParamId| state.shared.params.get_bool(id);
 
-    let mut content = column![].spacing(12).align_x(Alignment::Start);
+    let mut content = column![]
+        .spacing(12)
+        .align_x(Alignment::Start)
+        .width(Length::Fill);
+
+    if state.tone_settings_open {
+        content = content.push(
+            column![
+                row![
+                    text_input(
+                        "Tone3000 publishable key (client_id)",
+                        &state.tone_oauth_client_id
+                    )
+                    .on_input(Message::ToneOAuthClientIdChanged)
+                    .width(Length::Fixed(320.0)),
+                    button(text("OAuth Login")).on_press(Message::ToneOAuthBrowserLogin),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            ]
+            .align_x(Alignment::End)
+            .width(Length::Fill),
+        );
+    }
 
     content = content.push(
         row![
@@ -691,8 +1087,33 @@ fn view(state: &State) -> Element<'_, Message> {
                 "dB",
                 0.1
             ),
+            knob(
+                "Input Cal",
+                ParamId::InputCalibrationLevel,
+                p(ParamId::InputCalibrationLevel),
+                "dBu",
+                0.1
+            ),
+            container(text("")).width(Length::Fill),
+            button(text("⚙").size(18))
+                .on_press(Message::ToggleToneSettings)
+                .style(|theme: &Theme, status: Status| {
+                    let mut style = button::secondary(theme, status);
+                    style.text_color = style
+                        .background
+                        .and_then(|background| match background {
+                            Background::Color(color) => Some(color),
+                            _ => None,
+                        })
+                        .unwrap_or(style.text_color);
+                    style.background = None;
+                    style.border.width = 0.0;
+                    style
+                }),
         ]
-        .spacing(12),
+        .spacing(12)
+        .align_y(Alignment::Center)
+        .width(Length::Fill),
     );
 
     content = content.push(
@@ -703,34 +1124,16 @@ fn view(state: &State) -> Element<'_, Message> {
             checkbox(b(ParamId::EqActive))
                 .label("EQ")
                 .on_toggle(|v| Message::SetBoolParam(ParamId::EqActive, v)),
-            checkbox(b(ParamId::IrToggle))
-                .label("IR")
-                .on_toggle(|v| Message::SetBoolParam(ParamId::IrToggle, v)),
+            checkbox(b(ParamId::CalibrateInput))
+                .label("Calibrate")
+                .on_toggle(|v| Message::SetBoolParam(ParamId::CalibrateInput, v)),
         ]
         .spacing(16),
-    );
-
-    content = content.push(
-        row![
-            checkbox(b(ParamId::CalibrateInput))
-                .label("Calibrate Input")
-                .on_toggle(|v| Message::SetBoolParam(ParamId::CalibrateInput, v)),
-            knob(
-                "Input Cal",
-                ParamId::InputCalibrationLevel,
-                p(ParamId::InputCalibrationLevel),
-                "dBu",
-                0.1
-            ),
-        ]
-        .spacing(24)
-        .align_y(Alignment::Center),
     );
 
     let output_mode = state.shared.params.get_enum(ParamId::OutputMode).min(2);
     content = content.push(
         row![
-            text("Output Mode").size(16),
             radio("Raw", 0u8, Some(output_mode as u8), Message::SetOutputMode),
             radio(
                 "Normalized",
@@ -749,111 +1152,288 @@ fn view(state: &State) -> Element<'_, Message> {
         .align_y(Alignment::Center),
     );
 
-    content = content.push(text("Model"));
     content = content.push(
         row![
-            button(text("Load")).on_press(Message::LoadModel),
-            button(text("Clear")).on_press(Message::ClearModel),
+            asset_preview(
+                &model_path,
+                &model_label,
+                &model_picture_path,
+                "NAM",
+                Message::LoadModel,
+                Message::ClearModel,
+            ),
+            asset_preview(
+                &ir_path,
+                &ir_label,
+                &ir_picture_path,
+                "IR",
+                Message::LoadIr,
+                Message::ClearIr,
+            ),
         ]
-        .spacing(8),
-    );
-    content = content.push(text(model_label).size(14));
-
-    content = content.push(text("IR"));
-    content = content.push(
-        row![
-            button(text("Load")).on_press(Message::LoadIr),
-            button(text("Clear")).on_press(Message::ClearIr),
-        ]
-        .spacing(8),
-    );
-    content = content.push(text(ir_label).size(14));
-
-    content = content.push(text("Tone3000").size(16));
-    content = content.push(
-        row![
-            text_input("Tone3000 client_id", &state.tone_oauth_client_id)
-                .on_input(Message::ToneOAuthClientIdChanged)
-                .width(Length::Fill),
-            button(text("OAuth Login")).on_press(Message::ToneOAuthBrowserLogin),
-            button(text("Clear OAuth")).on_press(Message::ToneOAuthClear),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
+        .spacing(16),
     );
 
     if state.tone_oauth_authenticated {
         content = content.push(
             row![
-                text_input("NAM id/url or search query", &state.tone_model_query)
-                    .on_input(Message::ToneModelQueryChanged)
-                    .on_submit(Message::ToneSearchModels)
-                    .width(Length::Fill),
-                button(text("Search")).on_press(Message::ToneSearchModels),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
-        );
-        content = content.push(
-            row![
-                checkbox(state.tone_model_gear_amp)
-                    .label("Amp Head")
-                    .on_toggle(Message::ToneModelGearAmp),
-                checkbox(state.tone_model_gear_full_rig)
-                    .label("Full Rig")
-                    .on_toggle(Message::ToneModelGearFullRig),
-                checkbox(state.tone_model_gear_pedal)
-                    .label("Pedal")
-                    .on_toggle(Message::ToneModelGearPedal),
-                checkbox(state.tone_model_gear_outboard)
-                    .label("Outboard")
-                    .on_toggle(Message::ToneModelGearOutboard),
+                text("Tone3000").size(16),
+                radio(
+                    "NAM",
+                    ToneBrowserMode::Nam,
+                    Some(state.tone_browser_mode),
+                    Message::ToneBrowserModeSelected,
+                ),
+                radio(
+                    "IR",
+                    ToneBrowserMode::Ir,
+                    Some(state.tone_browser_mode),
+                    Message::ToneBrowserModeSelected,
+                ),
             ]
             .spacing(12)
             .align_y(Alignment::Center),
         );
-        content = content.push(
-            row![
-                text_input("IR id/url or search query", &state.tone_ir_query)
-                    .on_input(Message::ToneIrQueryChanged)
-                    .on_submit(Message::ToneSearchIrs)
-                    .width(Length::Fill),
-                button(text("Search")).on_press(Message::ToneSearchIrs),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
-        );
+
+        let filters = row![
+            taxonomy_checkbox_dropdown(TaxonomyDropdownConfig {
+                all_label: "All tags",
+                items: &state.tone_tags,
+                selected_values: &state.tone_selected_tags,
+                menu_open: state.tone_tags_menu_open,
+                messages: TaxonomyDropdownMessages {
+                    toggle: Message::ToggleToneTagsMenu,
+                    clear: Message::ToneTagsClear,
+                    toggle_item: Message::ToneTagToggled,
+                },
+                search: None,
+            }),
+            taxonomy_checkbox_dropdown(TaxonomyDropdownConfig {
+                all_label: "All models",
+                items: &state.tone_makes,
+                selected_values: &state.tone_selected_makes,
+                menu_open: state.tone_models_menu_open,
+                messages: TaxonomyDropdownMessages {
+                    toggle: Message::ToggleToneModelsMenu,
+                    clear: Message::ToneModelsClear,
+                    toggle_item: Message::ToneModelFilterToggled,
+                },
+                search: None,
+            }),
+            taxonomy_checkbox_dropdown(TaxonomyDropdownConfig {
+                all_label: "All creators",
+                items: &state.tone_creators,
+                selected_values: &state.tone_selected_creators,
+                menu_open: state.tone_creators_menu_open,
+                messages: TaxonomyDropdownMessages {
+                    toggle: Message::ToggleToneCreatorsMenu,
+                    clear: Message::ToneCreatorsClear,
+                    toggle_item: Message::ToneCreatorToggled,
+                },
+                search: Some(TaxonomyDropdownSearch {
+                    value: &state.tone_creator_query,
+                    on_input: Message::ToneCreatorQueryChanged,
+                    on_submit: Message::ToneCreatorsSearch,
+                }),
+            }),
+        ]
+        .spacing(10)
+        .width(Length::Fill);
+
+        let mut browser = column![].spacing(12).width(Length::Fill);
+        match state.tone_browser_mode {
+            ToneBrowserMode::Nam => {
+                browser = browser
+                    .push(
+                        row![
+                            text_input("NAM id/url or search query", &state.tone_model_query)
+                                .on_input(Message::ToneModelQueryChanged)
+                                .on_submit(Message::ToneSearchModels)
+                                .width(Length::Fill),
+                            button(text("Search")).on_press(Message::ToneSearchModels),
+                        ]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                    )
+                    .push(
+                        row![
+                            checkbox(state.tone_model_gear_amp)
+                                .label("Amp Head")
+                                .on_toggle(Message::ToneModelGearAmp),
+                            checkbox(state.tone_model_gear_full_rig)
+                                .label("Full Rig")
+                                .on_toggle(Message::ToneModelGearFullRig),
+                            checkbox(state.tone_model_gear_pedal)
+                                .label("Pedal")
+                                .on_toggle(Message::ToneModelGearPedal),
+                            checkbox(state.tone_model_gear_outboard)
+                                .label("Outboard")
+                                .on_toggle(Message::ToneModelGearOutboard),
+                        ]
+                        .spacing(12)
+                        .align_y(Alignment::Center),
+                    );
+            }
+            ToneBrowserMode::Ir => {
+                browser = browser.push(
+                    row![
+                        text_input("IR id/url or search query", &state.tone_ir_query)
+                            .on_input(Message::ToneIrQueryChanged)
+                            .on_submit(Message::ToneSearchIrs)
+                            .width(Length::Fill),
+                        button(text("Search")).on_press(Message::ToneSearchIrs),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                );
+            }
+        }
+
+        browser = browser.push(filters);
+
+        if state.tone_taxonomy_loading {
+            browser = browser.push(text("Loading filters...").size(12));
+        }
+
+        if let Some(error) = &state.tone_taxonomy_error {
+            browser = browser.push(text(error).size(12));
+        }
 
         if let Some(loading) = &state.loading {
-            content = content.push(text(format!("⏳ {loading}")).size(14));
+            browser = browser.push(text(format!("Loading: {loading}")).size(14));
         }
 
         if let Some(error) = &state.error {
-            content = content.push(text(error));
+            browser = browser.push(text(error));
         }
 
-        for (idx, item) in state.tone_ir_results.iter().enumerate() {
-            let options = variation_options(&item.variations);
-            let selected = options
-                .iter()
-                .find(|choice| {
-                    state
-                        .tone_ir_selected_variation
-                        .as_ref()
-                        .is_some_and(|sel| sel == &choice.reference)
-                })
-                .cloned();
-            let variation_widget: Element<'_, Message> = if options.is_empty() {
-                text("No variations").into()
-            } else {
-                maolan_baseview::iced::widget::pick_list(options, selected, |choice| {
-                    Message::ToneIrVariationSelected(choice.reference)
-                })
-                .placeholder("Variation")
-                .into()
-            };
-            let image_widget: Element<'_, Message> =
-                if let Some(handle) = state.tone_ir_pictures.get(idx).and_then(|h| h.clone()) {
+        if state.tone_browser_mode == ToneBrowserMode::Ir {
+            for (idx, item) in state.tone_ir_results.iter().enumerate() {
+                let options = variation_options(&item.variations);
+                let selected = options
+                    .iter()
+                    .find(|choice| {
+                        state
+                            .tone_ir_selected_variation
+                            .as_ref()
+                            .is_some_and(|sel| sel == &choice.reference)
+                    })
+                    .cloned();
+                let variations_loading = state
+                    .tone_ir_variations_loading
+                    .get(idx)
+                    .copied()
+                    .unwrap_or(false);
+                let variation_widget: Element<'_, Message> = if options.is_empty() {
+                    if variations_loading {
+                        text("Loading variations...").into()
+                    } else {
+                        text("No variations").into()
+                    }
+                } else {
+                    let ir_name = item.name.clone();
+                    let picture_path = state
+                        .tone_ir_picture_paths
+                        .get(idx)
+                        .and_then(|path| path.clone());
+                    maolan_baseview::iced::widget::pick_list(options, selected, move |choice| {
+                        Message::ToneIrVariationSelected(
+                            choice.reference,
+                            ir_name.clone(),
+                            picture_path.clone(),
+                        )
+                    })
+                    .placeholder("Variation")
+                    .into()
+                };
+                let image_widget: Element<'_, Message> =
+                    if let Some(handle) = state.tone_ir_pictures.get(idx).and_then(|h| h.clone()) {
+                        Image::new(handle)
+                            .width(Length::Fixed(40.0))
+                            .height(Length::Fixed(40.0))
+                            .into()
+                    } else {
+                        container(text(""))
+                            .width(Length::Fixed(40.0))
+                            .height(Length::Fixed(40.0))
+                            .into()
+                    };
+                let result_row = row![
+                    image_widget,
+                    text(item.name.clone())
+                        .size(13)
+                        .width(Length::FillPortion(2)),
+                    variation_widget
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center);
+                browser = browser.push(result_row);
+            }
+
+            if state.tone_ir_total_pages > 0 {
+                let page_label = format!(
+                    "Page {} / {}",
+                    state.tone_ir_page, state.tone_ir_total_pages
+                );
+                browser = browser.push(
+                    row![
+                        button(text("< Prev")).on_press_maybe(
+                            (state.tone_ir_page > 1).then_some(Message::ToneIrPagePrev)
+                        ),
+                        text(page_label).size(13),
+                        button(text("Next >")).on_press_maybe(
+                            (state.tone_ir_page < state.tone_ir_total_pages)
+                                .then_some(Message::ToneIrPageNext)
+                        ),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                );
+            }
+        }
+
+        if state.tone_browser_mode == ToneBrowserMode::Nam {
+            for (idx, item) in state.tone_model_results.iter().enumerate() {
+                let options = variation_options(&item.variations);
+                let selected = options
+                    .iter()
+                    .find(|choice| {
+                        state
+                            .tone_model_selected_variation
+                            .as_ref()
+                            .is_some_and(|sel| sel == &choice.reference)
+                    })
+                    .cloned();
+                let model_name = item.name.clone();
+                let picture_path = state
+                    .tone_model_picture_paths
+                    .get(idx)
+                    .and_then(|path| path.clone());
+                let variations_loading = state
+                    .tone_model_variations_loading
+                    .get(idx)
+                    .copied()
+                    .unwrap_or(false);
+                let variation_widget: Element<'_, Message> = if options.is_empty() {
+                    if variations_loading {
+                        text("Loading variations...").into()
+                    } else {
+                        text("No variations").into()
+                    }
+                } else {
+                    maolan_baseview::iced::widget::pick_list(options, selected, move |choice| {
+                        Message::ToneModelVariationSelected(
+                            choice.reference,
+                            model_name.clone(),
+                            picture_path.clone(),
+                        )
+                    })
+                    .placeholder("Variation")
+                    .into()
+                };
+                let image_widget: Element<'_, Message> = if let Some(handle) =
+                    state.tone_model_pictures.get(idx).and_then(|h| h.clone())
+                {
                     Image::new(handle)
                         .width(Length::Fixed(40.0))
                         .height(Length::Fixed(40.0))
@@ -864,111 +1444,41 @@ fn view(state: &State) -> Element<'_, Message> {
                         .height(Length::Fixed(40.0))
                         .into()
                 };
-            let result_row = row![
-                image_widget,
-                text(item.name.clone())
-                    .size(13)
-                    .width(Length::FillPortion(2)),
-                variation_widget
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center);
-            content = content.push(result_row);
-        }
-
-        if state.tone_ir_total_pages > 0 {
-            let page_label = format!(
-                "Page {} / {}",
-                state.tone_ir_page, state.tone_ir_total_pages
-            );
-            content = content.push(
-                row![
-                    button(text("< Prev")).on_press_maybe(
-                        (state.tone_ir_page > 1).then_some(Message::ToneIrPagePrev)
-                    ),
-                    text(page_label).size(13),
-                    button(text("Next >")).on_press_maybe(
-                        (state.tone_ir_page < state.tone_ir_total_pages)
-                            .then_some(Message::ToneIrPageNext)
-                    ),
+                let result_row = row![
+                    image_widget,
+                    text(item.name.clone())
+                        .size(13)
+                        .width(Length::FillPortion(2)),
+                    variation_widget
                 ]
                 .spacing(8)
-                .align_y(Alignment::Center),
-            );
+                .align_y(Alignment::Center);
+                browser = browser.push(result_row);
+            }
+
+            if state.tone_model_total_pages > 0 {
+                let page_label = format!(
+                    "Page {} / {}",
+                    state.tone_model_page, state.tone_model_total_pages
+                );
+                browser = browser.push(
+                    row![
+                        button(text("< Prev")).on_press_maybe(
+                            (state.tone_model_page > 1).then_some(Message::ToneModelPagePrev)
+                        ),
+                        text(page_label).size(13),
+                        button(text("Next >")).on_press_maybe(
+                            (state.tone_model_page < state.tone_model_total_pages)
+                                .then_some(Message::ToneModelPageNext)
+                        ),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                );
+            }
         }
 
-        for (idx, item) in state.tone_model_results.iter().enumerate() {
-            let options = variation_options(&item.variations);
-            let selected = options
-                .iter()
-                .find(|choice| {
-                    state
-                        .tone_model_selected_variation
-                        .as_ref()
-                        .is_some_and(|sel| sel == &choice.reference)
-                })
-                .cloned();
-            let variation_widget: Element<'_, Message> = if options.is_empty() {
-                text("No variations").into()
-            } else {
-                maolan_baseview::iced::widget::pick_list(options, selected, |choice| {
-                    Message::ToneModelVariationSelected(choice.reference)
-                })
-                .placeholder("Variation")
-                .into()
-            };
-            let image_widget: Element<'_, Message> =
-                if let Some(handle) = state.tone_model_pictures.get(idx).and_then(|h| h.clone()) {
-                    Image::new(handle)
-                        .width(Length::Fixed(40.0))
-                        .height(Length::Fixed(40.0))
-                        .into()
-                } else {
-                    container(text(""))
-                        .width(Length::Fixed(40.0))
-                        .height(Length::Fixed(40.0))
-                        .into()
-                };
-            let result_row = row![
-                image_widget,
-                text(item.name.clone())
-                    .size(13)
-                    .width(Length::FillPortion(2)),
-                variation_widget
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center);
-            content = content.push(result_row);
-        }
-
-        if state.tone_model_total_pages > 0 {
-            let page_label = format!(
-                "Page {} / {}",
-                state.tone_model_page, state.tone_model_total_pages
-            );
-            content = content.push(
-                row![
-                    button(text("< Prev")).on_press_maybe(
-                        (state.tone_model_page > 1).then_some(Message::ToneModelPagePrev)
-                    ),
-                    text(page_label).size(13),
-                    button(text("Next >")).on_press_maybe(
-                        (state.tone_model_page < state.tone_model_total_pages)
-                            .then_some(Message::ToneModelPageNext)
-                    ),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-            );
-        }
-    } else {
-        if let Some(loading) = &state.loading {
-            content = content.push(text(format!("⏳ {loading}")).size(14));
-        }
-
-        if let Some(error) = &state.error {
-            content = content.push(text(error));
-        }
+        content = content.push(browser);
     }
 
     container(scrollable(content))
@@ -982,6 +1492,59 @@ fn view(state: &State) -> Element<'_, Message> {
 
 fn theme(_state: &State) -> Theme {
     Theme::TokyoNight
+}
+
+fn asset_preview<'a>(
+    path: &str,
+    label: &str,
+    picture_path: &str,
+    empty_label: &'static str,
+    load_message: Message,
+    clear_message: Message,
+) -> Element<'a, Message> {
+    let content: Element<'a, Message> = if path.is_empty() {
+        text(empty_label).size(14).into()
+    } else if !picture_path.is_empty() {
+        match std::fs::read(picture_path) {
+            Ok(bytes) => Image::new(maolan_baseview::iced::widget::image::Handle::from_bytes(
+                bytes,
+            ))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into(),
+            Err(_) => text(label.to_string()).size(14).into(),
+        }
+    } else {
+        text(label.to_string()).size(14).into()
+    };
+
+    let preview = container(content)
+        .width(Length::Fixed(160.0))
+        .height(Length::Fixed(72.0))
+        .align_x(Horizontal::Center)
+        .align_y(Vertical::Center)
+        .style(|_theme: &Theme| container::Style {
+            background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.10))),
+            border: Border {
+                color: Color::from_rgb(0.20, 0.20, 0.24),
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..container::Style::default()
+        });
+
+    let button =
+        button(preview)
+            .on_press(load_message)
+            .padding(0)
+            .style(|theme: &Theme, status: Status| {
+                let mut style = button::secondary(theme, status);
+                style.background = None;
+                style.border.width = 0.0;
+                style
+            });
+
+    mouse_area(button).on_right_press(clear_message).into()
 }
 
 fn knob(
@@ -1067,6 +1630,101 @@ fn tone_knob(
     }
 
     container(column).width(Length::Fixed(50.0)).into()
+}
+
+fn selected_taxonomies_label(
+    all_label: &'static str,
+    items: &[TaxonomyItem],
+    selected_values: &[String],
+) -> String {
+    match selected_values {
+        [] => all_label.to_string(),
+        [value] => items
+            .iter()
+            .find(|item| &item.value == value)
+            .map(|item| item.name.clone())
+            .unwrap_or_else(|| value.clone()),
+        values => format!("{} selected", values.len()),
+    }
+}
+
+struct TaxonomyDropdownMessages {
+    toggle: Message,
+    clear: Message,
+    toggle_item: fn(String, bool) -> Message,
+}
+
+struct TaxonomyDropdownSearch<'a> {
+    value: &'a str,
+    on_input: fn(String) -> Message,
+    on_submit: Message,
+}
+
+struct TaxonomyDropdownConfig<'a> {
+    all_label: &'static str,
+    items: &'a [TaxonomyItem],
+    selected_values: &'a [String],
+    menu_open: bool,
+    messages: TaxonomyDropdownMessages,
+    search: Option<TaxonomyDropdownSearch<'a>>,
+}
+
+fn taxonomy_checkbox_dropdown<'a>(config: TaxonomyDropdownConfig<'a>) -> Element<'a, Message> {
+    let mut dropdown = column![
+        button(text(selected_taxonomies_label(
+            config.all_label,
+            config.items,
+            config.selected_values,
+        )))
+        .on_press(config.messages.toggle.clone())
+        .width(Length::Fill),
+    ]
+    .spacing(4);
+
+    if config.menu_open {
+        let mut menu = column![].spacing(4);
+
+        if let Some(search) = config.search {
+            menu = menu.push(
+                row![
+                    text_input("Search creators", search.value)
+                        .on_input(search.on_input)
+                        .on_submit(search.on_submit.clone())
+                        .width(Length::Fill),
+                    button(text("Search")).on_press(search.on_submit),
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center),
+            );
+        }
+
+        menu = menu.push(
+            checkbox(config.selected_values.is_empty())
+                .label(config.all_label)
+                .on_toggle(move |_| config.messages.clear.clone()),
+        );
+
+        for item in config.items {
+            let checked = config
+                .selected_values
+                .iter()
+                .any(|value| value == &item.value);
+            let value = item.value.clone();
+            let label = if item.count > 0 {
+                format!("{} ({})", item.name, item.count)
+            } else {
+                item.name.clone()
+            };
+            menu =
+                menu.push(checkbox(checked).label(label).on_toggle(move |enabled| {
+                    (config.messages.toggle_item)(value.clone(), enabled)
+                }));
+        }
+
+        dropdown = dropdown.push(container(menu).padding(4).width(Length::Fill));
+    }
+
+    dropdown.into()
 }
 
 fn variation_options(variations: &[SearchVariation]) -> Vec<VariationOption> {
