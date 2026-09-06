@@ -1,5 +1,6 @@
 use std::{
     ffi::CStr,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -32,7 +33,6 @@ use crate::{
         dsp::{ClassicWaveform, LfoShape, ModTarget, ModernSubWaveform, OscType},
         params::{ParamDef, ParamId, param_def},
         plugin::SharedState,
-        surge::{self, PresetInfo},
     },
 };
 
@@ -96,9 +96,9 @@ pub enum Message {
     SelectMisc(usize),
     SelectRouting(usize),
     PickWavetableFile(usize),
-    SelectSurgeCategory(String),
-    LoadSurgePreset(String),
-    ToggleSurgeReport,
+    PickSurgePreset,
+    SaveSynthPreset,
+    OpenSynthPreset,
 }
 
 struct State {
@@ -111,16 +111,10 @@ struct State {
     selected_eg: usize,
     selected_misc: usize,
     selected_routing: usize,
-    surge_presets: Vec<PresetInfo>,
-    surge_category: Option<String>,
-    surge_preset: Option<String>,
-    surge_error: Option<String>,
-    show_surge_report: bool,
+    preset_status: Option<String>,
 }
 
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
-    let surge_presets = surge::scan_presets();
-    let surge_category = surge_presets.first().map(|preset| preset.category.clone());
     (
         State {
             shared,
@@ -132,11 +126,7 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             selected_eg: 0,
             selected_misc: 0,
             selected_routing: 0,
-            surge_presets,
-            surge_category,
-            surge_preset: None,
-            surge_error: None,
-            show_surge_report: false,
+            preset_status: None,
         },
         Task::none(),
     )
@@ -222,34 +212,79 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
             }
         }
-        Message::SelectSurgeCategory(category) => {
-            state.surge_category = Some(category);
-            state.surge_preset = None;
-        }
-        Message::LoadSurgePreset(name) => {
-            let category = state.surge_category.clone();
-            let preset = state.surge_presets.iter().find(|preset| {
-                preset.name == name && category.as_deref() == Some(preset.category.as_str())
-            });
-            match preset {
-                Some(preset) => match state.shared.load_surge_preset(&preset.path) {
+        Message::PickSurgePreset => {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Surge XT presets", &["fxp"])
+                .pick_file()
+            {
+                match state.shared.load_surge_preset(&path) {
                     Ok(()) => {
-                        state.surge_preset = Some(name);
-                        state.surge_error = None;
-                        state.show_surge_report = true;
+                        let name = file_stem_display(&path);
+                        let report = state.shared.surge_report.lock();
+                        let skipped = report.skipped.len();
+                        let errors = report.errors.len();
+                        let notes = report.notes.len();
+                        state.preset_status = Some(format!(
+                            "Imported {name}: {skipped} skipped, {errors} errors, {notes} notes"
+                        ));
                     }
                     Err(error) => {
-                        state.surge_error = Some(error);
+                        state.preset_status = Some(format!("Import failed: {error}"));
                     }
-                },
-                None => state.surge_error = Some(format!("preset not found: {name}")),
+                }
             }
         }
-        Message::ToggleSurgeReport => {
-            state.show_surge_report = !state.show_surge_report;
+        Message::SaveSynthPreset => {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Maolan Synth presets", &["msynth"])
+                .set_file_name("Untitled.msynth")
+                .save_file()
+            {
+                let path = ensure_msynth_extension(path);
+                match state.shared.save_synth_preset(&path) {
+                    Ok(()) => {
+                        state.preset_status = Some(format!("Saved {}", file_stem_display(&path)));
+                    }
+                    Err(error) => {
+                        state.preset_status = Some(format!("Save failed: {error}"));
+                    }
+                }
+            }
+        }
+        Message::OpenSynthPreset => {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Maolan Synth presets", &["msynth"])
+                .pick_file()
+            {
+                match state.shared.load_synth_preset(&path) {
+                    Ok(name) => {
+                        let name = name.unwrap_or_else(|| file_stem_display(&path));
+                        state.preset_status = Some(format!("Opened {name}"));
+                    }
+                    Err(error) => {
+                        state.preset_status = Some(format!("Open failed: {error}"));
+                    }
+                }
+            }
         }
     }
     Task::none()
+}
+
+fn ensure_msynth_extension(mut path: PathBuf) -> PathBuf {
+    if path
+        .extension()
+        .is_none_or(|extension| extension != "msynth")
+    {
+        path.set_extension("msynth");
+    }
+    path
+}
+
+fn file_stem_display(path: &std::path::Path) -> String {
+    path.file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 const MOD_ROUTES: [ModRouteParamIds<ParamId>; 12] = [
@@ -921,84 +956,20 @@ fn lfo_tab_button(label: &'static str, index: usize, state: &State) -> Element<'
         .into()
 }
 
-/// Surge XT preset browser and import report, rendered above the main top
-/// bar.
-fn surge_preset_bar<'a>(state: &'a State) -> Element<'a, Message> {
-    let mut categories: Vec<String> = state
-        .surge_presets
-        .iter()
-        .map(|preset| preset.category.clone())
-        .collect();
-    categories.sort();
-    categories.dedup();
-    let category_pick = maolan_baseview::iced::widget::pick_list(
-        categories,
-        state.surge_category.clone(),
-        Message::SelectSurgeCategory,
-    )
-    .placeholder("Category")
-    .width(Length::Fixed(160.0));
-
-    let preset_names: Vec<String> = state
-        .surge_presets
-        .iter()
-        .filter(|preset| Some(preset.category.as_str()) == state.surge_category.as_deref())
-        .map(|preset| preset.name.clone())
-        .collect();
-    let preset_pick = maolan_baseview::iced::widget::pick_list(
-        preset_names,
-        state.surge_preset.clone(),
-        Message::LoadSurgePreset,
-    )
-    .placeholder("Surge XT preset")
-    .width(Length::Fixed(200.0));
-
-    let report = state.shared.surge_report.lock();
-    let mut status = String::new();
-    if let Some(error) = &state.surge_error {
-        status = format!("load failed: {error}");
-    } else if !report.is_empty() {
-        let skipped = report.skipped.len();
-        let errors = report.errors.len();
-        let notes = report.notes.len();
-        status = format!("import report: {skipped} skipped, {errors} errors, {notes} notes");
-    }
-    drop(report);
-
-    let report_button = button(text("Report").size(11)).on_press(Message::ToggleSurgeReport);
-    let status_text = text(status).size(11);
+/// Synth preset import/open/save controls, rendered above the main top bar.
+fn preset_bar<'a>(state: &'a State) -> Element<'a, Message> {
+    let import_button = button(text("Import").size(11)).on_press(Message::PickSurgePreset);
+    let save_button = button(text("Save").size(11)).on_press(Message::SaveSynthPreset);
+    let open_button = button(text("Open").size(11)).on_press(Message::OpenSynthPreset);
+    let status_text = text(state.preset_status.as_deref().unwrap_or("")).size(11);
 
     container(
-        row![
-            text("Surge XT").size(12),
-            category_pick,
-            preset_pick,
-            report_button,
-            status_text,
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
+        row![import_button, save_button, open_button, status_text]
+            .spacing(8)
+            .align_y(Alignment::Center),
     )
     .padding(4)
     .into()
-}
-
-/// Scrollable import report for the last Surge preset load.
-fn surge_report_panel<'a>(state: &'a State) -> Element<'a, Message> {
-    let report = state.shared.surge_report.lock();
-    let body = if let Some(error) = &state.surge_error {
-        format!("load failed: {error}")
-    } else {
-        report.to_display_string()
-    };
-    let element: Element<'a, Message> = if body.trim().is_empty() {
-        text("no import issues").size(11).into()
-    } else {
-        maolan_baseview::iced::widget::scrollable(text(body).size(11))
-            .height(Length::Fixed(120.0))
-            .into()
-    };
-    container(element).padding(4).into()
 }
 
 fn view(state: &State) -> Element<'_, Message> {
@@ -1428,18 +1399,11 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(12)
         .align_y(Alignment::Start);
 
-    let surge_bar = surge_preset_bar(state);
-    let content = if state.show_surge_report {
-        column![surge_bar, surge_report_panel(state), top_bar, main_content]
-            .spacing(12)
-            .padding(16)
-            .align_x(Alignment::Start)
-    } else {
-        column![surge_bar, top_bar, main_content]
-            .spacing(12)
-            .padding(16)
-            .align_x(Alignment::Start)
-    };
+    let preset_bar = preset_bar(state);
+    let content = column![preset_bar, top_bar, main_content]
+        .spacing(12)
+        .padding(16)
+        .align_x(Alignment::Start);
 
     container(content)
         .width(Length::Fill)

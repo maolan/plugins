@@ -51,6 +51,7 @@ use crate::synth::{
     },
     gui::GuiBridge,
     params::{PARAMS, ParamId, ParamStore, sanitize_param_value},
+    preset::SynthPreset,
     state::PluginState,
 };
 
@@ -257,6 +258,50 @@ impl SharedState {
         *self.surge_report.lock() = result.report;
         self.bump_params_version();
         Ok(())
+    }
+
+    pub fn save_synth_preset(&self, path: &Path) -> Result<(), String> {
+        let wavetable_paths: Vec<(u8, String)> = self
+            .custom_wavetable_paths
+            .iter()
+            .enumerate()
+            .filter_map(|(osc_index, path)| path.lock().clone().map(|path| (osc_index as u8, path)))
+            .collect();
+        let name = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned());
+        SynthPreset::from_runtime(&self.params, name, &wavetable_paths).save_to_path(path)
+    }
+
+    pub fn load_synth_preset(&self, path: &Path) -> Result<Option<String>, String> {
+        let preset = SynthPreset::load_from_path(path)?;
+        preset.apply(&self.params);
+        for osc_index in 0..self.custom_wavetables.len() {
+            self.set_custom_wavetable(osc_index, None, None);
+        }
+
+        for (osc_index, path) in preset.wavetable_paths() {
+            let osc_index = osc_index as usize;
+            let path_buf = resolve_wavetable_load_path(self, &path);
+            match Wavetable::from_file_any(&path_buf) {
+                Ok(wavetable) => {
+                    self.set_custom_wavetable(osc_index, Some(Arc::new(wavetable)), Some(path));
+                }
+                Err(_) => {
+                    self.set_custom_wavetable(osc_index, None, None);
+                }
+            }
+            let select_id = match osc_index {
+                0 => ParamId::Osc1Wavetable,
+                1 => ParamId::Osc2Wavetable,
+                _ => ParamId::Osc3Wavetable,
+            };
+            self.params.set(select_id, FACTORY_COUNT as f64);
+        }
+
+        self.bump_params_version();
+        self.mark_dirty();
+        Ok(preset.name)
     }
 
     pub fn visual_lfo_mod_value(&self, lfo_index: usize, target: ModTarget) -> f32 {

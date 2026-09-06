@@ -2,6 +2,7 @@ pub mod dsp;
 pub mod gui;
 mod params;
 pub mod plugin;
+mod preset;
 pub mod render;
 mod state;
 pub mod surge;
