@@ -30,8 +30,8 @@ oxideav-ogg = "0.1.8"
 pitch-detection = "0.3.0"
 symphonia = { version = "0.6.1", features = ["aac", "alac", "flac", "isomp4", "mp3", "ogg", "vorbis", "wav"] }
 maolan-baseview = { version = "0.0.6", features = ["canvas"] }
-maolan-editor = "0.0.5"
-maolan-widgets = "0.0.36"
+maolan-editor = "0.0.6"
+maolan-widgets = "0.0.37"
 parking_lot = "0.12.5"
 portable-atomic = { version = "1.14.0", features = ["float"] }
 quick-xml = { version = "0.42.0", features = ["serialize"] }
