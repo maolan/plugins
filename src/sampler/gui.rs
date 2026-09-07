@@ -32,7 +32,10 @@ use maolan_widgets::piano::{
 use maolan_widgets::slider::Slider;
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 use symphonia::core::{
-    formats::FormatOptions, io::MediaSourceStream, meta::MetadataOptions, probe::Hint,
+    codecs::audio::CODEC_ID_NULL_AUDIO,
+    formats::{FormatOptions, probe::Hint},
+    io::MediaSourceStream,
+    meta::MetadataOptions,
 };
 
 use crate::{
@@ -1207,18 +1210,23 @@ fn is_mono_or_stereo(path: &PathBuf) -> bool {
     }
     let format_opts = FormatOptions::default();
     let metadata_opts = MetadataOptions::default();
-    let Ok(probed) =
-        symphonia::default::get_probe().format(&hint, mss, &format_opts, &metadata_opts)
+    let Ok(format) = symphonia::default::get_probe().probe(&hint, mss, format_opts, metadata_opts)
     else {
         return false;
     };
-    let format = probed.format;
     format
         .tracks()
         .iter()
-        .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
+        .find(|t| {
+            t.codec_params
+                .as_ref()
+                .and_then(|p| p.audio())
+                .is_some_and(|a| a.codec != CODEC_ID_NULL_AUDIO)
+        })
         .or_else(|| format.tracks().first())
-        .and_then(|track| track.codec_params.channels)
+        .and_then(|track| track.codec_params.as_ref())
+        .and_then(|params| params.audio())
+        .and_then(|audio| audio.channels.clone())
         .map(|channels| {
             let count = channels.count();
             count == 1 || count == 2

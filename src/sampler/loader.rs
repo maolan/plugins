@@ -168,7 +168,7 @@ fn parse_ariax_slots(path: &Path) -> Result<Vec<AriaxSlot>, String> {
             Ok(Event::Start(e)) => {
                 let name = e.name();
                 let tag = name.as_ref();
-                if (tag == b"Slot" || tag == b"slot")
+                if (tag == "Slot" || tag == "slot")
                     && let Some(slot_name) = slot_name_from_attrs(&e)
                 {
                     current_slot = Some((slot_name, 0));
@@ -177,7 +177,7 @@ fn parse_ariax_slots(path: &Path) -> Result<Vec<AriaxSlot>, String> {
             Ok(Event::Empty(e)) => {
                 let name = e.name();
                 let tag = name.as_ref();
-                if (tag == b"Main" || tag == b"main")
+                if (tag == "Main" || tag == "main")
                     && let Some((_, ref mut output)) = current_slot
                     && let Some(bus) = parse_main_output_bus(&e)
                 {
@@ -187,7 +187,7 @@ fn parse_ariax_slots(path: &Path) -> Result<Vec<AriaxSlot>, String> {
             Ok(Event::End(e)) => {
                 let name = e.name();
                 let tag = name.as_ref();
-                if (tag == b"Slot" || tag == b"slot")
+                if (tag == "Slot" || tag == "slot")
                     && let Some((slot_name, output)) = current_slot.take()
                 {
                     let sfz_path = base_dir.join(&slot_name).with_extension("sfz");
@@ -215,8 +215,8 @@ fn parse_ariax_slots(path: &Path) -> Result<Vec<AriaxSlot>, String> {
 
 fn slot_name_from_attrs(e: &quick_xml::events::BytesStart<'_>) -> Option<String> {
     for attr in e.attributes().flatten() {
-        if attr.key.as_ref() == b"name" {
-            return Some(String::from_utf8_lossy(&attr.value).into_owned());
+        if attr.key.as_ref() == "name" {
+            return Some(attr.value.into_owned());
         }
     }
     None
@@ -225,17 +225,17 @@ fn slot_name_from_attrs(e: &quick_xml::events::BytesStart<'_>) -> Option<String>
 fn parse_main_output_bus(e: &quick_xml::events::BytesStart<'_>) -> Option<u8> {
     let name = e.name();
     let tag = name.as_ref();
-    if tag != b"Main" && tag != b"main" {
+    if tag != "Main" && tag != "main" {
         return None;
     }
     let mut id = None;
     let mut value = None;
     for attr in e.attributes().flatten() {
         let key = attr.key.as_ref();
-        if key == b"id" {
-            id = String::from_utf8_lossy(&attr.value).parse::<i32>().ok();
-        } else if key == b"value" {
-            value = String::from_utf8_lossy(&attr.value).parse::<i32>().ok();
+        if key == "id" {
+            id = attr.value.parse::<i32>().ok();
+        } else if key == "value" {
+            value = attr.value.parse::<i32>().ok();
         }
     }
     if value == Some(1) {

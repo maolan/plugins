@@ -1,13 +1,11 @@
 use std::{fs::File, path::Path, sync::Arc};
 
 use symphonia::core::{
-    audio::SampleBuffer,
-    codecs::{CODEC_TYPE_NULL, DecoderOptions},
+    codecs::audio::{AudioDecoderOptions, CODEC_ID_NULL_AUDIO},
     errors::Error as SymphoniaError,
-    formats::FormatOptions,
+    formats::{FormatOptions, probe::Hint},
     io::MediaSourceStream,
     meta::MetadataOptions,
-    probe::Hint,
 };
 
 /// An audio file decoded into non-interleaved `f32` channels.
@@ -173,21 +171,35 @@ fn decode_with_symphonia(
 
     let format_opts = FormatOptions::default();
     let metadata_opts = MetadataOptions::default();
-    let decoder_opts = DecoderOptions::default();
+    let decoder_opts = AudioDecoderOptions::default();
 
-    let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &format_opts, &metadata_opts)
+    let mut format = symphonia::default::get_probe()
+        .probe(&hint, mss, format_opts, metadata_opts)
         .map_err(|e| LoadError::Decode(format!("probe error: {e}")))?;
-    let mut format = probed.format;
 
     let track = format
         .tracks()
         .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .find(|t| {
+            t.codec_params
+                .as_ref()
+                .and_then(|p| p.audio())
+                .is_some_and(|a| a.codec != CODEC_ID_NULL_AUDIO)
+        })
         .or_else(|| format.tracks().first())
         .ok_or(LoadError::NoAudioStream)?;
 
-    let file_channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(1);
+    let audio_params = track
+        .codec_params
+        .as_ref()
+        .and_then(|p| p.audio())
+        .ok_or(LoadError::NoAudioStream)?;
+
+    let file_channels = audio_params
+        .channels
+        .as_ref()
+        .map(|c| c.count())
+        .unwrap_or(1);
     if file_channels == 0 {
         return Err(LoadError::NoAudioStream);
     }
@@ -202,26 +214,24 @@ fn decode_with_symphonia(
         }
     }
 
-    let sample_rate = track.codec_params.sample_rate.unwrap_or(48_000) as f32;
+    let sample_rate = audio_params.sample_rate.unwrap_or(48_000) as f32;
     let track_id = track.id;
 
     let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &decoder_opts)
+        .make_audio_decoder(audio_params, &decoder_opts)
         .map_err(|e| LoadError::Decode(format!("decoder init error: {e}")))?;
 
-    let mut sample_buf = None;
+    let mut chunk = Vec::new();
     let mut interleaved = Vec::new();
 
     loop {
         let packet = match format.next_packet() {
-            Ok(packet) => packet,
-            Err(SymphoniaError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                break;
-            }
+            Ok(Some(packet)) => packet,
+            Ok(None) | Err(SymphoniaError::IoError(_)) => break,
             Err(e) => return Err(LoadError::Decode(format!("read error: {e}"))),
         };
 
-        if packet.track_id() != track_id {
+        if packet.track_id != track_id {
             continue;
         }
 
@@ -229,13 +239,8 @@ fn decode_with_symphonia(
             .decode(&packet)
             .map_err(|e| LoadError::Decode(format!("decode error: {e}")))?;
 
-        if sample_buf.is_none() {
-            let spec = *decoded.spec();
-            sample_buf = Some(SampleBuffer::<f32>::new(decoded.capacity() as u64, spec));
-        }
-        let buf = sample_buf.as_mut().unwrap();
-        buf.copy_interleaved_ref(decoded);
-        interleaved.extend_from_slice(buf.samples());
+        decoded.copy_to_vec_interleaved(&mut chunk);
+        interleaved.extend_from_slice(&chunk);
     }
 
     if interleaved.is_empty() {

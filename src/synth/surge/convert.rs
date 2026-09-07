@@ -83,12 +83,7 @@ struct ParsedPatch {
 fn attr_string(attributes: quick_xml::events::attributes::Attributes) -> HashMap<String, String> {
     attributes
         .flatten()
-        .map(|attr| {
-            (
-                String::from_utf8_lossy(attr.key.as_ref()).into_owned(),
-                String::from_utf8_lossy(&attr.value).into_owned(),
-            )
-        })
+        .map(|attr| (attr.key.as_ref().to_string(), attr.value.into_owned()))
         .collect()
 }
 
@@ -115,7 +110,7 @@ fn parse_xml(xml: &str) -> Result<ParsedPatch, String> {
             Ok(Event::Decl(_)) | Ok(Event::Text(_)) | Ok(Event::Comment(_)) => {}
             Ok(Event::Eof) => break,
             Ok(Event::Start(event)) => {
-                let name = String::from_utf8_lossy(event.name().as_ref()).into_owned();
+                let name = event.name().as_ref().to_string();
                 match name.as_str() {
                     "patch" => {
                         let attrs = attr_string(event.attributes());
@@ -185,7 +180,7 @@ fn parse_xml(xml: &str) -> Result<ParsedPatch, String> {
                 }
             }
             Ok(Event::Empty(event)) => {
-                let name = String::from_utf8_lossy(event.name().as_ref()).into_owned();
+                let name = event.name().as_ref().to_string();
                 match name.as_str() {
                     "meta" => {
                         let attrs = attr_string(event.attributes());
@@ -244,7 +239,7 @@ fn parse_xml(xml: &str) -> Result<ParsedPatch, String> {
                 }
             }
             Ok(Event::End(event)) => {
-                let name = String::from_utf8_lossy(event.name().as_ref()).into_owned();
+                let name = event.name().as_ref().to_string();
                 match name.as_str() {
                     "parameters" => {
                         in_parameters = false;
