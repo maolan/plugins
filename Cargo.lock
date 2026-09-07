@@ -642,11 +642,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "clap-clap"
-version = "0.5.0"
-source = "git+https://github.com/mekanix/clap-clap?branch=feature%2Ffile-reference#8d38923f192658940869b900a4ea870401807bce"
-
-[[package]]
 name = "clipboard-win"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2610,6 +2605,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "maolan-clap"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0806877c16abfdc601427c661ac1afbe142c0f77701debe586997911af2f25fe"
+
+[[package]]
 name = "maolan-editor"
 version = "0.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2677,11 +2678,11 @@ name = "maolan-plugins"
 version = "0.0.4"
 dependencies = [
  "base64 0.23.1",
- "clap-clap",
  "dirs",
  "libc",
  "libloading 0.9.0",
  "maolan-baseview",
+ "maolan-clap",
  "maolan-editor",
  "maolan-widgets",
  "oxideav-basic",

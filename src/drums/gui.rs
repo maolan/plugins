@@ -8,15 +8,15 @@ use std::{
     time::Duration,
 };
 
-#[cfg(target_os = "windows")]
-use clap_clap::ffi::CLAP_WINDOW_API_WIN32;
-#[cfg(unix)]
-use clap_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
     widget::{button, column, container, progress_bar, text},
 };
+#[cfg(target_os = "windows")]
+use maolan_clap::ffi::CLAP_WINDOW_API_WIN32;
+#[cfg(unix)]
+use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 
 use crate::drums::{download, engine::DrumGizmoEngine, params::ParamId, shared::SharedState};

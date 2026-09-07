@@ -8,10 +8,6 @@ use std::{
     thread,
 };
 
-#[cfg(target_os = "windows")]
-use clap_clap::ffi::CLAP_WINDOW_API_WIN32;
-#[cfg(unix)]
-use clap_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::widget::image::Image;
 use maolan_baseview::iced::{
     Alignment, Background, Border, Color, Element, Length, Task, Theme,
@@ -22,6 +18,10 @@ use maolan_baseview::iced::{
     },
     window,
 };
+#[cfg(target_os = "windows")]
+use maolan_clap::ffi::CLAP_WINDOW_API_WIN32;
+#[cfg(unix)]
+use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_widgets::arch_slider::arch_slider;
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 

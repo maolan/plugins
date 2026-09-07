@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use clap_clap::{
+use maolan_clap::{
     events::{InputEvents, OutputEvents},
     ffi::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI, CLAP_EXT_LATENCY,
@@ -1151,8 +1151,8 @@ unsafe extern "C-unwind" fn ext_params_text_to_value(
 
 unsafe extern "C-unwind" fn ext_params_flush(
     plugin: *const clap_plugin,
-    in_events: *const clap_clap::ffi::clap_input_events,
-    out_events: *const clap_clap::ffi::clap_output_events,
+    in_events: *const maolan_clap::ffi::clap_input_events,
+    out_events: *const maolan_clap::ffi::clap_output_events,
 ) {
     if plugin.is_null() {
         return;
@@ -1791,8 +1791,8 @@ pub unsafe fn create_plugin(
 #[cfg(test)]
 mod tests {
     use super::{ModelMetadata, SharedState, initial_resource_paths, resource_files};
-    use clap_clap::ffi::{CLAP_EXT_GUI, CLAP_EXT_STATE, CLAP_VERSION};
-    use clap_clap::ffi::{clap_host, clap_host_gui, clap_host_state};
+    use maolan_clap::ffi::{CLAP_EXT_GUI, CLAP_EXT_STATE, CLAP_VERSION};
+    use maolan_clap::ffi::{clap_host, clap_host_gui, clap_host_state};
     use std::{
         ffi::{CStr, c_char, c_void},
         ptr::null,

@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
-use clap_clap::ffi::{
+use maolan_clap::ffi::{
     clap_host, clap_host_latency, clap_host_note_name, clap_host_params, clap_host_state,
 };
 use parking_lot::RwLock;

@@ -5,7 +5,7 @@ use std::{
     ptr::null,
 };
 
-use clap_clap::ffi::{
+use maolan_clap::ffi::{
     CLAP_PLUGIN_FACTORY_ID, CLAP_VERSION, clap_host, clap_plugin, clap_plugin_descriptor,
     clap_plugin_entry, clap_plugin_factory,
 };

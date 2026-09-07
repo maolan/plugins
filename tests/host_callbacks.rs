@@ -2,7 +2,7 @@ use maolan_plugins::eq::params::{PARAMS, ParamId, ParamStore};
 use maolan_plugins::eq::plugin as eq_plugin;
 use maolan_plugins::eq::plugin::SharedState;
 
-use clap_clap::ffi::{
+use maolan_clap::ffi::{
     clap_host, clap_host_audio_ports, clap_host_gui, clap_host_latency, clap_host_params,
     clap_host_state,
 };
@@ -82,7 +82,7 @@ unsafe extern "C-unwind" fn mock_noop(_host: *const clap_host) {}
 
 fn mock_host() -> clap_host {
     clap_host {
-        clap_version: clap_clap::ffi::CLAP_VERSION,
+        clap_version: maolan_clap::ffi::CLAP_VERSION,
         host_data: null::<c_void>() as *mut c_void,
         name: null(),
         vendor: null(),

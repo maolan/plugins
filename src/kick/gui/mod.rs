@@ -7,15 +7,15 @@ use std::{
     thread,
 };
 
-#[cfg(target_os = "windows")]
-use clap_clap::ffi::CLAP_WINDOW_API_WIN32;
-#[cfg(unix)]
-use clap_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
     widget::{canvas, checkbox, column, container, pick_list, row, slider, text},
 };
+#[cfg(target_os = "windows")]
+use maolan_clap::ffi::CLAP_WINDOW_API_WIN32;
+#[cfg(unix)]
+use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_widgets::arch_slider::arch_slider;
 use maolan_widgets::meters::meters;
 

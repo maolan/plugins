@@ -10,7 +10,7 @@ use std::{
     time::Instant,
 };
 
-use clap_clap::{
+use maolan_clap::{
     events::{InputEvents, OutputEvents},
     ffi::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI,
@@ -398,11 +398,11 @@ fn control_time_ns() -> u64 {
 
 fn apply_param_events_synth(
     shared: &SharedState,
-    events: &clap_clap::events::InputEvents<'_>,
+    events: &maolan_clap::events::InputEvents<'_>,
     sanitize: impl Fn(ParamId, f64) -> f64,
     changed: &mut [Option<(ParamId, f64)>; 32],
 ) -> bool {
-    use clap_clap::ffi::{
+    use maolan_clap::ffi::{
         CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END,
         CLAP_EVENT_PARAM_VALUE, clap_event_header, clap_event_param_gesture,
     };
@@ -461,10 +461,10 @@ fn apply_param_events_synth(
 
 fn emit_pending_param_events_to_host_synth(
     shared: &SharedState,
-    out_events: &mut clap_clap::events::OutputEvents<'_>,
+    out_events: &mut maolan_clap::events::OutputEvents<'_>,
 ) {
-    use clap_clap::events::{EventBuilder, ParamValue};
-    use clap_clap::id::ClapId;
+    use maolan_clap::events::{EventBuilder, ParamValue};
+    use maolan_clap::id::ClapId;
 
     for id in (0..ParamId::COUNT).filter_map(|i| ParamId::from_raw(i as u32)) {
         let idx = id.as_index();
@@ -3413,8 +3413,8 @@ unsafe extern "C-unwind" fn ext_params_text_to_value(
 
 unsafe extern "C-unwind" fn ext_params_flush(
     plugin: *const clap_plugin,
-    in_events: *const clap_clap::ffi::clap_input_events,
-    out_events: *const clap_clap::ffi::clap_output_events,
+    in_events: *const maolan_clap::ffi::clap_input_events,
+    out_events: *const maolan_clap::ffi::clap_output_events,
 ) {
     if plugin.is_null() {
         return;
@@ -3895,7 +3895,7 @@ unsafe extern "C-unwind" fn plugin_get_extension(
 }
 
 unsafe extern "C-unwind" fn factory_create_plugin(
-    _factory: *const clap_clap::ffi::clap_plugin_factory,
+    _factory: *const maolan_clap::ffi::clap_plugin_factory,
     host: *const clap_host,
     plugin_id: *const c_char,
 ) -> *const clap_plugin {

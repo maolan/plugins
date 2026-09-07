@@ -17,15 +17,15 @@ use crate::common::{
     ui::{SmallKnob, VerticalSlider, small_knob, vertical_slider, vertical_ticks, vu_meter},
 };
 
-#[cfg(target_os = "windows")]
-use clap_clap::ffi::CLAP_WINDOW_API_WIN32;
-#[cfg(unix)]
-use clap_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::{
     Alignment, Color, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
     widget::{checkbox, column, container, row, text},
 };
+#[cfg(target_os = "windows")]
+use maolan_clap::ffi::CLAP_WINDOW_API_WIN32;
+#[cfg(unix)]
+use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 
 use crate::compressor::{

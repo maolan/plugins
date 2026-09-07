@@ -1,6 +1,6 @@
 use std::ffi::c_char;
 
-use clap_clap::{
+use maolan_clap::{
     events::{EventBuilder, InputEvents, OutputEvents, ParamValue},
     ffi::{
         CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END,
@@ -190,8 +190,8 @@ impl ParamGesture {
     }
 }
 
-impl clap_clap::events::Event for ParamGesture {
-    fn header(&self) -> &clap_clap::events::Header {
-        unsafe { clap_clap::events::Header::new_unchecked(&self.inner.header) }
+impl maolan_clap::events::Event for ParamGesture {
+    fn header(&self) -> &maolan_clap::events::Header {
+        unsafe { maolan_clap::events::Header::new_unchecked(&self.inner.header) }
     }
 }

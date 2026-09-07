@@ -3294,9 +3294,9 @@ impl GuiBridge {
     }
 }
 #[cfg(target_os = "windows")]
-use clap_clap::ffi::CLAP_WINDOW_API_WIN32;
+use maolan_clap::ffi::CLAP_WINDOW_API_WIN32;
 #[cfg(unix)]
-use clap_clap::ffi::CLAP_WINDOW_API_X11;
+use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 
 pub fn preferred_api() -> &'static CStr {

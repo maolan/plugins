@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use clap_clap::{
+use maolan_clap::{
     events::{EventBuilder, InputEvents, OutputEvents, ParamValue},
     ffi::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_GESTURE_BEGIN,
@@ -1194,9 +1194,9 @@ impl ParamGesture {
     }
 }
 
-impl clap_clap::events::Event for ParamGesture {
-    fn header(&self) -> &clap_clap::events::Header {
-        unsafe { clap_clap::events::Header::new_unchecked(&self.inner.header) }
+impl maolan_clap::events::Event for ParamGesture {
+    fn header(&self) -> &maolan_clap::events::Header {
+        unsafe { maolan_clap::events::Header::new_unchecked(&self.inner.header) }
     }
 }
 
@@ -1499,8 +1499,8 @@ unsafe extern "C-unwind" fn ext_params_text_to_value(
 
 unsafe extern "C-unwind" fn ext_params_flush(
     plugin: *const clap_plugin,
-    in_events: *const clap_clap::ffi::clap_input_events,
-    out_events: *const clap_clap::ffi::clap_output_events,
+    in_events: *const maolan_clap::ffi::clap_input_events,
+    out_events: *const maolan_clap::ffi::clap_output_events,
 ) {
     let instance = unsafe { instance(plugin) };
     if !in_events.is_null() {
@@ -2027,7 +2027,7 @@ impl<T: ParamIdExt> SharedState<T> {
             if ext.is_null() {
                 return;
             }
-            let params = &*(ext as *const clap_clap::ffi::clap_host_params);
+            let params = &*(ext as *const maolan_clap::ffi::clap_host_params);
             if let Some(request_flush) = params.request_flush {
                 request_flush(host);
             }
@@ -2047,7 +2047,7 @@ impl<T: ParamIdExt> SharedState<T> {
             if ext.is_null() {
                 return;
             }
-            let state = &*(ext as *const clap_clap::ffi::clap_host_state);
+            let state = &*(ext as *const maolan_clap::ffi::clap_host_state);
             if let Some(mark_dirty) = state.mark_dirty {
                 mark_dirty(host);
             }
@@ -2173,7 +2173,7 @@ impl<T: ParamIdExt> SharedState<T> {
             if ext.is_null() {
                 return;
             }
-            let gui = &*(ext as *const clap_clap::ffi::clap_host_gui);
+            let gui = &*(ext as *const maolan_clap::ffi::clap_host_gui);
             if let Some(closed) = gui.closed {
                 closed(host, false);
             }
@@ -2193,9 +2193,9 @@ impl<T: ParamIdExt> SharedState<T> {
             if ext.is_null() {
                 return;
             }
-            let audio_ports = &*(ext as *const clap_clap::ffi::clap_host_audio_ports);
+            let audio_ports = &*(ext as *const maolan_clap::ffi::clap_host_audio_ports);
             if let Some(rescan) = audio_ports.rescan {
-                rescan(host, clap_clap::ffi::CLAP_AUDIO_PORTS_RESCAN_LIST);
+                rescan(host, maolan_clap::ffi::CLAP_AUDIO_PORTS_RESCAN_LIST);
             }
         }
     }

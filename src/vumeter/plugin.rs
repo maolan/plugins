@@ -7,7 +7,8 @@ use std::{
     },
 };
 
-use clap_clap::{
+use maolan_baseview::iced::PollSubNotifier;
+use maolan_clap::{
     ffi::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI, CLAP_EXT_TAIL,
         CLAP_INVALID_ID, CLAP_PLUGIN_FEATURE_AUDIO_EFFECT, CLAP_PLUGIN_FEATURE_STEREO,
@@ -18,7 +19,6 @@ use clap_clap::{
     },
     process::Process,
 };
-use maolan_baseview::iced::PollSubNotifier;
 use parking_lot::Mutex;
 use portable_atomic::AtomicF64;
 

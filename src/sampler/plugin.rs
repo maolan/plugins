@@ -11,10 +11,10 @@ use std::{
 };
 
 #[cfg(target_os = "windows")]
-use clap_clap::ffi::CLAP_WINDOW_API_WIN32;
+use maolan_clap::ffi::CLAP_WINDOW_API_WIN32;
 #[cfg(unix)]
-use clap_clap::ffi::CLAP_WINDOW_API_X11;
-use clap_clap::{
+use maolan_clap::ffi::CLAP_WINDOW_API_X11;
+use maolan_clap::{
     events::{EventBuilder, InputEvents, OutputEvents},
     ffi::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI,
@@ -262,9 +262,9 @@ impl SharedState {
             if ext.is_null() {
                 return;
             }
-            let audio_ports = &*(ext as *const clap_clap::ffi::clap_host_audio_ports);
+            let audio_ports = &*(ext as *const maolan_clap::ffi::clap_host_audio_ports);
             if let Some(rescan) = audio_ports.rescan {
-                rescan(host, clap_clap::ffi::CLAP_AUDIO_PORTS_RESCAN_LIST);
+                rescan(host, maolan_clap::ffi::CLAP_AUDIO_PORTS_RESCAN_LIST);
             }
         }
     }
@@ -907,7 +907,7 @@ fn apply_param_events_sampler(
     sanitize: impl Fn(ParamId, f64) -> f64,
     changed: &mut [Option<(ParamId, f64)>; 32],
 ) -> bool {
-    use clap_clap::ffi::{
+    use maolan_clap::ffi::{
         CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END,
         CLAP_EVENT_PARAM_VALUE, clap_event_header, clap_event_param_gesture,
     };
@@ -968,7 +968,7 @@ fn emit_pending_param_events_to_host_sampler(
     shared: &SharedState,
     out_events: &mut OutputEvents<'_>,
 ) {
-    use clap_clap::{events::ParamValue, id::ClapId};
+    use maolan_clap::{events::ParamValue, id::ClapId};
 
     for id in ParamId::all() {
         let index = id.as_index();
@@ -2237,7 +2237,7 @@ unsafe extern "C-unwind" fn ext_params_count(_plugin: *const clap_plugin) -> u32
 unsafe extern "C-unwind" fn ext_params_get_info(
     _plugin: *const clap_plugin,
     param_index: u32,
-    info: *mut clap_clap::ffi::clap_param_info,
+    info: *mut maolan_clap::ffi::clap_param_info,
 ) -> bool {
     unsafe {
         let index = param_index as usize;
@@ -2316,8 +2316,8 @@ unsafe extern "C-unwind" fn ext_params_text_to_value(
 
 unsafe extern "C-unwind" fn ext_params_flush(
     plugin: *const clap_plugin,
-    in_events: *const clap_clap::ffi::clap_input_events,
-    out_events: *const clap_clap::ffi::clap_output_events,
+    in_events: *const maolan_clap::ffi::clap_input_events,
+    out_events: *const maolan_clap::ffi::clap_output_events,
 ) {
     unsafe {
         let inst = instance(plugin);
@@ -2686,7 +2686,7 @@ unsafe extern "C-unwind" fn ext_gui_can_resize(_plugin: *const clap_plugin) -> b
 
 unsafe extern "C-unwind" fn ext_gui_get_resize_hints(
     _plugin: *const clap_plugin,
-    hints: *mut clap_clap::ffi::clap_gui_resize_hints,
+    hints: *mut maolan_clap::ffi::clap_gui_resize_hints,
 ) -> bool {
     if hints.is_null() {
         return false;

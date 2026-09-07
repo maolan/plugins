@@ -8,15 +8,15 @@ use std::{
     thread,
 };
 
-#[cfg(target_os = "windows")]
-use clap_clap::ffi::CLAP_WINDOW_API_WIN32;
-#[cfg(unix)]
-use clap_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::{
     Alignment, Background, Border, Color, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
     widget::{button, checkbox, column, container, mouse_area, row, text},
 };
+#[cfg(target_os = "windows")]
+use maolan_clap::ffi::CLAP_WINDOW_API_WIN32;
+#[cfg(unix)]
+use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_widgets::arch_slider::arch_slider;
 use maolan_widgets::horizontal_slider::HorizontalSlider;
 use maolan_widgets::slider::Slider;
@@ -958,13 +958,13 @@ fn lfo_tab_button(label: &'static str, index: usize, state: &State) -> Element<'
 
 /// Synth preset import/open/save controls, rendered above the main top bar.
 fn preset_bar<'a>(state: &'a State) -> Element<'a, Message> {
-    let import_button = button(text("Import").size(11)).on_press(Message::PickSurgePreset);
-    let save_button = button(text("Save").size(11)).on_press(Message::SaveSynthPreset);
     let open_button = button(text("Open").size(11)).on_press(Message::OpenSynthPreset);
+    let save_button = button(text("Save").size(11)).on_press(Message::SaveSynthPreset);
+    let import_button = button(text("Import").size(11)).on_press(Message::PickSurgePreset);
     let status_text = text(state.preset_status.as_deref().unwrap_or("")).size(11);
 
     container(
-        row![import_button, save_button, open_button, status_text]
+        row![open_button, save_button, import_button, status_text]
             .spacing(8)
             .align_y(Alignment::Center),
     )

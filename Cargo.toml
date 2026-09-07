@@ -13,15 +13,12 @@ categories = ["multimedia::audio"]
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-[patch.crates-io]
-clap-clap = { git = "https://github.com/mekanix/clap-clap", branch = "feature/file-reference" }
-
 [profile.dev]
 opt-level = 3
 debug = true
 
 [dependencies]
-clap-clap = "0.5.0"
+maolan-clap = "0.5.1"
 libc = "0.2"
 base64 = "0.23.1"
 dirs = "6"

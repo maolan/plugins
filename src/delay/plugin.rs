@@ -8,7 +8,7 @@ use std::{
     },
 };
 
-use clap_clap::{
+use maolan_clap::{
     events::{InputEvents, OutputEvents, TransportFlags},
     ffi::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_AUDIO_PORTS_RESCAN_LIST, CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI,
@@ -199,7 +199,7 @@ impl SharedState {
             if ext.is_null() {
                 return;
             }
-            let audio_ports = &*(ext as *const clap_clap::ffi::clap_host_audio_ports);
+            let audio_ports = &*(ext as *const maolan_clap::ffi::clap_host_audio_ports);
             if let Some(rescan) = audio_ports.rescan {
                 rescan(host, CLAP_AUDIO_PORTS_RESCAN_LIST);
             }
@@ -816,8 +816,8 @@ unsafe extern "C-unwind" fn ext_params_text_to_value(
 
 unsafe extern "C-unwind" fn ext_params_flush(
     plugin: *const clap_plugin,
-    in_events: *const clap_clap::ffi::clap_input_events,
-    out_events: *const clap_clap::ffi::clap_output_events,
+    in_events: *const maolan_clap::ffi::clap_input_events,
+    out_events: *const maolan_clap::ffi::clap_output_events,
 ) {
     if plugin.is_null() {
         return;

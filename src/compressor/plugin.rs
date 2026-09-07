@@ -8,7 +8,7 @@ use std::{
     },
 };
 
-use clap_clap::{
+use maolan_clap::{
     events::{InputEvents, OutputEvents},
     ffi::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_AUDIO_PORTS_RESCAN_LIST, CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI,
@@ -374,11 +374,11 @@ impl SharedStateExt<ParamId> for SharedState {
 
 fn apply_param_events_compressor(
     shared: &SharedState,
-    events: &clap_clap::events::InputEvents<'_>,
+    events: &maolan_clap::events::InputEvents<'_>,
     sanitize: impl Fn(ParamId, f64) -> f64,
     changed: &mut [Option<(ParamId, f64)>; 32],
 ) -> bool {
-    use clap_clap::ffi::{
+    use maolan_clap::ffi::{
         CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END,
         CLAP_EVENT_PARAM_VALUE, clap_event_header, clap_event_param_gesture,
     };
@@ -1520,8 +1520,8 @@ unsafe extern "C-unwind" fn ext_params_text_to_value(
 
 unsafe extern "C-unwind" fn ext_params_flush(
     plugin: *const clap_plugin,
-    in_events: *const clap_clap::ffi::clap_input_events,
-    out_events: *const clap_clap::ffi::clap_output_events,
+    in_events: *const maolan_clap::ffi::clap_input_events,
+    out_events: *const maolan_clap::ffi::clap_output_events,
 ) {
     if plugin.is_null() {
         return;

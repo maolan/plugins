@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use clap_clap::{
+use maolan_clap::{
     events::{EventBuilder, InputEvents, OutputEvents, ParamValue},
     ffi::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_AUDIO_PORTS_RESCAN_LIST, CLAP_CORE_EVENT_SPACE_ID,
@@ -533,9 +533,9 @@ impl ParamGesture {
     }
 }
 
-impl clap_clap::events::Event for ParamGesture {
-    fn header(&self) -> &clap_clap::events::Header {
-        unsafe { clap_clap::events::Header::new_unchecked(&self.inner.header) }
+impl maolan_clap::events::Event for ParamGesture {
+    fn header(&self) -> &maolan_clap::events::Header {
+        unsafe { maolan_clap::events::Header::new_unchecked(&self.inner.header) }
     }
 }
 
@@ -1811,8 +1811,8 @@ unsafe extern "C-unwind" fn ext_params_text_to_value(
 
 unsafe extern "C-unwind" fn ext_params_flush(
     plugin: *const clap_plugin,
-    in_events: *const clap_clap::ffi::clap_input_events,
-    out_events: *const clap_clap::ffi::clap_output_events,
+    in_events: *const maolan_clap::ffi::clap_input_events,
+    out_events: *const maolan_clap::ffi::clap_output_events,
 ) {
     if plugin.is_null() {
         return;

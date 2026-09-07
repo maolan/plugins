@@ -8,7 +8,7 @@ use std::{
     },
 };
 
-use clap_clap::{
+use maolan_clap::{
     events::InputEvents,
     ffi::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_CHOKE,
@@ -1369,19 +1369,19 @@ unsafe extern "C-unwind" fn plugin_get_extension(
         return null();
     }
     let id = unsafe { CStr::from_ptr(id) };
-    if id == clap_clap::ffi::CLAP_EXT_AUDIO_PORTS {
+    if id == maolan_clap::ffi::CLAP_EXT_AUDIO_PORTS {
         &raw const AUDIO_PORTS_EXT as *const _ as *const c_void
-    } else if id == clap_clap::ffi::CLAP_EXT_NOTE_PORTS {
+    } else if id == maolan_clap::ffi::CLAP_EXT_NOTE_PORTS {
         &raw const NOTE_PORTS_EXT as *const _ as *const c_void
-    } else if id == clap_clap::ffi::CLAP_EXT_PARAMS {
+    } else if id == maolan_clap::ffi::CLAP_EXT_PARAMS {
         &raw const PARAMS_EXT as *const _ as *const c_void
-    } else if id == clap_clap::ffi::CLAP_EXT_STATE {
+    } else if id == maolan_clap::ffi::CLAP_EXT_STATE {
         &raw const STATE_EXT as *const _ as *const c_void
-    } else if id == clap_clap::ffi::CLAP_EXT_LATENCY {
+    } else if id == maolan_clap::ffi::CLAP_EXT_LATENCY {
         &raw const LATENCY_EXT as *const _ as *const c_void
-    } else if id == clap_clap::ffi::CLAP_EXT_TAIL {
+    } else if id == maolan_clap::ffi::CLAP_EXT_TAIL {
         &raw const TAIL_EXT as *const _ as *const c_void
-    } else if id == clap_clap::ffi::CLAP_EXT_GUI {
+    } else if id == maolan_clap::ffi::CLAP_EXT_GUI {
         &raw const GUI_EXT as *const _ as *const c_void
     } else if id == CLAP_EXT_NOTE_NAME {
         &raw const NOTE_NAME_EXT as *const _ as *const c_void

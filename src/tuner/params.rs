@@ -1,6 +1,6 @@
 use std::sync::atomic::Ordering;
 
-use clap_clap::ffi::{CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_REQUIRES_PROCESS};
+use maolan_clap::ffi::{CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_REQUIRES_PROCESS};
 use portable_atomic::AtomicF64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

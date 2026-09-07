@@ -1,4 +1,4 @@
-use clap_clap::ffi::{
+use maolan_clap::ffi::{
     CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_IS_ENUM, CLAP_PARAM_IS_STEPPED,
     CLAP_PARAM_REQUIRES_PROCESS,
 };

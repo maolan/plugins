@@ -8,9 +8,9 @@ use std::{
 };
 
 #[cfg(target_os = "windows")]
-use clap_clap::ffi::CLAP_WINDOW_API_WIN32;
+use maolan_clap::ffi::CLAP_WINDOW_API_WIN32;
 #[cfg(unix)]
-use clap_clap::ffi::CLAP_WINDOW_API_X11;
+use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
