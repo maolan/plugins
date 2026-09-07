@@ -2779,7 +2779,7 @@ fn piano_note_at(position: Point, bounds: Rectangle) -> Option<(u8, u8)> {
             height: PIANO_ROLL_HEIGHT,
         };
         if let Some((note_class, velocity)) =
-            note_at_in_range(local_position, local_bounds, Orientation::Degree180, 12)
+            note_at_in_range(local_position, local_bounds, Orientation::Degree0, 12)
         {
             return Some((octave * 12 + note_class, velocity));
         }
@@ -2798,7 +2798,7 @@ fn piano_note_at(position: Point, bounds: Rectangle) -> Option<(u8, u8)> {
         if let Some((note_class, velocity)) = note_at_in_range(
             local_position,
             local_bounds,
-            Orientation::Degree180,
+            Orientation::Degree0,
             note_count,
         ) {
             return Some((10 * 12 + note_class, velocity));
@@ -3157,15 +3157,6 @@ impl canvas::Program<Message> for ZoneEditor {
                     })
                     .with_width(if selected { 2.0 } else { 1.0 }),
             );
-
-            let text = canvas::Text {
-                content: zone.name.clone(),
-                position: Point::new(rect.x + 2.0, rect.y + 2.0),
-                color: Color::from_rgb(0.72, 0.74, 0.82),
-                size: maolan_baseview::iced::Pixels(9.0),
-                ..canvas::Text::default()
-            };
-            frame.fill_text(text);
         }
 
         if let Some(position) = cursor.position_in(bounds)
@@ -3267,7 +3258,7 @@ impl canvas::Program<Message> for ZoneEditor {
                 &pressed,
                 octave as u8,
                 &names,
-                Orientation::Degree180,
+                Orientation::Degree0,
             );
         }
 
@@ -3290,7 +3281,7 @@ impl canvas::Program<Message> for ZoneEditor {
             &pressed,
             10,
             &names,
-            Orientation::Degree180,
+            Orientation::Degree0,
         );
 
         vec![frame.into_geometry()]

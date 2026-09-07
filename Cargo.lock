@@ -2612,13 +2612,13 @@ checksum = "0806877c16abfdc601427c661ac1afbe142c0f77701debe586997911af2f25fe"
 
 [[package]]
 name = "maolan-editor"
-version = "0.0.1"
+version = "0.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75751f5f40925c0a041b6f8a55d868e0a37e5ae79c4deb73c1109b735d9f38a4"
+checksum = "cf702120a24b9896a90c357fea690e4c0fef7129a5e7c777329687f8953830f5"
 dependencies = [
  "alsa",
  "maolan-engine",
- "maolan-widgets",
+ "maolan-widgets 0.0.36",
  "rfd",
  "rubato",
  "serde_json",
@@ -2628,9 +2628,9 @@ dependencies = [
 
 [[package]]
 name = "maolan-engine"
-version = "0.2.64"
+version = "0.2.67"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46e49eb53ba08399324e80699ccb1321bc01103fba2dd084d45b03ca11234e75"
+checksum = "ace4aa5a787a044c98b7a765de5acf084698cde37eeaeb23d72ce5e11bff3a08"
 dependencies = [
  "alsa",
  "arc-swap",
@@ -2641,6 +2641,7 @@ dependencies = [
  "maolan-plugin-protocol",
  "midir",
  "midly",
+ "mixosc",
  "nix",
  "num_cpus",
  "nvtree",
@@ -2664,9 +2665,9 @@ dependencies = [
 
 [[package]]
 name = "maolan-plugin-protocol"
-version = "0.0.17"
+version = "0.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4092980fa7f474ed5adc0159b6743f5283021e39f28c6e3ae9637aeee2fa518"
+checksum = "6af015d8fdef7bba3f7149de0fea0536a825d62ceca5ce15b27397f2fc9c9dc4"
 dependencies = [
  "libc",
  "tracing",
@@ -2684,7 +2685,7 @@ dependencies = [
  "maolan-baseview",
  "maolan-clap",
  "maolan-editor",
- "maolan-widgets",
+ "maolan-widgets 0.0.36",
  "oxideav-basic",
  "oxideav-core",
  "oxideav-flac",
@@ -2709,6 +2710,20 @@ dependencies = [
  "urlencoding",
  "wide",
  "zip",
+]
+
+[[package]]
+name = "maolan-widgets"
+version = "0.0.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8201881f51e26aff699cf591f5fd243e1ecb3555bd3673263bfcf6684b91ed28"
+dependencies = [
+ "iced",
+ "iced_aw",
+ "iced_drop",
+ "iced_fonts",
+ "serde",
+ "symphonia",
 ]
 
 [[package]]
@@ -2823,6 +2838,16 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "mixosc"
+version = "0.0.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aeedb8f68326ded98233c8048331cd2fc9d385e5e4d656d31fe0ef07f481e279"
+dependencies = [
+ "maolan-widgets 0.0.35",
+ "tokio",
 ]
 
 [[package]]
