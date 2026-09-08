@@ -142,6 +142,38 @@ pub struct CcCondition {
     pub high: u8,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SampleEditState {
+    pub fade_in_samples: usize,
+    pub fade_out_samples: usize,
+    pub gain_db: f32,
+    pub reversed: bool,
+}
+
+impl SampleEditState {
+    pub fn is_default(self) -> bool {
+        self.fade_in_samples == 0
+            && self.fade_out_samples == 0
+            && self.gain_db == 0.0
+            && !self.reversed
+    }
+
+    pub fn gain_for_frame(self, frame: usize, frames: usize) -> f32 {
+        let mut envelope = 1.0f32;
+        if self.fade_in_samples > 0 && frame < self.fade_in_samples {
+            envelope *= frame as f32 / self.fade_in_samples as f32;
+        }
+        if self.fade_out_samples > 0 {
+            let fade_start = frames.saturating_sub(self.fade_out_samples);
+            if frame >= fade_start {
+                envelope *= (frames.saturating_sub(frame) as f32 / self.fade_out_samples as f32)
+                    .clamp(0.0, 1.0);
+            }
+        }
+        envelope * 10.0f32.powf(self.gain_db / 20.0)
+    }
+}
+
 impl VariantMode {
     pub fn from_u8(v: u8) -> Self {
         match v {
@@ -199,6 +231,8 @@ pub struct Zone {
     pub amp_keytrack_db: f32,
 
     pub reverse: bool,
+
+    pub edit_state: SampleEditState,
 
     pub play_mode: SamplePlayMode,
 
@@ -304,6 +338,7 @@ impl Clone for Zone {
             position: self.position,
             amp_keytrack_db: self.amp_keytrack_db,
             reverse: self.reverse,
+            edit_state: self.edit_state,
             play_mode: self.play_mode,
             loop_mode: self.loop_mode,
             loop_direction: self.loop_direction,
@@ -374,6 +409,7 @@ impl Default for Zone {
             position: 0.0,
             amp_keytrack_db: 0.0,
             reverse: false,
+            edit_state: SampleEditState::default(),
             play_mode: SamplePlayMode::Normal,
             loop_mode: LoopMode::Off,
             loop_direction: LoopDirection::Forward,

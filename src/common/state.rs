@@ -180,6 +180,19 @@ pub struct SamplerGroupState {
     pub extra_sfz_opcodes: Vec<(String, String)>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct SamplerZoneEditState {
+    pub zone_index: usize,
+    #[serde(default)]
+    pub fade_in_samples: usize,
+    #[serde(default)]
+    pub fade_out_samples: usize,
+    #[serde(default)]
+    pub gain_db: f32,
+    #[serde(default)]
+    pub reversed: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginState {
     pub version: u32,
@@ -192,6 +205,8 @@ pub struct PluginState {
     pub sampler_instrument_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sampler_sf2_preset: Option<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sampler_zone_edits: Vec<SamplerZoneEditState>,
     /// Per-oscillator (0..2) custom wavetable file paths for the synth.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub wavetable_paths: Vec<(u8, String)>,
@@ -212,6 +227,7 @@ impl PluginState {
             sampler_groups: None,
             sampler_instrument_path: None,
             sampler_sf2_preset: None,
+            sampler_zone_edits: Vec::new(),
             wavetable_paths: Vec::new(),
         }
     }

@@ -51,7 +51,7 @@ use crate::{
             patch::Patch,
             sfz::{export_patch_to_sfz, is_non_vendor_sfz_opcode},
             voice::LfoParams,
-            zone::{CcCondition, CurveType, LoopMode, OffMode, SamplePlayMode},
+            zone::{CcCondition, CurveType, LoopMode, OffMode, SampleEditState, SamplePlayMode},
         },
         load_status::SamplerLoadStatus,
         loader::{PresetInfo, detect_format},
@@ -853,26 +853,43 @@ async fn finish_sampler_audition_after(duration: Duration, id: u64, note: u8) ->
     (id, note)
 }
 
-fn zone_sample_path(state: &State, zone_index: usize) -> Option<PathBuf> {
+fn editor_audio_buffer_for_zone(
+    state: &State,
+    zone_index: usize,
+) -> Option<maolan_editor::app::AudioBuffer> {
     let zones = state.shared.zones.load();
-    let zone = zones.get(zone_index)?;
-    if let Some(path) = zone.files.first() {
-        return Some(path.clone());
-    }
+    let zone = zones.get(zone_index);
     let sample = patch_zone_sample(state, zone_index)?;
-    let temp_dir = std::env::temp_dir().join("maolan-sampler-editor");
-    let _ = std::fs::create_dir_all(&temp_dir);
-    let file_name = format!(
-        "zone_{}_{}.wav",
-        zone_index,
-        std::time::UNIX_EPOCH
-            .elapsed()
-            .unwrap_or_default()
-            .as_secs()
-    );
-    let path = temp_dir.join(file_name);
-    crate::sampler::dsp::sfz::write_wav_stereo(&path, &sample).ok()?;
-    Some(path)
+    let name = zone
+        .and_then(|zone| {
+            zone.files
+                .first()
+                .and_then(|path| path.file_name())
+                .and_then(|name| name.to_str())
+                .map(ToOwned::to_owned)
+                .or_else(|| (!zone.name.is_empty()).then(|| zone.name.clone()))
+        })
+        .unwrap_or_else(|| format!("Zone {zone_index}"));
+
+    let frames = sample
+        .frames
+        .min(sample.data_l.len())
+        .min(sample.data_r.len());
+    if frames == 0 {
+        return None;
+    }
+    let mut samples = Vec::with_capacity(frames * 2);
+    for frame in 0..frames {
+        samples.push(sample.data_l[frame]);
+        samples.push(sample.data_r[frame]);
+    }
+
+    Some(maolan_editor::app::AudioBuffer::new(
+        name,
+        Arc::new(samples),
+        2,
+        sample.sample_rate.max(1.0).round() as u32,
+    ))
 }
 
 fn reload_zone_sample(state: &mut State, path: &Path) {
@@ -882,6 +899,7 @@ fn reload_zone_sample(state: &mut State, path: &Path) {
     let Ok(sample) = crate::sampler::dsp::sample::load_audio(path) else {
         return;
     };
+    state.shared.clear_edited_zone_edits(index);
     let mut patch = (*state.shared.patch.load()).clone();
     let mut zone_iter = patch
         .parts
@@ -902,6 +920,29 @@ fn reload_zone_sample(state: &mut State, path: &Path) {
     state.shared.bump_zones_version();
     state.shared.request_audio_ports_rescan();
     state.shared.mark_dirty();
+}
+
+fn apply_editor_edits_to_zone(state: &mut State) -> bool {
+    let (Some(index), Some(edits)) = (
+        state.editing_zone_index,
+        state
+            .audio_editor
+            .as_ref()
+            .and_then(maolan_editor::app::current_audio_edits),
+    ) else {
+        return false;
+    };
+
+    state.shared.set_edited_zone_edits(
+        index,
+        SampleEditState {
+            fade_in_samples: edits.fade_in_samples,
+            fade_out_samples: edits.fade_out_samples,
+            gain_db: edits.gain_db,
+            reversed: edits.reversed,
+        },
+    );
+    true
 }
 
 fn find_vertical_slot(
@@ -1645,17 +1686,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .map(|zone| format_sfz_opcode_text(&zone.extra_sfz_opcodes))
                     .unwrap_or_default();
                 let mut editor = maolan_editor::app::EditApp::default();
-                let path = zone_sample_path(state, index);
-                let open_task = if let Some(ref p) = path {
-                    maolan_editor::app::update(
-                        &mut editor,
-                        maolan_editor::app::Message::OpenPath(p.clone()),
-                    )
+                let audio = editor_audio_buffer_for_zone(state, index);
+                let open_task = if let Some(audio) = audio {
+                    maolan_editor::app::open_audio(&mut editor, audio)
                 } else {
                     Task::none()
                 };
                 state.audio_editor = Some(editor);
-                state.audio_editor_path = path;
+                state.audio_editor_path = zones
+                    .get(index)
+                    .and_then(|zone| zone.files.first().cloned());
                 return open_task.map(Message::AudioEditor);
             }
             Message::CloseSamplerEditor => {
@@ -1671,7 +1711,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.extra_sfz_opcode_text.clear();
             }
             Message::AudioEditor(msg) => {
-                if maolan_editor::app::message_edits_document(&msg) {
+                let edits_document = maolan_editor::app::message_edits_document(&msg);
+                if edits_document {
                     state.shared.mark_dirty();
                 }
                 match msg {
@@ -1687,6 +1728,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                                 .map(Message::AudioEditor)
                             })
                             .unwrap_or_else(Task::none);
+                        apply_editor_edits_to_zone(state);
                         if let Some(index) = state.editing_zone_index {
                             let zones = state.shared.zones.load();
                             if let Some(zone) = zones.get(index) {
@@ -1736,7 +1778,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 let Some(editor) = state.audio_editor.as_mut() else {
                     break 'task Task::none();
                 };
-                break 'task match msg {
+                let task = match msg {
                     maolan_editor::app::Message::DocumentSaved(Ok(path)) => {
                         let path = path.clone();
                         let task = maolan_editor::app::update(
@@ -1749,6 +1791,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                     _ => maolan_editor::app::update(editor, msg).map(Message::AudioEditor),
                 };
+                if edits_document {
+                    apply_editor_edits_to_zone(state);
+                }
+                break 'task task;
             }
             Message::SetEditingZoneValue(field, value) => {
                 if let Some(index) = state.editing_zone_index {

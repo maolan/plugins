@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     ffi::{CStr, c_char, c_void},
     io::{Read, Write},
     ptr::{NonNull, null, null_mut},
@@ -42,7 +42,7 @@ use crate::common::filter::{FilterParams, FilterSubtype, FilterType};
 use crate::common::lfo::{LfoShape, LfoSyncMode, LfoTriggerMode};
 use crate::common::param_store::ParamStore;
 use crate::common::resource_directory::resource_file_in_dir;
-use crate::common::state::PluginState;
+use crate::common::state::{PluginState, SamplerZoneEditState};
 use crate::common::{copy_str_to_array, param_events::ParamGesture};
 use crate::sampler::{
     dsp::{
@@ -54,7 +54,7 @@ use crate::sampler::{
         sample::{Sample, load_audio},
         sfz::{export_patch_to_sfz, sanitize_export_name},
         voice::LfoParams,
-        zone::Zone,
+        zone::{SampleEditState, Zone},
     },
     gui::GuiBridge,
     load_status::SamplerLoadStatus,
@@ -114,6 +114,7 @@ pub struct SharedState {
     pub zones: AtomicArc<Vec<SampleZone>>,
     pub groups: AtomicArc<Vec<SampleGroup>>,
     pub patch: AtomicArc<Patch>,
+    pub edited_zone_edits: Mutex<HashMap<usize, SampleEditState>>,
     pub load_status: Mutex<SamplerLoadStatus>,
     pub load_error: Mutex<Option<String>>,
     pub load_log: Mutex<Vec<String>>,
@@ -162,6 +163,7 @@ impl Default for SharedState {
             zones: AtomicArc::default(),
             groups: AtomicArc::default(),
             patch: AtomicArc::default(),
+            edited_zone_edits: Mutex::new(HashMap::new()),
             load_status: Mutex::new(SamplerLoadStatus::Empty),
             load_error: Mutex::new(None),
             load_log: Mutex::new(Vec::new()),
@@ -309,6 +311,24 @@ impl SharedState {
         self.request_process();
     }
 
+    pub fn set_edited_zone_edits(&self, zone_index: usize, edits: SampleEditState) {
+        if edits.is_default() {
+            self.edited_zone_edits.lock().remove(&zone_index);
+        } else {
+            self.edited_zone_edits.lock().insert(zone_index, edits);
+        }
+        self.bump_patch_version();
+        self.request_process();
+        self.mark_dirty();
+    }
+
+    pub fn clear_edited_zone_edits(&self, zone_index: usize) {
+        if self.edited_zone_edits.lock().remove(&zone_index).is_some() {
+            self.bump_patch_version();
+            self.request_process();
+        }
+    }
+
     pub fn send_note_off(&self, note: u8) {
         let seq = self.note_sequence.fetch_add(1, Ordering::Relaxed);
         let encoded = (seq << 16) | (note as u64);
@@ -424,6 +444,7 @@ impl SharedState {
         path: std::path::PathBuf,
         preset_index: Option<usize>,
     ) {
+        self.edited_zone_edits.lock().clear();
         self.load_file_with_preset_dirty(path, preset_index, true);
     }
 
@@ -1441,6 +1462,22 @@ fn build_patch_from_zones(groups: &[SampleGroup], zones: &[SampleZone], sample_r
     }
 }
 
+fn apply_edited_zone_edits(patch: &mut Patch, edits: &HashMap<usize, SampleEditState>) {
+    if edits.is_empty() {
+        return;
+    }
+    for (index, edit_state) in edits {
+        let mut zone_iter = patch
+            .parts
+            .iter_mut()
+            .flat_map(|part| part.groups.iter_mut())
+            .flat_map(|group| group.zones.iter_mut());
+        if let Some(zone) = zone_iter.nth(*index) {
+            zone.edit_state = *edit_state;
+        }
+    }
+}
+
 fn build_dsp_zone(zone: &SampleZone, sample_rate: f32) -> Zone {
     let mut variants = Vec::new();
     for file in &zone.files {
@@ -1808,15 +1845,19 @@ impl AudioProcessor {
         if zones_version != self.last_zones_version {
             let zones = shared.zones.load();
             let groups = shared.groups.load();
-            let patch = build_patch_from_zones(&groups, &zones, self.sample_rate);
+            let mut patch = build_patch_from_zones(&groups, &zones, self.sample_rate);
+            let edited_zone_edits = shared.edited_zone_edits.lock().clone();
+            apply_edited_zone_edits(&mut patch, &edited_zone_edits);
             self.engine.set_patch(patch);
             self.last_zones_version = zones_version;
         }
 
         let patch_version = shared.patch_version();
         if patch_version != self.last_patch_version {
-            let patch = shared.patch.load();
-            self.engine.set_patch((*patch).clone());
+            let mut patch = (*shared.patch.load()).clone();
+            let edited_zone_edits = shared.edited_zone_edits.lock().clone();
+            apply_edited_zone_edits(&mut patch, &edited_zone_edits);
+            self.engine.set_patch(patch);
             self.last_patch_version = patch_version;
         }
 
@@ -2376,6 +2417,19 @@ unsafe extern "C-unwind" fn ext_state_save(
             .as_ref()
             .map(|path| path.to_string_lossy().into_owned());
         state.sampler_sf2_preset = *inst.shared.selected_sf2_preset.lock();
+        state.sampler_zone_edits = inst
+            .shared
+            .edited_zone_edits
+            .lock()
+            .iter()
+            .map(|(zone_index, edits)| SamplerZoneEditState {
+                zone_index: *zone_index,
+                fade_in_samples: edits.fade_in_samples,
+                fade_out_samples: edits.fade_out_samples,
+                gain_db: edits.gain_db,
+                reversed: edits.reversed,
+            })
+            .collect();
         let bytes = match state.to_bytes() {
             Ok(bytes) => bytes,
             Err(_e) => {
@@ -2408,6 +2462,21 @@ unsafe extern "C-unwind" fn ext_state_load(
             }
         };
         state.apply(&inst.shared.params);
+        {
+            let mut edits = inst.shared.edited_zone_edits.lock();
+            edits.clear();
+            for zone_edit in &state.sampler_zone_edits {
+                edits.insert(
+                    zone_edit.zone_index,
+                    SampleEditState {
+                        fade_in_samples: zone_edit.fade_in_samples,
+                        fade_out_samples: zone_edit.fade_out_samples,
+                        gain_db: zone_edit.gain_db,
+                        reversed: zone_edit.reversed,
+                    },
+                );
+            }
+        }
         if let Some(path) = state.sampler_instrument_path {
             let path = expand_tilde(std::path::PathBuf::from(path));
             Arc::clone(&inst.shared).restore_file_with_preset(path, state.sampler_sf2_preset);

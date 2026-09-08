@@ -333,7 +333,7 @@ impl SampleVoice {
         self.zone = Some(zone.clone());
         self.note = note;
         self.velocity = velocity;
-        self.reverse = zone.reverse;
+        self.reverse = zone.reverse ^ zone.edit_state.reversed;
         self.released = false;
         self.waiting_for_release = false;
         let trigger_sources = self.trigger_source_values();
@@ -1260,6 +1260,11 @@ impl SampleVoice {
 
             let (mut sl, mut sr) =
                 sample.read_with_increment(phase_f64, effective_inc, self.interpolation);
+            let edit_gain = zone
+                .edit_state
+                .gain_for_frame(phase_f64.round() as usize, frames);
+            sl *= edit_gain;
+            sr *= edit_gain;
 
             if crossfade_samples > 0 && !self.released {
                 if effective_inc >= 0.0 {
