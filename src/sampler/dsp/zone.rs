@@ -2,6 +2,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use maolan_editor::app::AudioEditAction;
+
 use crate::sampler::dsp::mod_matrix::ModMatrix;
 use crate::sampler::dsp::sample::Sample;
 
@@ -142,35 +144,76 @@ pub struct CcCondition {
     pub high: u8,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SampleEditState {
-    pub fade_in_samples: usize,
-    pub fade_out_samples: usize,
-    pub gain_db: f32,
-    pub reversed: bool,
+    pub actions: Vec<AudioEditAction>,
 }
 
 impl SampleEditState {
-    pub fn is_default(self) -> bool {
-        self.fade_in_samples == 0
-            && self.fade_out_samples == 0
-            && self.gain_db == 0.0
-            && !self.reversed
+    pub fn is_default(&self) -> bool {
+        self.actions.is_empty()
     }
 
-    pub fn gain_for_frame(self, frame: usize, frames: usize) -> f32 {
-        let mut envelope = 1.0f32;
-        if self.fade_in_samples > 0 && frame < self.fade_in_samples {
-            envelope *= frame as f32 / self.fade_in_samples as f32;
-        }
-        if self.fade_out_samples > 0 {
-            let fade_start = frames.saturating_sub(self.fade_out_samples);
-            if frame >= fade_start {
-                envelope *= (frames.saturating_sub(frame) as f32 / self.fade_out_samples as f32)
-                    .clamp(0.0, 1.0);
+    pub fn gain_for_frame(&self, frame: usize, frames: usize) -> f32 {
+        let mut gain = 1.0f32;
+        for action in &self.actions {
+            match *action {
+                AudioEditAction::FadeIn {
+                    start_sample,
+                    length_samples,
+                } => {
+                    let end = start_sample.saturating_add(length_samples).min(frames);
+                    if frame >= start_sample && frame < end {
+                        gain *= (frame - start_sample) as f32 / length_samples.max(1) as f32;
+                    }
+                }
+                AudioEditAction::FadeOut {
+                    start_sample,
+                    length_samples,
+                } => {
+                    let end = start_sample.saturating_add(length_samples).min(frames);
+                    if frame >= start_sample && frame < end {
+                        gain *= (end.saturating_sub(frame + 1) as f32
+                            / length_samples.max(1) as f32)
+                            .clamp(0.0, 1.0);
+                    }
+                }
+                AudioEditAction::GainDb {
+                    start_sample,
+                    length_samples,
+                    delta_db,
+                } => {
+                    let end = start_sample.saturating_add(length_samples).min(frames);
+                    if frame >= start_sample && frame < end {
+                        gain *= 10.0f32.powf(delta_db / 20.0);
+                    }
+                }
+                AudioEditAction::ReplaceWithSilence {
+                    start_sample,
+                    length_samples,
+                }
+                | AudioEditAction::Delete {
+                    start_sample,
+                    length_samples,
+                } => {
+                    let end = start_sample.saturating_add(length_samples).min(frames);
+                    if frame >= start_sample && frame < end {
+                        gain = 0.0;
+                    }
+                }
+                AudioEditAction::Reverse => {}
             }
         }
-        envelope * 10.0f32.powf(self.gain_db / 20.0)
+        gain
+    }
+
+    pub fn reversed(&self) -> bool {
+        self.actions
+            .iter()
+            .filter(|action| matches!(action, AudioEditAction::Reverse))
+            .count()
+            % 2
+            == 1
     }
 }
 
@@ -338,7 +381,7 @@ impl Clone for Zone {
             position: self.position,
             amp_keytrack_db: self.amp_keytrack_db,
             reverse: self.reverse,
-            edit_state: self.edit_state,
+            edit_state: self.edit_state.clone(),
             play_mode: self.play_mode,
             loop_mode: self.loop_mode,
             loop_direction: self.loop_direction,

@@ -1,3 +1,4 @@
+use maolan_editor::app::AudioEditAction;
 use serde::{Deserialize, Serialize};
 
 use crate::common::ClapParamId;
@@ -180,17 +181,11 @@ pub struct SamplerGroupState {
     pub extra_sfz_opcodes: Vec<(String, String)>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamplerZoneEditState {
     pub zone_index: usize,
-    #[serde(default)]
-    pub fade_in_samples: usize,
-    #[serde(default)]
-    pub fade_out_samples: usize,
-    #[serde(default)]
-    pub gain_db: f32,
-    #[serde(default)]
-    pub reversed: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<AudioEditAction>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

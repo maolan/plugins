@@ -51,7 +51,7 @@ use crate::{
             patch::Patch,
             sfz::{export_patch_to_sfz, is_non_vendor_sfz_opcode},
             voice::LfoParams,
-            zone::{CcCondition, CurveType, LoopMode, OffMode, SampleEditState, SamplePlayMode},
+            zone::{CcCondition, CurveType, LoopMode, OffMode, SamplePlayMode},
         },
         load_status::SamplerLoadStatus,
         loader::{PresetInfo, detect_format},
@@ -922,26 +922,22 @@ fn reload_zone_sample(state: &mut State, path: &Path) {
     state.shared.mark_dirty();
 }
 
-fn apply_editor_edits_to_zone(state: &mut State) -> bool {
-    let (Some(index), Some(edits)) = (
-        state.editing_zone_index,
-        state
-            .audio_editor
-            .as_ref()
-            .and_then(maolan_editor::app::current_audio_edits),
-    ) else {
+fn dispatch_editor_action_to_zone(
+    state: &mut State,
+    action: maolan_editor::app::AudioEditAction,
+) -> bool {
+    let Some(index) = state.editing_zone_index else {
         return false;
     };
-
-    state.shared.set_edited_zone_edits(
-        index,
-        SampleEditState {
-            fade_in_samples: edits.fade_in_samples,
-            fade_out_samples: edits.fade_out_samples,
-            gain_db: edits.gain_db,
-            reversed: edits.reversed,
-        },
-    );
+    let mut edits = state
+        .shared
+        .edited_zone_edits
+        .lock()
+        .get(&index)
+        .cloned()
+        .unwrap_or_default();
+    edits.actions.push(action);
+    state.shared.set_edited_zone_edits(index, edits);
     true
 }
 
@@ -1711,6 +1707,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.extra_sfz_opcode_text.clear();
             }
             Message::AudioEditor(msg) => {
+                if matches!(
+                    msg,
+                    maolan_editor::app::Message::Save | maolan_editor::app::Message::SaveAs
+                ) {
+                    break 'task Task::none();
+                }
+                if let Some(editor) = state.audio_editor.as_ref()
+                    && let Some(action) =
+                        maolan_editor::app::audio_edit_action_for_message(editor, &msg)
+                {
+                    state.shared.mark_dirty();
+                    dispatch_editor_action_to_zone(state, action);
+                    break 'task Task::none();
+                }
                 let edits_document = maolan_editor::app::message_edits_document(&msg);
                 if edits_document {
                     state.shared.mark_dirty();
@@ -1728,7 +1738,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                                 .map(Message::AudioEditor)
                             })
                             .unwrap_or_else(Task::none);
-                        apply_editor_edits_to_zone(state);
                         if let Some(index) = state.editing_zone_index {
                             let zones = state.shared.zones.load();
                             if let Some(zone) = zones.get(index) {
@@ -1791,9 +1800,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                     _ => maolan_editor::app::update(editor, msg).map(Message::AudioEditor),
                 };
-                if edits_document {
-                    apply_editor_edits_to_zone(state);
-                }
                 break 'task task;
             }
             Message::SetEditingZoneValue(field, value) => {

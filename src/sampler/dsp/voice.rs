@@ -333,7 +333,7 @@ impl SampleVoice {
         self.zone = Some(zone.clone());
         self.note = note;
         self.velocity = velocity;
-        self.reverse = zone.reverse ^ zone.edit_state.reversed;
+        self.reverse = zone.reverse ^ zone.edit_state.reversed();
         self.released = false;
         self.waiting_for_release = false;
         let trigger_sources = self.trigger_source_values();

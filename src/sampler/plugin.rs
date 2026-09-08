@@ -1473,7 +1473,7 @@ fn apply_edited_zone_edits(patch: &mut Patch, edits: &HashMap<usize, SampleEditS
             .flat_map(|part| part.groups.iter_mut())
             .flat_map(|group| group.zones.iter_mut());
         if let Some(zone) = zone_iter.nth(*index) {
-            zone.edit_state = *edit_state;
+            zone.edit_state = edit_state.clone();
         }
     }
 }
@@ -2424,10 +2424,7 @@ unsafe extern "C-unwind" fn ext_state_save(
             .iter()
             .map(|(zone_index, edits)| SamplerZoneEditState {
                 zone_index: *zone_index,
-                fade_in_samples: edits.fade_in_samples,
-                fade_out_samples: edits.fade_out_samples,
-                gain_db: edits.gain_db,
-                reversed: edits.reversed,
+                actions: edits.actions.clone(),
             })
             .collect();
         let bytes = match state.to_bytes() {
@@ -2469,10 +2466,7 @@ unsafe extern "C-unwind" fn ext_state_load(
                 edits.insert(
                     zone_edit.zone_index,
                     SampleEditState {
-                        fade_in_samples: zone_edit.fade_in_samples,
-                        fade_out_samples: zone_edit.fade_out_samples,
-                        gain_db: zone_edit.gain_db,
-                        reversed: zone_edit.reversed,
+                        actions: zone_edit.actions.clone(),
                     },
                 );
             }
