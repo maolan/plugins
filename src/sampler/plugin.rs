@@ -10,9 +10,11 @@ use std::{
     thread::JoinHandle,
 };
 
+#[cfg(target_os = "macos")]
+use maolan_clap::ffi::CLAP_WINDOW_API_COCOA;
 #[cfg(target_os = "windows")]
 use maolan_clap::ffi::CLAP_WINDOW_API_WIN32;
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_clap::{
     events::{EventBuilder, InputEvents, OutputEvents},
@@ -2787,6 +2789,12 @@ unsafe extern "C-unwind" fn ext_gui_set_size(
     true
 }
 
+#[cfg(any(
+    target_os = "windows",
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "freebsd"
+))]
 unsafe extern "C-unwind" fn ext_gui_set_parent(
     plugin: *const clap_plugin,
     window: *const clap_window,
@@ -2798,7 +2806,7 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     let window = unsafe { &*window };
     let api = unsafe { CStr::from_ptr(window.api) };
 
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     if api == CLAP_WINDOW_API_X11 {
         let parent =
             crate::sampler::gui::ParentWindowHandle::X11(unsafe { window.clap_window__.x11 });
@@ -2812,6 +2820,16 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     if api == CLAP_WINDOW_API_WIN32 {
         let parent =
             crate::sampler::gui::ParentWindowHandle::Win32(unsafe { window.clap_window__.win32 });
+        return inst
+            .gui_bridge
+            .lock()
+            .set_parent(inst.shared.clone(), parent);
+    }
+
+    #[cfg(target_os = "macos")]
+    if api == CLAP_WINDOW_API_COCOA {
+        let parent =
+            crate::sampler::gui::ParentWindowHandle::Cocoa(unsafe { window.clap_window__.cocoa });
         return inst
             .gui_bridge
             .lock()

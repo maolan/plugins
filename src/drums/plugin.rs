@@ -1231,6 +1231,12 @@ unsafe extern "C-unwind" fn ext_gui_set_size(
     false
 }
 
+#[cfg(any(
+    target_os = "windows",
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "freebsd"
+))]
 unsafe extern "C-unwind" fn ext_gui_set_parent(
     plugin: *const clap_plugin,
     window: *const clap_window,
@@ -1243,13 +1249,26 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     let api = unsafe { CStr::from_ptr(window.api) };
 
     let parent = if api == crate::drums::gui::preferred_api() {
-        #[cfg(unix)]
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         {
             crate::drums::gui::ParentWindowHandle::X11(unsafe { window.clap_window__.x11 })
         }
         #[cfg(target_os = "windows")]
         {
             crate::drums::gui::ParentWindowHandle::Win32(unsafe { window.clap_window__.win32 })
+        }
+        #[cfg(target_os = "macos")]
+        {
+            crate::drums::gui::ParentWindowHandle::Cocoa(unsafe { window.clap_window__.cocoa })
+        }
+        #[cfg(not(any(
+            target_os = "windows",
+            target_os = "macos",
+            target_os = "linux",
+            target_os = "freebsd"
+        )))]
+        {
+            return false;
         }
     } else {
         return false;

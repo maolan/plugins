@@ -9,6 +9,9 @@ use std::{
     },
 };
 
+use maolan_clap::ffi::CLAP_WINDOW_API_COCOA;
+use maolan_clap::ffi::CLAP_WINDOW_API_WIN32;
+use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_clap::{
     events::{EventBuilder, InputEvents, OutputEvents, ParamValue},
     ffi::{
@@ -17,12 +20,11 @@ use maolan_clap::{
         CLAP_EXT_LATENCY, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL, CLAP_INVALID_ID,
         CLAP_PLUGIN_FEATURE_AUDIO_EFFECT, CLAP_PLUGIN_FEATURE_EQUALIZER, CLAP_PLUGIN_FEATURE_MONO,
         CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION,
-        CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11, clap_audio_port_info, clap_event_header,
-        clap_event_param_gesture, clap_host, clap_host_latency, clap_id, clap_istream,
-        clap_ostream, clap_param_info, clap_plugin, clap_plugin_audio_ports,
-        clap_plugin_descriptor, clap_plugin_factory, clap_plugin_gui, clap_plugin_latency,
-        clap_plugin_params, clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status,
-        clap_window,
+        clap_audio_port_info, clap_event_header, clap_event_param_gesture, clap_host,
+        clap_host_latency, clap_id, clap_istream, clap_ostream, clap_param_info, clap_plugin,
+        clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_factory, clap_plugin_gui,
+        clap_plugin_latency, clap_plugin_params, clap_plugin_state, clap_plugin_tail, clap_process,
+        clap_process_status, clap_window,
     },
     id::ClapId,
     process::Process,
@@ -35,9 +37,14 @@ use std::mem::size_of;
 use crate::common::bus;
 use crate::common::halfband::{HALFBAND_LATENCY, HalfbandDownsampler, HalfbandUpsampler};
 use crate::eq::dsp::{MAX_BANDS, ParametricEqualizer};
-use crate::eq::gui::{
-    EDITOR_HEIGHT, EDITOR_WIDTH, GuiBridge, ParentWindowHandle, is_api_supported, preferred_api,
-};
+#[cfg(any(
+    target_os = "windows",
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "freebsd"
+))]
+use crate::eq::gui::ParentWindowHandle;
+use crate::eq::gui::{EDITOR_HEIGHT, EDITOR_WIDTH, GuiBridge, is_api_supported, preferred_api};
 use crate::eq::linear_phase::{BandDesign, LP_LATENCY, LinearPhaseEq};
 use crate::eq::params::{
     PARAMS, ParamDef, ParamId, ParamIdExt, ParamStore, copy_str_to_array, sanitize_param_value,
@@ -1645,6 +1652,12 @@ unsafe extern "C-unwind" fn ext_gui_get_size(
     true
 }
 
+#[cfg(any(
+    target_os = "windows",
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "freebsd"
+))]
 #[allow(clippy::needless_bool)]
 unsafe extern "C-unwind" fn ext_gui_set_parent(
     plugin: *const clap_plugin,
@@ -1655,11 +1668,11 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     let api = unsafe { CStr::from_ptr(window.api) };
 
     let parent = if api == CLAP_WINDOW_API_X11 {
-        #[cfg(unix)]
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         {
             ParentWindowHandle::X11(unsafe { window.clap_window__.x11 })
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
         {
             return false;
         }
@@ -1669,6 +1682,15 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
             ParentWindowHandle::Win32(unsafe { window.clap_window__.win32 })
         }
         #[cfg(not(target_os = "windows"))]
+        {
+            return false;
+        }
+    } else if api == CLAP_WINDOW_API_COCOA {
+        #[cfg(target_os = "macos")]
+        {
+            ParentWindowHandle::Cocoa(unsafe { window.clap_window__.cocoa })
+        }
+        #[cfg(not(target_os = "macos"))]
         {
             return false;
         }

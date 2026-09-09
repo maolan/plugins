@@ -9,6 +9,7 @@ use std::{
     },
 };
 
+use maolan_clap::ffi::CLAP_WINDOW_API_COCOA;
 use maolan_clap::{
     events::{EventBuilder, InputEvents, OutputEvents, ParamValue},
     ffi::{
@@ -2151,7 +2152,18 @@ unsafe extern "C-unwind" fn ext_gui_is_api_supported(
         return false;
     }
     let api = unsafe { CStr::from_ptr(api) };
-    api == CLAP_WINDOW_API_X11 || api == CLAP_WINDOW_API_WIN32
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    {
+        api == CLAP_WINDOW_API_X11
+    }
+    #[cfg(target_os = "windows")]
+    {
+        api == CLAP_WINDOW_API_WIN32
+    }
+    #[cfg(target_os = "macos")]
+    {
+        api == CLAP_WINDOW_API_COCOA
+    }
 }
 
 unsafe extern "C-unwind" fn ext_gui_get_preferred_api(
@@ -2172,7 +2184,12 @@ unsafe extern "C-unwind" fn ext_gui_get_preferred_api(
         unsafe { *api = CLAP_WINDOW_API_WIN32.as_ptr() };
         true
     }
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(target_os = "macos")]
+    {
+        unsafe { *api = CLAP_WINDOW_API_COCOA.as_ptr() };
+        true
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         false
     }
@@ -2259,6 +2276,12 @@ unsafe extern "C-unwind" fn ext_gui_set_size(
     false
 }
 
+#[cfg(any(
+    target_os = "windows",
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "freebsd"
+))]
 unsafe extern "C-unwind" fn ext_gui_set_parent(
     plugin: *const clap_plugin,
     window: *const clap_window,
@@ -2270,13 +2293,13 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     let window = unsafe { &*window };
     let api = unsafe { CStr::from_ptr(window.api) };
     let parent = if api == CLAP_WINDOW_API_X11 {
-        #[cfg(unix)]
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         {
             Some(crate::kick::gui::ParentWindowHandle::X11(unsafe {
                 window.clap_window__.x11
             }))
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
         {
             None
         }
@@ -2288,6 +2311,17 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
             }))
         }
         #[cfg(not(target_os = "windows"))]
+        {
+            None
+        }
+    } else if api == CLAP_WINDOW_API_COCOA {
+        #[cfg(target_os = "macos")]
+        {
+            Some(crate::kick::gui::ParentWindowHandle::Cocoa(unsafe {
+                window.clap_window__.cocoa
+            }))
+        }
+        #[cfg(not(target_os = "macos"))]
         {
             None
         }

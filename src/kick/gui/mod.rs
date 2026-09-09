@@ -12,9 +12,11 @@ use maolan_baseview::iced::{
     alignment::{Horizontal, Vertical},
     widget::{canvas, checkbox, column, container, pick_list, row, slider, text},
 };
+#[cfg(target_os = "macos")]
+use maolan_clap::ffi::CLAP_WINDOW_API_COCOA;
 #[cfg(target_os = "windows")]
 use maolan_clap::ffi::CLAP_WINDOW_API_WIN32;
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_widgets::arch_slider::arch_slider;
 use maolan_widgets::meters::meters;
@@ -22,7 +24,14 @@ use maolan_widgets::meters::meters;
 use crate::common::ui::{
     FADER_MAX_DB, FADER_MIN_DB, SmallKnob, VerticalSlider, small_knob, vertical_slider,
 };
-use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
+#[cfg(any(
+    target_os = "windows",
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "freebsd"
+))]
+use raw_window_handle::RawWindowHandle;
+use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
 mod envelope_editor;
 
@@ -45,6 +54,10 @@ pub fn preferred_api() -> &'static CStr {
     {
         CLAP_WINDOW_API_X11
     }
+    #[cfg(target_os = "macos")]
+    {
+        CLAP_WINDOW_API_COCOA
+    }
 }
 
 pub fn is_api_supported(api: &CStr, _is_floating: bool) -> bool {
@@ -52,8 +65,10 @@ pub fn is_api_supported(api: &CStr, _is_floating: bool) -> bool {
 }
 
 pub enum ParentWindowHandle {
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     X11(u64),
+    #[cfg(target_os = "macos")]
+    Cocoa(*mut std::ffi::c_void),
     #[cfg(target_os = "windows")]
     Win32(*mut std::ffi::c_void),
 }
@@ -61,7 +76,7 @@ pub enum ParentWindowHandle {
 impl HasWindowHandle for ParentWindowHandle {
     fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
         match self {
-            #[cfg(unix)]
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             ParentWindowHandle::X11(window) => {
                 let handle = raw_window_handle::XlibWindowHandle::new(*window);
                 Ok(unsafe { WindowHandle::borrow_raw(RawWindowHandle::Xlib(handle)) })
@@ -72,6 +87,13 @@ impl HasWindowHandle for ParentWindowHandle {
                     std::num::NonZeroIsize::new(*hwnd as isize).unwrap(),
                 );
                 Ok(unsafe { WindowHandle::borrow_raw(RawWindowHandle::Win32(handle)) })
+            }
+            #[cfg(target_os = "macos")]
+            ParentWindowHandle::Cocoa(ns_view) => {
+                let handle = raw_window_handle::AppKitWindowHandle::new(
+                    std::ptr::NonNull::new(*ns_view).expect("null NSView"),
+                );
+                Ok(unsafe { WindowHandle::borrow_raw(RawWindowHandle::AppKit(handle)) })
             }
         }
     }

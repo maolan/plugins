@@ -10,6 +10,9 @@ use std::{
     time::Instant,
 };
 
+use maolan_clap::ffi::CLAP_WINDOW_API_COCOA;
+use maolan_clap::ffi::CLAP_WINDOW_API_WIN32;
+use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_clap::{
     events::{InputEvents, OutputEvents},
     ffi::{
@@ -20,12 +23,12 @@ use maolan_clap::{
         CLAP_NOTE_EXPRESSION_BRIGHTNESS, CLAP_NOTE_EXPRESSION_PAN, CLAP_NOTE_EXPRESSION_PRESSURE,
         CLAP_NOTE_EXPRESSION_TUNING, CLAP_NOTE_EXPRESSION_VOLUME, CLAP_PLUGIN_FEATURE_INSTRUMENT,
         CLAP_PLUGIN_FEATURE_MONO, CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_STEREO,
-        CLAP_PROCESS_CONTINUE, CLAP_VERSION, CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11,
-        clap_audio_port_info, clap_gui_resize_hints, clap_host, clap_host_gui, clap_host_params,
-        clap_host_state, clap_id, clap_istream, clap_note_port_info, clap_ostream, clap_param_info,
-        clap_plugin, clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_gui,
-        clap_plugin_note_ports, clap_plugin_params, clap_plugin_resource_directory,
-        clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status, clap_window,
+        CLAP_PROCESS_CONTINUE, CLAP_VERSION, clap_audio_port_info, clap_gui_resize_hints,
+        clap_host, clap_host_gui, clap_host_params, clap_host_state, clap_id, clap_istream,
+        clap_note_port_info, clap_ostream, clap_param_info, clap_plugin, clap_plugin_audio_ports,
+        clap_plugin_descriptor, clap_plugin_gui, clap_plugin_note_ports, clap_plugin_params,
+        clap_plugin_resource_directory, clap_plugin_state, clap_plugin_tail, clap_process,
+        clap_process_status, clap_window,
     },
     process::Process,
     stream::{IStream, OStream},
@@ -3781,6 +3784,12 @@ unsafe extern "C-unwind" fn ext_gui_set_size(
     false
 }
 
+#[cfg(any(
+    target_os = "windows",
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "freebsd"
+))]
 #[allow(clippy::needless_bool)]
 unsafe extern "C-unwind" fn ext_gui_set_parent(
     plugin: *const clap_plugin,
@@ -3794,11 +3803,11 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     let api = unsafe { CStr::from_ptr(window.api) };
 
     let parent = if api == CLAP_WINDOW_API_X11 {
-        #[cfg(unix)]
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         {
             crate::synth::gui::ParentWindowHandle::X11(unsafe { window.clap_window__.x11 as u32 })
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
         {
             return false;
         }
@@ -3808,6 +3817,15 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
             crate::synth::gui::ParentWindowHandle::Win32(unsafe { window.clap_window__.win32 })
         }
         #[cfg(not(target_os = "windows"))]
+        {
+            return false;
+        }
+    } else if api == CLAP_WINDOW_API_COCOA {
+        #[cfg(target_os = "macos")]
+        {
+            crate::synth::gui::ParentWindowHandle::Cocoa(unsafe { window.clap_window__.cocoa })
+        }
+        #[cfg(not(target_os = "macos"))]
         {
             return false;
         }
