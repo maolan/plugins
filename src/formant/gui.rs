@@ -17,7 +17,7 @@ use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{column, container, row, text},
+    widget::{container, row},
 };
 #[cfg(any(
     target_os = "windows",
@@ -138,10 +138,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
 }
 
 fn view(state: &State) -> Element<'_, Message> {
-    let title = text("Maolan Formant").size(18);
-
-    let content = column![
-        title,
+    container(
         row![
             knob(ParamId::Vowel, "Vowel", state),
             knob(ParamId::Sharpness, "Sharpness", state),
@@ -149,17 +146,13 @@ fn view(state: &State) -> Element<'_, Message> {
         ]
         .spacing(8)
         .align_y(Alignment::Center),
-    ]
-    .spacing(16)
-    .align_x(Alignment::Center);
-
-    container(content)
-        .padding(20)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .align_x(Horizontal::Center)
-        .align_y(Vertical::Center)
-        .into()
+    )
+    .padding(20)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .align_x(Horizontal::Center)
+    .align_y(Vertical::Center)
+    .into()
 }
 
 fn knob<'a>(id: ParamId, label: &'a str, state: &'a State) -> Element<'a, Message> {

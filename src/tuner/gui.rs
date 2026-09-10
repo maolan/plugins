@@ -124,7 +124,6 @@ fn view(state: &State) -> Element<'_, ()> {
     let clarity_text = format!("clarity: {:.0}%", clarity * 100.0);
 
     let content = column![
-        text("Maolan Tuner").size(16),
         text(note_text).size(64),
         row![text(freq_text).size(13), text(cents_text).size(13),].spacing(16),
         text(clarity_text).size(11),

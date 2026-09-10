@@ -10,7 +10,7 @@ use std::{
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{column, container, row},
+    widget::{column, container, row, text, toggler},
 };
 #[cfg(target_os = "macos")]
 use maolan_clap::ffi::CLAP_WINDOW_API_COCOA;
@@ -198,16 +198,22 @@ fn view(state: &State) -> Element<'_, Message> {
     }
 
     let channels = state.shared.params.get(ParamId::Channels).round() as u32;
-    let channels_dropdown = maolan_baseview::iced::widget::pick_list(
-        vec![ChannelMode::Mono, ChannelMode::Stereo],
-        Some(ChannelMode::from(channels)),
-        Message::SetChannels,
-    )
-    .placeholder("Channels");
+    let channels_toggle = toggler(channels > 1).on_toggle(|v| {
+        if v {
+            Message::SetChannels(ChannelMode::Stereo)
+        } else {
+            Message::SetChannels(ChannelMode::Mono)
+        }
+    });
+    let channels_label = if channels > 1 {
+        text("Stereo")
+    } else {
+        text("Mono")
+    };
 
     let content = column![
         row![
-            channels_dropdown,
+            column![channels_label, channels_toggle],
             knob(ParamId::Replace, "Replace", state),
             knob(ParamId::Brightness, "Brightness", state),
             knob(ParamId::Detune, "Detune", state),

@@ -147,10 +147,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
 }
 
 fn view(state: &State) -> Element<'_, Message> {
-    let title = text("Maolan Phaser").size(18);
-
     let content = column![
-        title,
         row![
             knob(ParamId::LfoRate, "Rate", state),
             knob(ParamId::LfoDepth, "Depth", state),

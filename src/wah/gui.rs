@@ -17,7 +17,7 @@ use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{column, container, row, text},
+    widget::{column, container, row},
 };
 #[cfg(any(
     target_os = "windows",
@@ -185,7 +185,6 @@ fn knob<'a>(id: ParamId, label: &'static str, state: &'a State) -> Element<'a, M
 
 fn view(state: &State) -> Element<'_, Message> {
     let content = column![
-        text("Maolan Wah").size(16),
         row![
             knob(ParamId::Mode, "Mode", state),
             knob(ParamId::Position, "Position", state),
