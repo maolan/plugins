@@ -8,9 +8,10 @@ use std::{
 };
 
 use maolan_baseview::iced::{
-    Alignment, Element, Length, Task, Theme,
+    Alignment, Color, Element, Length, Point, Rectangle, Size, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{checkbox, column, container, row, scrollable, text, toggler},
+    mouse::Cursor,
+    widget::{canvas, checkbox, column, container, row, scrollable, text, toggler},
 };
 #[cfg(target_os = "macos")]
 use maolan_clap::ffi::CLAP_WINDOW_API_COCOA;
@@ -32,12 +33,14 @@ use crate::{
     common::ui::{SmallKnob, small_knob},
     stereo::{
         params::{PARAMS, ParamId},
-        plugin::SharedState,
+        plugin::{SharedState, VectorscopeData},
     },
 };
 
-pub const EDITOR_WIDTH: u32 = 550;
-pub const EDITOR_HEIGHT: u32 = 830;
+pub const EDITOR_WIDTH: u32 = 910;
+pub const EDITOR_HEIGHT: u32 = 760;
+const SCOPE_WIDTH: f32 = 430.0;
+const SCOPE_HEIGHT: f32 = SCOPE_WIDTH * 0.5;
 
 pub fn preferred_api() -> &'static CStr {
     #[cfg(target_os = "windows")]
@@ -101,11 +104,39 @@ pub enum Message {
     ToggleGain(bool),
     ToggleDelay(bool),
     ToggleCharacter(bool),
+    SetScopeMode(usize),
+    Poll,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScopeMode {
+    PolarSample,
+    PolarLevel,
+    Lissajous,
+}
+
+impl ScopeMode {
+    fn from_index(index: usize) -> Self {
+        match index {
+            1 => Self::PolarLevel,
+            2 => Self::Lissajous,
+            _ => Self::PolarSample,
+        }
+    }
+
+    fn as_index(self) -> usize {
+        match self {
+            Self::PolarSample => 0,
+            Self::PolarLevel => 1,
+            Self::Lissajous => 2,
+        }
+    }
 }
 
 struct State {
     shared: Arc<SharedState>,
     active_gestures: Vec<bool>,
+    scope_mode: ScopeMode,
 }
 
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
@@ -113,6 +144,7 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
         State {
             shared,
             active_gestures: vec![false; ParamId::COUNT],
+            scope_mode: ScopeMode::PolarSample,
         },
         Task::none(),
     )
@@ -154,6 +186,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ToggleCharacter(on) => {
             state.shared.set_character_on(on);
         }
+        Message::SetScopeMode(index) => {
+            state.scope_mode = ScopeMode::from_index(index);
+        }
+        Message::Poll => {}
     }
     Task::none()
 }
@@ -162,9 +198,12 @@ fn view(state: &State) -> Element<'_, Message> {
     let p = |id: ParamId| state.shared.params.get(id) as f32;
     let b = |id: ParamId| state.shared.params.get(id) >= 0.5;
 
-    let mut content = column![].spacing(16).align_x(Alignment::Start);
+    let mut scope_data = VectorscopeData::default();
+    let _ = state.shared.vectorscope.read(&mut scope_data);
 
-    content = content.push(
+    let mut controls = column![].spacing(16).align_x(Alignment::Start);
+
+    controls = controls.push(
         row![
             text("Gain").size(14),
             text("Off").size(13),
@@ -174,7 +213,7 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(6)
         .align_y(Alignment::Center),
     );
-    content = content.push(
+    controls = controls.push(
         row![
             container(
                 column![
@@ -212,7 +251,7 @@ fn view(state: &State) -> Element<'_, Message> {
         ]
         .spacing(16),
     );
-    content = content.push(
+    controls = controls.push(
         row![
             knob("X1", ParamId::X1, p(ParamId::X1), "Hz", 1.0),
             knob("X2", ParamId::X2, p(ParamId::X2), "Hz", 1.0),
@@ -221,7 +260,7 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(16),
     );
 
-    content = content.push(
+    controls = controls.push(
         row![
             text("Delay").size(14),
             text("Off").size(13),
@@ -231,7 +270,7 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(6)
         .align_y(Alignment::Center),
     );
-    content = content.push(
+    controls = controls.push(
         row![
             knob("Strength", ParamId::Strength, p(ParamId::Strength), "", 0.1),
             knob("Low", ParamId::LowDelay, p(ParamId::LowDelay), "", 1.0),
@@ -241,7 +280,7 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(16),
     );
 
-    content = content.push(
+    controls = controls.push(
         row![
             text("Character").size(14),
             text("Off").size(13),
@@ -251,7 +290,7 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(6)
         .align_y(Alignment::Center),
     );
-    content = content.push(
+    controls = controls.push(
         row![
             knob("Density", ParamId::Density, p(ParamId::Density), "", 0.01),
             knob("Focus", ParamId::Focus, p(ParamId::Focus), "", 0.01),
@@ -260,13 +299,13 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(16),
     );
 
-    content = content.push(text("Output").size(18));
+    controls = controls.push(text("Output").size(18));
     let monitor_selected = match p(ParamId::MonitorMode) as i32 {
         1 => 1,
         2 => 2,
         _ => 0,
     };
-    content = content.push(
+    controls = controls.push(
         row![
             knob(
                 "Volume",
@@ -285,6 +324,29 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(16),
     );
 
+    let scope = column![
+        container(
+            canvas(Vectorscope {
+                data: scope_data,
+                mode: state.scope_mode,
+            })
+            .width(Length::Fill)
+            .height(Length::Fill),
+        )
+        .width(Length::Fixed(SCOPE_WIDTH))
+        .height(Length::Fixed(SCOPE_HEIGHT)),
+        horizontal_multi_toggler(
+            ["Polar Sample", "Polar Level", "Lissajous"],
+            state.scope_mode.as_index(),
+            Message::SetScopeMode,
+        )
+        .label_extent(96.0),
+    ]
+    .spacing(12)
+    .align_x(Alignment::Center);
+
+    let content = row![controls, scope].spacing(24).align_y(Alignment::Start);
+
     container(scrollable(content))
         .padding(24)
         .width(Length::Fill)
@@ -292,6 +354,342 @@ fn view(state: &State) -> Element<'_, Message> {
         .align_x(Horizontal::Left)
         .align_y(Vertical::Top)
         .into()
+}
+
+struct Vectorscope {
+    data: VectorscopeData,
+    mode: ScopeMode,
+}
+
+impl Vectorscope {
+    fn lissajous_point(&self, index: usize, center: Point, scale: f32) -> Point {
+        let left = self.data.left[index];
+        let right = self.data.right[index];
+        let side = (left - right) * 0.5;
+        let mid = (left + right) * 0.5;
+        Point::new(center.x + side * scale, center.y - mid * scale)
+    }
+
+    fn polar_sample_point(
+        &self,
+        index: usize,
+        origin: Point,
+        radius_x: f32,
+        radius_y: f32,
+        peak: f32,
+    ) -> Point {
+        let left = self.data.left[index];
+        let right = self.data.right[index];
+        let side = ((left - right) * 0.5 / peak).clamp(-1.0, 1.0);
+        let level = ((left * left + right * right) * 0.5).sqrt() / peak;
+        Self::polar_point_from_side_level(side, level, origin, radius_x, radius_y)
+    }
+
+    fn polar_point_from_side_level(
+        side: f32,
+        level: f32,
+        origin: Point,
+        radius_x: f32,
+        radius_y: f32,
+    ) -> Point {
+        let angle =
+            std::f32::consts::FRAC_PI_2 - side.clamp(-1.0, 1.0) * std::f32::consts::FRAC_PI_2;
+        let level = level.clamp(0.0, 1.0);
+        Point::new(
+            origin.x + angle.cos() * level * radius_x,
+            origin.y - angle.sin() * level * radius_y,
+        )
+    }
+
+    fn draw_arc(
+        frame: &mut canvas::Frame,
+        center: Point,
+        radius_x: f32,
+        radius_y: f32,
+        color: Color,
+        width: f32,
+    ) {
+        let arc = canvas::Path::new(|builder| {
+            for i in 0..=72 {
+                let phase = std::f32::consts::PI - i as f32 / 72.0 * std::f32::consts::PI;
+                let point = Point::new(
+                    center.x + phase.cos() * radius_x,
+                    center.y - phase.sin() * radius_y,
+                );
+                if i == 0 {
+                    builder.move_to(point);
+                } else {
+                    builder.line_to(point);
+                }
+            }
+        });
+        frame.stroke(
+            &arc,
+            canvas::Stroke::default()
+                .with_color(color)
+                .with_width(width),
+        );
+    }
+
+    fn draw_scope_background(&self, frame: &mut canvas::Frame, width: f32, height: f32) {
+        let bg = canvas::Path::rectangle(Point::ORIGIN, Size::new(width, height));
+        frame.fill(&bg, Color::from_rgb(0.055, 0.060, 0.075));
+        frame.stroke(
+            &bg,
+            canvas::Stroke::default()
+                .with_color(Color::from_rgba(0.80, 0.86, 0.95, 0.18))
+                .with_width(1.0),
+        );
+    }
+
+    fn draw_polar_grid(
+        &self,
+        frame: &mut canvas::Frame,
+        width: f32,
+        height: f32,
+    ) -> (Point, f32, f32) {
+        let pad = 20.0;
+        let radius_x = ((width - pad * 2.0) * 0.5).max(16.0);
+        let radius_y = (height - pad * 2.0).max(16.0);
+        let center = Point::new(width * 0.5, height - pad);
+
+        for factor in [0.25, 0.5, 0.75, 1.0] {
+            Self::draw_arc(
+                frame,
+                center,
+                radius_x * factor,
+                radius_y * factor,
+                Color::from_rgba(0.67, 0.72, 0.82, 0.09),
+                if factor == 1.0 { 1.0 } else { 0.7 },
+            );
+        }
+
+        for degrees in [30.0_f32, 60.0, 90.0, 120.0, 150.0] {
+            let phase = degrees.to_radians();
+            let end = Point::new(
+                center.x + phase.cos() * radius_x,
+                center.y - phase.sin() * radius_y,
+            );
+            frame.stroke(
+                &canvas::Path::line(center, end),
+                canvas::Stroke::default()
+                    .with_color(Color::from_rgba(0.68, 0.72, 0.80, 0.10))
+                    .with_width(if degrees == 90.0 { 1.0 } else { 0.6 }),
+            );
+        }
+
+        frame.stroke(
+            &canvas::Path::line(
+                Point::new(center.x - radius_x, center.y),
+                Point::new(center.x + radius_x, center.y),
+            ),
+            canvas::Stroke::default()
+                .with_color(Color::from_rgba(0.88, 0.92, 0.98, 0.24))
+                .with_width(1.0),
+        );
+        frame.stroke(
+            &canvas::Path::line(center, Point::new(center.x, center.y - radius_y)),
+            canvas::Stroke::default()
+                .with_color(Color::from_rgba(0.88, 0.92, 0.98, 0.30))
+                .with_width(1.0),
+        );
+
+        (center, radius_x, radius_y)
+    }
+
+    fn draw_lissajous_grid(
+        &self,
+        frame: &mut canvas::Frame,
+        width: f32,
+        height: f32,
+    ) -> (Point, f32) {
+        let pad = 18.0;
+        let side = (width.min(height) - pad * 2.0).max(16.0);
+        let left = (width - side) * 0.5;
+        let top = (height - side) * 0.5;
+        let center = Point::new(width * 0.5, height * 0.5);
+        let radius = side * 0.5;
+
+        for offset in [-0.5_f32, 0.0, 0.5] {
+            let x = center.x + offset * radius;
+            let y = center.y + offset * radius;
+            frame.stroke(
+                &canvas::Path::line(Point::new(x, top), Point::new(x, top + side)),
+                canvas::Stroke::default()
+                    .with_color(Color::from_rgba(0.68, 0.72, 0.80, 0.10))
+                    .with_width(if offset == 0.0 { 1.0 } else { 0.6 }),
+            );
+            frame.stroke(
+                &canvas::Path::line(Point::new(left, y), Point::new(left + side, y)),
+                canvas::Stroke::default()
+                    .with_color(Color::from_rgba(0.68, 0.72, 0.80, 0.10))
+                    .with_width(if offset == 0.0 { 1.0 } else { 0.6 }),
+            );
+        }
+
+        let diamond = canvas::Path::new(|builder| {
+            builder.move_to(Point::new(center.x, top));
+            builder.line_to(Point::new(left + side, center.y));
+            builder.line_to(Point::new(center.x, top + side));
+            builder.line_to(Point::new(left, center.y));
+            builder.close();
+        });
+        frame.stroke(
+            &diamond,
+            canvas::Stroke::default()
+                .with_color(Color::from_rgba(0.75, 0.80, 0.90, 0.16))
+                .with_width(1.0),
+        );
+
+        (center, radius)
+    }
+
+    fn draw_polar_sample(
+        &self,
+        frame: &mut canvas::Frame,
+        origin: Point,
+        radius_x: f32,
+        radius_y: f32,
+        peak: f32,
+    ) {
+        let step = (self.data.len / 320).max(1);
+        for i in (0..self.data.len).step_by(step) {
+            let point = self.polar_sample_point(i, origin, radius_x, radius_y, peak);
+            let side = (self.data.left[i] - self.data.right[i]) * 0.5;
+            let color = if side < 0.0 {
+                Color::from_rgba(1.00, 0.42, 0.22, 0.50)
+            } else {
+                Color::from_rgba(0.05, 0.78, 0.95, 0.50)
+            };
+            frame.fill(&canvas::Path::circle(point, 1.15), color);
+        }
+    }
+
+    fn draw_polar_level(
+        &self,
+        frame: &mut canvas::Frame,
+        origin: Point,
+        radius_x: f32,
+        radius_y: f32,
+        peak: f32,
+    ) {
+        const BINS: usize = 129;
+        let mut levels = [0.0_f32; BINS];
+        for i in 0..self.data.len {
+            let left = self.data.left[i];
+            let right = self.data.right[i];
+            let side = ((left - right) * 0.5 / peak).clamp(-1.0, 1.0);
+            let level = ((left * left + right * right) * 0.5).sqrt() / peak;
+            let bin = (((side + 1.0) * 0.5) * (BINS - 1) as f32).round() as usize;
+            levels[bin] = levels[bin].max(level);
+        }
+
+        let fill = canvas::Path::new(|builder| {
+            builder.move_to(origin);
+            for (bin, level) in levels.iter().enumerate() {
+                let side = bin as f32 / (BINS - 1) as f32 * 2.0 - 1.0;
+                builder.line_to(Self::polar_point_from_side_level(
+                    side,
+                    level.sqrt(),
+                    origin,
+                    radius_x,
+                    radius_y,
+                ));
+            }
+            builder.line_to(origin);
+            builder.close();
+        });
+        frame.fill(&fill, Color::from_rgba(0.05, 0.78, 0.95, 0.24));
+        frame.stroke(
+            &fill,
+            canvas::Stroke::default()
+                .with_color(Color::from_rgba(0.05, 0.78, 0.95, 0.62))
+                .with_width(1.6),
+        );
+    }
+
+    fn draw_lissajous(&self, frame: &mut canvas::Frame, center: Point, radius: f32, peak: f32) {
+        let scale = radius * 0.94 / peak;
+        let trace = canvas::Path::new(|builder| {
+            builder.move_to(self.lissajous_point(0, center, scale));
+            for i in 1..self.data.len {
+                builder.line_to(self.lissajous_point(i, center, scale));
+            }
+        });
+        frame.stroke(
+            &trace,
+            canvas::Stroke::default()
+                .with_color(Color::from_rgba(1.00, 0.42, 0.22, 0.20))
+                .with_width(5.0),
+        );
+        frame.stroke(
+            &trace,
+            canvas::Stroke::default()
+                .with_color(Color::from_rgba(0.24, 0.62, 1.00, 0.18))
+                .with_width(3.0),
+        );
+
+        let step = (self.data.len / 220).max(1);
+        for i in (0..self.data.len).step_by(step) {
+            let point = self.lissajous_point(i, center, scale);
+            let side_signal = (self.data.left[i] - self.data.right[i]) * 0.5;
+            let color = if side_signal < 0.0 {
+                Color::from_rgba(1.00, 0.42, 0.22, 0.58)
+            } else {
+                Color::from_rgba(0.24, 0.62, 1.00, 0.58)
+            };
+            frame.fill(&canvas::Path::circle(point, 1.35), color);
+        }
+    }
+}
+
+impl canvas::Program<Message> for Vectorscope {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &maolan_baseview::iced::Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let width = bounds.width;
+        let height = bounds.height;
+        self.draw_scope_background(&mut frame, width, height);
+
+        let peak = self.data.peak.max(0.08);
+        if self.data.len >= 2 && self.data.peak > 0.000_01 {
+            match self.mode {
+                ScopeMode::PolarSample => {
+                    let (center, radius_x, radius_y) =
+                        self.draw_polar_grid(&mut frame, width, height);
+                    self.draw_polar_sample(&mut frame, center, radius_x, radius_y, peak);
+                }
+                ScopeMode::PolarLevel => {
+                    let (center, radius_x, radius_y) =
+                        self.draw_polar_grid(&mut frame, width, height);
+                    self.draw_polar_level(&mut frame, center, radius_x, radius_y, peak);
+                }
+                ScopeMode::Lissajous => {
+                    let (center, radius) = self.draw_lissajous_grid(&mut frame, width, height);
+                    self.draw_lissajous(&mut frame, center, radius, peak);
+                }
+            }
+        } else {
+            match self.mode {
+                ScopeMode::PolarSample | ScopeMode::PolarLevel => {
+                    let _ = self.draw_polar_grid(&mut frame, width, height);
+                }
+                ScopeMode::Lissajous => {
+                    let _ = self.draw_lissajous_grid(&mut frame, width, height);
+                }
+            }
+        }
+
+        vec![frame.into_geometry()]
+    }
 }
 
 fn theme(_state: &State) -> Theme {
@@ -352,6 +750,7 @@ fn pretty_value(id: ParamId, value: f32, _units: &'static str) -> String {
 
 fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {
     maolan_baseview::iced::application(move || init(shared.clone()), update, view)
+        .subscription(|_state| maolan_baseview::iced::poll_events().map(|_| Message::Poll))
         .font(maolan_widgets::iced_fonts::LUCIDE_FONT_BYTES)
         .theme(theme)
         .run()
@@ -395,6 +794,9 @@ impl GuiBridge {
     }
 
     pub fn destroy(&mut self) {
+        if let Some(shared) = &self.shared {
+            *shared.poll_notifier.lock() = None;
+        }
         self.window_handle = None;
         self.shared = None;
         self.floating = false;
@@ -420,15 +822,15 @@ impl GuiBridge {
                 scale: maolan_baseview::iced::baseview::WindowScalePolicy::SystemScaleFactor,
             },
             ignore_non_modifier_keys: false,
-            always_redraw: false,
+            always_redraw: true,
         };
+        let notifier = maolan_baseview::iced::PollSubNotifier::new();
+        *shared.poll_notifier.lock() = Some(notifier.clone());
 
-        let handle = maolan_baseview::iced::shell::open_parented(
-            &parent,
-            settings,
-            maolan_baseview::iced::PollSubNotifier::new(),
-            move || build_app(shared),
-        );
+        let handle =
+            maolan_baseview::iced::shell::open_parented(&parent, settings, notifier, move || {
+                build_app(shared)
+            });
 
         self.window_handle = Some(AnyWindowHandle {
             _inner: Box::new(handle),
@@ -461,13 +863,13 @@ impl GuiBridge {
                             maolan_baseview::iced::baseview::WindowScalePolicy::SystemScaleFactor,
                     },
                     ignore_non_modifier_keys: false,
-                    always_redraw: false,
+                    always_redraw: true,
                 };
-                maolan_baseview::iced::shell::open_blocking(
-                    settings,
-                    maolan_baseview::iced::PollSubNotifier::new(),
-                    move || build_app(shared),
-                );
+                let notifier = maolan_baseview::iced::PollSubNotifier::new();
+                *shared.poll_notifier.lock() = Some(notifier.clone());
+                maolan_baseview::iced::shell::open_blocking(settings, notifier, move || {
+                    build_app(shared)
+                });
                 open_flag.store(false, Ordering::Release);
             });
         }
@@ -475,6 +877,7 @@ impl GuiBridge {
     }
 
     pub fn hide(&mut self, shared: Arc<SharedState>) -> bool {
+        *shared.poll_notifier.lock() = None;
         if self.floating {
             self.floating_open.store(false, Ordering::Release);
             shared.request_gui_closed();

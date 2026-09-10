@@ -8,6 +8,7 @@ use std::{
     },
 };
 
+use maolan_baseview::iced::PollSubNotifier;
 use maolan_clap::ffi::CLAP_WINDOW_API_COCOA;
 use maolan_clap::ffi::CLAP_WINDOW_API_WIN32;
 use maolan_clap::ffi::CLAP_WINDOW_API_X11;
@@ -32,7 +33,7 @@ use portable_atomic::AtomicF64;
 use crate::common::{
     SharedStateExt, apply_param_events, copy_str_to_array, emit_pending_param_events_to_host,
 };
-use crate::common::{bus, fft};
+use crate::common::{bus, fft, slot::SeqLockSlot};
 use crate::stereo::{
     dsp::{Stereo, StereoParams},
     gui::GuiBridge,
@@ -49,6 +50,7 @@ const PLUGIN_DESCRIPTION: &[u8] =
     b"Multiband stereo width processor with gain, delay and character sections\0";
 const FEATURE_AUDIO_EFFECT: *const c_char = CLAP_PLUGIN_FEATURE_AUDIO_EFFECT.as_ptr();
 const FEATURE_STEREO: *const c_char = CLAP_PLUGIN_FEATURE_STEREO.as_ptr();
+pub const VECTORSCOPE_SAMPLES: usize = 512;
 
 struct SyncFeatureList([*const c_char; 3]);
 unsafe impl Sync for SyncFeatureList {}
@@ -71,7 +73,26 @@ static DESCRIPTOR: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor {
     features: FEATURES.0.as_ptr(),
 });
 
-#[derive(Debug)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct VectorscopeData {
+    pub len: usize,
+    pub peak: f32,
+    pub left: [f32; VECTORSCOPE_SAMPLES],
+    pub right: [f32; VECTORSCOPE_SAMPLES],
+}
+
+impl Default for VectorscopeData {
+    fn default() -> Self {
+        Self {
+            len: 0,
+            peak: 0.0,
+            left: [0.0; VECTORSCOPE_SAMPLES],
+            right: [0.0; VECTORSCOPE_SAMPLES],
+        }
+    }
+}
+
 pub struct SharedState {
     pub params: ParamStore,
     sample_rate: AtomicF64,
@@ -83,6 +104,8 @@ pub struct SharedState {
     pending_gesture_end: std::sync::atomic::AtomicU32,
     active_local_gestures: std::sync::atomic::AtomicU32,
     host: AtomicPtr<clap_host>,
+    pub vectorscope: SeqLockSlot<VectorscopeData>,
+    pub poll_notifier: Mutex<Option<PollSubNotifier>>,
 }
 
 impl Default for SharedState {
@@ -98,6 +121,8 @@ impl Default for SharedState {
             pending_gesture_end: std::sync::atomic::AtomicU32::new(0),
             active_local_gestures: std::sync::atomic::AtomicU32::new(0),
             host: AtomicPtr::new(null_mut()),
+            vectorscope: SeqLockSlot::new(VectorscopeData::default()),
+            poll_notifier: Mutex::new(None),
         }
     }
 }
@@ -290,6 +315,29 @@ impl SharedState {
     }
 }
 
+fn write_vectorscope_data(slot: &SeqLockSlot<VectorscopeData>, left: &[f32], right: &[f32]) {
+    let frames = left.len().min(right.len());
+    slot.write(|scope| {
+        scope.left.fill(0.0);
+        scope.right.fill(0.0);
+        scope.len = frames.min(VECTORSCOPE_SAMPLES);
+        scope.peak = 0.0;
+        if scope.len == 0 {
+            return;
+        }
+
+        let stride = (frames / scope.len).max(1);
+        for i in 0..scope.len {
+            let index = (i * stride).min(frames - 1);
+            let l = left[index].clamp(-1.0, 1.0);
+            let r = right[index].clamp(-1.0, 1.0);
+            scope.left[i] = l;
+            scope.right[i] = r;
+            scope.peak = scope.peak.max(l.abs()).max(r.abs());
+        }
+    });
+}
+
 impl SharedStateExt<ParamId> for SharedState {
     fn params_get(&self, id: ParamId) -> f64 {
         self.params.get(id)
@@ -423,9 +471,15 @@ impl AudioProcessor {
                 let mut output_r = process.audio_outputs(1);
                 output_r.data32(0)[..frames].copy_from_slice(&self.temp_right[..frames]);
             }
+            write_vectorscope_data(
+                &shared.vectorscope,
+                &self.temp_left[..frames],
+                &self.temp_right[..frames],
+            );
         } else if inputs_count >= 1 && outputs_count >= 1 {
             let input_port = process.audio_inputs(0);
             self.temp_left[..frames].copy_from_slice(input_port.data32(0));
+            self.temp_right[..frames].copy_from_slice(&self.temp_left[..frames]);
 
             self.dsp.process_stereo(
                 &mut self.temp_left[..frames],
@@ -458,6 +512,11 @@ impl AudioProcessor {
 
             let mut output_port = process.audio_outputs(0);
             output_port.data32(0)[..frames].copy_from_slice(&self.temp_left[..frames]);
+            write_vectorscope_data(
+                &shared.vectorscope,
+                &self.temp_left[..frames],
+                &self.temp_right[..frames],
+            );
         }
 
         if let Some(ref bus) = self.bus_data
@@ -476,6 +535,10 @@ impl AudioProcessor {
                     fft.valid_bins = n;
                 });
             }
+        }
+
+        if let Some(ref notifier) = *shared.poll_notifier.lock() {
+            notifier.notify();
         }
 
         CLAP_PROCESS_CONTINUE
