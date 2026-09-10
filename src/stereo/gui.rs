@@ -10,7 +10,7 @@ use std::{
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{checkbox, column, container, radio, row, scrollable, text, toggler},
+    widget::{checkbox, column, container, row, scrollable, text, toggler},
 };
 #[cfg(target_os = "macos")]
 use maolan_clap::ffi::CLAP_WINDOW_API_COCOA;
@@ -18,6 +18,7 @@ use maolan_clap::ffi::CLAP_WINDOW_API_COCOA;
 use maolan_clap::ffi::CLAP_WINDOW_API_WIN32;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use maolan_clap::ffi::CLAP_WINDOW_API_X11;
+use maolan_widgets::multi_toggler::horizontal_multi_toggler;
 #[cfg(any(
     target_os = "windows",
     target_os = "macos",
@@ -260,35 +261,28 @@ fn view(state: &State) -> Element<'_, Message> {
     );
 
     content = content.push(text("Output").size(18));
-    content = content.push(
-        row![knob(
-            "Volume",
-            ParamId::OutputGain,
-            p(ParamId::OutputGain),
-            "dB",
-            0.1
-        ),]
-        .spacing(16),
-    );
     let monitor_selected = match p(ParamId::MonitorMode) as i32 {
-        1 => Some(1u8),
-        2 => Some(2u8),
-        _ => Some(0u8),
+        1 => 1,
+        2 => 2,
+        _ => 0,
     };
     content = content.push(
         row![
-            radio("Stereo", 0u8, monitor_selected, |v| {
-                Message::SetParam(ParamId::MonitorMode, v as f32)
-            }),
-            radio("Mono", 1u8, monitor_selected, |v| {
-                Message::SetParam(ParamId::MonitorMode, v as f32)
-            }),
-            radio("Side", 2u8, monitor_selected, |v| {
-                Message::SetParam(ParamId::MonitorMode, v as f32)
-            }),
+            knob(
+                "Volume",
+                ParamId::OutputGain,
+                p(ParamId::OutputGain),
+                "dB",
+                0.1
+            ),
+            column![
+                text("Mode"),
+                horizontal_multi_toggler(["Stereo", "Mono", "Side"], monitor_selected, |index| {
+                    Message::SetParam(ParamId::MonitorMode, index as f32)
+                })
+            ],
         ]
-        .spacing(16)
-        .align_y(Alignment::Center),
+        .spacing(16),
     );
 
     container(scrollable(content))
