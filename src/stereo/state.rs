@@ -4,10 +4,28 @@ use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::fmt;
 
-use crate::stereo::params::{PARAMS, ParamStore, sanitize_param_value};
+use crate::stereo::params::{PARAMS, ParamId, ParamStore, sanitize_param_value};
 
 const CURRENT_STATE_VERSION: &str = "0.1.0";
 const STATE_HEADER_PREFIX: &str = "maolan-stereo-state-v";
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SectionSwitches {
+    pub gain: bool,
+    pub delay: bool,
+    pub character: bool,
+}
+
+impl Default for SectionSwitches {
+    fn default() -> Self {
+        Self {
+            gain: true,
+            delay: true,
+            character: true,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginState {
@@ -15,6 +33,8 @@ pub struct PluginState {
     pub version: String,
     #[serde(default, deserialize_with = "deserialize_params")]
     pub params: BTreeMap<String, f64>,
+    #[serde(default)]
+    pub sections: SectionSwitches,
 }
 
 fn default_version() -> String {
@@ -26,12 +46,13 @@ impl Default for PluginState {
         Self {
             version: CURRENT_STATE_VERSION.to_string(),
             params: BTreeMap::new(),
+            sections: SectionSwitches::default(),
         }
     }
 }
 
 impl PluginState {
-    pub fn from_runtime(params: &ParamStore) -> Self {
+    pub fn from_runtime(params: &ParamStore, sections: SectionSwitches) -> Self {
         let mut params_map = BTreeMap::new();
         for def in PARAMS.iter() {
             params_map.insert(def.name.to_string(), params.get(def.id));
@@ -39,10 +60,11 @@ impl PluginState {
         Self {
             version: CURRENT_STATE_VERSION.to_string(),
             params: params_map,
+            sections,
         }
     }
 
-    pub fn apply(self, params: &ParamStore) {
+    pub fn apply(self, params: &ParamStore) -> SectionSwitches {
         for def in PARAMS.iter() {
             if let Some(&value) = self.params.get(def.name) {
                 params.set(def.id, sanitize_param_value(def.id, value));
@@ -50,6 +72,12 @@ impl PluginState {
                 params.set(def.id, def.default);
             }
         }
+        let x1 = params.get(ParamId::X1);
+        let x2 = params.get(ParamId::X2);
+        if x2 < x1 {
+            params.set(ParamId::X2, sanitize_param_value(ParamId::X2, x1));
+        }
+        self.sections
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {

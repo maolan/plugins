@@ -33,7 +33,6 @@ pub mod tuner;
 pub mod vocoder;
 pub mod vumeter;
 pub mod wah;
-pub mod widener;
 
 type DescriptorFn = unsafe fn() -> *const clap_plugin_descriptor;
 type CreateFn = unsafe fn(*const clap_host, *const c_char) -> *const clap_plugin;
@@ -43,7 +42,7 @@ struct PluginApi {
     create: CreateFn,
 }
 
-static PLUGINS: [PluginApi; 22] = [
+static PLUGINS: [PluginApi; 21] = [
     PluginApi {
         descriptor: eq::clap_descriptor_ptr,
         create: eq::clap_create_plugin,
@@ -55,10 +54,6 @@ static PLUGINS: [PluginApi; 22] = [
     PluginApi {
         descriptor: limiter::clap_descriptor_ptr,
         create: limiter::clap_create_plugin,
-    },
-    PluginApi {
-        descriptor: stereo::clap_descriptor_ptr,
-        create: stereo::clap_create_plugin,
     },
     PluginApi {
         descriptor: monitoring::clap_descriptor_ptr,
@@ -89,8 +84,8 @@ static PLUGINS: [PluginApi; 22] = [
         create: deesser::clap_create_plugin,
     },
     PluginApi {
-        descriptor: widener::clap_descriptor_ptr,
-        create: widener::clap_create_plugin,
+        descriptor: stereo::clap_descriptor_ptr,
+        create: stereo::clap_create_plugin,
     },
     PluginApi {
         descriptor: kick::clap_descriptor_ptr,

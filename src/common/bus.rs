@@ -85,7 +85,6 @@ pub enum PluginType {
     Reverb,
     Saturator,
     Stereo,
-    Widener,
     Kick,
     MaolanModeler,
     Synth,
@@ -313,9 +312,8 @@ fn plugin_type_from_u32(v: u32) -> PluginType {
         6 => PluginType::Reverb,
         7 => PluginType::Saturator,
         8 => PluginType::Stereo,
-        9 => PluginType::Widener,
-        10 => PluginType::Kick,
-        11 => PluginType::MaolanModeler,
+        9 => PluginType::Kick,
+        10 => PluginType::MaolanModeler,
         _ => PluginType::Eq,
     }
 }
@@ -751,7 +749,7 @@ mod tests {
         let name = BILLBOARD_NAME.get().unwrap().clone();
 
         let id = next_instance_id();
-        let data = PluginSharedData::new(PluginType::Widener).with_fft(FftData::default());
+        let data = PluginSharedData::new(PluginType::Stereo).with_fft(FftData::default());
         let _handle = register(id, data);
 
         let mapping2 = crate::common::shm::ShmMapping::open_existing(&name, BILLBOARD_SIZE)

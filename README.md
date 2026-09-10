@@ -25,10 +25,12 @@ theme.
 | **Maolan Reverb** | `rs.maolan.reverb` | Mono / Stereo | Stereo reverb |
 | **Maolan Sampler** | `rs.maolan.sampler` | Stereo | Polyphonic sample player |
 | **Maolan Saturator** | `rs.maolan.saturator` | Stereo | Waveshape saturation with sine-based distortion |
-| **Maolan Stereo** | `rs.maolan.stereo` | Stereo | Stereo width processor |
+| **Maolan Stereo** | `rs.maolan.stereo` | Stereo | Multiband stereo width processor with gain, delay and character sections |
 | **Maolan Synth** | `rs.maolan.synth` | Stereo | Polyphonic synthesizer inspired by Surge XT |
+| **Maolan Tuner** | `rs.maolan.tuner` | Mono | Monophonic pitch tuner using YIN |
+| **Maolan VU Meter** | `rs.maolan.vumeter` | Stereo | VU meter for diagnostics |
 | **Maolan Vocoder** | `rs.maolan.vocoder` | Stereo | 24-band filter-bank vocoder |
-| **Maolan Widener** | `rs.maolan.widener` | Stereo | Multiband stereo width processor |
+| **Maolan Wah** | `rs.maolan.wah` | Stereo | Resonant wah-wah with pedal, LFO and envelope modes |
 
 ---
 
@@ -362,17 +364,36 @@ Simple but effective stereo saturator using sine-wave distortion with an intensi
 
 ## Maolan Stereo
 
-Stereo width processor.
+A multiband stereo width processor organized into four sections: Gain (per-band width gains,
+crossover frequencies, global side boost), Delay (per-band Haas-style delays with a shared
+strength control), Character (sin/cos mid/side density with offset delay, inherited from the
+former Stereo plugin design), and Output (volume, monitor mode, per-band solos). Uses LR4
+crossover filters and mid/side processing per band. The Gain, Delay, and Character sections can
+be switched on or off from the GUI; the switches are GUI-only controls, not automatable
+parameters. When both Gain and Delay are off, the crossover split is bypassed entirely.
 
 **Parameters**
 
 | Parameter | Range | Default | Description |
 |-----------|-------|---------|-------------|
-| Width | 0.0 ... 1.0 | 0.5 | Stereo width |
-| Focus | 0.0 ... 1.0 | 0.5 | Focus / center control |
-| Amount | 0.0 ... 1.0 | 1.0 | Effect amount |
-
-Mid/side processing with density controls and delay-based focus.
+| Volume | −24.0 ... 4.0 dB | 0.0 | Output gain staging |
+| Boost | 0.0 ... 2.0x | 1.0 | Global side boost |
+| Low Gain | 0.0 ... 100.0 % | 50.0 | Low-band width amount |
+| Mid Gain | 0.0 ... 100.0 % | 50.0 | Mid-band width amount |
+| High Gain | 0.0 ... 100.0 % | 50.0 | High-band width amount |
+| Solo Low | 0 / 1 | 0 | Solo low band |
+| Solo Mid | 0 / 1 | 0 | Solo mid band |
+| Solo High | 0 / 1 | 0 | Solo high band |
+| X1 | 40.0 ... 1000.0 Hz | 400.0 | Low/mid crossover |
+| X2 | 1000.0 ... 18000.0 Hz | 4000.0 | Mid/high crossover |
+| Strength | 1.0 ... 20.0 ms | 10.0 | Delay section strength |
+| Monitor Mode | 0=Stereo, 1=Mono, 2=Side | 0 | Output monitor mode |
+| Low Delay | 0.0 ... 100.0 % | 50.0 | Low-band delay amount |
+| Mid Delay | 0.0 ... 100.0 % | 50.0 | Mid-band delay amount |
+| High Delay | 0.0 ... 100.0 % | 50.0 | High-band delay amount |
+| Density | 0.0 ... 1.0 | 0.5 | Character side density |
+| Focus | 0.0 ... 1.0 | 0.5 | Character mid density |
+| Amount | 0.0 ... 1.0 | 1.0 | Character effect mix |
 
 ---
 
@@ -409,6 +430,20 @@ are defined in the plugin parameter list; the table above summarizes the availab
 
 ---
 
+## Maolan Tuner
+
+Monophonic pitch tuner using the YIN algorithm. Adjustable reference pitch and clarity threshold
+for reliable pitch detection.
+
+**Parameters**
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| Reference Hz | 420.0 ... 460.0 | 440.0 | Tuning reference frequency |
+| Clarity Threshold | 0.0 ... 1.0 | 0.7 | Minimum clarity for pitch detection |
+
+---
+
 ## Maolan Vocoder
 
 24-band filter-bank vocoder based on the Mire Vocoder design. Each band has its own envelope
@@ -424,27 +459,32 @@ transpose the filter bank.
 
 ---
 
-## Maolan Widener
+## Maolan VU Meter
 
-A multiband stereo width processor with independent Low, Mid, and High band controls. Uses LR4
-crossover filters and mid/side processing per band.
+Stereo VU meter for diagnostics.
+
+---
+
+## Maolan Wah
+
+Resonant wah-wah filter with pedal, LFO, and envelope follower modes. The filter sweeps a resonant
+response between Min and Max Cutoff, driven manually by the Position control, automatically by an
+LFO, or by the input signal envelope.
 
 **Parameters**
 
 | Parameter | Range | Default | Description |
 |-----------|-------|---------|-------------|
-| Output Gain | −24.0 ... 24.0 dB | 0.0 | Output gain staging |
-| Boost | 0.0 ... 4.0x | 1.0 | Global side boost |
-| Low | 0.0 ... 200.0 % | 100.0 | Low-band width |
-| Mid | 0.0 ... 200.0 % | 100.0 | Mid-band width |
-| High | 0.0 ... 200.0 % | 100.0 | High-band width |
-| Solo Low | 0 / 1 | 0 | Solo low band |
-| Solo Mid | 0 / 1 | 0 | Solo mid band |
-| Solo High | 0 / 1 | 0 | Solo high band |
-| X1 | 40.0 ... 1000.0 Hz | 400.0 | Low/mid crossover |
-| X2 | 1000.0 ... 18000.0 Hz | 4000.0 | Mid/high crossover |
-| Strength | 1.0 ... 20.0 ms | 5.0 | Width strength |
-| Monitor Mode | 0=Stereo, 1=Mono, 2=Side | 0 | Output monitor mode |
+| Mode | 0=Pedal, 1=LFO, 2=Envelope | 0 | Sweep mode |
+| Min Cutoff | 50.0 ... 2000.0 | 300.0 | Minimum filter cutoff |
+| Max Cutoff | 500.0 ... 10000.0 | 3000.0 | Maximum filter cutoff |
+| Resonance | 0.1 ... 10.0 | 4.0 | Filter resonance |
+| Position | 0.0 ... 1.0 | 0.5 | Manual pedal position |
+| LFO Rate | 0.1 ... 20.0 | 2.0 | LFO rate |
+| LFO Depth | 0.0 ... 1.0 | 0.5 | LFO modulation depth |
+| LFO Shape | 0.0 ... 3.0 | 0.0 | LFO waveform |
+| Env Attack | 1.0 ... 500.0 | 20.0 | Envelope follower attack time |
+| Env Release | 10.0 ... 2000.0 | 200.0 | Envelope follower release time |
 
 ---
 
@@ -463,7 +503,7 @@ In the Windows environment execute the following:
 
 ## Platform Support
 
-Linux, FreeBSD, and Windows are supported.
+Linux, FreeBSD, macOS, and Windows are supported.
 
 ---
 

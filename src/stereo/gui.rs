@@ -10,7 +10,7 @@ use std::{
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{column, container, row, scrollable},
+    widget::{checkbox, column, container, radio, row, scrollable, text, toggler},
 };
 #[cfg(target_os = "macos")]
 use maolan_clap::ffi::CLAP_WINDOW_API_COCOA;
@@ -35,8 +35,8 @@ use crate::{
     },
 };
 
-pub const EDITOR_WIDTH: u32 = 800;
-pub const EDITOR_HEIGHT: u32 = 420;
+pub const EDITOR_WIDTH: u32 = 550;
+pub const EDITOR_HEIGHT: u32 = 830;
 
 pub fn preferred_api() -> &'static CStr {
     #[cfg(target_os = "windows")]
@@ -97,6 +97,9 @@ impl HasWindowHandle for ParentWindowHandle {
 pub enum Message {
     SetParam(ParamId, f32),
     ReleaseParam(ParamId),
+    ToggleGain(bool),
+    ToggleDelay(bool),
+    ToggleCharacter(bool),
 }
 
 struct State {
@@ -117,6 +120,16 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::SetParam(id, value) => {
+            let discrete = matches!(
+                id,
+                ParamId::SoloLow | ParamId::SoloMid | ParamId::SoloHigh | ParamId::MonitorMode
+            );
+            if discrete {
+                state.shared.mark_gesture_begin_pending(id);
+                state.shared.set_param_outbound_only(id, value as f64);
+                state.shared.mark_gesture_end_pending(id);
+                return Task::none();
+            }
             let idx = id.as_index();
             if !state.active_gestures[idx] {
                 state.active_gestures[idx] = true;
@@ -131,22 +144,151 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.shared.mark_gesture_end_pending(id);
             }
         }
+        Message::ToggleGain(on) => {
+            state.shared.set_gain_on(on);
+        }
+        Message::ToggleDelay(on) => {
+            state.shared.set_delay_on(on);
+        }
+        Message::ToggleCharacter(on) => {
+            state.shared.set_character_on(on);
+        }
     }
     Task::none()
 }
 
 fn view(state: &State) -> Element<'_, Message> {
     let p = |id: ParamId| state.shared.params.get(id) as f32;
+    let b = |id: ParamId| state.shared.params.get(id) >= 0.5;
 
     let mut content = column![].spacing(16).align_x(Alignment::Start);
 
     content = content.push(
         row![
-            knob("Width", ParamId::Width, p(ParamId::Width), "", 0.01),
+            text("Gain").size(14),
+            text("Off").size(13),
+            toggler(state.shared.gain_on()).on_toggle(Message::ToggleGain),
+            text("On").size(13),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    );
+    content = content.push(
+        row![
+            container(
+                column![
+                    knob("Low", ParamId::LowGain, p(ParamId::LowGain), "", 1.0),
+                    checkbox(b(ParamId::SoloLow)).label("Solo").on_toggle(|v| {
+                        Message::SetParam(ParamId::SoloLow, if v { 1.0 } else { 0.0 })
+                    })
+                ]
+                .spacing(6)
+                .align_x(Alignment::Center),
+            )
+            .width(Length::Fixed(90.0)),
+            container(
+                column![
+                    knob("Mid", ParamId::MidGain, p(ParamId::MidGain), "", 1.0),
+                    checkbox(b(ParamId::SoloMid)).label("Solo").on_toggle(|v| {
+                        Message::SetParam(ParamId::SoloMid, if v { 1.0 } else { 0.0 })
+                    })
+                ]
+                .spacing(6)
+                .align_x(Alignment::Center),
+            )
+            .width(Length::Fixed(90.0)),
+            container(
+                column![
+                    knob("High", ParamId::HighGain, p(ParamId::HighGain), "", 1.0),
+                    checkbox(b(ParamId::SoloHigh)).label("Solo").on_toggle(|v| {
+                        Message::SetParam(ParamId::SoloHigh, if v { 1.0 } else { 0.0 })
+                    })
+                ]
+                .spacing(6)
+                .align_x(Alignment::Center),
+            )
+            .width(Length::Fixed(90.0)),
+        ]
+        .spacing(16),
+    );
+    content = content.push(
+        row![
+            knob("X1", ParamId::X1, p(ParamId::X1), "Hz", 1.0),
+            knob("X2", ParamId::X2, p(ParamId::X2), "Hz", 1.0),
+            knob("Boost", ParamId::Boost, p(ParamId::Boost), "x", 0.01),
+        ]
+        .spacing(16),
+    );
+
+    content = content.push(
+        row![
+            text("Delay").size(14),
+            text("Off").size(13),
+            toggler(state.shared.delay_on()).on_toggle(Message::ToggleDelay),
+            text("On").size(13),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    );
+    content = content.push(
+        row![
+            knob("Strength", ParamId::Strength, p(ParamId::Strength), "", 0.1),
+            knob("Low", ParamId::LowDelay, p(ParamId::LowDelay), "", 1.0),
+            knob("Mid", ParamId::MidDelay, p(ParamId::MidDelay), "", 1.0),
+            knob("High", ParamId::HighDelay, p(ParamId::HighDelay), "", 1.0),
+        ]
+        .spacing(16),
+    );
+
+    content = content.push(
+        row![
+            text("Character").size(14),
+            text("Off").size(13),
+            toggler(state.shared.character_on()).on_toggle(Message::ToggleCharacter),
+            text("On").size(13),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    );
+    content = content.push(
+        row![
+            knob("Density", ParamId::Density, p(ParamId::Density), "", 0.01),
             knob("Focus", ParamId::Focus, p(ParamId::Focus), "", 0.01),
             knob("Amount", ParamId::Amount, p(ParamId::Amount), "", 0.01),
         ]
         .spacing(16),
+    );
+
+    content = content.push(text("Output").size(18));
+    content = content.push(
+        row![knob(
+            "Volume",
+            ParamId::OutputGain,
+            p(ParamId::OutputGain),
+            "dB",
+            0.1
+        ),]
+        .spacing(16),
+    );
+    let monitor_selected = match p(ParamId::MonitorMode) as i32 {
+        1 => Some(1u8),
+        2 => Some(2u8),
+        _ => Some(0u8),
+    };
+    content = content.push(
+        row![
+            radio("Stereo", 0u8, monitor_selected, |v| {
+                Message::SetParam(ParamId::MonitorMode, v as f32)
+            }),
+            radio("Mono", 1u8, monitor_selected, |v| {
+                Message::SetParam(ParamId::MonitorMode, v as f32)
+            }),
+            radio("Side", 2u8, monitor_selected, |v| {
+                Message::SetParam(ParamId::MonitorMode, v as f32)
+            }),
+        ]
+        .spacing(16)
+        .align_y(Alignment::Center),
     );
 
     container(scrollable(content))
@@ -170,11 +312,7 @@ fn knob(
     step: f32,
 ) -> Element<'static, Message> {
     let def = PARAMS[id.as_index()];
-    let value_text = if units.is_empty() {
-        format!("{value:.2}")
-    } else {
-        format!("{value:.1} {units}")
-    };
+    let value_text = pretty_value(id, value, units);
 
     small_knob(
         SmallKnob {
@@ -188,6 +326,34 @@ fn knob(
         move |v| Message::SetParam(id, v),
         Message::ReleaseParam(id),
     )
+}
+
+fn pretty_value(id: ParamId, value: f32, _units: &'static str) -> String {
+    match id {
+        ParamId::SoloLow | ParamId::SoloMid | ParamId::SoloHigh => {
+            if value >= 0.5 {
+                "On".to_string()
+            } else {
+                "Off".to_string()
+            }
+        }
+        ParamId::MonitorMode => match value as i32 {
+            1 => "Mono".to_string(),
+            2 => "Side".to_string(),
+            _ => "Stereo".to_string(),
+        },
+        ParamId::LowGain
+        | ParamId::MidGain
+        | ParamId::HighGain
+        | ParamId::LowDelay
+        | ParamId::MidDelay
+        | ParamId::HighDelay => format!("{value:.0} %"),
+        ParamId::Strength => format!("{value:.1}"),
+        ParamId::Boost => format!("{value:.2}x"),
+        ParamId::OutputGain => format!("{value:.1} dB"),
+        ParamId::X1 | ParamId::X2 => format!("{value:.0} Hz"),
+        ParamId::Density | ParamId::Focus | ParamId::Amount => format!("{value:.2}"),
+    }
 }
 
 fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {

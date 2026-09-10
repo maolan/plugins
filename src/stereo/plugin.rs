@@ -45,7 +45,8 @@ const PLUGIN_NAME: &[u8] = b"Maolan Stereo\0";
 const PLUGIN_VENDOR: &[u8] = b"Maolan\0";
 const PLUGIN_URL: &[u8] = b"\0";
 const PLUGIN_VERSION: &[u8] = b"0.1.0\0";
-const PLUGIN_DESCRIPTION: &[u8] = b"Rust CLAP Stereo\0";
+const PLUGIN_DESCRIPTION: &[u8] =
+    b"Multiband stereo width processor with gain, delay and character sections\0";
 const FEATURE_AUDIO_EFFECT: *const c_char = CLAP_PLUGIN_FEATURE_AUDIO_EFFECT.as_ptr();
 const FEATURE_STEREO: *const c_char = CLAP_PLUGIN_FEATURE_STEREO.as_ptr();
 
@@ -74,6 +75,9 @@ static DESCRIPTOR: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor {
 pub struct SharedState {
     pub params: ParamStore,
     sample_rate: AtomicF64,
+    gain_on: AtomicBool,
+    delay_on: AtomicBool,
+    character_on: AtomicBool,
     pending_param_notifications: std::sync::atomic::AtomicU32,
     pending_gesture_begin: std::sync::atomic::AtomicU32,
     pending_gesture_end: std::sync::atomic::AtomicU32,
@@ -86,6 +90,9 @@ impl Default for SharedState {
         Self {
             params: ParamStore::default(),
             sample_rate: AtomicF64::new(48_000.0),
+            gain_on: AtomicBool::new(true),
+            delay_on: AtomicBool::new(true),
+            character_on: AtomicBool::new(true),
             pending_param_notifications: std::sync::atomic::AtomicU32::new(0),
             pending_gesture_begin: std::sync::atomic::AtomicU32::new(0),
             pending_gesture_end: std::sync::atomic::AtomicU32::new(0),
@@ -109,9 +116,33 @@ impl SharedState {
     }
 
     fn set_param_internal(&self, id: ParamId, value: f64, notify_host: bool) {
-        self.params.set(id, sanitize_param_value(id, value));
+        let value = sanitize_param_value(id, value);
+        self.params.set(id, value);
+        let mut coupled: Vec<(ParamId, f64)> = Vec::new();
+        match id {
+            ParamId::X1 => {
+                let x2 = self.params.get(ParamId::X2);
+                if x2 < value {
+                    coupled.push((ParamId::X2, sanitize_param_value(ParamId::X2, value)));
+                }
+            }
+            ParamId::X2 => {
+                let x1 = self.params.get(ParamId::X1);
+                if value < x1 {
+                    coupled.push((ParamId::X1, sanitize_param_value(ParamId::X1, value)));
+                }
+            }
+            _ => {}
+        }
+        for (other_id, other_value) in &coupled {
+            self.params.set(*other_id, *other_value);
+        }
+
         if notify_host {
             self.mark_param_notification_pending(id);
+            for (other_id, _) in coupled {
+                self.mark_param_notification_pending(other_id);
+            }
             self.request_flush();
             self.mark_dirty();
         }
@@ -215,6 +246,48 @@ impl SharedState {
             }
         }
     }
+
+    pub fn gain_on(&self) -> bool {
+        self.gain_on.load(Ordering::Acquire)
+    }
+
+    pub fn set_gain_on(&self, on: bool) {
+        self.gain_on.store(on, Ordering::Release);
+        self.mark_dirty();
+    }
+
+    pub fn delay_on(&self) -> bool {
+        self.delay_on.load(Ordering::Acquire)
+    }
+
+    pub fn set_delay_on(&self, on: bool) {
+        self.delay_on.store(on, Ordering::Release);
+        self.mark_dirty();
+    }
+
+    pub fn character_on(&self) -> bool {
+        self.character_on.load(Ordering::Acquire)
+    }
+
+    pub fn set_character_on(&self, on: bool) {
+        self.character_on.store(on, Ordering::Release);
+        self.mark_dirty();
+    }
+
+    fn section_switches(&self) -> crate::stereo::state::SectionSwitches {
+        crate::stereo::state::SectionSwitches {
+            gain: self.gain_on(),
+            delay: self.delay_on(),
+            character: self.character_on(),
+        }
+    }
+
+    fn apply_section_switches(&self, sections: crate::stereo::state::SectionSwitches) {
+        self.gain_on.store(sections.gain, Ordering::Release);
+        self.delay_on.store(sections.delay, Ordering::Release);
+        self.character_on
+            .store(sections.character, Ordering::Release);
+    }
 }
 
 impl SharedStateExt<ParamId> for SharedState {
@@ -317,7 +390,26 @@ impl AudioProcessor {
                 &mut self.temp_left[..frames],
                 &mut self.temp_right[..frames],
                 &StereoParams {
-                    width: shared.params.get(ParamId::Width),
+                    output_gain_db: shared.params.get(ParamId::OutputGain),
+                    boost: shared.params.get(ParamId::Boost),
+                    low_gain: shared.params.get(ParamId::LowGain),
+                    mid_gain: shared.params.get(ParamId::MidGain),
+                    high_gain: shared.params.get(ParamId::HighGain),
+                    low_delay: shared.params.get(ParamId::LowDelay),
+                    mid_delay: shared.params.get(ParamId::MidDelay),
+                    high_delay: shared.params.get(ParamId::HighDelay),
+                    solo_low: shared.params.get(ParamId::SoloLow) >= 0.5,
+                    solo_mid: shared.params.get(ParamId::SoloMid) >= 0.5,
+                    solo_high: shared.params.get(ParamId::SoloHigh) >= 0.5,
+                    x1: shared.params.get(ParamId::X1),
+                    x2: shared.params.get(ParamId::X2),
+                    strength: shared.params.get(ParamId::Strength),
+                    monitor_mode: shared.params.get(ParamId::MonitorMode) as u8,
+                    bypass: false,
+                    gain_on: shared.gain_on(),
+                    delay_on: shared.delay_on(),
+                    character_on: shared.character_on(),
+                    density: shared.params.get(ParamId::Density),
                     focus: shared.params.get(ParamId::Focus),
                     amount: shared.params.get(ParamId::Amount),
                 },
@@ -339,7 +431,26 @@ impl AudioProcessor {
                 &mut self.temp_left[..frames],
                 &mut self.temp_right[..frames],
                 &StereoParams {
-                    width: shared.params.get(ParamId::Width),
+                    output_gain_db: shared.params.get(ParamId::OutputGain),
+                    boost: shared.params.get(ParamId::Boost),
+                    low_gain: shared.params.get(ParamId::LowGain),
+                    mid_gain: shared.params.get(ParamId::MidGain),
+                    high_gain: shared.params.get(ParamId::HighGain),
+                    low_delay: shared.params.get(ParamId::LowDelay),
+                    mid_delay: shared.params.get(ParamId::MidDelay),
+                    high_delay: shared.params.get(ParamId::HighDelay),
+                    solo_low: shared.params.get(ParamId::SoloLow) >= 0.5,
+                    solo_mid: shared.params.get(ParamId::SoloMid) >= 0.5,
+                    solo_high: shared.params.get(ParamId::SoloHigh) >= 0.5,
+                    x1: shared.params.get(ParamId::X1),
+                    x2: shared.params.get(ParamId::X2),
+                    strength: shared.params.get(ParamId::Strength),
+                    monitor_mode: shared.params.get(ParamId::MonitorMode) as u8,
+                    bypass: false,
+                    gain_on: shared.gain_on(),
+                    delay_on: shared.delay_on(),
+                    character_on: shared.character_on(),
+                    density: shared.params.get(ParamId::Density),
                     focus: shared.params.get(ParamId::Focus),
                     amount: shared.params.get(ParamId::Amount),
                 },
@@ -420,12 +531,67 @@ unsafe fn instance<'a>(plugin: *const clap_plugin) -> &'a mut PluginInstance {
     unsafe { &mut *((*plugin).plugin_data as *mut PluginInstance) }
 }
 
-fn param_text(_id: ParamId, value: f64) -> String {
-    format!("{value:.2}")
+fn param_text(id: ParamId, value: f64) -> String {
+    match id {
+        ParamId::MonitorMode => match value as i32 {
+            1 => "Mono".to_string(),
+            2 => "Side".to_string(),
+            _ => "Stereo".to_string(),
+        },
+        ParamId::SoloLow | ParamId::SoloMid | ParamId::SoloHigh => {
+            if value >= 0.5 {
+                "On".to_string()
+            } else {
+                "Off".to_string()
+            }
+        }
+        ParamId::OutputGain => format!("{value:.1} dB"),
+        ParamId::Boost => format!("{value:.2}x"),
+        ParamId::X1 | ParamId::X2 => format!("{value:.0} Hz"),
+        ParamId::LowGain
+        | ParamId::MidGain
+        | ParamId::HighGain
+        | ParamId::LowDelay
+        | ParamId::MidDelay
+        | ParamId::HighDelay => format!("{value:.0} %"),
+        ParamId::Strength => format!("{value:.1} ms"),
+        ParamId::Density | ParamId::Focus | ParamId::Amount => format!("{value:.2}"),
+    }
 }
 
-fn parse_param_text(_id: ParamId, text: &str) -> Option<f64> {
-    text.parse().ok()
+fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
+    let t = text.trim().to_ascii_lowercase();
+    match id {
+        ParamId::MonitorMode => match t.as_str() {
+            "stereo" | "0" => Some(0.0),
+            "mono" | "1" => Some(1.0),
+            "side" | "2" => Some(2.0),
+            _ => t.parse::<f64>().ok(),
+        },
+        ParamId::SoloLow | ParamId::SoloMid | ParamId::SoloHigh => match t.as_str() {
+            "on" | "true" | "yes" | "1" => Some(1.0),
+            "off" | "false" | "no" | "0" => Some(0.0),
+            _ => t.parse::<f64>().ok(),
+        },
+        ParamId::OutputGain => t.trim_end_matches("db").trim().parse::<f64>().ok(),
+        ParamId::Boost => t.trim_end_matches('x').trim().parse::<f64>().ok(),
+        ParamId::X1 | ParamId::X2 => t.trim_end_matches("hz").trim().parse::<f64>().ok(),
+        ParamId::LowGain
+        | ParamId::MidGain
+        | ParamId::HighGain
+        | ParamId::LowDelay
+        | ParamId::MidDelay
+        | ParamId::HighDelay => {
+            if t.ends_with('%') {
+                let v = t.trim_end_matches('%').trim().parse::<f64>().ok()?;
+                Some(v)
+            } else {
+                t.parse::<f64>().ok()
+            }
+        }
+        ParamId::Strength => t.trim_end_matches("ms").trim().parse::<f64>().ok(),
+        ParamId::Density | ParamId::Focus | ParamId::Amount => t.parse::<f64>().ok(),
+    }
 }
 
 unsafe extern "C-unwind" fn plugin_init(plugin: *const clap_plugin) -> bool {
@@ -636,7 +802,7 @@ unsafe extern "C-unwind" fn ext_params_text_to_value(
         return false;
     };
     unsafe {
-        *out_value = value;
+        *out_value = sanitize_param_value(id, value);
     }
     true
 }
@@ -668,7 +834,8 @@ unsafe extern "C-unwind" fn ext_state_save(
         return false;
     }
     let instance = unsafe { instance(plugin) };
-    let state = PluginState::from_runtime(&instance.shared.params);
+    let state =
+        PluginState::from_runtime(&instance.shared.params, instance.shared.section_switches());
     let Ok(bytes) = state.to_bytes() else {
         return false;
     };
@@ -692,7 +859,8 @@ unsafe extern "C-unwind" fn ext_state_load(
     let Ok(state) = PluginState::from_bytes(&bytes) else {
         return false;
     };
-    state.apply(&instance.shared.params);
+    let sections = state.apply(&instance.shared.params);
+    instance.shared.apply_section_switches(sections);
     true
 }
 
