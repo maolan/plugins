@@ -10,7 +10,7 @@ use std::{
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{column, container, row, text, toggler},
+    widget::{column, container, row},
 };
 #[cfg(target_os = "macos")]
 use maolan_clap::ffi::CLAP_WINDOW_API_COCOA;
@@ -34,6 +34,8 @@ use crate::{
         plugin::SharedState,
     },
 };
+
+use maolan_widgets::multi_toggler::horizontal_multi_toggler;
 
 pub const EDITOR_WIDTH: u32 = 540;
 pub const EDITOR_HEIGHT: u32 = 340;
@@ -198,22 +200,19 @@ fn view(state: &State) -> Element<'_, Message> {
     }
 
     let channels = state.shared.params.get(ParamId::Channels).round() as u32;
-    let channels_toggle = toggler(channels > 1).on_toggle(|v| {
-        if v {
-            Message::SetChannels(ChannelMode::Stereo)
-        } else {
-            Message::SetChannels(ChannelMode::Mono)
-        }
-    });
-    let channels_label = if channels > 1 {
-        text("Stereo")
-    } else {
-        text("Mono")
-    };
+    let channels_selected = if channels >= 2 { 1 } else { 0 };
+    let channels_toggle =
+        horizontal_multi_toggler(["Mono", "Stereo"], channels_selected, |index| {
+            Message::SetChannels(if index >= 1 {
+                ChannelMode::Stereo
+            } else {
+                ChannelMode::Mono
+            })
+        });
 
     let content = column![
         row![
-            column![channels_label, channels_toggle],
+            channels_toggle,
             knob(ParamId::Replace, "Replace", state),
             knob(ParamId::Brightness, "Brightness", state),
             knob(ParamId::Detune, "Detune", state),

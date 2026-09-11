@@ -35,6 +35,8 @@ use crate::{
     },
 };
 
+use maolan_widgets::multi_toggler::horizontal_multi_toggler;
+
 pub const EDITOR_WIDTH: u32 = 540;
 pub const EDITOR_HEIGHT: u32 = 340;
 
@@ -242,12 +244,15 @@ fn view(state: &State) -> Element<'_, Message> {
     }
 
     let channels = state.shared.params.get(ParamId::Channels).round() as u32;
-    let channels_dropdown = maolan_baseview::iced::widget::pick_list(
-        vec![ChannelMode::Mono, ChannelMode::Stereo],
-        Some(ChannelMode::from(channels)),
-        Message::SetChannels,
-    )
-    .placeholder("Channels");
+    let channels_selected = if channels >= 2 { 1 } else { 0 };
+    let channels_toggle =
+        horizontal_multi_toggler(["Mono", "Stereo"], channels_selected, |index| {
+            Message::SetChannels(if index >= 1 {
+                ChannelMode::Stereo
+            } else {
+                ChannelMode::Mono
+            })
+        });
 
     let time_mode_value = state.shared.params.get(ParamId::TimeMode) as f32;
     let time_mode_switch = row![
@@ -261,7 +266,7 @@ fn view(state: &State) -> Element<'_, Message> {
 
     let content = column![
         row![
-            channels_dropdown,
+            channels_toggle,
             time_mode_switch,
             time_knob(state),
             knob(ParamId::Feedback, "Feedback", state),

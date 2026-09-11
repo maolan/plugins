@@ -7,6 +7,8 @@ use crate::eq::dsp::{self, Biquad};
 use crate::eq::params::{PARAMS, ParamId, ParamIdExt};
 use crate::eq::plugin::{SPECTRUM_BINS, SharedState};
 
+use maolan_widgets::multi_toggler::horizontal_multi_toggler;
+
 use maolan_baseview::iced::{
     Alignment, Color, Element, Event, Length, Point, Rectangle, Renderer, Task, Theme,
     alignment::{Horizontal, Vertical},
@@ -943,17 +945,19 @@ fn view(state: &State) -> Element<'_, Message> {
     });
 
     let channels = p(ParamId::Channels).round() as u32;
-    let channels_dropdown = maolan_baseview::iced::widget::pick_list(
-        vec![ChannelMode::Mono, ChannelMode::Stereo],
-        Some(ChannelMode::from(channels)),
-        Message::SetChannels,
-    )
-    .placeholder("Channels")
-    .width(Length::Fixed(95.0));
+    let channels_selected = if channels >= 2 { 1 } else { 0 };
+    let channels_toggle =
+        horizontal_multi_toggler(["Mono", "Stereo"], channels_selected, |index| {
+            Message::SetChannels(if index >= 1 {
+                ChannelMode::Stereo
+            } else {
+                ChannelMode::Mono
+            })
+        });
 
     let peer_slots: Vec<u32> = state.eq_peers.iter().map(|p| p.slot_index()).collect();
     let analyzer_controls = row![
-        channels_dropdown,
+        channels_toggle,
         maolan_baseview::iced::widget::checkbox(state.show_pre_spectrum)
             .label("Pre")
             .on_toggle(|_| Message::TogglePreSpectrum),

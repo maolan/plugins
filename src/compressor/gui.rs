@@ -42,6 +42,8 @@ use crate::compressor::{
     plugin::SharedState,
 };
 
+use maolan_widgets::multi_toggler::horizontal_multi_toggler;
+
 pub const EDITOR_WIDTH: u32 = 1024;
 pub const EDITOR_HEIGHT: u32 = 720;
 const MAX_COMPRESSOR_BANDS: usize = 6;
@@ -513,12 +515,15 @@ fn view(state: &State) -> Element<'_, Message> {
     .view_fill();
 
     let channels = p(ParamId::Channels).round() as u32;
-    let channels_dropdown = maolan_baseview::iced::widget::pick_list(
-        vec![ChannelMode::Mono, ChannelMode::Stereo],
-        Some(ChannelMode::from(channels)),
-        Message::SetChannels,
-    )
-    .placeholder("Channels");
+    let channels_selected = if channels >= 2 { 1 } else { 0 };
+    let channels_toggle =
+        horizontal_multi_toggler(["Mono", "Stereo"], channels_selected, |index| {
+            Message::SetChannels(if index >= 1 {
+                ChannelMode::Stereo
+            } else {
+                ChannelMode::Mono
+            })
+        });
 
     if !state.eq_band_freqs.is_empty() {
         let freq_text = state
@@ -604,7 +609,7 @@ fn view(state: &State) -> Element<'_, Message> {
     .align_y(Alignment::Center);
 
     let bottom_controls = row![
-        channels_dropdown,
+        channels_toggle,
         text("Range").size(11),
         maolan_baseview::iced::widget::pick_list(
             vec![3.0_f32, 6.0, 12.0, 30.0],
