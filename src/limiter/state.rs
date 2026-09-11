@@ -44,11 +44,13 @@ impl PluginState {
 
     pub fn apply(self, params: &ParamStore) {
         for def in PARAMS.iter() {
-            if let Some(&value) = self.params.get(def.name) {
-                params.set(def.id, sanitize_param_value(def.id, value));
-            } else {
-                params.set(def.id, def.default);
-            }
+            let value = self
+                .params
+                .get(def.name)
+                .or_else(|| legacy_param_name(def.name).and_then(|name| self.params.get(name)))
+                .copied()
+                .unwrap_or(def.default);
+            params.set(def.id, sanitize_param_value(def.id, value));
         }
     }
 
@@ -72,6 +74,13 @@ impl PluginState {
             text
         };
         serde_json::from_str(json_text).map_err(|e| format!("failed to parse plugin state: {e}"))
+    }
+}
+
+fn legacy_param_name(name: &str) -> Option<&'static str> {
+    match name {
+        "Gain" => Some("Boost"),
+        _ => None,
     }
 }
 

@@ -1,808 +1,318 @@
-const FP_OLD: f64 = 0.618_033_988_749_894_8;
-const FP_NEW: f64 = 1.0 - FP_OLD;
-const BUFFER_SIZE: usize = 22_200;
-const HALF_BUFFER: usize = 11_020;
+const MAX_LOOKAHEAD_MS: f64 = 20.0;
+const MIN_SAMPLE_RATE: f64 = 1.0;
 
-pub struct Vintage {
-    last_sample_l: f64,
-    last_sample_r: f64,
-    b_l: Vec<f32>,
-    b_r: Vec<f32>,
-    gcount: i32,
-    lows_l: f64,
-    lows_r: f64,
-    refclip_l: f64,
-    refclip_r: f64,
-    iir_lows_al: f64,
-    iir_lows_ar: f64,
-    iir_lows_bl: f64,
-    iir_lows_br: f64,
-    fpd_l: u32,
-    fpd_r: u32,
-    sample_rate: f64,
-}
-
-impl Default for Vintage {
-    fn default() -> Self {
-        Self {
-            last_sample_l: 0.0,
-            last_sample_r: 0.0,
-            b_l: vec![0.0; BUFFER_SIZE],
-            b_r: vec![0.0; BUFFER_SIZE],
-            gcount: HALF_BUFFER as i32,
-            lows_l: 0.0,
-            lows_r: 0.0,
-            refclip_l: 0.99,
-            refclip_r: 0.99,
-            iir_lows_al: 0.0,
-            iir_lows_ar: 0.0,
-            iir_lows_bl: 0.0,
-            iir_lows_br: 0.0,
-            fpd_l: rand::random(),
-            fpd_r: rand::random(),
-            sample_rate: 48_000.0,
-        }
-    }
-}
-
-impl Vintage {
-    pub fn set_sample_rate(&mut self, sr: f64) {
-        self.sample_rate = sr;
-    }
-
-    pub fn reset(&mut self) {
-        self.last_sample_l = 0.0;
-        self.last_sample_r = 0.0;
-        self.b_l.fill(0.0);
-        self.b_r.fill(0.0);
-        self.gcount = HALF_BUFFER as i32;
-        self.lows_l = 0.0;
-        self.lows_r = 0.0;
-        self.refclip_l = 0.99;
-        self.refclip_r = 0.99;
-        self.iir_lows_al = 0.0;
-        self.iir_lows_ar = 0.0;
-        self.iir_lows_bl = 0.0;
-        self.iir_lows_br = 0.0;
-        self.fpd_l = rand::random();
-        self.fpd_r = rand::random();
-    }
-
-    pub fn process_stereo(
-        &mut self,
-        left: &mut [f32],
-        right: &mut [f32],
-        boost: f64,
-        soften: f64,
-        enhance: f64,
-        mode: u32,
-    ) {
-        let overallscale = self.sample_rate / 44_100.0;
-        let input_gain = 10.0_f64.powf(boost / 20.0);
-        let softness = soften * FP_NEW;
-        let hardness = 1.0 - softness;
-        let highslift = 0.307 * enhance;
-        let adjust = highslift.powi(3) * 0.416;
-        let subslift = 0.796 * enhance;
-        let calibsubs = subslift / 53.0;
-        let invcalibsubs = 1.0 - calibsubs;
-        let subs = 0.81 + (calibsubs * 2.0);
-        let mode = mode.min(2) + 1;
-
-        let offset_h1 = 1.84 * overallscale;
-        let offset_h2 = offset_h1 * 1.9;
-        let offset_h3 = offset_h1 * 2.7;
-        let offset_l1 = 612.0 * overallscale;
-        let offset_l2 = offset_l1 * 2.0;
-
-        let ref_h1 = offset_h1.floor() as i32;
-        let ref_h2 = offset_h2.floor() as i32;
-        let ref_h3 = offset_h3.floor() as i32;
-        let ref_l1 = offset_l1.floor() as i32;
-        let ref_l2 = offset_l2.floor() as i32;
-
-        let fraction_h1 = offset_h1 - offset_h1.floor();
-        let fraction_h2 = offset_h2 - offset_h2.floor();
-        let fraction_h3 = offset_h3 - offset_h3.floor();
-        let minus_h1 = 1.0 - fraction_h1;
-        let minus_h2 = 1.0 - fraction_h2;
-        let minus_h3 = 1.0 - fraction_h3;
-
-        for (input_l, input_r) in left.iter_mut().zip(right.iter_mut()) {
-            let mut sample_l = *input_l as f64;
-            let mut sample_r = *input_r as f64;
-
-            if sample_l.abs() < 1.18e-23 {
-                sample_l = self.fpd_l as f64 * 1.18e-17;
-            }
-            if sample_r.abs() < 1.18e-23 {
-                sample_r = self.fpd_r as f64 * 1.18e-17;
-            }
-
-            if input_gain != 1.0 {
-                sample_l *= input_gain;
-                sample_r *= input_gain;
-            }
-
-            let overshoot_l = (sample_l.abs() - self.refclip_l).max(0.0);
-            let overshoot_r = (sample_r.abs() - self.refclip_r).max(0.0);
-
-            if self.gcount < 0 || self.gcount > HALF_BUFFER as i32 {
-                self.gcount = HALF_BUFFER as i32;
-            }
-            let count = self.gcount as usize;
-            self.b_l[count] = overshoot_l as f32;
-            self.b_l[count + HALF_BUFFER] = overshoot_l as f32;
-            self.b_r[count] = overshoot_r as f32;
-            self.b_r[count + HALF_BUFFER] = overshoot_r as f32;
-            self.gcount -= 1;
-
-            let mut highs_l = 0.0;
-            let mut highs_r = 0.0;
-
-            if highslift > 0.0 {
-                let temp = count + ref_h3 as usize;
-                highs_l = -(self.b_l[temp] as f64 * minus_h3);
-                highs_l -= self.b_l[temp + 1] as f64;
-                highs_l -= self.b_l[temp + 2] as f64 * fraction_h3;
-                highs_l += ((self.b_l[temp] - self.b_l[temp + 1])
-                    - (self.b_l[temp + 1] - self.b_l[temp + 2])) as f64
-                    / 50.0;
-                highs_l *= adjust;
-
-                highs_r = -(self.b_r[temp] as f64 * minus_h3);
-                highs_r -= self.b_r[temp + 1] as f64;
-                highs_r -= self.b_r[temp + 2] as f64 * fraction_h3;
-                highs_r += ((self.b_r[temp] - self.b_r[temp + 1])
-                    - (self.b_r[temp + 1] - self.b_r[temp + 2])) as f64
-                    / 50.0;
-                highs_r *= adjust;
-
-                let temp = count + ref_h2 as usize;
-                highs_l += self.b_l[temp] as f64 * minus_h2;
-                highs_l += self.b_l[temp + 1] as f64;
-                highs_l += self.b_l[temp + 2] as f64 * fraction_h2;
-                highs_l -= ((self.b_l[temp] - self.b_l[temp + 1])
-                    - (self.b_l[temp + 1] - self.b_l[temp + 2])) as f64
-                    / 50.0;
-                highs_l *= adjust;
-
-                highs_r += self.b_r[temp] as f64 * minus_h2;
-                highs_r += self.b_r[temp + 1] as f64;
-                highs_r += self.b_r[temp + 2] as f64 * fraction_h2;
-                highs_r -= ((self.b_r[temp] - self.b_r[temp + 1])
-                    - (self.b_r[temp + 1] - self.b_r[temp + 2])) as f64
-                    / 50.0;
-                highs_r *= adjust;
-
-                let temp = count + ref_h1 as usize;
-                highs_l -= self.b_l[temp] as f64 * minus_h1;
-                highs_l -= self.b_l[temp + 1] as f64;
-                highs_l -= self.b_l[temp + 2] as f64 * fraction_h1;
-                highs_l += ((self.b_l[temp] - self.b_l[temp + 1])
-                    - (self.b_l[temp + 1] - self.b_l[temp + 2])) as f64
-                    / 50.0;
-                highs_l *= adjust;
-
-                highs_r -= self.b_r[temp] as f64 * minus_h1;
-                highs_r -= self.b_r[temp + 1] as f64;
-                highs_r -= self.b_r[temp + 2] as f64 * fraction_h1;
-                highs_r += ((self.b_r[temp] - self.b_r[temp + 1])
-                    - (self.b_r[temp + 1] - self.b_r[temp + 2])) as f64
-                    / 50.0;
-                highs_r *= adjust;
-            }
-
-            let mut bridgerectifier = (highs_l.abs() * hardness).sin();
-            highs_l = if highs_l > 0.0 {
-                bridgerectifier
-            } else {
-                -bridgerectifier
-            };
-
-            bridgerectifier = (highs_r.abs() * hardness).sin();
-            highs_r = if highs_r > 0.0 {
-                bridgerectifier
-            } else {
-                -bridgerectifier
-            };
-
-            if subslift > 0.0 {
-                self.lows_l *= subs;
-                self.lows_r *= subs;
-
-                let temp = count + ref_l1 as usize;
-                self.lows_l -= self.b_l[temp + 127] as f64;
-                self.lows_l -= self.b_l[temp + 113] as f64;
-                self.lows_l -= self.b_l[temp + 109] as f64;
-                self.lows_l -= self.b_l[temp + 107] as f64;
-                self.lows_l -= self.b_l[temp + 103] as f64;
-                self.lows_l -= self.b_l[temp + 101] as f64;
-                self.lows_l -= self.b_l[temp + 97] as f64;
-                self.lows_l -= self.b_l[temp + 89] as f64;
-                self.lows_l -= self.b_l[temp + 83] as f64;
-                self.lows_l -= self.b_l[temp + 79] as f64;
-                self.lows_l -= self.b_l[temp + 73] as f64;
-                self.lows_l -= self.b_l[temp + 71] as f64;
-                self.lows_l -= self.b_l[temp + 67] as f64;
-                self.lows_l -= self.b_l[temp + 61] as f64;
-                self.lows_l -= self.b_l[temp + 59] as f64;
-                self.lows_l -= self.b_l[temp + 53] as f64;
-                self.lows_l -= self.b_l[temp + 47] as f64;
-                self.lows_l -= self.b_l[temp + 43] as f64;
-                self.lows_l -= self.b_l[temp + 41] as f64;
-                self.lows_l -= self.b_l[temp + 37] as f64;
-                self.lows_l -= self.b_l[temp + 31] as f64;
-                self.lows_l -= self.b_l[temp + 29] as f64;
-                self.lows_l -= self.b_l[temp + 23] as f64;
-                self.lows_l -= self.b_l[temp + 19] as f64;
-                self.lows_l -= self.b_l[temp + 17] as f64;
-                self.lows_l -= self.b_l[temp + 13] as f64;
-                self.lows_l -= self.b_l[temp + 11] as f64;
-                self.lows_l -= self.b_l[temp + 7] as f64;
-                self.lows_l -= self.b_l[temp + 5] as f64;
-                self.lows_l -= self.b_l[temp + 3] as f64;
-                self.lows_l -= self.b_l[temp + 2] as f64;
-                self.lows_l -= self.b_l[temp + 1] as f64;
-
-                self.lows_r -= self.b_r[temp + 127] as f64;
-                self.lows_r -= self.b_r[temp + 113] as f64;
-                self.lows_r -= self.b_r[temp + 109] as f64;
-                self.lows_r -= self.b_r[temp + 107] as f64;
-                self.lows_r -= self.b_r[temp + 103] as f64;
-                self.lows_r -= self.b_r[temp + 101] as f64;
-                self.lows_r -= self.b_r[temp + 97] as f64;
-                self.lows_r -= self.b_r[temp + 89] as f64;
-                self.lows_r -= self.b_r[temp + 83] as f64;
-                self.lows_r -= self.b_r[temp + 79] as f64;
-                self.lows_r -= self.b_r[temp + 73] as f64;
-                self.lows_r -= self.b_r[temp + 71] as f64;
-                self.lows_r -= self.b_r[temp + 67] as f64;
-                self.lows_r -= self.b_r[temp + 61] as f64;
-                self.lows_r -= self.b_r[temp + 59] as f64;
-                self.lows_r -= self.b_r[temp + 53] as f64;
-                self.lows_r -= self.b_r[temp + 47] as f64;
-                self.lows_r -= self.b_r[temp + 43] as f64;
-                self.lows_r -= self.b_r[temp + 41] as f64;
-                self.lows_r -= self.b_r[temp + 37] as f64;
-                self.lows_r -= self.b_r[temp + 31] as f64;
-                self.lows_r -= self.b_r[temp + 29] as f64;
-                self.lows_r -= self.b_r[temp + 23] as f64;
-                self.lows_r -= self.b_r[temp + 19] as f64;
-                self.lows_r -= self.b_r[temp + 17] as f64;
-                self.lows_r -= self.b_r[temp + 13] as f64;
-                self.lows_r -= self.b_r[temp + 11] as f64;
-                self.lows_r -= self.b_r[temp + 7] as f64;
-                self.lows_r -= self.b_r[temp + 5] as f64;
-                self.lows_r -= self.b_r[temp + 3] as f64;
-                self.lows_r -= self.b_r[temp + 2] as f64;
-                self.lows_r -= self.b_r[temp + 1] as f64;
-
-                self.lows_l *= subs * subs;
-                self.lows_r *= subs * subs;
-
-                let temp = count + ref_l2 as usize;
-                self.lows_l += self.b_l[temp + 127] as f64;
-                self.lows_l += self.b_l[temp + 113] as f64;
-                self.lows_l += self.b_l[temp + 109] as f64;
-                self.lows_l += self.b_l[temp + 107] as f64;
-                self.lows_l += self.b_l[temp + 103] as f64;
-                self.lows_l += self.b_l[temp + 101] as f64;
-                self.lows_l += self.b_l[temp + 97] as f64;
-                self.lows_l += self.b_l[temp + 89] as f64;
-                self.lows_l += self.b_l[temp + 83] as f64;
-                self.lows_l += self.b_l[temp + 79] as f64;
-                self.lows_l += self.b_l[temp + 73] as f64;
-                self.lows_l += self.b_l[temp + 71] as f64;
-                self.lows_l += self.b_l[temp + 67] as f64;
-                self.lows_l += self.b_l[temp + 61] as f64;
-                self.lows_l += self.b_l[temp + 59] as f64;
-                self.lows_l += self.b_l[temp + 53] as f64;
-                self.lows_l += self.b_l[temp + 47] as f64;
-                self.lows_l += self.b_l[temp + 43] as f64;
-                self.lows_l += self.b_l[temp + 41] as f64;
-                self.lows_l += self.b_l[temp + 37] as f64;
-                self.lows_l += self.b_l[temp + 31] as f64;
-                self.lows_l += self.b_l[temp + 29] as f64;
-                self.lows_l += self.b_l[temp + 23] as f64;
-                self.lows_l += self.b_l[temp + 19] as f64;
-                self.lows_l += self.b_l[temp + 17] as f64;
-                self.lows_l += self.b_l[temp + 13] as f64;
-                self.lows_l += self.b_l[temp + 11] as f64;
-                self.lows_l += self.b_l[temp + 7] as f64;
-                self.lows_l += self.b_l[temp + 5] as f64;
-                self.lows_l += self.b_l[temp + 3] as f64;
-                self.lows_l += self.b_l[temp + 2] as f64;
-                self.lows_l += self.b_l[temp + 1] as f64;
-
-                self.lows_r += self.b_r[temp + 127] as f64;
-                self.lows_r += self.b_r[temp + 113] as f64;
-                self.lows_r += self.b_r[temp + 109] as f64;
-                self.lows_r += self.b_r[temp + 107] as f64;
-                self.lows_r += self.b_r[temp + 103] as f64;
-                self.lows_r += self.b_r[temp + 101] as f64;
-                self.lows_r += self.b_r[temp + 97] as f64;
-                self.lows_r += self.b_r[temp + 89] as f64;
-                self.lows_r += self.b_r[temp + 83] as f64;
-                self.lows_r += self.b_r[temp + 79] as f64;
-                self.lows_r += self.b_r[temp + 73] as f64;
-                self.lows_r += self.b_r[temp + 71] as f64;
-                self.lows_r += self.b_r[temp + 67] as f64;
-                self.lows_r += self.b_r[temp + 61] as f64;
-                self.lows_r += self.b_r[temp + 59] as f64;
-                self.lows_r += self.b_r[temp + 53] as f64;
-                self.lows_r += self.b_r[temp + 47] as f64;
-                self.lows_r += self.b_r[temp + 43] as f64;
-                self.lows_r += self.b_r[temp + 41] as f64;
-                self.lows_r += self.b_r[temp + 37] as f64;
-                self.lows_r += self.b_r[temp + 31] as f64;
-                self.lows_r += self.b_r[temp + 29] as f64;
-                self.lows_r += self.b_r[temp + 23] as f64;
-                self.lows_r += self.b_r[temp + 19] as f64;
-                self.lows_r += self.b_r[temp + 17] as f64;
-                self.lows_r += self.b_r[temp + 13] as f64;
-                self.lows_r += self.b_r[temp + 11] as f64;
-                self.lows_r += self.b_r[temp + 7] as f64;
-                self.lows_r += self.b_r[temp + 5] as f64;
-                self.lows_r += self.b_r[temp + 3] as f64;
-                self.lows_r += self.b_r[temp + 2] as f64;
-                self.lows_r += self.b_r[temp + 1] as f64;
-
-                self.lows_l *= subs;
-                self.lows_r *= subs;
-            }
-
-            bridgerectifier = (self.lows_l.abs() * softness).sin();
-            self.lows_l = if self.lows_l > 0.0 {
-                bridgerectifier
-            } else {
-                -bridgerectifier
-            };
-
-            bridgerectifier = (self.lows_r.abs() * softness).sin();
-            self.lows_r = if self.lows_r > 0.0 {
-                bridgerectifier
-            } else {
-                -bridgerectifier
-            };
-
-            self.iir_lows_al = (self.iir_lows_al * invcalibsubs) + (self.lows_l * calibsubs);
-            self.lows_l = self.iir_lows_al;
-            bridgerectifier = self.lows_l.abs().sin();
-            self.lows_l = if self.lows_l > 0.0 {
-                bridgerectifier
-            } else {
-                -bridgerectifier
-            };
-
-            self.iir_lows_ar = (self.iir_lows_ar * invcalibsubs) + (self.lows_r * calibsubs);
-            self.lows_r = self.iir_lows_ar;
-            bridgerectifier = self.lows_r.abs().sin();
-            self.lows_r = if self.lows_r > 0.0 {
-                bridgerectifier
-            } else {
-                -bridgerectifier
-            };
-
-            self.iir_lows_bl = (self.iir_lows_bl * invcalibsubs) + (self.lows_l * calibsubs);
-            self.lows_l = self.iir_lows_bl;
-            bridgerectifier = self.lows_l.abs().sin() * 2.0;
-            self.lows_l = if self.lows_l > 0.0 {
-                bridgerectifier
-            } else {
-                -bridgerectifier
-            };
-
-            self.iir_lows_br = (self.iir_lows_br * invcalibsubs) + (self.lows_r * calibsubs);
-            self.lows_r = self.iir_lows_br;
-            bridgerectifier = self.lows_r.abs().sin() * 2.0;
-            self.lows_r = if self.lows_r > 0.0 {
-                bridgerectifier
-            } else {
-                -bridgerectifier
-            };
-
-            if highslift > 0.0 {
-                sample_l += highs_l * (1.0 - sample_l.abs() * hardness);
-            }
-            if subslift > 0.0 {
-                sample_l += self.lows_l * (1.0 - sample_l.abs() * softness);
-            }
-
-            if highslift > 0.0 {
-                sample_r += highs_r * (1.0 - sample_r.abs() * hardness);
-            }
-            if subslift > 0.0 {
-                sample_r += self.lows_r * (1.0 - sample_r.abs() * softness);
-            }
-
-            if sample_l > self.refclip_l && self.refclip_l > 0.9 {
-                self.refclip_l -= 0.01;
-            }
-            if sample_l < -self.refclip_l && self.refclip_l > 0.9 {
-                self.refclip_l -= 0.01;
-            }
-            if self.refclip_l < 0.99 {
-                self.refclip_l += 0.000_01;
-            }
-
-            if sample_r > self.refclip_r && self.refclip_r > 0.9 {
-                self.refclip_r -= 0.01;
-            }
-            if sample_r < -self.refclip_r && self.refclip_r > 0.9 {
-                self.refclip_r -= 0.01;
-            }
-            if self.refclip_r < 0.99 {
-                self.refclip_r += 0.000_01;
-            }
-
-            if self.last_sample_l >= self.refclip_l {
-                if sample_l < self.refclip_l {
-                    self.last_sample_l = self.refclip_l * hardness + sample_l * softness;
-                } else {
-                    self.last_sample_l = self.refclip_l;
-                }
-            }
-            if self.last_sample_r >= self.refclip_r {
-                if sample_r < self.refclip_r {
-                    self.last_sample_r = self.refclip_r * hardness + sample_r * softness;
-                } else {
-                    self.last_sample_r = self.refclip_r;
-                }
-            }
-            if self.last_sample_l <= -self.refclip_l {
-                if sample_l > -self.refclip_l {
-                    self.last_sample_l = -self.refclip_l * hardness + sample_l * softness;
-                } else {
-                    self.last_sample_l = -self.refclip_l;
-                }
-            }
-            if self.last_sample_r <= -self.refclip_r {
-                if sample_r > -self.refclip_r {
-                    self.last_sample_r = -self.refclip_r * hardness + sample_r * softness;
-                } else {
-                    self.last_sample_r = -self.refclip_r;
-                }
-            }
-
-            if sample_l > self.refclip_l {
-                if self.last_sample_l < self.refclip_l {
-                    sample_l = self.refclip_l * hardness + self.last_sample_l * softness;
-                } else {
-                    sample_l = self.refclip_l;
-                }
-            }
-            if sample_r > self.refclip_r {
-                if self.last_sample_r < self.refclip_r {
-                    sample_r = self.refclip_r * hardness + self.last_sample_r * softness;
-                } else {
-                    sample_r = self.refclip_r;
-                }
-            }
-            if sample_l < -self.refclip_l {
-                if self.last_sample_l > -self.refclip_l {
-                    sample_l = -self.refclip_l * hardness + self.last_sample_l * softness;
-                } else {
-                    sample_l = -self.refclip_l;
-                }
-            }
-            if sample_r < -self.refclip_r {
-                if self.last_sample_r > -self.refclip_r {
-                    sample_r = -self.refclip_r * hardness + self.last_sample_r * softness;
-                } else {
-                    sample_r = -self.refclip_r;
-                }
-            }
-
-            self.last_sample_l = sample_l;
-            self.last_sample_r = sample_r;
-
-            match mode {
-                1 => {}
-                2 => {
-                    sample_l /= input_gain;
-                    sample_r /= input_gain;
-                }
-                3 => {
-                    sample_l = overshoot_l + highs_l + self.lows_l;
-                    sample_r = overshoot_r + highs_r + self.lows_r;
-                }
-                _ => {}
-            }
-
-            sample_l = sample_l.clamp(-self.refclip_l, self.refclip_l);
-            sample_r = sample_r.clamp(-self.refclip_r, self.refclip_r);
-
-            let mut expon = sample_l.abs().log2().floor() as i32;
-            self.fpd_l ^= self.fpd_l << 13;
-            self.fpd_l ^= self.fpd_l >> 17;
-            self.fpd_l ^= self.fpd_l << 5;
-            sample_l +=
-                (self.fpd_l as f64 - 0x7fff_ffffu32 as f64) * 5.5e-36 * 2.0_f64.powi(expon + 62);
-
-            expon = sample_r.abs().log2().floor() as i32;
-            self.fpd_r ^= self.fpd_r << 13;
-            self.fpd_r ^= self.fpd_r >> 17;
-            self.fpd_r ^= self.fpd_r << 5;
-            sample_r +=
-                (self.fpd_r as f64 - 0x7fff_ffffu32 as f64) * 5.5e-36 * 2.0_f64.powi(expon + 62);
-
-            *input_l = sample_l as f32;
-            *input_r = sample_r as f32;
-        }
-    }
-}
-
-pub struct Modern {
-    last_sample_l: [f64; 8],
-    last_sample_r: [f64; 8],
-    intermediate_l: [[f64; 8]; 17],
-    intermediate_r: [[f64; 8]; 17],
-    was_pos_clip_l: [bool; 8],
-    was_neg_clip_l: [bool; 8],
-    was_pos_clip_r: [bool; 8],
-    was_neg_clip_r: [bool; 8],
-    fpd_l: u32,
-    fpd_r: u32,
-    sample_rate: f64,
-}
-
-impl Default for Modern {
-    fn default() -> Self {
-        Self {
-            last_sample_l: [0.0; 8],
-            last_sample_r: [0.0; 8],
-            intermediate_l: [[0.0; 8]; 17],
-            intermediate_r: [[0.0; 8]; 17],
-            was_pos_clip_l: [false; 8],
-            was_neg_clip_l: [false; 8],
-            was_pos_clip_r: [false; 8],
-            was_neg_clip_r: [false; 8],
-            fpd_l: rand::random(),
-            fpd_r: rand::random(),
-            sample_rate: 48_000.0,
-        }
-    }
-}
-
-impl Modern {
-    pub fn set_sample_rate(&mut self, sr: f64) {
-        self.sample_rate = sr;
-    }
-
-    pub fn reset(&mut self) {
-        *self = Self {
-            sample_rate: self.sample_rate,
-            ..Default::default()
-        };
-    }
-
-    pub fn process_stereo(
-        &mut self,
-        left: &mut [f32],
-        right: &mut [f32],
-        boost: f64,
-        ceiling: f64,
-        mode: u32,
-    ) {
-        let overallscale = self.sample_rate / 44_100.0;
-        let mut spacing = overallscale.floor() as usize;
-        spacing = spacing.clamp(1, 16);
-        let input_gain = 10.0_f64.powf(boost / 20.0);
-        let ceiling_val = 10.0_f64.powf(ceiling / 20.0);
-        let mode = mode.min(7) + 1;
-        let mut stage_setting = mode as i32 - 2;
-        if stage_setting < 1 {
-            stage_setting = 1;
-        }
-        let stage_input_gain = ((input_gain - 1.0) / stage_setting as f64) + 1.0;
-        let hardness = 0.618_033_988_749_894;
-        let softness = 0.381_966_011_250_105;
-
-        for (sample_l, sample_r) in left.iter_mut().zip(right.iter_mut()) {
-            let mut input_l = *sample_l as f64;
-            let mut input_r = *sample_r as f64;
-
-            if input_l.abs() < 1.18e-23 {
-                input_l = self.fpd_l as f64 * 1.18e-17;
-            }
-            if input_r.abs() < 1.18e-23 {
-                input_r = self.fpd_r as f64 * 1.18e-17;
-            }
-
-            let mut overshoot_l = 0.0;
-            let mut overshoot_r = 0.0;
-            input_l *= 1.618_033_988_749_894;
-            input_r *= 1.618_033_988_749_894;
-
-            for stage in 0..stage_setting as usize {
-                if stage_input_gain != 1.0 {
-                    input_l *= stage_input_gain;
-                    input_r *= stage_input_gain;
-                }
-                if stage == 0 {
-                    overshoot_l = input_l.abs() - 1.618_033_988_749_894;
-                    if overshoot_l < 0.0 {
-                        overshoot_l = 0.0;
-                    }
-                    overshoot_r = input_r.abs() - 1.618_033_988_749_894;
-                    if overshoot_r < 0.0 {
-                        overshoot_r = 0.0;
-                    }
-                }
-
-                input_l = input_l.clamp(-4.0, 4.0);
-                input_r = input_r.clamp(-4.0, 4.0);
-
-                let diff_l = input_l - self.last_sample_l[stage];
-                let diff_r = input_r - self.last_sample_r[stage];
-                if diff_l > hardness {
-                    input_l = self.last_sample_l[stage] + hardness;
-                }
-                if diff_l < -hardness {
-                    input_l = self.last_sample_l[stage] - hardness;
-                }
-                if diff_r > hardness {
-                    input_r = self.last_sample_r[stage] + hardness;
-                }
-                if diff_r < -hardness {
-                    input_r = self.last_sample_r[stage] - hardness;
-                }
-
-                if self.was_pos_clip_l[stage] {
-                    if input_l < self.last_sample_l[stage] {
-                        self.last_sample_l[stage] = 1.0 + input_l * softness;
-                    } else {
-                        self.last_sample_l[stage] = hardness + self.last_sample_l[stage] * hardness;
-                    }
-                }
-                self.was_pos_clip_l[stage] = false;
-                if input_l > 1.618_033_988_749_894 {
-                    self.was_pos_clip_l[stage] = true;
-                    input_l = 1.0 + self.last_sample_l[stage] * softness;
-                }
-
-                if self.was_neg_clip_l[stage] {
-                    if input_l > self.last_sample_l[stage] {
-                        self.last_sample_l[stage] = -1.0 + input_l * softness;
-                    } else {
-                        self.last_sample_l[stage] =
-                            -hardness + self.last_sample_l[stage] * hardness;
-                    }
-                }
-                self.was_neg_clip_l[stage] = false;
-                if input_l < -1.618_033_988_749_894 {
-                    self.was_neg_clip_l[stage] = true;
-                    input_l = -1.0 + self.last_sample_l[stage] * softness;
-                }
-
-                self.intermediate_l[spacing][stage] = input_l;
-                input_l = self.last_sample_l[stage];
-                for x in (1..=spacing).rev() {
-                    self.intermediate_l[x - 1][stage] = self.intermediate_l[x][stage];
-                }
-                self.last_sample_l[stage] = self.intermediate_l[0][stage];
-
-                if self.was_pos_clip_r[stage] {
-                    if input_r < self.last_sample_r[stage] {
-                        self.last_sample_r[stage] = 1.0 + input_r * softness;
-                    } else {
-                        self.last_sample_r[stage] = hardness + self.last_sample_r[stage] * hardness;
-                    }
-                }
-                self.was_pos_clip_r[stage] = false;
-                if input_r > 1.618_033_988_749_894 {
-                    self.was_pos_clip_r[stage] = true;
-                    input_r = 1.0 + self.last_sample_r[stage] * softness;
-                }
-
-                if self.was_neg_clip_r[stage] {
-                    if input_r > self.last_sample_r[stage] {
-                        self.last_sample_r[stage] = -1.0 + input_r * softness;
-                    } else {
-                        self.last_sample_r[stage] =
-                            -hardness + self.last_sample_r[stage] * hardness;
-                    }
-                }
-                self.was_neg_clip_r[stage] = false;
-                if input_r < -1.618_033_988_749_894 {
-                    self.was_neg_clip_r[stage] = true;
-                    input_r = -1.0 + self.last_sample_r[stage] * softness;
-                }
-
-                self.intermediate_r[spacing][stage] = input_r;
-                input_r = self.last_sample_r[stage];
-                for x in (1..=spacing).rev() {
-                    self.intermediate_r[x - 1][stage] = self.intermediate_r[x][stage];
-                }
-                self.last_sample_r[stage] = self.intermediate_r[0][stage];
-            }
-
-            match mode {
-                1 => {}
-                2 => {
-                    input_l /= stage_input_gain;
-                    input_r /= stage_input_gain;
-                }
-                3 => {
-                    input_l = overshoot_l;
-                    input_r = overshoot_r;
-                }
-                _ => {}
-            }
-
-            input_l *= ceiling_val;
-            input_r *= ceiling_val;
-
-            let mut expon = input_l.abs().log2().floor() as i32;
-            self.fpd_l ^= self.fpd_l << 13;
-            self.fpd_l ^= self.fpd_l >> 17;
-            self.fpd_l ^= self.fpd_l << 5;
-            input_l +=
-                (self.fpd_l as f64 - 0x7fff_ffffu32 as f64) * 5.5e-36 * 2.0_f64.powi(expon + 62);
-
-            expon = input_r.abs().log2().floor() as i32;
-            self.fpd_r ^= self.fpd_r << 13;
-            self.fpd_r ^= self.fpd_r >> 17;
-            self.fpd_r ^= self.fpd_r << 5;
-            input_r +=
-                (self.fpd_r as f64 - 0x7fff_ffffu32 as f64) * 5.5e-36 * 2.0_f64.powi(expon + 62);
-
-            *sample_l = input_l as f32;
-            *sample_r = input_r as f32;
-        }
-    }
-}
-
-#[derive(Default)]
-pub struct Limiter {
-    pub vintage: Vintage,
-    pub modern: Modern,
-}
-
+#[derive(Debug, Clone, Copy)]
 pub struct LimiterParams {
-    pub variant: u32,
     pub boost: f64,
-    pub soften: f64,
-    pub enhance: f64,
     pub ceiling: f64,
+    pub lookahead_ms: f64,
+    pub attack_ms: f64,
+    pub release_ms: f64,
+    pub link_transients: f64,
+    pub link_release: f64,
     pub output_gain: f64,
-    pub mode: u32,
+}
+
+pub struct Limiter {
+    sample_rate: f64,
+    delay_l: Vec<f32>,
+    delay_r: Vec<f32>,
+    write_pos: usize,
+    gain_l: f64,
+    gain_r: f64,
+    reduction_l_db: f32,
+    reduction_r_db: f32,
+}
+
+impl Default for Limiter {
+    fn default() -> Self {
+        let mut limiter = Self {
+            sample_rate: 48_000.0,
+            delay_l: Vec::new(),
+            delay_r: Vec::new(),
+            write_pos: 0,
+            gain_l: 1.0,
+            gain_r: 1.0,
+            reduction_l_db: 0.0,
+            reduction_r_db: 0.0,
+        };
+        limiter.resize_delay();
+        limiter
+    }
 }
 
 impl Limiter {
     pub fn set_sample_rate(&mut self, sr: f64) {
-        self.vintage.set_sample_rate(sr);
-        self.modern.set_sample_rate(sr);
+        self.sample_rate = sr.max(MIN_SAMPLE_RATE);
+        self.resize_delay();
     }
 
     pub fn reset(&mut self) {
-        self.vintage.reset();
-        self.modern.reset();
+        self.delay_l.fill(0.0);
+        self.delay_r.fill(0.0);
+        self.write_pos = 0;
+        self.gain_l = 1.0;
+        self.gain_r = 1.0;
+        self.reduction_l_db = 0.0;
+        self.reduction_r_db = 0.0;
+    }
+
+    pub fn latency_samples_for(sample_rate: f64, lookahead_ms: f64) -> u32 {
+        (sample_rate.max(MIN_SAMPLE_RATE) * lookahead_ms.clamp(0.0, MAX_LOOKAHEAD_MS) / 1000.0)
+            .round() as u32
+    }
+
+    pub fn latency_samples(&self, lookahead_ms: f64) -> u32 {
+        Self::latency_samples_for(self.sample_rate, lookahead_ms)
+    }
+
+    pub fn gain_reduction_db(&self) -> [f32; 2] {
+        [self.reduction_l_db, self.reduction_r_db]
     }
 
     pub fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32], params: &LimiterParams) {
-        match params.variant {
-            0 => self.vintage.process_stereo(
-                left,
-                right,
-                params.boost,
-                params.soften,
-                params.enhance,
-                params.mode,
-            ),
-            1 => self
-                .modern
-                .process_stereo(left, right, params.boost, params.ceiling, params.mode),
-            _ => {}
+        if left.is_empty() || right.is_empty() {
+            self.reduction_l_db = 0.0;
+            self.reduction_r_db = 0.0;
+            return;
         }
 
-        let output_gain = 10.0_f64.powf(params.output_gain / 20.0) as f32;
-        if (output_gain - 1.0).abs() > f32::EPSILON {
-            for (left, right) in left.iter_mut().zip(right.iter_mut()) {
-                *left *= output_gain;
-                *right *= output_gain;
+        self.ensure_delay_capacity();
+
+        let input_gain = db_to_gain(params.boost);
+        let ceiling = db_to_gain(params.ceiling).max(1.0e-9);
+        let hidden_gain = db_to_gain(hidden_ceiling_drive_db(params.ceiling)) as f32;
+        let output_gain = db_to_gain(params.output_gain) as f32;
+        let delay_samples = self
+            .latency_samples(params.lookahead_ms)
+            .min(self.delay_l.len().saturating_sub(1) as u32) as usize;
+        let attack_step = raised_cosine_step(params.attack_ms, self.sample_rate);
+        let release_step = raised_cosine_step(params.release_ms, self.sample_rate);
+        let transient_link = (params.link_transients / 100.0).clamp(0.0, 1.0);
+        let release_link = (params.link_release / 100.0).clamp(0.0, 1.0);
+        let mut max_reduction_l_db = 0.0_f32;
+        let mut max_reduction_r_db = 0.0_f32;
+
+        for (left, right) in left.iter_mut().zip(right.iter_mut()) {
+            let input_l = *left as f64 * input_gain;
+            let input_r = *right as f64 * input_gain;
+
+            let target_l = target_gain(input_l, ceiling);
+            let target_r = target_gain(input_r, ceiling);
+            let linked_target = target_l.min(target_r);
+            let target_l = lerp(target_l, linked_target, transient_link);
+            let target_r = lerp(target_r, linked_target, transient_link);
+
+            let next_l = smooth_gain(self.gain_l, target_l, attack_step, release_step);
+            let next_r = smooth_gain(self.gain_r, target_r, attack_step, release_step);
+            let release_floor = next_l.min(next_r);
+
+            self.gain_l = if next_l > self.gain_l {
+                lerp(next_l, release_floor, release_link)
+            } else {
+                next_l
+            };
+            self.gain_r = if next_r > self.gain_r {
+                lerp(next_r, release_floor, release_link)
+            } else {
+                next_r
+            };
+
+            let delayed_l = delay_sample(
+                &mut self.delay_l,
+                input_l as f32,
+                self.write_pos,
+                delay_samples,
+            );
+            let delayed_r = delay_sample(
+                &mut self.delay_r,
+                input_r as f32,
+                self.write_pos,
+                delay_samples,
+            );
+            self.write_pos += 1;
+            if self.write_pos >= self.delay_l.len() {
+                self.write_pos = 0;
             }
+
+            let limited_l = (delayed_l as f64 * self.gain_l).clamp(-ceiling, ceiling) as f32;
+            let limited_r = (delayed_r as f64 * self.gain_r).clamp(-ceiling, ceiling) as f32;
+            max_reduction_l_db = max_reduction_l_db.max(actual_reduction_db(delayed_l, limited_l));
+            max_reduction_r_db = max_reduction_r_db.max(actual_reduction_db(delayed_r, limited_r));
+            *left = limited_l * hidden_gain * output_gain;
+            *right = limited_r * hidden_gain * output_gain;
         }
+
+        self.reduction_l_db = max_reduction_l_db;
+        self.reduction_r_db = max_reduction_r_db;
+    }
+
+    fn resize_delay(&mut self) {
+        let len = Self::latency_samples_for(self.sample_rate, MAX_LOOKAHEAD_MS) as usize + 1;
+        self.delay_l.resize(len.max(1), 0.0);
+        self.delay_r.resize(len.max(1), 0.0);
+        self.write_pos = self.write_pos.min(self.delay_l.len().saturating_sub(1));
+    }
+
+    fn ensure_delay_capacity(&mut self) {
+        let required = Self::latency_samples_for(self.sample_rate, MAX_LOOKAHEAD_MS) as usize + 1;
+        if self.delay_l.len() < required {
+            self.resize_delay();
+        }
+    }
+}
+
+fn db_to_gain(db: f64) -> f64 {
+    10.0_f64.powf(db / 20.0)
+}
+
+fn hidden_ceiling_drive_db(ceiling_db: f64) -> f64 {
+    -ceiling_db.clamp(-90.0, 0.0)
+}
+
+fn target_gain(sample: f64, ceiling: f64) -> f64 {
+    let peak = sample.abs();
+    if peak > ceiling { ceiling / peak } else { 1.0 }
+}
+
+fn raised_cosine_step(time_ms: f64, sample_rate: f64) -> f64 {
+    if time_ms <= 0.0 {
+        return 1.0;
+    }
+    let samples = (time_ms * sample_rate.max(MIN_SAMPLE_RATE) / 1000.0).max(1.0);
+    let linear_step = 1.0 / samples;
+    let cosine_step = 0.5 - 0.5 * (std::f64::consts::PI * linear_step.clamp(0.0, 1.0)).cos();
+    cosine_step.max(linear_step)
+}
+
+fn smooth_gain(current: f64, target: f64, attack_step: f64, release_step: f64) -> f64 {
+    let step = if target < current {
+        attack_step
+    } else {
+        release_step
+    };
+    current + (target - current) * step
+}
+
+fn lerp(a: f64, b: f64, amount: f64) -> f64 {
+    a + (b - a) * amount
+}
+
+fn actual_reduction_db(input: f32, output: f32) -> f32 {
+    let input = input.abs();
+    if input <= 1.0e-12 {
+        return 0.0;
+    }
+    let gain = (output.abs() / input).clamp(1.0e-12, 1.0);
+    (-20.0 * gain.log10()).clamp(0.0, 60.0)
+}
+
+fn delay_sample(buffer: &mut [f32], input: f32, write_pos: usize, delay_samples: usize) -> f32 {
+    if delay_samples == 0 {
+        buffer[write_pos] = input;
+        return input;
+    }
+    let read_pos = (write_pos + buffer.len() - delay_samples.min(buffer.len() - 1)) % buffer.len();
+    let output = buffer[read_pos];
+    buffer[write_pos] = input;
+    output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params() -> LimiterParams {
+        LimiterParams {
+            boost: 0.0,
+            ceiling: -1.0,
+            lookahead_ms: 1.0,
+            attack_ms: 0.0,
+            release_ms: 50.0,
+            link_transients: 100.0,
+            link_release: 100.0,
+            output_gain: 0.0,
+        }
+    }
+
+    #[test]
+    fn limiter_bounds_loud_samples() {
+        let mut limiter = Limiter::default();
+        limiter.set_sample_rate(48_000.0);
+        let mut left = vec![2.0; 256];
+        let mut right = vec![-2.0; 256];
+        let mut params = params();
+        params.lookahead_ms = 0.0;
+        limiter.process_stereo(&mut left, &mut right, &params);
+        let post_makeup_ceiling =
+            db_to_gain(params.ceiling + hidden_ceiling_drive_db(params.ceiling)) as f32;
+        assert!(
+            left.iter()
+                .chain(&right)
+                .all(|sample| sample.abs() <= post_makeup_ceiling + 1.0e-6)
+        );
+    }
+
+    #[test]
+    fn full_transient_link_applies_left_peak_to_right() {
+        let mut limiter = Limiter::default();
+        limiter.set_sample_rate(48_000.0);
+        let mut left = vec![2.0; 32];
+        let mut right = vec![0.5; 32];
+        let mut params = params();
+        params.lookahead_ms = 0.0;
+        params.link_transients = 100.0;
+        limiter.process_stereo(&mut left, &mut right, &params);
+        assert!(right[0] < 0.5);
+    }
+
+    #[test]
+    fn zero_transient_link_leaves_quiet_side_unreduced() {
+        let mut limiter = Limiter::default();
+        limiter.set_sample_rate(48_000.0);
+        let mut left = vec![2.0; 32];
+        let mut right = vec![0.5; 32];
+        let mut params = params();
+        params.lookahead_ms = 0.0;
+        params.link_transients = 0.0;
+        limiter.process_stereo(&mut left, &mut right, &params);
+        let expected = 0.5 * db_to_gain(hidden_ceiling_drive_db(params.ceiling)) as f32;
+        assert!((right[0] - expected).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn lower_ceiling_adds_hidden_drive_after_limiting() {
+        let mut limiter = Limiter::default();
+        limiter.set_sample_rate(48_000.0);
+        let mut unchanged_left = vec![0.05; 32];
+        let mut unchanged_right = vec![0.05; 32];
+        let mut driven_left = unchanged_left.clone();
+        let mut driven_right = unchanged_right.clone();
+        let mut params = params();
+        params.lookahead_ms = 0.0;
+        params.ceiling = 0.0;
+        limiter.process_stereo(&mut unchanged_left, &mut unchanged_right, &params);
+
+        limiter.reset();
+        params.ceiling = -12.0;
+        limiter.process_stereo(&mut driven_left, &mut driven_right, &params);
+
+        assert!(driven_left[0] > unchanged_left[0]);
+        assert!(driven_right[0] > unchanged_right[0]);
+        assert!(
+            driven_left
+                .iter()
+                .all(|sample| sample.abs() <= 1.0 + 1.0e-6)
+        );
+        assert!(
+            driven_right
+                .iter()
+                .all(|sample| sample.abs() <= 1.0 + 1.0e-6)
+        );
+    }
+
+    #[test]
+    fn lookahead_reports_latency_in_samples() {
+        assert_eq!(Limiter::latency_samples_for(48_000.0, 1.0), 48);
     }
 }

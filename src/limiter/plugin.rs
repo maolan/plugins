@@ -15,14 +15,14 @@ use maolan_clap::{
     events::{InputEvents, OutputEvents},
     ffi::{
         CLAP_AUDIO_PORT_IS_MAIN, CLAP_AUDIO_PORTS_RESCAN_LIST, CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI,
-        CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL, CLAP_INVALID_ID,
+        CLAP_EXT_LATENCY, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL, CLAP_INVALID_ID,
         CLAP_PARAM_REQUIRES_PROCESS, CLAP_PLUGIN_FEATURE_AUDIO_EFFECT, CLAP_PLUGIN_FEATURE_STEREO,
         CLAP_PORT_MONO, CLAP_PROCESS_CONTINUE, CLAP_VERSION, clap_audio_port_info,
-        clap_gui_resize_hints, clap_host, clap_host_audio_ports, clap_host_gui, clap_host_params,
-        clap_host_state, clap_id, clap_istream, clap_ostream, clap_param_info, clap_plugin,
-        clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_factory, clap_plugin_gui,
-        clap_plugin_params, clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status,
-        clap_window,
+        clap_gui_resize_hints, clap_host, clap_host_audio_ports, clap_host_gui, clap_host_latency,
+        clap_host_params, clap_host_state, clap_id, clap_istream, clap_ostream, clap_param_info,
+        clap_plugin, clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_factory,
+        clap_plugin_gui, clap_plugin_latency, clap_plugin_params, clap_plugin_state,
+        clap_plugin_tail, clap_process, clap_process_status, clap_window,
     },
     process::Process,
     stream::{IStream, OStream},
@@ -46,11 +46,11 @@ const PLUGIN_NAME: &[u8] = b"Maolan Limiter\0";
 const PLUGIN_VENDOR: &[u8] = b"Maolan\0";
 const PLUGIN_URL: &[u8] = b"\0";
 const PLUGIN_VERSION: &[u8] = b"0.1.0\0";
-const PLUGIN_DESCRIPTION: &[u8] = b"Rust CLAP Limiter based on MaximizerVintage\0";
+const PLUGIN_DESCRIPTION: &[u8] = b"Maolan lookahead peak limiter\0";
 const FEATURE_AUDIO_EFFECT: *const c_char = CLAP_PLUGIN_FEATURE_AUDIO_EFFECT.as_ptr();
 const FEATURE_STEREO: *const c_char = CLAP_PLUGIN_FEATURE_STEREO.as_ptr();
-pub const WAVEFORM_POINTS: usize = 512;
-const WAVEFORM_DECIMATION: usize = 64;
+pub const WAVEFORM_POINTS: usize = 2048;
+const WAVEFORM_DECIMATION: usize = 256;
 
 struct SyncFeatureList([*const c_char; 3]);
 unsafe impl Sync for SyncFeatureList {}
@@ -77,8 +77,14 @@ static DESCRIPTOR: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor {
 pub struct SharedState {
     pub params: ParamStore,
     sample_rate: AtomicF64,
-    waveform_write_index: std::sync::atomic::AtomicU64,
-    waveform_samples: [AtomicF32; WAVEFORM_POINTS],
+    peak_write_index: std::sync::atomic::AtomicU64,
+    peak_write_position: AtomicF32,
+    input_peak_samples_left: [AtomicF32; WAVEFORM_POINTS],
+    input_peak_samples_right: [AtomicF32; WAVEFORM_POINTS],
+    output_peak_samples_left: [AtomicF32; WAVEFORM_POINTS],
+    output_peak_samples_right: [AtomicF32; WAVEFORM_POINTS],
+    reduction_samples_left: [AtomicF32; WAVEFORM_POINTS],
+    reduction_samples_right: [AtomicF32; WAVEFORM_POINTS],
     input_level_left_db: AtomicF32,
     input_level_right_db: AtomicF32,
     output_level_left_db: AtomicF32,
@@ -96,8 +102,14 @@ impl Default for SharedState {
         Self {
             params: ParamStore::default(),
             sample_rate: AtomicF64::new(48_000.0),
-            waveform_write_index: std::sync::atomic::AtomicU64::new(0),
-            waveform_samples: std::array::from_fn(|_| AtomicF32::new(0.0)),
+            peak_write_index: std::sync::atomic::AtomicU64::new(0),
+            peak_write_position: AtomicF32::new(0.0),
+            input_peak_samples_left: std::array::from_fn(|_| AtomicF32::new(0.0)),
+            input_peak_samples_right: std::array::from_fn(|_| AtomicF32::new(0.0)),
+            output_peak_samples_left: std::array::from_fn(|_| AtomicF32::new(0.0)),
+            output_peak_samples_right: std::array::from_fn(|_| AtomicF32::new(0.0)),
+            reduction_samples_left: std::array::from_fn(|_| AtomicF32::new(0.0)),
+            reduction_samples_right: std::array::from_fn(|_| AtomicF32::new(0.0)),
             input_level_left_db: AtomicF32::new(-90.0),
             input_level_right_db: AtomicF32::new(-90.0),
             output_level_left_db: AtomicF32::new(-90.0),
@@ -126,6 +138,9 @@ impl SharedState {
         if id == ParamId::Channels {
             self.sync_channels_from_params();
             self.request_audio_ports_rescan();
+        }
+        if id == ParamId::Lookahead {
+            self.request_latency_changed();
         }
         if notify_host {
             self.mark_param_notification_pending(id);
@@ -233,6 +248,26 @@ impl SharedState {
         }
     }
 
+    pub fn request_latency_changed(&self) {
+        let host = self.host.load(Ordering::Acquire);
+        if host.is_null() {
+            return;
+        }
+        unsafe {
+            let Some(get_extension) = (*host).get_extension else {
+                return;
+            };
+            let ext = get_extension(host, CLAP_EXT_LATENCY.as_ptr());
+            if ext.is_null() {
+                return;
+            }
+            let latency = &*(ext as *const clap_host_latency);
+            if let Some(changed) = latency.changed {
+                changed(host);
+            }
+        }
+    }
+
     pub fn request_audio_ports_rescan(&self) {
         let host = self.host.load(Ordering::Acquire);
         if host.is_null() {
@@ -258,18 +293,54 @@ impl SharedState {
         self.channels.store(channels, Ordering::Release);
     }
 
-    pub fn waveform_snapshot(&self) -> [f32; WAVEFORM_POINTS] {
-        let write = self.waveform_write_index.load(Ordering::Acquire) as usize;
-        std::array::from_fn(|i| {
-            let source = write.wrapping_add(i) % WAVEFORM_POINTS;
-            self.waveform_samples[source].load(Ordering::Acquire)
-        })
+    pub fn display_timing(&self) -> (f32, f32) {
+        (
+            self.peak_write_position.load(Ordering::Acquire),
+            (self.sample_rate.load(Ordering::Acquire) as f32 / WAVEFORM_DECIMATION as f32).max(1.0),
+        )
     }
 
-    fn push_waveform_sample(&self, sample: f32) {
-        let index = self.waveform_write_index.fetch_add(1, Ordering::AcqRel) as usize;
-        self.waveform_samples[index % WAVEFORM_POINTS]
-            .store(sample.clamp(-1.2, 1.2), Ordering::Release);
+    pub fn input_peak_sample(&self, channel: usize, index: usize) -> f32 {
+        match channel {
+            0 => self.input_peak_samples_left[index].load(Ordering::Acquire),
+            _ => self.input_peak_samples_right[index].load(Ordering::Acquire),
+        }
+    }
+
+    pub fn output_peak_sample(&self, channel: usize, index: usize) -> f32 {
+        match channel {
+            0 => self.output_peak_samples_left[index].load(Ordering::Acquire),
+            _ => self.output_peak_samples_right[index].load(Ordering::Acquire),
+        }
+    }
+
+    pub fn reduction_sample(&self, channel: usize, index: usize) -> f32 {
+        match channel {
+            0 => self.reduction_samples_left[index].load(Ordering::Acquire),
+            _ => self.reduction_samples_right[index].load(Ordering::Acquire),
+        }
+    }
+
+    fn push_display_sample(
+        &self,
+        input_left: f32,
+        input_right: f32,
+        output_left: f32,
+        output_right: f32,
+        reduction_left: f32,
+        reduction_right: f32,
+    ) {
+        let index = self.peak_write_index.fetch_add(1, Ordering::AcqRel) as usize;
+        let index = index % WAVEFORM_POINTS;
+        self.input_peak_samples_left[index].store(input_left.clamp(0.0, 1.2), Ordering::Release);
+        self.input_peak_samples_right[index].store(input_right.clamp(0.0, 1.2), Ordering::Release);
+        self.output_peak_samples_left[index].store(output_left.clamp(0.0, 1.2), Ordering::Release);
+        self.output_peak_samples_right[index]
+            .store(output_right.clamp(0.0, 1.2), Ordering::Release);
+        self.reduction_samples_left[index]
+            .store(reduction_left.clamp(0.0, 60.0), Ordering::Release);
+        self.reduction_samples_right[index]
+            .store(reduction_right.clamp(0.0, 60.0), Ordering::Release);
     }
 
     pub fn input_levels_db(&self) -> [f32; 2] {
@@ -350,9 +421,33 @@ struct AudioProcessor {
     dsp: Limiter,
     temp_left: Vec<f32>,
     temp_right: Vec<f32>,
-    waveform_counter: usize,
+    input_left: Vec<f32>,
+    input_right: Vec<f32>,
+    peak_counter: usize,
+    input_peak_left: f32,
+    input_peak_right: f32,
+    output_peak_left: f32,
+    output_peak_right: f32,
+    reduction_left_db: f32,
+    reduction_right_db: f32,
 }
 
+fn limiter_params_from_shared(shared: &SharedState) -> crate::limiter::dsp::LimiterParams {
+    crate::limiter::dsp::LimiterParams {
+        boost: shared.params.get(ParamId::Boost),
+        ceiling: shared.params.get(ParamId::Ceiling),
+        lookahead_ms: shared.params.get(ParamId::Lookahead),
+        attack_ms: shared.params.get(ParamId::Attack),
+        release_ms: shared.params.get(ParamId::Release),
+        link_transients: shared.params.get(ParamId::LinkTransients),
+        link_release: shared.params.get(ParamId::LinkRelease),
+        output_gain: shared.params.get(ParamId::OutputGain),
+    }
+}
+
+fn latency_samples(params: &ParamStore, sample_rate: f64) -> u32 {
+    Limiter::latency_samples_for(sample_rate, params.get(ParamId::Lookahead))
+}
 fn peak_db(samples: &[f32]) -> f32 {
     let peak = crate::simd::peak_abs(samples);
     if peak > 0.0 {
@@ -374,7 +469,15 @@ impl AudioProcessor {
             dsp,
             temp_left: vec![0.0; max_frames as usize],
             temp_right: vec![0.0; max_frames as usize],
-            waveform_counter: 0,
+            input_left: vec![0.0; max_frames as usize],
+            input_right: vec![0.0; max_frames as usize],
+            peak_counter: 0,
+            input_peak_left: 0.0,
+            input_peak_right: 0.0,
+            output_peak_left: 0.0,
+            output_peak_right: 0.0,
+            reduction_left_db: 0.0,
+            reduction_right_db: 0.0,
         }
     }
 
@@ -395,6 +498,8 @@ impl AudioProcessor {
         if self.temp_left.len() < frames {
             self.temp_left.resize(frames, 0.0);
             self.temp_right.resize(frames, 0.0);
+            self.input_left.resize(frames, 0.0);
+            self.input_right.resize(frames, 0.0);
         }
 
         let inputs_count = process.audio_inputs_count();
@@ -405,20 +510,14 @@ impl AudioProcessor {
             let input_r = process.audio_inputs(1);
             self.temp_left[..frames].copy_from_slice(input_l.data32(0));
             self.temp_right[..frames].copy_from_slice(input_r.data32(0));
+            self.input_left[..frames].copy_from_slice(&self.temp_left[..frames]);
+            self.input_right[..frames].copy_from_slice(&self.temp_right[..frames]);
             shared.set_input_levels_db(
                 peak_db(&self.temp_left[..frames]),
                 peak_db(&self.temp_right[..frames]),
             );
 
-            let params = crate::limiter::dsp::LimiterParams {
-                variant: shared.params.get_enum(ParamId::Variant),
-                boost: shared.params.get(ParamId::Boost),
-                soften: shared.params.get(ParamId::Soften),
-                enhance: shared.params.get(ParamId::Enhance),
-                ceiling: shared.params.get(ParamId::Ceiling),
-                output_gain: shared.params.get(ParamId::OutputGain),
-                mode: shared.params.get_enum(ParamId::Mode),
-            };
+            let params = limiter_params_from_shared(shared);
             self.dsp.process_stereo(
                 &mut self.temp_left[..frames],
                 &mut self.temp_right[..frames],
@@ -441,17 +540,11 @@ impl AudioProcessor {
             let input_port = process.audio_inputs(0);
             self.temp_left[..frames].copy_from_slice(input_port.data32(0));
             self.temp_right[..frames].copy_from_slice(&self.temp_left[..frames]);
+            self.input_left[..frames].copy_from_slice(&self.temp_left[..frames]);
+            self.input_right[..frames].copy_from_slice(&self.temp_right[..frames]);
             shared.set_input_levels_db(peak_db(&self.temp_left[..frames]), -90.0);
 
-            let params = crate::limiter::dsp::LimiterParams {
-                variant: shared.params.get_enum(ParamId::Variant),
-                boost: shared.params.get(ParamId::Boost),
-                soften: shared.params.get(ParamId::Soften),
-                enhance: shared.params.get(ParamId::Enhance),
-                ceiling: shared.params.get(ParamId::Ceiling),
-                output_gain: shared.params.get(ParamId::OutputGain),
-                mode: shared.params.get_enum(ParamId::Mode),
-            };
+            let params = limiter_params_from_shared(shared);
             self.dsp.process_stereo(
                 &mut self.temp_left[..frames],
                 &mut self.temp_right[..frames],
@@ -463,12 +556,41 @@ impl AudioProcessor {
             output_port.data32(0)[..frames].copy_from_slice(&self.temp_left[..frames]);
         }
 
+        let reduction_db = self.dsp.gain_reduction_db();
+        self.reduction_left_db = self.reduction_left_db.max(reduction_db[0]);
+        self.reduction_right_db = self.reduction_right_db.max(reduction_db[1]);
+
         for i in 0..frames {
-            if self.waveform_counter == 0 {
-                shared.push_waveform_sample((self.temp_left[i] + self.temp_right[i]) * 0.5);
+            self.input_peak_left = self.input_peak_left.max(self.input_left[i].abs());
+            self.input_peak_right = self.input_peak_right.max(self.input_right[i].abs());
+            self.output_peak_left = self.output_peak_left.max(self.temp_left[i].abs());
+            self.output_peak_right = self.output_peak_right.max(self.temp_right[i].abs());
+            if self.peak_counter + 1 >= WAVEFORM_DECIMATION {
+                shared.push_display_sample(
+                    self.input_peak_left,
+                    self.input_peak_right,
+                    self.output_peak_left,
+                    self.output_peak_right,
+                    self.reduction_left_db,
+                    self.reduction_right_db,
+                );
+                self.input_peak_left = 0.0;
+                self.input_peak_right = 0.0;
+                self.output_peak_left = 0.0;
+                self.output_peak_right = 0.0;
+                self.reduction_left_db = 0.0;
+                self.reduction_right_db = 0.0;
+                self.peak_counter = 0;
+            } else {
+                self.peak_counter += 1;
             }
-            self.waveform_counter = (self.waveform_counter + 1) % WAVEFORM_DECIMATION;
         }
+        let written = self.peak_counter as f32 / WAVEFORM_DECIMATION as f32;
+        let write_count = shared.peak_write_index.load(Ordering::Acquire);
+        let latest_written = write_count.saturating_sub(1) as f32;
+        shared
+            .peak_write_position
+            .store(latest_written + written, Ordering::Release);
 
         CLAP_PROCESS_CONTINUE
     }
@@ -527,45 +649,14 @@ fn param_text(id: ParamId, value: f64) -> String {
             _ => format!("{value:.0}"),
         },
         ParamId::Boost | ParamId::Ceiling | ParamId::OutputGain => format!("{value:.1} dB"),
-        ParamId::Variant => match value.round() as i32 {
-            0 => "Vintage".into(),
-            1 => "Modern".into(),
-            _ => format!("{value:.0}"),
-        },
-        ParamId::Mode => match value.round() as i32 {
-            0 => "Normal".into(),
-            1 => "Atten".into(),
-            2 => "Clips".into(),
-            3 => "Afterbr".into(),
-            4 => "Explode".into(),
-            5 => "Nuke".into(),
-            6 => "Apocaly".into(),
-            7 => "Apothes".into(),
-            _ => format!("{value:.0}"),
-        },
-        _ => format!("{value:.2}"),
+        ParamId::Lookahead | ParamId::Attack | ParamId::Release => format!("{value:.1} ms"),
+        ParamId::LinkTransients | ParamId::LinkRelease => format!("{value:.0}%"),
     }
 }
 
 fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
     let text = text.trim();
     match id {
-        ParamId::Variant => match text.to_ascii_lowercase().as_str() {
-            "vintage" => Some(0.0),
-            "modern" => Some(1.0),
-            _ => text.parse().ok(),
-        },
-        ParamId::Mode => match text.to_ascii_lowercase().as_str() {
-            "normal" => Some(0.0),
-            "atten" => Some(1.0),
-            "clips" => Some(2.0),
-            "afterbr" => Some(3.0),
-            "explode" => Some(4.0),
-            "nuke" => Some(5.0),
-            "apocaly" => Some(6.0),
-            "apothes" => Some(7.0),
-            _ => text.parse().ok(),
-        },
         ParamId::Channels => match text.to_ascii_lowercase().as_str() {
             "mono" | "1" => Some(1.0),
             "stereo" | "2" => Some(2.0),
@@ -577,7 +668,12 @@ fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
             .trim()
             .parse::<f64>()
             .ok(),
-        _ => text.parse().ok(),
+        ParamId::Lookahead | ParamId::Attack | ParamId::Release => {
+            text.trim_end_matches("ms").trim().parse::<f64>().ok()
+        }
+        ParamId::LinkTransients | ParamId::LinkRelease => {
+            text.trim_end_matches('%').trim().parse::<f64>().ok()
+        }
     }
 }
 
@@ -893,6 +989,21 @@ unsafe extern "C-unwind" fn ext_tail_get(_plugin: *const clap_plugin) -> u32 {
     0
 }
 
+unsafe extern "C-unwind" fn ext_latency_get(plugin: *const clap_plugin) -> u32 {
+    if plugin.is_null() {
+        return 0;
+    }
+    let instance = unsafe { instance(plugin) };
+    latency_samples(
+        &instance.shared.params,
+        instance.shared.sample_rate.load(Ordering::Acquire),
+    )
+}
+
+static LATENCY_EXT: clap_plugin_latency = clap_plugin_latency {
+    get: Some(ext_latency_get),
+};
+
 static TAIL_EXT: clap_plugin_tail = clap_plugin_tail {
     get: Some(ext_tail_get),
 };
@@ -1115,6 +1226,8 @@ unsafe extern "C-unwind" fn plugin_get_extension(
         &raw const PARAMS_EXT as *const _ as *const c_void
     } else if id == CLAP_EXT_STATE {
         &raw const STATE_EXT as *const _ as *const c_void
+    } else if id == CLAP_EXT_LATENCY {
+        &raw const LATENCY_EXT as *const _ as *const c_void
     } else if id == CLAP_EXT_TAIL {
         &raw const TAIL_EXT as *const _ as *const c_void
     } else if id == CLAP_EXT_GUI {
