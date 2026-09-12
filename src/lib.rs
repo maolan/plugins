@@ -21,7 +21,6 @@ pub mod formant;
 pub mod kick;
 pub mod limiter;
 pub mod modeler;
-pub mod monitoring;
 pub mod phaser;
 pub mod reverb;
 pub mod sampler;
@@ -42,7 +41,7 @@ struct PluginApi {
     create: CreateFn,
 }
 
-static PLUGINS: [PluginApi; 21] = [
+static PLUGINS: [PluginApi; 20] = [
     PluginApi {
         descriptor: eq::clap_descriptor_ptr,
         create: eq::clap_create_plugin,
@@ -54,10 +53,6 @@ static PLUGINS: [PluginApi; 21] = [
     PluginApi {
         descriptor: limiter::clap_descriptor_ptr,
         create: limiter::clap_create_plugin,
-    },
-    PluginApi {
-        descriptor: monitoring::clap_descriptor_ptr,
-        create: monitoring::clap_create_plugin,
     },
     PluginApi {
         descriptor: saturator::clap_descriptor_ptr,
