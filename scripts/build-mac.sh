@@ -141,6 +141,7 @@ if [[ -n "$TARGET_DIR" ]]; then
     echo "Using local target directory: $TARGET_DIR"
 fi
 
+cargo clean
 cargo build "${CARGO_ARGS[@]}"
 
 # Determine where the library ended up
@@ -206,7 +207,7 @@ cat > "$BUNDLE_DIR/Contents/Info.plist" <<EOF
 EOF
 
 # Strip local symbols from the library before signing
-strip "$BUNDLE_DIR/Contents/MacOS/libmaolan_plugins.dylib"
+strip -x "$BUNDLE_DIR/Contents/MacOS/libmaolan_plugins.dylib"
 
 # Documentation
 cp "$SOURCE_DIR/README.md" "$BUNDLE_DIR/Contents/Resources/"
