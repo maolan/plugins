@@ -19,6 +19,7 @@ use maolan_baseview::iced::{
     alignment::{Horizontal, Vertical},
     widget::{column, container, row, text},
 };
+use maolan_widgets::horizontal_slider::horizontal_slider;
 #[cfg(any(
     target_os = "windows",
     target_os = "macos",
@@ -122,11 +123,20 @@ fn view(state: &State) -> Element<'_, ()> {
         "--".to_string()
     };
     let clarity_text = format!("clarity: {:.0}%", clarity * 100.0);
+    let cents_value = if detected {
+        cents.clamp(-50.0, 50.0)
+    } else {
+        0.0
+    };
+    let cents_slider = horizontal_slider(-50.0..=50.0, cents_value, |_| ())
+        .width(Length::Fixed(200.0))
+        .height(Length::Fixed(16.0));
 
     let content = column![
         text(note_text).size(64),
         row![text(freq_text).size(13), text(cents_text).size(13),].spacing(16),
         text(clarity_text).size(11),
+        cents_slider,
     ]
     .spacing(8)
     .align_x(Alignment::Center);
