@@ -33,6 +33,7 @@ pub mod shm;
 pub mod slot;
 pub mod spectrum;
 pub mod state;
+pub mod true_peak;
 pub mod tuning;
 pub mod twist;
 pub mod ui;
