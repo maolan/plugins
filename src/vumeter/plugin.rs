@@ -26,10 +26,12 @@ use parking_lot::Mutex;
 use portable_atomic::AtomicF64;
 
 use crate::common::copy_str_to_array;
+use crate::common::lufs::LufsMeter;
+use crate::common::true_peak::TruePeakDetector;
 use crate::vumeter::gui::GuiBridge;
 
 const PLUGIN_ID: &[u8] = b"rs.maolan.vumeter\0";
-const PLUGIN_NAME: &[u8] = b"Maolan VU Meter\0";
+const PLUGIN_NAME: &[u8] = b"Maolan VU\0";
 const PLUGIN_VENDOR: &[u8] = b"Maolan\0";
 const PLUGIN_URL: &[u8] = b"\0";
 const PLUGIN_VERSION: &[u8] = b"0.1.0\0";
@@ -66,6 +68,16 @@ pub struct SharedState {
     pub in_r_rms: AtomicF64,
     pub out_l_rms: AtomicF64,
     pub out_r_rms: AtomicF64,
+    pub in_l_peak: AtomicF64,
+    pub in_r_peak: AtomicF64,
+    pub out_l_peak: AtomicF64,
+    pub out_r_peak: AtomicF64,
+    pub in_lufs_momentary: AtomicF64,
+    pub in_lufs_short_term: AtomicF64,
+    pub in_lufs_integrated: AtomicF64,
+    pub out_lufs_momentary: AtomicF64,
+    pub out_lufs_short_term: AtomicF64,
+    pub out_lufs_integrated: AtomicF64,
     pub poll_notifier: Mutex<Option<PollSubNotifier>>,
 }
 
@@ -78,6 +90,16 @@ impl Default for SharedState {
             in_r_rms: AtomicF64::new(0.0),
             out_l_rms: AtomicF64::new(0.0),
             out_r_rms: AtomicF64::new(0.0),
+            in_l_peak: AtomicF64::new(0.0),
+            in_r_peak: AtomicF64::new(0.0),
+            out_l_peak: AtomicF64::new(0.0),
+            out_r_peak: AtomicF64::new(0.0),
+            in_lufs_momentary: AtomicF64::new(0.0),
+            in_lufs_short_term: AtomicF64::new(0.0),
+            in_lufs_integrated: AtomicF64::new(0.0),
+            out_lufs_momentary: AtomicF64::new(0.0),
+            out_lufs_short_term: AtomicF64::new(0.0),
+            out_lufs_integrated: AtomicF64::new(0.0),
             poll_notifier: Mutex::new(None),
         }
     }
@@ -100,19 +122,37 @@ impl SharedState {
 struct AudioProcessor {
     temp_left: Vec<f32>,
     temp_right: Vec<f32>,
+    in_meter: LufsMeter,
+    out_meter: LufsMeter,
+    in_peak_l: TruePeakDetector,
+    in_peak_r: TruePeakDetector,
+    out_peak_l: TruePeakDetector,
+    out_peak_r: TruePeakDetector,
     log_cycle: u64,
 }
 
 impl AudioProcessor {
-    fn new(_sample_rate: f64, max_frames: u32) -> Self {
+    fn new(sample_rate: f64, max_frames: u32) -> Self {
         Self {
             temp_left: vec![0.0; max_frames as usize],
             temp_right: vec![0.0; max_frames as usize],
+            in_meter: LufsMeter::new(sample_rate),
+            out_meter: LufsMeter::new(sample_rate),
+            in_peak_l: TruePeakDetector::new(4),
+            in_peak_r: TruePeakDetector::new(4),
+            out_peak_l: TruePeakDetector::new(4),
+            out_peak_r: TruePeakDetector::new(4),
             log_cycle: 0,
         }
     }
 
     fn reset(&mut self) {
+        self.in_meter.reset();
+        self.out_meter.reset();
+        self.in_peak_l.reset();
+        self.in_peak_r.reset();
+        self.out_peak_l.reset();
+        self.out_peak_r.reset();
         self.log_cycle = 0;
     }
 
@@ -127,6 +167,65 @@ impl AudioProcessor {
         }
         let rms = ((sum_sq / buf.len().max(1) as f64) as f32).sqrt();
         (min_val, max_val, rms)
+    }
+
+    fn detect_peak(detector: &mut TruePeakDetector, buf: &[f32]) -> f64 {
+        let mut peak = 0.0f64;
+        for &sample in buf {
+            peak = peak.max(detector.detect(sample));
+        }
+        peak
+    }
+
+    /// Publish RMS, LUFS (momentary/short-term/integrated), and true-peak
+    /// readouts for both the input taps and the output taps.
+    fn publish(&mut self, shared: &SharedState, frames: usize) {
+        let left = &self.temp_left[..frames];
+        let right = &self.temp_right[..frames];
+
+        let (_, _, in_rms_l) = Self::buf_stats(left);
+        let (_, _, in_rms_r) = Self::buf_stats(right);
+        shared.in_l_rms.store(in_rms_l as f64, Ordering::Relaxed);
+        shared.in_r_rms.store(in_rms_r as f64, Ordering::Relaxed);
+
+        self.in_meter.process(left, right);
+        shared
+            .in_lufs_momentary
+            .store(self.in_meter.momentary_lufs(), Ordering::Relaxed);
+        shared
+            .in_lufs_short_term
+            .store(self.in_meter.short_term_lufs(), Ordering::Relaxed);
+        shared
+            .in_lufs_integrated
+            .store(self.in_meter.integrated_lufs(), Ordering::Relaxed);
+
+        let in_peak_l = Self::detect_peak(&mut self.in_peak_l, left);
+        let in_peak_r = Self::detect_peak(&mut self.in_peak_r, right);
+        shared.in_l_peak.store(in_peak_l, Ordering::Relaxed);
+        shared.in_r_peak.store(in_peak_r, Ordering::Relaxed);
+
+        // The plugin is a pass-through: the output taps see the same samples
+        // that were just written to the output ports.
+        let (_, _, out_rms_l) = Self::buf_stats(left);
+        let (_, _, out_rms_r) = Self::buf_stats(right);
+        shared.out_l_rms.store(out_rms_l as f64, Ordering::Relaxed);
+        shared.out_r_rms.store(out_rms_r as f64, Ordering::Relaxed);
+
+        self.out_meter.process(left, right);
+        shared
+            .out_lufs_momentary
+            .store(self.out_meter.momentary_lufs(), Ordering::Relaxed);
+        shared
+            .out_lufs_short_term
+            .store(self.out_meter.short_term_lufs(), Ordering::Relaxed);
+        shared
+            .out_lufs_integrated
+            .store(self.out_meter.integrated_lufs(), Ordering::Relaxed);
+
+        let out_peak_l = Self::detect_peak(&mut self.out_peak_l, left);
+        let out_peak_r = Self::detect_peak(&mut self.out_peak_r, right);
+        shared.out_l_peak.store(out_peak_l, Ordering::Relaxed);
+        shared.out_r_peak.store(out_peak_r, Ordering::Relaxed);
     }
 
     fn process(&mut self, shared: &SharedState, process: &mut Process) -> clap_process_status {
@@ -148,11 +247,6 @@ impl AudioProcessor {
             self.temp_left[..frames].copy_from_slice(input_l.data32(0));
             self.temp_right[..frames].copy_from_slice(input_r.data32(0));
 
-            let (_, _, irms) = Self::buf_stats(&self.temp_left[..frames]);
-            let (_, _, irms_r) = Self::buf_stats(&self.temp_right[..frames]);
-            shared.in_l_rms.store(irms as f64, Ordering::Relaxed);
-            shared.in_r_rms.store(irms_r as f64, Ordering::Relaxed);
-
             {
                 let mut output_l = process.audio_outputs(0);
                 output_l.data32(0)[..frames].copy_from_slice(&self.temp_left[..frames]);
@@ -162,10 +256,7 @@ impl AudioProcessor {
                 output_r.data32(0)[..frames].copy_from_slice(&self.temp_right[..frames]);
             }
 
-            let (_, _, orms) = Self::buf_stats(&self.temp_left[..frames]);
-            let (_, _, orms_r) = Self::buf_stats(&self.temp_right[..frames]);
-            shared.out_l_rms.store(orms as f64, Ordering::Relaxed);
-            shared.out_r_rms.store(orms_r as f64, Ordering::Relaxed);
+            self.publish(shared, frames);
 
             if log_this_cycle {}
         } else if inputs_count >= 1 && outputs_count >= 1 {
@@ -178,21 +269,13 @@ impl AudioProcessor {
                 self.temp_right[..frames].copy_from_slice(&self.temp_left[..frames]);
             }
 
-            let (_, _, irms) = Self::buf_stats(&self.temp_left[..frames]);
-            let (_, _, irms_r) = Self::buf_stats(&self.temp_right[..frames]);
-            shared.in_l_rms.store(irms as f64, Ordering::Relaxed);
-            shared.in_r_rms.store(irms_r as f64, Ordering::Relaxed);
-
             let mut output_port = process.audio_outputs(0);
             output_port.data32(0)[..frames].copy_from_slice(&self.temp_left[..frames]);
             if output_port.channel_count() >= 2 {
                 output_port.data32(1)[..frames].copy_from_slice(&self.temp_right[..frames]);
             }
 
-            let (_, _, orms) = Self::buf_stats(&self.temp_left[..frames]);
-            let (_, _, orms_r) = Self::buf_stats(&self.temp_right[..frames]);
-            shared.out_l_rms.store(orms as f64, Ordering::Relaxed);
-            shared.out_r_rms.store(orms_r as f64, Ordering::Relaxed);
+            self.publish(shared, frames);
 
             if log_this_cycle {}
         }

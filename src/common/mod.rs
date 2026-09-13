@@ -13,6 +13,7 @@ pub mod gain_pan;
 pub mod halfband;
 pub mod lfo;
 pub mod lfo_assignment;
+pub mod lufs;
 pub mod mmap;
 pub mod modulated_delay;
 pub mod modulated_oscillator;

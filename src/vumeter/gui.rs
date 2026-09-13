@@ -17,7 +17,7 @@ use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{column, container, row, text},
+    widget::{Column, column, container, row, text},
 };
 use maolan_widgets::meters;
 #[cfg(any(
@@ -31,8 +31,8 @@ use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
 use crate::vumeter::plugin::SharedState;
 
-pub const EDITOR_WIDTH: u32 = 280;
-pub const EDITOR_HEIGHT: u32 = 180;
+pub const EDITOR_WIDTH: u32 = 380;
+pub const EDITOR_HEIGHT: u32 = 250;
 
 pub fn preferred_api() -> &'static CStr {
     #[cfg(target_os = "windows")]
@@ -117,60 +117,92 @@ fn db_str(level: f64) -> String {
     }
 }
 
-fn view(state: &State) -> Element<'_, ()> {
-    let in_l = state.shared.in_l_rms.load(Ordering::Relaxed);
-    let in_r = state.shared.in_r_rms.load(Ordering::Relaxed);
-    let out_l = state.shared.out_l_rms.load(Ordering::Relaxed);
-    let out_r = state.shared.out_r_rms.load(Ordering::Relaxed);
+fn lufs_str(value: f64) -> String {
+    if !value.is_finite() || value <= -120.0 {
+        String::from("-inf")
+    } else {
+        format!("{value:.1}")
+    }
+}
 
-    let in_levels = [db(in_l), db(in_r)];
-    let out_levels = [db(out_l), db(out_r)];
+struct MeterReadouts {
+    rms_l: f64,
+    rms_r: f64,
+    peak_l: f64,
+    peak_r: f64,
+    lufs_momentary: f64,
+    lufs_short_term: f64,
+    lufs_integrated: f64,
+}
+
+fn side_column<'a>(title: &'a str, levels: [f32; 2], readouts: MeterReadouts) -> Column<'a, ()> {
     let meter_h = 100.0;
-
-    let input_col = column![
-        text("Input").size(13),
-        container(meters::meters(2, &in_levels, meter_h))
+    column![
+        text(title).size(13),
+        container(meters::meters(2, &levels, meter_h))
             .height(Length::Fixed(meter_h))
             .width(Length::Shrink),
         row![
-            text(format!("L {}", db_str(in_l))).size(11),
-            text(format!("R {}", db_str(in_r))).size(11),
+            text("Pk").size(11),
+            text(format!("L {}", db_str(readouts.peak_l))).size(11),
+            text(format!("R {}", db_str(readouts.peak_r))).size(11),
         ]
         .spacing(8),
-    ]
-    .spacing(6)
-    .align_x(Alignment::Center);
-
-    let output_col = column![
-        text("Output").size(13),
-        container(meters::meters(2, &out_levels, meter_h))
-            .height(Length::Fixed(meter_h))
-            .width(Length::Shrink),
         row![
-            text(format!("L {}", db_str(out_l))).size(11),
-            text(format!("R {}", db_str(out_r))).size(11),
+            text("RMS").size(11),
+            text(format!("L {}", db_str(readouts.rms_l))).size(11),
+            text(format!("R {}", db_str(readouts.rms_r))).size(11),
         ]
         .spacing(8),
+        row![
+            text("LUFS").size(11),
+            text(format!("M {}", lufs_str(readouts.lufs_momentary))).size(11),
+            text(format!("S {}", lufs_str(readouts.lufs_short_term))).size(11),
+            text(format!("I {}", lufs_str(readouts.lufs_integrated))).size(11),
+        ]
+        .spacing(6),
     ]
     .spacing(6)
-    .align_x(Alignment::Center);
+    .align_x(Alignment::Center)
+}
 
-    let content = column![
-        text("Maolan VU Meter").size(16),
+fn view(state: &State) -> Element<'_, ()> {
+    let in_readouts = MeterReadouts {
+        rms_l: state.shared.in_l_rms.load(Ordering::Relaxed),
+        rms_r: state.shared.in_r_rms.load(Ordering::Relaxed),
+        peak_l: state.shared.in_l_peak.load(Ordering::Relaxed),
+        peak_r: state.shared.in_r_peak.load(Ordering::Relaxed),
+        lufs_momentary: state.shared.in_lufs_momentary.load(Ordering::Relaxed),
+        lufs_short_term: state.shared.in_lufs_short_term.load(Ordering::Relaxed),
+        lufs_integrated: state.shared.in_lufs_integrated.load(Ordering::Relaxed),
+    };
+    let out_readouts = MeterReadouts {
+        rms_l: state.shared.out_l_rms.load(Ordering::Relaxed),
+        rms_r: state.shared.out_r_rms.load(Ordering::Relaxed),
+        peak_l: state.shared.out_l_peak.load(Ordering::Relaxed),
+        peak_r: state.shared.out_r_peak.load(Ordering::Relaxed),
+        lufs_momentary: state.shared.out_lufs_momentary.load(Ordering::Relaxed),
+        lufs_short_term: state.shared.out_lufs_short_term.load(Ordering::Relaxed),
+        lufs_integrated: state.shared.out_lufs_integrated.load(Ordering::Relaxed),
+    };
+
+    let in_levels = [db(in_readouts.rms_l), db(in_readouts.rms_r)];
+    let out_levels = [db(out_readouts.rms_l), db(out_readouts.rms_r)];
+
+    let input_col = side_column("Input", in_levels, in_readouts);
+    let output_col = side_column("Output", out_levels, out_readouts);
+
+    container(
         row![input_col, output_col]
             .spacing(24)
             .align_y(Alignment::Center),
-    ]
-    .spacing(12)
-    .align_x(Alignment::Center);
-
-    container(content)
-        .padding(16)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .align_x(Horizontal::Center)
-        .align_y(Vertical::Center)
-        .into()
+    )
+    .padding(16)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .align_x(Horizontal::Center)
+    .align_y(Vertical::Center)
+    .into()
 }
 
 fn theme(_state: &State) -> Theme {
@@ -237,7 +269,7 @@ impl GuiBridge {
             thread::spawn(move || {
                 let settings = maolan_baseview::iced::IcedBaseviewSettings {
                     window: maolan_baseview::iced::baseview::WindowOpenOptions {
-                        title: String::from("Maolan VU Meter"),
+                        title: String::from("Maolan VU"),
                         size: maolan_baseview::iced::baseview::Size::new(
                             EDITOR_WIDTH as f64,
                             EDITOR_HEIGHT as f64,
