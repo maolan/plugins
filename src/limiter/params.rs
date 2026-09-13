@@ -19,10 +19,14 @@ pub enum ParamId {
     LinkRelease = 6,
     Channels = 7,
     OutputGain = 8,
+    Mode = 9,
+    Envelope = 10,
+    Window = 11,
+    Oversampling = 12,
 }
 
 impl ParamId {
-    pub const COUNT: usize = 9;
+    pub const COUNT: usize = 13;
 
     pub const fn all() -> [ParamId; Self::COUNT] {
         [
@@ -35,6 +39,10 @@ impl ParamId {
             ParamId::LinkRelease,
             ParamId::Channels,
             ParamId::OutputGain,
+            ParamId::Mode,
+            ParamId::Envelope,
+            ParamId::Window,
+            ParamId::Oversampling,
         ]
     }
 
@@ -156,6 +164,46 @@ pub const PARAMS: [ParamDef; ParamId::COUNT] = [
         default: 0.0,
         step: 0.1,
         flags: AUTOMATABLE,
+    },
+    ParamDef {
+        id: ParamId::Mode,
+        name: "Mode",
+        module: "Shape",
+        min: 1.0,
+        max: 1.0,
+        default: 1.0,
+        step: 1.0,
+        flags: ENUM_FLAGS,
+    },
+    ParamDef {
+        id: ParamId::Envelope,
+        name: "Envelope",
+        module: "Shape",
+        min: 1.0,
+        max: 1.0,
+        default: 1.0,
+        step: 1.0,
+        flags: ENUM_FLAGS,
+    },
+    ParamDef {
+        id: ParamId::Window,
+        name: "Window",
+        module: "Shape",
+        min: 0.0,
+        max: 100.0,
+        default: 25.0,
+        step: 1.0,
+        flags: AUTOMATABLE,
+    },
+    ParamDef {
+        id: ParamId::Oversampling,
+        name: "True Peak",
+        module: "Envelope",
+        min: 0.0,
+        max: 3.0,
+        default: 0.0,
+        step: 1.0,
+        flags: ENUM_FLAGS,
     },
 ];
 

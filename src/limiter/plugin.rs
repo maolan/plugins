@@ -442,11 +442,17 @@ fn limiter_params_from_shared(shared: &SharedState) -> crate::limiter::dsp::Limi
         link_transients: shared.params.get(ParamId::LinkTransients),
         link_release: shared.params.get(ParamId::LinkRelease),
         output_gain: shared.params.get(ParamId::OutputGain),
+        window: shared.params.get(ParamId::Window),
+        oversampling: shared.params.get(ParamId::Oversampling),
     }
 }
 
 fn latency_samples(params: &ParamStore, sample_rate: f64) -> u32 {
-    Limiter::latency_samples_for(sample_rate, params.get(ParamId::Lookahead))
+    Limiter::latency_samples_for(
+        sample_rate,
+        params.get(ParamId::Lookahead),
+        params.get(ParamId::Oversampling),
+    )
 }
 fn peak_db(samples: &[f32]) -> f32 {
     let peak = crate::simd::peak_abs(samples);
@@ -648,9 +654,18 @@ fn param_text(id: ParamId, value: f64) -> String {
             2 => "Stereo".into(),
             _ => format!("{value:.0}"),
         },
+        ParamId::Mode => "1 (Discrete)".into(),
+        ParamId::Envelope => "1 (Raised Cosine)".into(),
+        ParamId::Oversampling => match value.round() as i32 {
+            0 => "Off".into(),
+            1 => "2x".into(),
+            2 => "4x".into(),
+            _ => "8x".into(),
+        },
         ParamId::Boost | ParamId::Ceiling | ParamId::OutputGain => format!("{value:.1} dB"),
         ParamId::Lookahead | ParamId::Attack | ParamId::Release => format!("{value:.1} ms"),
         ParamId::LinkTransients | ParamId::LinkRelease => format!("{value:.0}%"),
+        ParamId::Window => format!("{value:.0}%"),
     }
 }
 
@@ -674,6 +689,14 @@ fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
         ParamId::LinkTransients | ParamId::LinkRelease => {
             text.trim_end_matches('%').trim().parse::<f64>().ok()
         }
+        ParamId::Mode | ParamId::Envelope | ParamId::Window => text.parse().ok(),
+        ParamId::Oversampling => match text.to_ascii_lowercase().as_str() {
+            "off" | "1x" => Some(0.0),
+            "2x" | "2" => Some(1.0),
+            "4x" | "4" => Some(2.0),
+            "8x" | "8" => Some(3.0),
+            _ => text.parse().ok(),
+        },
     }
 }
 
@@ -1285,18 +1308,12 @@ static FACTORY: clap_plugin_factory = clap_plugin_factory {
 };
 
 /// # Safety
-///
 /// The returned pointer is valid for the lifetime of the program and points to
-/// a static CLAP plugin descriptor.
 pub unsafe fn descriptor_ptr() -> *const clap_plugin_descriptor {
     &raw const DESCRIPTOR.0
 }
 
 /// # Safety
-///
-/// `host` and `plugin_id` must be valid pointers suitable for the CLAP plugin
-/// factory `create_plugin` callback. The returned plugin pointer must be handled
-/// according to the CLAP lifetime rules.
 pub unsafe fn create_plugin(
     host: *const clap_host,
     plugin_id: *const c_char,

@@ -17,7 +17,7 @@ use maolan_baseview::iced::{
     widget::{
         canvas,
         canvas::{Frame, Geometry, Path, Program, Stroke},
-        checkbox, column, container, row, text,
+        checkbox, column, container, row,
     },
 };
 #[cfg(target_os = "macos")]
@@ -142,6 +142,7 @@ impl HasWindowHandle for ParentWindowHandle {
 #[allow(clippy::enum_variant_names)]
 pub enum Message {
     SetParam(ParamId, f32),
+    SelectParam(ParamId, f64),
     SetChannels(ChannelMode),
     SetShowOriginal(bool),
     SetShowProcessed(bool),
@@ -192,6 +193,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.shared.mark_gesture_begin_pending(id);
             }
             state.shared.set_param_outbound_only(id, value as f64);
+        }
+        Message::SelectParam(id, value) => {
+            state.shared.set_param_outbound_only(id, value);
         }
         Message::ReleaseParam(id) => {
             let idx = id.as_index();
@@ -264,13 +268,20 @@ fn view(state: &State) -> Element<'_, Message> {
         .label("Processed")
         .on_toggle(Message::SetShowProcessed);
 
+    let oversampling_selected = p(ParamId::Oversampling).round().clamp(0.0, 3.0) as usize;
+    let oversampling_toggle =
+        horizontal_multi_toggler(["Off", "2x", "4x", "8x"], oversampling_selected, |index| {
+            Message::SelectParam(ParamId::Oversampling, index as f64)
+        });
+
     controls = controls.push(
         row![
             channels_toggle,
-            text("Display").size(16),
             original_checkbox,
             processed_checkbox,
             knob("Ceiling", ParamId::Ceiling, p(ParamId::Ceiling), "dB", 0.1),
+            knob("Attack", ParamId::Attack, p(ParamId::Attack), "ms", 0.1),
+            knob("Release", ParamId::Release, p(ParamId::Release), "ms", 1.0),
             knob(
                 "Lookahead",
                 ParamId::Lookahead,
@@ -278,30 +289,22 @@ fn view(state: &State) -> Element<'_, Message> {
                 "ms",
                 0.1
             ),
-            knob("Attack", ParamId::Attack, p(ParamId::Attack), "ms", 0.1),
-            knob("Release", ParamId::Release, p(ParamId::Release), "ms", 1.0),
-        ]
-        .spacing(16)
-        .align_y(Alignment::Center),
-    );
-
-    controls = controls.push(
-        row![
-            text("Channel Linking").size(16),
+            knob("Window", ParamId::Window, p(ParamId::Window), "%", 1.0),
             knob(
-                "Transients",
+                "Link Transients",
                 ParamId::LinkTransients,
                 p(ParamId::LinkTransients),
                 "%",
                 1.0
             ),
             knob(
-                "Release",
+                "Link Release",
                 ParamId::LinkRelease,
                 p(ParamId::LinkRelease),
                 "%",
                 1.0
             ),
+            oversampling_toggle,
         ]
         .spacing(16)
         .align_y(Alignment::Center),
@@ -708,6 +711,7 @@ fn knob(
         ParamId::LinkTransients | ParamId::LinkRelease if units == "%" => {
             format!("{value:.0}{units}")
         }
+        ParamId::Window if units == "%" => format!("{value:.0}{units}"),
         _ => {
             if units.is_empty() {
                 format!("{value:.2}")
