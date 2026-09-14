@@ -31,7 +31,7 @@ use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
 use crate::vumeter::plugin::SharedState;
 
-pub const EDITOR_WIDTH: u32 = 380;
+pub const EDITOR_WIDTH: u32 = 500;
 pub const EDITOR_HEIGHT: u32 = 250;
 
 pub fn preferred_api() -> &'static CStr {
@@ -113,7 +113,7 @@ fn db_str(level: f64) -> String {
     if v <= -90.0 {
         String::from("-inf")
     } else {
-        format!("{:+.1}", v)
+        format!("{v:+06.2}")
     }
 }
 
@@ -121,7 +121,7 @@ fn lufs_str(value: f64) -> String {
     if !value.is_finite() || value <= -120.0 {
         String::from("-inf")
     } else {
-        format!("{value:.1}")
+        format!("{value:+06.2}")
     }
 }
 
