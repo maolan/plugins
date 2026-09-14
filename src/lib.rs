@@ -22,6 +22,7 @@ pub mod kick;
 pub mod limiter;
 pub mod modeler;
 pub mod phaser;
+pub mod random;
 pub mod reverb;
 pub mod sampler;
 pub mod saturator;
@@ -41,7 +42,7 @@ struct PluginApi {
     create: CreateFn,
 }
 
-static PLUGINS: [PluginApi; 20] = [
+static PLUGINS: [PluginApi; 21] = [
     PluginApi {
         descriptor: eq::clap_descriptor_ptr,
         create: eq::clap_create_plugin,
@@ -121,6 +122,10 @@ static PLUGINS: [PluginApi; 20] = [
     PluginApi {
         descriptor: vocoder::clap_descriptor_ptr,
         create: vocoder::clap_create_plugin,
+    },
+    PluginApi {
+        descriptor: random::clap_descriptor_ptr,
+        create: random::clap_create_plugin,
     },
 ];
 
