@@ -17,6 +17,7 @@ pub mod deesser;
 pub mod delay;
 pub mod drums;
 pub mod eq;
+pub mod flanger;
 pub mod formant;
 pub mod kick;
 pub mod limiter;
@@ -42,7 +43,7 @@ struct PluginApi {
     create: CreateFn,
 }
 
-static PLUGINS: [PluginApi; 21] = [
+static PLUGINS: [PluginApi; 22] = [
     PluginApi {
         descriptor: eq::clap_descriptor_ptr,
         create: eq::clap_create_plugin,
@@ -118,6 +119,10 @@ static PLUGINS: [PluginApi; 21] = [
     PluginApi {
         descriptor: formant::clap_descriptor_ptr,
         create: formant::clap_create_plugin,
+    },
+    PluginApi {
+        descriptor: flanger::clap_descriptor_ptr,
+        create: flanger::clap_create_plugin,
     },
     PluginApi {
         descriptor: vocoder::clap_descriptor_ptr,
