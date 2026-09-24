@@ -1,6 +1,7 @@
 pub mod audio_file;
 pub mod bus;
 pub mod byte_reader;
+pub mod clap_harness;
 pub mod distortion;
 pub mod envelope;
 pub mod envelope_follower;
@@ -10,7 +11,9 @@ pub mod filter;
 pub mod flavor;
 pub mod fx;
 pub mod gain_pan;
+pub mod gui_bridge;
 pub mod halfband;
+pub mod json_state;
 pub mod lfo;
 pub mod lfo_assignment;
 pub mod lufs;

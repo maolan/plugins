@@ -2,10 +2,7 @@ use std::{
     ffi::{CStr, c_char, c_void},
     path::{Path, PathBuf},
     ptr::{NonNull, null, null_mut},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering},
-    },
+    sync::{Arc, atomic::Ordering},
 };
 
 use maolan_clap::{
@@ -18,16 +15,15 @@ use maolan_clap::{
         CLAP_VERSION, clap_audio_port_info, clap_gui_resize_hints, clap_host, clap_id,
         clap_input_events, clap_istream, clap_note_name, clap_note_port_info, clap_ostream,
         clap_output_events, clap_param_info, clap_plugin, clap_plugin_audio_ports,
-        clap_plugin_descriptor, clap_plugin_factory, clap_plugin_gui, clap_plugin_latency,
-        clap_plugin_note_name, clap_plugin_note_ports, clap_plugin_params,
-        clap_plugin_resource_directory, clap_plugin_state, clap_plugin_tail, clap_process,
-        clap_process_status, clap_window,
+        clap_plugin_descriptor, clap_plugin_gui, clap_plugin_latency, clap_plugin_note_name,
+        clap_plugin_note_ports, clap_plugin_params, clap_plugin_resource_directory,
+        clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status, clap_window,
     },
     process::Process,
     stream::{IStream, OStream},
 };
-use parking_lot::Mutex;
 
+use crate::common::clap_harness::{Processor, SharedBase};
 use crate::common::{bus, fft, resource_directory};
 use crate::drums::{
     download,
@@ -44,10 +40,6 @@ const PLUGIN_VENDOR: &[u8] = b"maolan\0";
 const PLUGIN_URL: &[u8] = b"\0";
 const PLUGIN_VERSION: &[u8] = b"0.1.0\0";
 const PLUGIN_DESCRIPTION: &[u8] = b"Drum sampler CLAP plugin\0";
-
-/// Process-unique plugin instance ids, used to make resource-directory
-/// bundle names collision-safe across plugin instances.
-static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const FEATURE_INSTRUMENT: *const c_char = CLAP_PLUGIN_FEATURE_INSTRUMENT.as_ptr();
 const FEATURE_MONO: *const c_char = CLAP_PLUGIN_FEATURE_MONO.as_ptr();
@@ -87,11 +79,11 @@ struct AudioProcessor {
 impl AudioProcessor {
     fn new(
         shared: Arc<SharedState>,
-        engine: Arc<DrumGizmoEngine>,
         sample_rate: f64,
         max_frames: u32,
         bus_data: Option<bus::PluginSharedData>,
     ) -> Self {
+        let engine = Arc::clone(&shared.engine);
         engine.set_sample_rate(sample_rate as f32);
         let mut limiter = Limiter::default();
         limiter.set_sample_rate(sample_rate as f32);
@@ -296,43 +288,11 @@ impl AudioProcessor {
     }
 }
 
-struct PluginInstance {
-    shared: Arc<SharedState>,
-    engine: Arc<DrumGizmoEngine>,
-    active: AtomicBool,
-    processor: AtomicPtr<AudioProcessor>,
-    retired_processors: Mutex<Vec<*mut AudioProcessor>>,
-    gui_bridge: Mutex<GuiBridge>,
+type Instance = crate::common::clap_harness::PluginInstance<SharedState, AudioProcessor, GuiBridge>;
 
-    note_names: Mutex<Vec<(u8, String)>>,
-    bus_id: bus::InstanceId,
-    bus_data: bus::PluginSharedData,
-    /// Unique id for this plugin instance, used in resource-directory
-    /// bundle names.
-    instance_id: u64,
-}
-
-impl PluginInstance {
-    fn new(host: *const clap_host) -> Self {
-        let shared = Arc::new(SharedState::default());
-        shared.set_host(host);
-        let engine = Arc::new(DrumGizmoEngine::new());
-        let bus_id = bus::next_instance_id();
-        let mut bus_data =
-            bus::PluginSharedData::new(bus::PluginType::Drums).with_fft(bus::FftData::default());
-        bus_data = bus::register(bus_id, bus_data);
-        Self {
-            shared,
-            engine,
-            active: AtomicBool::new(false),
-            processor: AtomicPtr::new(null_mut()),
-            retired_processors: Mutex::new(Vec::new()),
-            gui_bridge: Mutex::new(GuiBridge::default()),
-            note_names: Mutex::new(Vec::new()),
-            bus_id,
-            bus_data,
-            instance_id: INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed),
-        }
+impl SharedState {
+    pub fn sample_rate_value(&self) -> f64 {
+        48_000.0
     }
 
     fn load_kit(&self, path: String) {
@@ -346,28 +306,28 @@ impl PluginInstance {
     fn load_kit_internal(&self, path: String, mark_dirty: bool, auto_resolve_midimap: bool) {
         self.engine.kit_ready.store(false, Ordering::Release);
 
-        *self.shared.kit_path.write() = path.clone();
-        *self.shared.last_error.write() = None;
-        self.shared.active_channels.store(0, Ordering::Release);
+        *self.kit_path.write() = path.clone();
+        *self.last_error.write() = None;
+        self.active_channels.store(0, Ordering::Release);
 
-        self.shared.loading_progress.store(0, Ordering::Release);
+        self.loading_progress.store(0, Ordering::Release);
         if mark_dirty {
-            self.shared.mark_dirty();
+            self.mark_dirty();
         }
-        self.shared.latency_changed();
+        self.latency_changed();
 
         let engine = Arc::clone(&self.engine);
         engine.load_kit_async(path.clone());
 
-        let mut variation = self.shared.variation.read().clone();
+        let mut variation = self.variation.read().clone();
         if auto_resolve_midimap
             && variation.is_empty()
             && let Some(inferred) = download::kit_variation_from_path(&path)
         {
             variation = inferred;
-            *self.shared.variation.write() = variation.clone();
+            *self.variation.write() = variation.clone();
             if mark_dirty {
-                self.shared.mark_dirty();
+                self.mark_dirty();
             }
         }
         if auto_resolve_midimap
@@ -375,9 +335,9 @@ impl PluginInstance {
             && let Some(midimap_path) = download::resolve_midimap_xml(&kit_name, &variation)
         {
             let _ = self.engine.load_midimap(&midimap_path.to_string_lossy());
-            *self.shared.midimap_path.write() = midimap_path.to_string_lossy().into_owned();
+            *self.midimap_path.write() = midimap_path.to_string_lossy().into_owned();
             if mark_dirty {
-                self.shared.mark_dirty();
+                self.mark_dirty();
             }
         }
 
@@ -393,7 +353,7 @@ impl PluginInstance {
         drop(mapper);
         names.sort_by_key(|(note, _)| *note);
         *self.note_names.lock() = names;
-        self.shared.note_names_changed();
+        self.note_names_changed();
     }
 
     fn restore_midimap(&self, path: String) {
@@ -403,37 +363,193 @@ impl PluginInstance {
     fn load_midimap_internal(&self, path: String, mark_dirty: bool) {
         match self.engine.load_midimap(&path) {
             Ok(()) => {
-                *self.shared.midimap_path.write() = path;
-                *self.shared.last_error.write() = None;
+                *self.midimap_path.write() = path;
+                *self.last_error.write() = None;
                 if mark_dirty {
-                    self.shared.mark_dirty();
+                    self.mark_dirty();
                 }
                 self.rebuild_note_names();
             }
             Err(err) => {
-                *self.shared.last_error.write() = Some(format!("Failed to load midimap: {err}"));
+                *self.last_error.write() = Some(format!("Failed to load midimap: {err}"));
             }
         }
     }
 }
 
-impl Drop for PluginInstance {
-    fn drop(&mut self) {
-        let ptr = self.processor.swap(null_mut(), Ordering::AcqRel);
-        if !ptr.is_null() {
-            unsafe { drop(Box::from_raw(ptr)) };
-        }
-        let retired = std::mem::take(&mut *self.retired_processors.lock());
-        for ptr in retired {
-            if !ptr.is_null() {
-                unsafe { drop(Box::from_raw(ptr)) };
-            }
-        }
+unsafe fn instance<'a>(plugin: *const clap_plugin) -> &'a mut Instance {
+    unsafe {
+        crate::common::clap_harness::instance::<SharedState, AudioProcessor, GuiBridge, ()>(plugin)
     }
 }
 
-unsafe fn instance<'a>(plugin: *const clap_plugin) -> &'a mut PluginInstance {
-    unsafe { &mut *((*plugin).plugin_data as *mut PluginInstance) }
+impl SharedBase for SharedState {
+    fn set_host(&self, host: *const clap_host) {
+        self.host.store(host.cast_mut(), Ordering::Release);
+    }
+
+    fn clear_host(&self) {
+        self.host.store(std::ptr::null_mut(), Ordering::Release);
+    }
+
+    fn set_sample_rate(&self, sample_rate: f64) {
+        self.params_version.fetch_add(1, Ordering::Release);
+        self.engine.set_sample_rate(sample_rate as f32);
+    }
+}
+
+impl Processor<SharedState> for AudioProcessor {
+    fn new(sample_rate: f64, max_frames: u32, bus_data: Option<bus::PluginSharedData>) -> Self {
+        AudioProcessor::new(
+            Arc::new(SharedState::default()),
+            sample_rate,
+            max_frames,
+            bus_data,
+        )
+    }
+
+    fn new_with_shared(
+        sample_rate: f64,
+        max_frames: u32,
+        bus_data: Option<bus::PluginSharedData>,
+        shared: &Arc<SharedState>,
+    ) -> Self {
+        AudioProcessor::new(Arc::clone(shared), sample_rate, max_frames, bus_data)
+    }
+
+    fn reset(&mut self) {
+        // Engine and limiter reset are handled by the plugin-level reset,
+        // which has access to the voice-state seed.
+    }
+
+    fn process(&mut self, _shared: &SharedState, process: &mut Process) -> clap_process_status {
+        AudioProcessor::process(self, process)
+    }
+}
+
+unsafe extern "C-unwind" fn plugin_activate(
+    plugin: *const clap_plugin,
+    sample_rate: f64,
+    _min_frames: u32,
+    max_frames: u32,
+) -> bool {
+    if plugin.is_null() {
+        return false;
+    }
+    let inst = unsafe { instance(plugin) };
+    let _shared = Arc::clone(&inst.shared);
+    let engine = Arc::clone(&inst.shared.engine);
+
+    let ptr_mix = inst as *const _ as usize as u64;
+    let time_mix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    let seed = time_mix.wrapping_add(ptr_mix);
+    {
+        let mut state = engine.audio_state.lock();
+        state.reset(seed);
+    }
+
+    let bus_data = inst.bus_data;
+    let next = Box::into_raw(Box::new(AudioProcessor::new(
+        Arc::clone(&inst.shared),
+        sample_rate,
+        max_frames,
+        bus_data,
+    )));
+    let old = inst.swap_processor(next);
+    if !old.is_null() {
+        inst.push_retired(old);
+    }
+    inst.store_active(true);
+
+    let kit_path = inst.shared.kit_path.read().clone();
+    let midimap_path = inst.shared.midimap_path.read().clone();
+    let kit_loaded = !inst.shared.engine.kit.load(Ordering::Acquire).is_null();
+    if !kit_path.is_empty() && !kit_loaded {
+        inst.shared.restore_kit(kit_path);
+        if !midimap_path.is_empty() {
+            inst.shared.restore_midimap(midimap_path);
+        }
+    }
+    inst.shared.latency_changed();
+    true
+}
+
+unsafe extern "C-unwind" fn plugin_reset(plugin: *const clap_plugin) {
+    if plugin.is_null() {
+        return;
+    }
+    let inst = unsafe { instance(plugin) };
+    let seed = inst.shared.engine.random_seed.load(Ordering::Acquire);
+    {
+        let mut state = inst.shared.engine.audio_state.lock();
+        state.reset(seed);
+    }
+    let ptr = inst.processor();
+    if !ptr.is_null() {
+        let processor = unsafe { &mut *ptr };
+        processor.limiter.reset();
+    }
+}
+
+unsafe extern "C-unwind" fn plugin_process(
+    plugin: *const clap_plugin,
+    process: *const clap_process,
+) -> clap_process_status {
+    if plugin.is_null() || process.is_null() {
+        return CLAP_PROCESS_CONTINUE;
+    }
+    let inst = unsafe { instance(plugin) };
+    let ptr = inst.processor();
+    if ptr.is_null() {
+        return CLAP_PROCESS_CONTINUE;
+    }
+    let processor = unsafe { &mut *ptr };
+    let process_ptr = unsafe { NonNull::new_unchecked(process as *mut clap_process) };
+    let mut process = unsafe { Process::new_unchecked(process_ptr) };
+    processor.process(&mut process)
+}
+
+unsafe extern "C-unwind" fn plugin_on_main_thread(plugin: *const clap_plugin) {
+    if plugin.is_null() {
+        return;
+    }
+    let inst = unsafe { instance(plugin) };
+    inst.shared.engine.cleanup_retired();
+
+    if !inst.shared.engine.is_loading.load(Ordering::Acquire) {
+        let ep = inst.shared.engine.loading_progress.load(Ordering::Acquire);
+        if ep < 100 {
+            inst.shared
+                .engine
+                .loading_progress
+                .store(100, Ordering::Release);
+        }
+    }
+
+    inst.shared.loading_progress.store(
+        inst.shared.engine.loading_progress.load(Ordering::Acquire),
+        Ordering::Release,
+    );
+
+    if let Some(path) = inst.shared.pending_kit_path.write().take() {
+        inst.shared.load_kit(path);
+    }
+
+    if !inst.shared.engine.is_loading.load(Ordering::Acquire) {
+        if let Some(err) = inst.shared.engine.last_load_error.lock().take() {
+            *inst.shared.last_error.write() = Some(err);
+        }
+        let kit_ptr = inst.shared.engine.kit.load(Ordering::Acquire);
+        if !kit_ptr.is_null() {
+            let num_channels = unsafe { &*kit_ptr }.channels.len().min(MAX_CHANNELS);
+            inst.shared
+                .active_channels
+                .store(num_channels as u32, Ordering::Release);
+        }
+    }
 }
 
 fn param_text(id: ParamId, value: f64) -> String {
@@ -474,161 +590,6 @@ fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
             }
         }
         _ => text.parse().ok(),
-    }
-}
-
-unsafe extern "C-unwind" fn plugin_init(_plugin: *const clap_plugin) -> bool {
-    true
-}
-
-unsafe extern "C-unwind" fn plugin_destroy(plugin: *const clap_plugin) {
-    if plugin.is_null() {
-        return;
-    }
-    let instance = unsafe { &*((*plugin).plugin_data as *mut PluginInstance) };
-    bus::unregister(instance.bus_id);
-    let _ = unsafe { Box::from_raw((*plugin).plugin_data as *mut PluginInstance) };
-    let _ = unsafe { Box::from_raw(plugin as *mut clap_plugin) };
-}
-
-unsafe extern "C-unwind" fn plugin_activate(
-    plugin: *const clap_plugin,
-    sample_rate: f64,
-    _min_frames: u32,
-    max_frames: u32,
-) -> bool {
-    if plugin.is_null() {
-        return false;
-    }
-    let inst = unsafe { instance(plugin) };
-    let shared = Arc::clone(&inst.shared);
-    let engine = Arc::clone(&inst.engine);
-
-    let ptr_mix = inst as *const _ as usize as u64;
-    let time_mix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64;
-    let seed = time_mix.wrapping_add(ptr_mix);
-    {
-        let mut state = engine.audio_state.lock();
-        state.reset(seed);
-    }
-
-    let bus_data = Some(inst.bus_data);
-    let next = Box::into_raw(Box::new(AudioProcessor::new(
-        shared,
-        engine,
-        sample_rate,
-        max_frames,
-        bus_data,
-    )));
-    let old = inst.processor.swap(next, Ordering::AcqRel);
-    if !old.is_null() {
-        inst.retired_processors.lock().push(old);
-    }
-    inst.active.store(true, Ordering::Release);
-
-    let kit_path = inst.shared.kit_path.read().clone();
-    let midimap_path = inst.shared.midimap_path.read().clone();
-    let kit_loaded = !inst.engine.kit.load(Ordering::Acquire).is_null();
-    if !kit_path.is_empty() && !kit_loaded {
-        inst.restore_kit(kit_path);
-        if !midimap_path.is_empty() {
-            inst.restore_midimap(midimap_path);
-        }
-    }
-    inst.shared.latency_changed();
-    true
-}
-
-unsafe extern "C-unwind" fn plugin_deactivate(plugin: *const clap_plugin) {
-    if plugin.is_null() {
-        return;
-    }
-    let inst = unsafe { instance(plugin) };
-    let old = inst.processor.swap(null_mut(), Ordering::AcqRel);
-    if !old.is_null() {
-        inst.retired_processors.lock().push(old);
-    }
-    inst.active.store(false, Ordering::Release);
-}
-
-unsafe extern "C-unwind" fn plugin_start_processing(_plugin: *const clap_plugin) -> bool {
-    true
-}
-
-unsafe extern "C-unwind" fn plugin_stop_processing(_plugin: *const clap_plugin) {}
-
-unsafe extern "C-unwind" fn plugin_reset(plugin: *const clap_plugin) {
-    if plugin.is_null() {
-        return;
-    }
-    let inst = unsafe { instance(plugin) };
-    let seed = inst.engine.random_seed.load(Ordering::Acquire);
-    {
-        let mut state = inst.engine.audio_state.lock();
-        state.reset(seed);
-    }
-    let ptr = inst.processor.load(Ordering::Acquire);
-    if !ptr.is_null() {
-        let processor = unsafe { &mut *ptr };
-        processor.limiter.reset();
-    }
-}
-
-unsafe extern "C-unwind" fn plugin_process(
-    plugin: *const clap_plugin,
-    process: *const clap_process,
-) -> clap_process_status {
-    if plugin.is_null() || process.is_null() {
-        return CLAP_PROCESS_CONTINUE;
-    }
-    let inst = unsafe { instance(plugin) };
-    let ptr = inst.processor.load(Ordering::Acquire);
-    if ptr.is_null() {
-        return CLAP_PROCESS_CONTINUE;
-    }
-    let processor = unsafe { &mut *ptr };
-    let process_ptr = unsafe { NonNull::new_unchecked(process as *mut clap_process) };
-    let mut process = unsafe { Process::new_unchecked(process_ptr) };
-    processor.process(&mut process)
-}
-
-unsafe extern "C-unwind" fn plugin_on_main_thread(plugin: *const clap_plugin) {
-    if plugin.is_null() {
-        return;
-    }
-    let inst = unsafe { instance(plugin) };
-    inst.engine.cleanup_retired();
-
-    if !inst.engine.is_loading.load(Ordering::Acquire) {
-        let ep = inst.engine.loading_progress.load(Ordering::Acquire);
-        if ep < 100 {
-            inst.engine.loading_progress.store(100, Ordering::Release);
-        }
-    }
-
-    inst.shared.loading_progress.store(
-        inst.engine.loading_progress.load(Ordering::Acquire),
-        Ordering::Release,
-    );
-
-    if let Some(path) = inst.shared.pending_kit_path.write().take() {
-        inst.load_kit(path);
-    }
-
-    if !inst.engine.is_loading.load(Ordering::Acquire) {
-        if let Some(err) = inst.engine.last_load_error.lock().take() {
-            *inst.shared.last_error.write() = Some(err);
-        }
-        let kit_ptr = inst.engine.kit.load(Ordering::Acquire);
-        if !kit_ptr.is_null() {
-            let num_channels = unsafe { &*kit_ptr }.channels.len().min(MAX_CHANNELS);
-            inst.shared
-                .active_channels
-                .store(num_channels as u32, Ordering::Release);
-        }
     }
 }
 
@@ -879,15 +840,15 @@ unsafe extern "C-unwind" fn ext_state_load(
     *inst.shared.kit_path.write() = kit_path.clone();
     *inst.shared.midimap_path.write() = midimap_path.clone();
 
-    let is_audio_instance = !inst.processor.load(Ordering::Acquire).is_null();
+    let is_audio_instance = !inst.processor().is_null();
 
     if !kit_path.is_empty() && kit_changed && is_audio_instance {
-        inst.restore_kit(kit_path.clone());
+        inst.shared.restore_kit(kit_path.clone());
         if !midimap_path.is_empty() {
-            inst.restore_midimap(midimap_path.clone());
+            inst.shared.restore_midimap(midimap_path.clone());
         }
     } else if !midimap_path.is_empty() && midimap_changed && is_audio_instance {
-        inst.restore_midimap(midimap_path);
+        inst.shared.restore_midimap(midimap_path);
     }
 
     *inst.shared.state_id.write() = saved_state_id;
@@ -899,8 +860,8 @@ unsafe extern "C-unwind" fn ext_latency_get(plugin: *const clap_plugin) -> u32 {
         return 0;
     }
     let inst = unsafe { instance(plugin) };
-    let sr = inst.engine.sample_rate.load(Ordering::Acquire);
-    let state = inst.engine.audio_state.lock();
+    let sr = inst.shared.engine.sample_rate.load(Ordering::Acquire);
+    let state = inst.shared.engine.audio_state.lock();
     let max_ms = state.latency_filter.max_ms;
     drop(state);
     (max_ms / 1000.0 * sr) as u32
@@ -1002,7 +963,7 @@ unsafe extern "C-unwind" fn ext_resource_directory_collect(plugin: *const clap_p
     // A kit is a self-contained directory tree (XML plus audio files, in
     // possibly nested subdirectories), all referenced relative to the kit
     // directory, so collect copies the whole tree.
-    let target_kit_dir = dir.join(collect_bundle_name(source_kit_dir, inst.instance_id));
+    let target_kit_dir = dir.join(collect_bundle_name(source_kit_dir, inst.shared.instance_id));
 
     // The bundle name carries this instance's own id, so an existing target
     // directory can only be a previous collect of this very instance. Remove
@@ -1067,7 +1028,8 @@ unsafe extern "C-unwind" fn ext_resource_directory_collect(plugin: *const clap_p
         all,
         "Drums resource_directory collect: switching kit to collected copy"
     );
-    inst.restore_kit(new_kit_path.to_string_lossy().into_owned());
+    inst.shared
+        .restore_kit(new_kit_path.to_string_lossy().into_owned());
 }
 
 unsafe extern "C-unwind" fn ext_resource_directory_get_files_count(
@@ -1155,7 +1117,7 @@ unsafe extern "C-unwind" fn ext_gui_create(
     let api = unsafe { CStr::from_ptr(api) };
     inst.gui_bridge.lock().create(
         Arc::clone(&inst.shared),
-        Arc::clone(&inst.engine),
+        Arc::clone(&inst.shared.engine),
         api,
         is_floating,
     )
@@ -1273,9 +1235,11 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
     } else {
         return false;
     };
-    inst.gui_bridge
-        .lock()
-        .set_parent(Arc::clone(&inst.shared), Arc::clone(&inst.engine), parent)
+    inst.gui_bridge.lock().set_parent(
+        Arc::clone(&inst.shared),
+        Arc::clone(&inst.shared.engine),
+        parent,
+    )
 }
 
 unsafe extern "C-unwind" fn ext_gui_set_transient(
@@ -1295,8 +1259,8 @@ unsafe extern "C-unwind" fn ext_note_name_count(plugin: *const clap_plugin) -> u
     if plugin.is_null() {
         return 0;
     }
-    let inst = unsafe { &*((*plugin).plugin_data as *const PluginInstance) };
-    inst.note_names.lock().len() as u32
+    let inst = unsafe { instance(plugin) };
+    inst.shared.note_names.lock().len() as u32
 }
 
 unsafe extern "C-unwind" fn ext_note_name_get(
@@ -1307,8 +1271,8 @@ unsafe extern "C-unwind" fn ext_note_name_get(
     if plugin.is_null() || note_name.is_null() {
         return false;
     }
-    let inst = unsafe { &*((*plugin).plugin_data as *const PluginInstance) };
-    let names = inst.note_names.lock();
+    let inst = unsafe { instance(plugin) };
+    let names = inst.shared.note_names.lock();
     let Some((note, name)) = names.get(index as usize) else {
         return false;
     };
@@ -1411,23 +1375,7 @@ unsafe extern "C-unwind" fn plugin_get_extension(
     }
 }
 
-unsafe extern "C-unwind" fn factory_get_plugin_count(_factory: *const clap_plugin_factory) -> u32 {
-    1
-}
-
-unsafe extern "C-unwind" fn factory_get_plugin_descriptor(
-    _factory: *const clap_plugin_factory,
-    index: u32,
-) -> *const clap_plugin_descriptor {
-    if index == 0 {
-        &raw const DESCRIPTOR.0
-    } else {
-        null()
-    }
-}
-
-unsafe extern "C-unwind" fn factory_create_plugin(
-    _factory: *const clap_plugin_factory,
+unsafe fn create_plugin_impl(
     host: *const clap_host,
     plugin_id: *const c_char,
 ) -> *const clap_plugin {
@@ -1438,16 +1386,47 @@ unsafe extern "C-unwind" fn factory_create_plugin(
     if plugin_id != unsafe { CStr::from_ptr(PLUGIN_ID.as_ptr().cast()) } {
         return null();
     }
-    let instance = Box::new(PluginInstance::new(host));
+    let bus_data =
+        bus::PluginSharedData::new(bus::PluginType::Drums).with_fft(bus::FftData::default());
+    let shared = Arc::new(SharedState::default());
+    shared.set_host(host);
+    let instance = Box::new(Instance::new_with_shared_and_bus(
+        host, PORTS, shared, bus_data,
+    ));
     let plugin = Box::new(clap_plugin {
         desc: &raw const DESCRIPTOR.0,
         plugin_data: Box::into_raw(instance).cast(),
-        init: Some(plugin_init),
-        destroy: Some(plugin_destroy),
+        init: Some(
+            crate::common::clap_harness::plugin_init::<SharedState, AudioProcessor, GuiBridge, ()>,
+        ),
+        destroy: Some(
+            crate::common::clap_harness::plugin_destroy::<SharedState, AudioProcessor, GuiBridge, ()>,
+        ),
         activate: Some(plugin_activate),
-        deactivate: Some(plugin_deactivate),
-        start_processing: Some(plugin_start_processing),
-        stop_processing: Some(plugin_stop_processing),
+        deactivate: Some(
+            crate::common::clap_harness::plugin_deactivate::<
+                SharedState,
+                AudioProcessor,
+                GuiBridge,
+                (),
+            >,
+        ),
+        start_processing: Some(
+            crate::common::clap_harness::plugin_start_processing::<
+                SharedState,
+                AudioProcessor,
+                GuiBridge,
+                (),
+            >,
+        ),
+        stop_processing: Some(
+            crate::common::clap_harness::plugin_stop_processing::<
+                SharedState,
+                AudioProcessor,
+                GuiBridge,
+                (),
+            >,
+        ),
         reset: Some(plugin_reset),
         process: Some(plugin_process),
         get_extension: Some(plugin_get_extension),
@@ -1456,10 +1435,19 @@ unsafe extern "C-unwind" fn factory_create_plugin(
     Box::into_raw(plugin)
 }
 
-static FACTORY: clap_plugin_factory = clap_plugin_factory {
-    get_plugin_count: Some(factory_get_plugin_count),
-    get_plugin_descriptor: Some(factory_get_plugin_descriptor),
-    create_plugin: Some(factory_create_plugin),
+const PORTS: crate::common::clap_harness::PortConfig = crate::common::clap_harness::PortConfig {
+    inputs: crate::common::clap_harness::PortDesc {
+        count: 1,
+        channel_count: 1,
+        port_type: crate::common::clap_harness::CLAP_PORT_MONO_REF,
+        names: &["in"],
+    },
+    outputs: crate::common::clap_harness::PortDesc {
+        count: 0,
+        channel_count: 1,
+        port_type: crate::common::clap_harness::CLAP_PORT_MONO_REF,
+        names: &[],
+    },
 };
 
 /// # Safety
@@ -1479,13 +1467,110 @@ pub unsafe fn create_plugin(
     host: *const clap_host,
     plugin_id: *const c_char,
 ) -> *const clap_plugin {
-    unsafe { factory_create_plugin(&raw const FACTORY, host, plugin_id) }
+    unsafe { create_plugin_impl(host, plugin_id) }
 }
 
 fn copy_str_to_array<const N: usize>(source: &str, target: &mut [c_char; N]) {
     target.fill(0);
     for (dst, src) in target.iter_mut().zip(source.as_bytes().iter().copied()) {
         *dst = src as c_char;
+    }
+}
+
+impl crate::common::clap_harness::GuiHooks<SharedState> for GuiBridge {
+    type Parent = crate::drums::gui::ParentWindowHandle;
+
+    fn is_api_supported(api: &CStr, is_floating: bool) -> bool {
+        crate::drums::gui::is_api_supported(api, is_floating)
+    }
+
+    fn preferred_api() -> &'static CStr {
+        crate::drums::gui::preferred_api()
+    }
+
+    fn editor_size() -> (u32, u32) {
+        (
+            crate::drums::gui::EDITOR_WIDTH,
+            crate::drums::gui::EDITOR_HEIGHT,
+        )
+    }
+
+    #[cfg(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "freebsd"
+    ))]
+    fn parent_from_window(window: &clap_window, api: &CStr) -> Option<Self::Parent> {
+        use maolan_clap::ffi::{CLAP_WINDOW_API_COCOA, CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11};
+        if api == CLAP_WINDOW_API_X11 {
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            {
+                Some(crate::drums::gui::ParentWindowHandle::X11(unsafe {
+                    window.clap_window__.x11
+                }))
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+            {
+                None
+            }
+        } else if api == CLAP_WINDOW_API_WIN32 {
+            #[cfg(target_os = "windows")]
+            {
+                Some(crate::drums::gui::ParentWindowHandle::Win32(unsafe {
+                    window.clap_window__.win32
+                }))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                None
+            }
+        } else if api == CLAP_WINDOW_API_COCOA {
+            #[cfg(target_os = "macos")]
+            {
+                Some(crate::drums::gui::ParentWindowHandle::Cocoa(unsafe {
+                    window.clap_window__.cocoa
+                }))
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    fn create(&mut self, shared: Arc<SharedState>, api: &CStr, is_floating: bool) -> bool {
+        GuiBridge::create(
+            self,
+            shared.clone(),
+            Arc::clone(&shared.engine),
+            api,
+            is_floating,
+        )
+    }
+
+    fn destroy(&mut self) {
+        GuiBridge::destroy(self)
+    }
+
+    #[cfg(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "freebsd"
+    ))]
+    fn set_parent(&mut self, shared: Arc<SharedState>, parent: Self::Parent) -> bool {
+        GuiBridge::set_parent(self, shared.clone(), Arc::clone(&shared.engine), parent)
+    }
+
+    fn show(&mut self) -> bool {
+        GuiBridge::show(self)
+    }
+
+    fn hide(&mut self, _shared: Arc<SharedState>) -> bool {
+        GuiBridge::hide(self)
     }
 }
 

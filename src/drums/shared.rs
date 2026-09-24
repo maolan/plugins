@@ -1,13 +1,16 @@
+use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use maolan_clap::ffi::{
     clap_host, clap_host_latency, clap_host_note_name, clap_host_params, clap_host_state,
 };
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 
+use crate::drums::engine::DrumGizmoEngine;
 use crate::drums::params::{ParamId, ParamStore, sanitize_param_value};
 
-#[derive(Debug)]
+static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 pub struct SharedState {
     pub params: ParamStore,
     pub kit_path: RwLock<String>,
@@ -26,10 +29,19 @@ pub struct SharedState {
     /// Session resource directory pushed by the host through
     /// `clap.resource-directory/1`, `None` until the host sets one.
     pub resource_dir: RwLock<Option<String>>,
+    /// Shared drum engine (kit loading, voices, rendering).
+    pub engine: Arc<DrumGizmoEngine>,
+    /// Note-name table exposed through the note-name extension.
+    pub note_names: Mutex<Vec<(u8, String)>>,
+    /// Unique id for this plugin instance, used in resource-directory bundle
+    /// names.
+    pub instance_id: u64,
 }
 
 impl Default for SharedState {
     fn default() -> Self {
+        let engine = Arc::new(DrumGizmoEngine::new());
+        engine.set_sample_rate(48_000.0);
         Self {
             params: ParamStore::default(),
             kit_path: RwLock::new(String::new()),
@@ -46,6 +58,9 @@ impl Default for SharedState {
             state_id: RwLock::new(String::new()),
             loading_progress: AtomicU8::new(0),
             resource_dir: RwLock::new(None),
+            engine,
+            note_names: Mutex::new(Vec::new()),
+            instance_id: INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed),
         }
     }
 }

@@ -2,10 +2,10 @@ use std::{
     f32::consts::PI,
     ffi::{CStr, c_char, c_void},
     io::{Read, Write},
-    ptr::{null, null_mut},
+    ptr::null,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering},
     },
 };
 
@@ -25,7 +25,7 @@ use maolan_clap::{
         clap_note_name, clap_note_port_info, clap_ostream, clap_param_info, clap_plugin,
         clap_plugin_audio_ports, clap_plugin_descriptor, clap_plugin_gui, clap_plugin_note_name,
         clap_plugin_note_ports, clap_plugin_params, clap_plugin_state, clap_plugin_tail,
-        clap_process, clap_process_status, clap_window,
+        clap_process_status, clap_window,
     },
     id::ClapId,
     process::Process,
@@ -1457,148 +1457,42 @@ impl AudioProcessor {
     }
 }
 
-struct PluginInstance {
-    shared: Arc<SharedState>,
-    active: AtomicBool,
-    processor: AtomicPtr<AudioProcessor>,
-    retired_processors: Mutex<Vec<*mut AudioProcessor>>,
-    gui_bridge: Mutex<GuiBridge>,
-    bus_id: bus::InstanceId,
-    bus_data: bus::PluginSharedData,
-}
-
-impl PluginInstance {
-    fn new(host: *const clap_host) -> Self {
-        let shared = Arc::new(SharedState::new(host));
-        let bus_id = bus::next_instance_id();
-        let mut bus_data =
-            bus::PluginSharedData::new(bus::PluginType::Kick).with_fft(bus::FftData::default());
-        bus_data = bus::register(bus_id, bus_data);
-        Self {
-            shared,
-            active: AtomicBool::new(false),
-            processor: AtomicPtr::new(null_mut()),
-            retired_processors: Mutex::new(Vec::new()),
-            gui_bridge: Mutex::new(GuiBridge::default()),
-            bus_id,
-            bus_data,
-        }
-    }
-
-    fn retire_processor(&self, ptr: *mut AudioProcessor) {
-        if !ptr.is_null() {
-            self.retired_processors.lock().push(ptr);
-        }
-    }
-
-    fn drop_retired_processors(&self) {
-        let mut retired = self.retired_processors.lock();
-        for ptr in retired.drain(..) {
-            unsafe {
-                let _ = Box::from_raw(ptr);
-            }
-        }
-    }
-}
+type Instance = crate::common::clap_harness::PluginInstance<SharedState, AudioProcessor, GuiBridge>;
 
 #[inline]
-unsafe fn instance(plugin: *const clap_plugin) -> &'static PluginInstance {
-    unsafe { &*(plugin.as_ref().unwrap().plugin_data as *const PluginInstance) }
-}
-
-unsafe extern "C-unwind" fn plugin_init(_plugin: *const clap_plugin) -> bool {
-    true
-}
-
-unsafe extern "C-unwind" fn plugin_destroy(plugin: *const clap_plugin) {
-    if plugin.is_null() {
-        return;
-    }
-    let inst = unsafe { instance(plugin) };
-    bus::unregister(inst.bus_id);
-    inst.drop_retired_processors();
-    let old = inst.processor.swap(null_mut(), Ordering::AcqRel);
-    if !old.is_null() {
-        unsafe {
-            let _ = Box::from_raw(old);
-        }
-    }
+unsafe fn instance(plugin: *const clap_plugin) -> &'static Instance {
     unsafe {
-        let _ = Box::from_raw(plugin as *mut clap_plugin);
+        crate::common::clap_harness::instance::<SharedState, AudioProcessor, GuiBridge, ()>(plugin)
     }
 }
 
-unsafe extern "C-unwind" fn plugin_activate(
-    plugin: *const clap_plugin,
-    sample_rate: f64,
-    min_frames: u32,
-    max_frames: u32,
-) -> bool {
-    if plugin.is_null() {
-        return false;
+impl crate::common::clap_harness::SharedBase for SharedState {
+    fn set_host(&self, host: *const clap_host) {
+        self.host.store(host.cast_mut(), Ordering::Release);
     }
-    let inst = unsafe { instance(plugin) };
-    inst.shared.set_sample_rate(sample_rate);
-    let processor = Box::new(AudioProcessor::new(
-        sample_rate,
-        max_frames,
-        Some(inst.bus_data),
-    ));
-    let ptr = Box::into_raw(processor);
-    let old = inst.processor.swap(ptr, Ordering::AcqRel);
-    inst.retire_processor(old);
-    inst.drop_retired_processors();
-    inst.active.store(true, Ordering::Release);
-    let _ = (min_frames, max_frames);
-    true
-}
 
-unsafe extern "C-unwind" fn plugin_deactivate(plugin: *const clap_plugin) {
-    if plugin.is_null() {
-        return;
+    fn clear_host(&self) {
+        self.host.store(std::ptr::null_mut(), Ordering::Release);
     }
-    let inst = unsafe { instance(plugin) };
-    inst.active.store(false, Ordering::Release);
-    let old = inst.processor.swap(null_mut(), Ordering::AcqRel);
-    inst.retire_processor(old);
-    inst.drop_retired_processors();
-}
 
-unsafe extern "C-unwind" fn plugin_start_processing(_plugin: *const clap_plugin) -> bool {
-    true
-}
-
-unsafe extern "C-unwind" fn plugin_stop_processing(_plugin: *const clap_plugin) {}
-
-unsafe extern "C-unwind" fn plugin_reset(plugin: *const clap_plugin) {
-    if plugin.is_null() {
-        return;
-    }
-    let inst = unsafe { instance(plugin) };
-    let ptr = inst.processor.load(Ordering::Acquire);
-    if !ptr.is_null() {
-        unsafe { (*ptr).reset() };
+    fn set_sample_rate(&self, sample_rate: f64) {
+        self.sample_rate.store(sample_rate, Ordering::Release);
     }
 }
 
-unsafe extern "C-unwind" fn plugin_process(
-    plugin: *const clap_plugin,
-    process: *const clap_process,
-) -> clap_process_status {
-    if plugin.is_null() || process.is_null() {
-        return CLAP_PROCESS_CONTINUE;
+impl crate::common::clap_harness::Processor<SharedState> for AudioProcessor {
+    fn new(sample_rate: f64, max_frames: u32, bus_data: Option<bus::PluginSharedData>) -> Self {
+        AudioProcessor::new(sample_rate, max_frames, bus_data)
     }
-    let inst = unsafe { instance(plugin) };
-    let ptr = inst.processor.load(Ordering::Acquire);
-    if ptr.is_null() {
-        return CLAP_PROCESS_CONTINUE;
-    }
-    let process_ptr = unsafe { std::ptr::NonNull::new_unchecked(process as *mut clap_process) };
-    let mut process = unsafe { Process::new_unchecked(process_ptr) };
-    unsafe { (*ptr).process(&inst.shared, &mut process) }
-}
 
-unsafe extern "C-unwind" fn plugin_on_main_thread(_plugin: *const clap_plugin) {}
+    fn reset(&mut self) {
+        AudioProcessor::reset(self)
+    }
+
+    fn process(&mut self, shared: &SharedState, process: &mut Process) -> clap_process_status {
+        AudioProcessor::process(self, shared, process)
+    }
+}
 
 unsafe extern "C-unwind" fn ext_audio_ports_count(
     plugin: *const clap_plugin,
@@ -2420,25 +2314,95 @@ unsafe extern "C-unwind" fn plugin_get_extension(
 /// according to the CLAP lifetime rules.
 pub unsafe fn create_plugin(
     host: *const clap_host,
-    _plugin_id: *const c_char,
+    plugin_id: *const c_char,
 ) -> *const clap_plugin {
-    let instance = Box::new(PluginInstance::new(host));
+    if host.is_null() || plugin_id.is_null() {
+        return null();
+    }
+    let requested = unsafe { CStr::from_ptr(plugin_id) };
+    if requested != unsafe { CStr::from_ptr(PLUGIN_ID.as_ptr().cast()) } {
+        return null();
+    }
+    let shared = Arc::new(SharedState::new(host));
+    let bus_data =
+        bus::PluginSharedData::new(bus::PluginType::Kick).with_fft(bus::FftData::default());
+    let instance = Box::new(Instance::new_with_shared_and_bus(
+        host, PORTS, shared, bus_data,
+    ));
     let plugin = Box::new(clap_plugin {
-        desc: &DESCRIPTOR.0,
-        plugin_data: Box::into_raw(instance) as *mut c_void,
-        init: Some(plugin_init),
-        destroy: Some(plugin_destroy),
-        activate: Some(plugin_activate),
-        deactivate: Some(plugin_deactivate),
-        start_processing: Some(plugin_start_processing),
-        stop_processing: Some(plugin_stop_processing),
-        reset: Some(plugin_reset),
-        process: Some(plugin_process),
+        desc: &raw const DESCRIPTOR.0,
+        plugin_data: Box::into_raw(instance).cast(),
+        init: Some(
+            crate::common::clap_harness::plugin_init::<SharedState, AudioProcessor, GuiBridge, ()>,
+        ),
+        destroy: Some(
+            crate::common::clap_harness::plugin_destroy::<SharedState, AudioProcessor, GuiBridge, ()>,
+        ),
+        activate: Some(
+            crate::common::clap_harness::plugin_activate::<
+                SharedState,
+                AudioProcessor,
+                GuiBridge,
+                (),
+            >,
+        ),
+        deactivate: Some(
+            crate::common::clap_harness::plugin_deactivate::<
+                SharedState,
+                AudioProcessor,
+                GuiBridge,
+                (),
+            >,
+        ),
+        start_processing: Some(
+            crate::common::clap_harness::plugin_start_processing::<
+                SharedState,
+                AudioProcessor,
+                GuiBridge,
+                (),
+            >,
+        ),
+        stop_processing: Some(
+            crate::common::clap_harness::plugin_stop_processing::<
+                SharedState,
+                AudioProcessor,
+                GuiBridge,
+                (),
+            >,
+        ),
+        reset: Some(
+            crate::common::clap_harness::plugin_reset::<SharedState, AudioProcessor, GuiBridge, ()>,
+        ),
+        process: Some(
+            crate::common::clap_harness::plugin_process::<SharedState, AudioProcessor, GuiBridge, ()>,
+        ),
         get_extension: Some(plugin_get_extension),
-        on_main_thread: Some(plugin_on_main_thread),
+        on_main_thread: Some(
+            crate::common::clap_harness::plugin_on_main_thread::<
+                SharedState,
+                AudioProcessor,
+                GuiBridge,
+                (),
+            >,
+        ),
     });
     Box::into_raw(plugin)
 }
+
+const PORTS: crate::common::clap_harness::PortConfig = crate::common::clap_harness::PortConfig {
+    inputs: crate::common::clap_harness::PortDesc {
+        count: 1,
+        channel_count: 1,
+        port_type: crate::common::clap_harness::CLAP_PORT_MONO_REF,
+        names: &["in"],
+    },
+    outputs: crate::common::clap_harness::PortDesc {
+        count: 1,
+        channel_count: 1,
+        port_type: crate::common::clap_harness::CLAP_PORT_MONO_REF,
+        names: &["out"],
+    },
+};
 
 /// # Safety
 ///
@@ -2446,6 +2410,97 @@ pub unsafe fn create_plugin(
 /// a static CLAP plugin descriptor.
 pub const unsafe fn descriptor_ptr() -> *const clap_plugin_descriptor {
     &DESCRIPTOR.0
+}
+
+impl crate::common::clap_harness::GuiHooks<SharedState> for GuiBridge {
+    type Parent = crate::kick::gui::ParentWindowHandle;
+
+    fn is_api_supported(api: &CStr, is_floating: bool) -> bool {
+        crate::kick::gui::is_api_supported(api, is_floating)
+    }
+
+    fn preferred_api() -> &'static CStr {
+        crate::kick::gui::preferred_api()
+    }
+
+    fn editor_size() -> (u32, u32) {
+        (
+            crate::kick::gui::EDITOR_WIDTH,
+            crate::kick::gui::EDITOR_HEIGHT,
+        )
+    }
+
+    #[cfg(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "freebsd"
+    ))]
+    fn parent_from_window(window: &clap_window, api: &CStr) -> Option<Self::Parent> {
+        use maolan_clap::ffi::{CLAP_WINDOW_API_COCOA, CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11};
+        if api == CLAP_WINDOW_API_X11 {
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            {
+                Some(crate::kick::gui::ParentWindowHandle::X11(unsafe {
+                    window.clap_window__.x11
+                }))
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+            {
+                None
+            }
+        } else if api == CLAP_WINDOW_API_WIN32 {
+            #[cfg(target_os = "windows")]
+            {
+                Some(crate::kick::gui::ParentWindowHandle::Win32(unsafe {
+                    window.clap_window__.win32
+                }))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                None
+            }
+        } else if api == CLAP_WINDOW_API_COCOA {
+            #[cfg(target_os = "macos")]
+            {
+                Some(crate::kick::gui::ParentWindowHandle::Cocoa(unsafe {
+                    window.clap_window__.cocoa
+                }))
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    fn create(&mut self, shared: Arc<SharedState>, api: &CStr, is_floating: bool) -> bool {
+        GuiBridge::create(self, shared, api, is_floating)
+    }
+
+    fn destroy(&mut self) {
+        GuiBridge::destroy(self)
+    }
+
+    #[cfg(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "freebsd"
+    ))]
+    fn set_parent(&mut self, shared: Arc<SharedState>, parent: Self::Parent) -> bool {
+        GuiBridge::set_parent(self, shared, parent)
+    }
+
+    fn show(&mut self) -> bool {
+        GuiBridge::show(self)
+    }
+
+    fn hide(&mut self, shared: Arc<SharedState>) -> bool {
+        GuiBridge::hide(self, shared)
+    }
 }
 
 #[cfg(test)]

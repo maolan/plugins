@@ -8,6 +8,29 @@ mod x86 {
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 use x86::*;
 
+/// Enables flush-to-zero (FTZ) and denormals-are-zero (DAZ) for the calling
+/// thread so recursive filter/delay states decay to exact zero instead of
+/// crawling through denormals. Called once per audio block; on non-x86
+/// targets it is a no-op (denormal protection then relies on the +1e-24 bias
+/// in the recursive DSP structs).
+pub fn enable_flush_to_zero() {
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    {
+        if is_x86_feature_detected!("sse") {
+            // FTZ (bit 15) and DAZ (bit 6) of MXCSR. `_mm_setcsr` is
+            // deprecated in favor of inline assembly, which we use directly.
+            const MXCSR_FTZ: u32 = 1 << 15;
+            const MXCSR_DAZ: u32 = 1 << 6;
+            unsafe {
+                let mut csr: u32 = 0;
+                std::arch::asm!("stmxcsr [{}]", in(reg) &mut csr, options(nostack));
+                csr |= MXCSR_FTZ | MXCSR_DAZ;
+                std::arch::asm!("ldmxcsr [{}]", in(reg) &csr, options(readonly, nostack));
+            }
+        }
+    }
+}
+
 pub fn add_inplace(dst: &mut [f32], src: &[f32]) {
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     unsafe {

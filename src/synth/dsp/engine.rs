@@ -833,10 +833,8 @@ impl SynthEngine {
                 &scene_lfo_slices,
             );
 
-            for i in 0..frames {
-                out_l[i] += self.temp_l[i];
-                out_r[i] += self.temp_r[i];
-            }
+            crate::simd::add_inplace(&mut out_l[..frames], &self.temp_l[..frames]);
+            crate::simd::add_inplace(&mut out_r[..frames], &self.temp_r[..frames]);
 
             let voice_visuals = voice.lfo_visual_mod_values();
             for (lfo_index, lfo_values) in voice_visuals.iter().enumerate() {
