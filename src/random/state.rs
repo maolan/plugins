@@ -79,13 +79,15 @@ mod tests {
     use crate::random::params::ParamId;
     #[test]
     fn restores_lengths_and_note_range() {
-        let params = ParamStore::default();
+        let params =
+            ParamStore::with_defaults(&PARAMS.iter().map(|def| def.default).collect::<Vec<_>>());
         params.set(ParamId::NoteLength, 2.0);
         params.set(ParamId::PauseLength, 7.0);
         params.set(ParamId::LowestNote, 55.0);
         params.set(ParamId::HighestNote, 67.0);
         let bytes = PluginState::from_runtime(&params).to_bytes().unwrap();
-        let restored = ParamStore::default();
+        let restored =
+            ParamStore::with_defaults(&PARAMS.iter().map(|def| def.default).collect::<Vec<_>>());
         PluginState::from_bytes(&bytes).unwrap().apply(&restored);
         assert_eq!(restored.get(ParamId::NoteLength), 2.0);
         assert_eq!(restored.get(ParamId::PauseLength), 7.0);

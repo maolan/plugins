@@ -1,12 +1,4 @@
-use std::{
-    ffi::CStr,
-    path::Path,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    thread,
-};
+use std::{ffi::CStr, path::Path, sync::Arc};
 
 use maolan_baseview::iced::widget::image::Image;
 use maolan_baseview::iced::{
@@ -1767,142 +1759,100 @@ fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {
         .run()
 }
 
-trait PluginWindowHandle {
-    fn close_window(&mut self);
-}
+pub struct App;
 
-impl<Message: 'static + Send> PluginWindowHandle
-    for maolan_baseview::iced::shell::window::WindowHandle<Message>
-{
-    fn close_window(&mut self) {
-        maolan_baseview::iced::shell::window::WindowHandle::close_window(self);
+impl crate::common::gui_bridge::GuiApp<super::plugin::SharedState> for App {
+    type Parent = ParentWindowHandle;
+
+    fn title() -> String {
+        String::from("Maolan Modeler")
     }
-}
 
-struct StoredWindowHandle {
-    inner: Box<dyn PluginWindowHandle>,
-}
-
-unsafe impl Send for StoredWindowHandle {}
-
-pub struct GuiBridge {
-    created: bool,
-    floating: bool,
-    shared: Option<Arc<SharedState>>,
-    floating_open: Arc<AtomicBool>,
-    window_handle: Option<StoredWindowHandle>,
-}
-
-impl Default for GuiBridge {
-    fn default() -> Self {
-        Self {
-            created: false,
-            floating: false,
-            shared: None,
-            floating_open: Arc::new(AtomicBool::new(false)),
-            window_handle: None,
-        }
+    fn size() -> (u32, u32) {
+        (EDITOR_WIDTH, EDITOR_HEIGHT)
     }
-}
 
-impl GuiBridge {
-    pub fn create(&mut self, shared: Arc<SharedState>, api: &CStr, is_floating: bool) -> bool {
-        if !is_api_supported(api, is_floating) {
-            return false;
-        }
-        self.created = true;
-        self.floating = is_floating;
-        self.shared = Some(shared);
+    fn always_redraw() -> bool {
+        false
+    }
+
+    fn notify_closed_on_hide() -> bool {
         true
     }
 
-    pub fn destroy(&mut self) {
-        self.window_handle = None;
-        self.shared = None;
-        self.floating = false;
-        self.created = false;
-    }
-
-    pub fn set_parent(&mut self, shared: Arc<SharedState>, parent: ParentWindowHandle) -> bool {
-        if !self.created {
-            return false;
-        }
-        if self.floating {
-            self.shared = Some(shared);
-            return true;
-        }
-
-        let settings = maolan_baseview::iced::IcedBaseviewSettings {
-            window: maolan_baseview::iced::baseview::WindowOpenOptions {
-                title: String::from("Maolan Modeler"),
-                size: maolan_baseview::iced::baseview::Size::new(
-                    EDITOR_WIDTH as f64,
-                    EDITOR_HEIGHT as f64,
-                ),
-                scale: maolan_baseview::iced::baseview::WindowScalePolicy::SystemScaleFactor,
-            },
-            ignore_non_modifier_keys: false,
-            always_redraw: false,
-        };
-
-        let handle = maolan_baseview::iced::shell::open_parented(
-            &parent,
-            settings,
-            maolan_baseview::iced::PollSubNotifier::new(),
-            move || build_app(shared),
-        );
-
-        self.window_handle = Some(StoredWindowHandle {
-            inner: Box::new(handle),
-        });
+    fn opens_parented_window() -> bool {
         true
     }
 
-    pub fn show(&mut self) -> bool {
-        if !self.created {
-            return false;
-        }
-        if self.floating {
-            if self.floating_open.load(Ordering::Acquire) {
-                return true;
-            }
-            let Some(shared) = self.shared.clone() else {
-                return false;
-            };
-            let floating_open = self.floating_open.clone();
-            floating_open.store(true, Ordering::Release);
-            let _ = thread::Builder::new()
-                .name("maolan-modeler-gui".to_string())
-                .spawn(move || {
-                    let settings = maolan_baseview::iced::IcedBaseviewSettings {
-                        window: maolan_baseview::iced::baseview::WindowOpenOptions {
-                            title: String::from("Maolan Modeler"),
-                            size: maolan_baseview::iced::baseview::Size::new(
-                                EDITOR_WIDTH as f64,
-                                EDITOR_HEIGHT as f64,
-                            ),
-                            scale: maolan_baseview::iced::baseview::WindowScalePolicy::SystemScaleFactor,
-                        },
-                        ignore_non_modifier_keys: false,
-                        always_redraw: false,
-                    };
-                    maolan_baseview::iced::open_blocking(
-                        settings,
-                        maolan_baseview::iced::PollSubNotifier::new(),
-                        move || build_app(shared),
-                    );
-                    floating_open.store(false, Ordering::Release);
-                });
-            return true;
-        }
-        true
+    fn preferred_api() -> &'static CStr {
+        preferred_api()
     }
 
-    pub fn hide(&mut self) -> bool {
-        if let Some(mut handle) = self.window_handle.take() {
-            handle.inner.close_window();
+    #[cfg(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "freebsd"
+    ))]
+    fn parent_from_window(
+        window: &maolan_clap::ffi::clap_window,
+        api: &CStr,
+    ) -> Option<Self::Parent> {
+        crate::modeler::gui::parent_from_window(window, api)
+    }
+
+    fn build_app(
+        shared: std::sync::Arc<super::plugin::SharedState>,
+    ) -> impl maolan_baseview::iced::Program {
+        build_app(shared)
+    }
+}
+
+pub type GuiBridge = crate::common::gui_bridge::GuiBridge<super::plugin::SharedState, App>;
+#[cfg(any(
+    target_os = "windows",
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "freebsd"
+))]
+pub fn parent_from_window(
+    window: &maolan_clap::ffi::clap_window,
+    api: &CStr,
+) -> Option<ParentWindowHandle> {
+    use maolan_clap::ffi::{CLAP_WINDOW_API_COCOA, CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11};
+    if api == CLAP_WINDOW_API_X11 {
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        {
+            Some(ParentWindowHandle::X11(unsafe { window.clap_window__.x11 }))
         }
-        true
+        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+        {
+            None
+        }
+    } else if api == CLAP_WINDOW_API_WIN32 {
+        #[cfg(target_os = "windows")]
+        {
+            Some(ParentWindowHandle::Win32(unsafe {
+                window.clap_window__.win32
+            }))
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            None
+        }
+    } else if api == CLAP_WINDOW_API_COCOA {
+        #[cfg(target_os = "macos")]
+        {
+            Some(ParentWindowHandle::Cocoa(unsafe {
+                window.clap_window__.cocoa
+            }))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None
+        }
+    } else {
+        None
     }
 }
 

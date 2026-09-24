@@ -1,46 +1,34 @@
 use std::{
     ffi::{CStr, c_char, c_void},
-    io::{Read, Write},
-    ptr::{NonNull, null, null_mut},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicPtr, Ordering},
-    },
+    sync::atomic::Ordering,
 };
 
-use maolan_baseview::iced::PollSubNotifier;
-use maolan_clap::ffi::CLAP_WINDOW_API_COCOA;
-use maolan_clap::ffi::CLAP_WINDOW_API_WIN32;
-use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_clap::{
-    events::{InputEvents, OutputEvents},
     ffi::{
-        CLAP_AUDIO_PORT_IS_MAIN, CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI, CLAP_EXT_PARAMS,
-        CLAP_EXT_STATE, CLAP_EXT_TAIL, CLAP_INVALID_ID, CLAP_PARAM_REQUIRES_PROCESS,
-        CLAP_PLUGIN_FEATURE_AUDIO_EFFECT, CLAP_PLUGIN_FEATURE_STEREO, CLAP_PORT_MONO,
-        CLAP_PROCESS_CONTINUE, CLAP_VERSION, clap_audio_port_info, clap_gui_resize_hints,
-        clap_host, clap_host_gui, clap_host_params, clap_host_state, clap_id, clap_istream,
-        clap_ostream, clap_param_info, clap_plugin, clap_plugin_audio_ports,
-        clap_plugin_descriptor, clap_plugin_factory, clap_plugin_gui, clap_plugin_params,
-        clap_plugin_state, clap_plugin_tail, clap_process, clap_process_status, clap_window,
+        CLAP_EXT_AUDIO_PORTS, CLAP_EXT_GUI, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_EXT_TAIL,
+        CLAP_PLUGIN_FEATURE_AUDIO_EFFECT, CLAP_PLUGIN_FEATURE_STEREO, CLAP_PROCESS_CONTINUE,
+        CLAP_VERSION, clap_host, clap_plugin, clap_plugin_descriptor, clap_process_status,
     },
     process::Process,
-    stream::{IStream, OStream},
 };
-use parking_lot::Mutex;
-use portable_atomic::AtomicF64;
 
-use crate::common::{
-    SharedStateExt, apply_param_events, copy_str_to_array, emit_pending_param_events_to_host,
-};
+use crate::common::{apply_param_events, emit_pending_param_events_to_host};
 use crate::common::{bus, fft, slot::SeqLockSlot};
 use crate::stereo::{
     dsp::{Stereo, StereoParams},
     gui::GuiBridge,
-    params::{PARAMS, ParamId, ParamStore, sanitize_param_value},
+    params::{PARAMS, ParamId, sanitize_param_value},
     state::PluginState,
 };
 
+use crate::common::clap_harness::{
+    DescriptorMeta, ParamHost, ParamSharedState, ParamSpec, PortConfig, Processor, SharedBase,
+    StateHooks,
+};
+use crate::{
+    clap_audio_ports_ext, clap_create_fn, clap_descriptor, clap_gui_ext, clap_params_ext,
+    clap_state_ext, clap_tail_ext, mono_pair,
+};
 const PLUGIN_ID: &[u8] = b"rs.maolan.stereo\0";
 const PLUGIN_NAME: &[u8] = b"Maolan Stereo\0";
 const PLUGIN_VENDOR: &[u8] = b"Maolan\0";
@@ -52,26 +40,19 @@ const FEATURE_AUDIO_EFFECT: *const c_char = CLAP_PLUGIN_FEATURE_AUDIO_EFFECT.as_
 const FEATURE_STEREO: *const c_char = CLAP_PLUGIN_FEATURE_STEREO.as_ptr();
 pub const VECTORSCOPE_SAMPLES: usize = 512;
 
-struct SyncFeatureList([*const c_char; 3]);
-unsafe impl Sync for SyncFeatureList {}
+const FEATURE_PTRS: &[*const c_char] = &[FEATURE_AUDIO_EFFECT, FEATURE_STEREO, std::ptr::null()];
 
-struct SyncDescriptor(clap_plugin_descriptor);
-unsafe impl Sync for SyncDescriptor {}
+static META: DescriptorMeta = DescriptorMeta {
+    id: PLUGIN_ID,
+    name: PLUGIN_NAME,
+    vendor: PLUGIN_VENDOR,
+    url: PLUGIN_URL,
+    version: PLUGIN_VERSION,
+    description: PLUGIN_DESCRIPTION,
+    features: FEATURE_PTRS,
+};
 
-static FEATURES: SyncFeatureList = SyncFeatureList([FEATURE_AUDIO_EFFECT, FEATURE_STEREO, null()]);
-
-static DESCRIPTOR: SyncDescriptor = SyncDescriptor(clap_plugin_descriptor {
-    clap_version: CLAP_VERSION,
-    id: PLUGIN_ID.as_ptr().cast(),
-    name: PLUGIN_NAME.as_ptr().cast(),
-    vendor: PLUGIN_VENDOR.as_ptr().cast(),
-    url: PLUGIN_URL.as_ptr().cast(),
-    manual_url: PLUGIN_URL.as_ptr().cast(),
-    support_url: PLUGIN_URL.as_ptr().cast(),
-    version: PLUGIN_VERSION.as_ptr().cast(),
-    description: PLUGIN_DESCRIPTION.as_ptr().cast(),
-    features: FEATURES.0.as_ptr(),
-});
+clap_descriptor!(META);
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -94,182 +75,84 @@ impl Default for VectorscopeData {
 }
 
 pub struct SharedState {
-    pub params: ParamStore,
-    sample_rate: AtomicF64,
-    gain_on: AtomicBool,
-    delay_on: AtomicBool,
-    character_on: AtomicBool,
-    pending_param_notifications: std::sync::atomic::AtomicU32,
-    pending_gesture_begin: std::sync::atomic::AtomicU32,
-    pending_gesture_end: std::sync::atomic::AtomicU32,
-    active_local_gestures: std::sync::atomic::AtomicU32,
-    host: AtomicPtr<clap_host>,
+    core: ParamSharedState<ParamId>,
+    pub gain_on: std::sync::atomic::AtomicBool,
+    pub delay_on: std::sync::atomic::AtomicBool,
+    pub character_on: std::sync::atomic::AtomicBool,
     pub vectorscope: SeqLockSlot<VectorscopeData>,
-    pub poll_notifier: Mutex<Option<PollSubNotifier>>,
 }
 
 impl Default for SharedState {
     fn default() -> Self {
         Self {
-            params: ParamStore::default(),
-            sample_rate: AtomicF64::new(48_000.0),
-            gain_on: AtomicBool::new(true),
-            delay_on: AtomicBool::new(true),
-            character_on: AtomicBool::new(true),
-            pending_param_notifications: std::sync::atomic::AtomicU32::new(0),
-            pending_gesture_begin: std::sync::atomic::AtomicU32::new(0),
-            pending_gesture_end: std::sync::atomic::AtomicU32::new(0),
-            active_local_gestures: std::sync::atomic::AtomicU32::new(0),
-            host: AtomicPtr::new(null_mut()),
+            core: ParamSharedState::default(),
+            gain_on: std::sync::atomic::AtomicBool::new(true),
+            delay_on: std::sync::atomic::AtomicBool::new(true),
+            character_on: std::sync::atomic::AtomicBool::new(true),
             vectorscope: SeqLockSlot::new(VectorscopeData::default()),
-            poll_notifier: Mutex::new(None),
         }
+    }
+}
+
+impl std::ops::Deref for SharedState {
+    type Target = ParamSharedState<ParamId>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.core
+    }
+}
+
+impl std::ops::DerefMut for SharedState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.core
+    }
+}
+
+impl SharedBase for SharedState {
+    fn set_host(&self, host: *const clap_host) {
+        self.core.set_host(host);
+    }
+
+    fn clear_host(&self) {
+        self.core.clear_host();
+    }
+
+    fn set_sample_rate(&self, sample_rate: f64) {
+        self.core.set_sample_rate(sample_rate);
+    }
+
+    fn notify_gui_closed(&self) {
+        self.core.request_gui_closed();
+    }
+}
+
+impl ParamHost for SharedState {
+    type Param = ParamId;
+
+    fn params(&self) -> &crate::common::param_store::ParamStore<ParamId> {
+        &self.core.params
+    }
+}
+
+crate::delegate_param_shared_ext!(SharedState, ParamId);
+
+impl ParamSpec for ParamId {
+    fn param_defs() -> &'static [crate::common::clap_harness::ParamDef<Self>] {
+        &PARAMS
+    }
+
+    fn param_text(id: Self, value: f64) -> String {
+        param_text(id, value)
+    }
+
+    fn parse_param_text(id: Self, text: &str) -> Option<f64> {
+        parse_param_text(id, text)
     }
 }
 
 impl SharedState {
     fn _sample_rate(&self) -> f32 {
-        self.sample_rate.load(Ordering::Acquire) as f32
-    }
-
-    fn set_host(&self, host: *const clap_host) {
-        self.host.store(host.cast_mut(), Ordering::Release);
-    }
-
-    fn set_sample_rate(&self, sample_rate: f64) {
-        self.sample_rate.store(sample_rate, Ordering::Release);
-    }
-
-    fn set_param_internal(&self, id: ParamId, value: f64, notify_host: bool) {
-        let value = sanitize_param_value(id, value);
-        self.params.set(id, value);
-        let mut coupled: Vec<(ParamId, f64)> = Vec::new();
-        match id {
-            ParamId::X1 => {
-                let x2 = self.params.get(ParamId::X2);
-                if x2 < value {
-                    coupled.push((ParamId::X2, sanitize_param_value(ParamId::X2, value)));
-                }
-            }
-            ParamId::X2 => {
-                let x1 = self.params.get(ParamId::X1);
-                if value < x1 {
-                    coupled.push((ParamId::X1, sanitize_param_value(ParamId::X1, value)));
-                }
-            }
-            _ => {}
-        }
-        for (other_id, other_value) in &coupled {
-            self.params.set(*other_id, *other_value);
-        }
-
-        if notify_host {
-            self.mark_param_notification_pending(id);
-            for (other_id, _) in coupled {
-                self.mark_param_notification_pending(other_id);
-            }
-            self.request_flush();
-            self.mark_dirty();
-        }
-    }
-
-    fn mark_param_notification_pending(&self, id: ParamId) {
-        let bit = 1_u32 << (id.as_index() as u32);
-        self.pending_param_notifications
-            .fetch_or(bit, Ordering::AcqRel);
-    }
-
-    fn take_pending_param_notifications(&self) -> u64 {
-        self.pending_param_notifications.swap(0, Ordering::AcqRel) as u64
-    }
-
-    fn requeue_pending_param_notifications(&self, bits: u64) {
-        if bits != 0 {
-            self.pending_param_notifications
-                .fetch_or(bits as u32, Ordering::AcqRel);
-        }
-    }
-
-    pub fn set_param_outbound_only(&self, id: ParamId, value: f64) {
-        self.set_param_internal(id, value, true);
-    }
-
-    pub fn mark_gesture_begin_pending(&self, id: ParamId) {
-        let bit = 1_u32 << (id.as_index() as u32);
-        self.pending_gesture_begin.fetch_or(bit, Ordering::AcqRel);
-        self.active_local_gestures.fetch_or(bit, Ordering::AcqRel);
-        self.mark_dirty();
-    }
-
-    pub fn mark_gesture_end_pending(&self, id: ParamId) {
-        let bit = 1_u32 << (id.as_index() as u32);
-        self.pending_gesture_end.fetch_or(bit, Ordering::AcqRel);
-        self.active_local_gestures.fetch_and(!bit, Ordering::AcqRel);
-        self.mark_dirty();
-    }
-
-    pub fn set_param_from_host(&self, id: ParamId, value: f64) {
-        self.set_param_internal(id, value, false);
-    }
-
-    pub fn request_gui_closed(&self) {
-        let host = self.host.load(Ordering::Acquire);
-        if host.is_null() {
-            return;
-        }
-        unsafe {
-            let Some(get_extension) = (*host).get_extension else {
-                return;
-            };
-            let ext = get_extension(host, c"clap.gui".as_ptr());
-            if ext.is_null() {
-                return;
-            }
-            let gui = &*(ext as *const clap_host_gui);
-            if let Some(closed) = gui.closed {
-                closed(host, false);
-            }
-        }
-    }
-
-    fn request_flush(&self) {
-        let host = self.host.load(Ordering::Acquire);
-        if host.is_null() {
-            return;
-        }
-        unsafe {
-            let Some(get_extension) = (*host).get_extension else {
-                return;
-            };
-            let ext = get_extension(host, c"clap.params".as_ptr());
-            if ext.is_null() {
-                return;
-            }
-            let params = &*(ext as *const clap_host_params);
-            if let Some(request_flush) = params.request_flush {
-                request_flush(host);
-            }
-        }
-    }
-
-    fn mark_dirty(&self) {
-        let host = self.host.load(Ordering::Acquire);
-        if host.is_null() {
-            return;
-        }
-        unsafe {
-            let Some(get_extension) = (*host).get_extension else {
-                return;
-            };
-            let ext = get_extension(host, c"clap.state".as_ptr());
-            if ext.is_null() {
-                return;
-            }
-            let state = &*(ext as *const clap_host_state);
-            if let Some(mark_dirty) = state.mark_dirty {
-                mark_dirty(host);
-            }
-        }
+        self.core.sample_rate() as f32
     }
 
     pub fn gain_on(&self) -> bool {
@@ -312,74 +195,6 @@ impl SharedState {
         self.delay_on.store(sections.delay, Ordering::Release);
         self.character_on
             .store(sections.character, Ordering::Release);
-    }
-}
-
-fn write_vectorscope_data(slot: &SeqLockSlot<VectorscopeData>, left: &[f32], right: &[f32]) {
-    let frames = left.len().min(right.len());
-    slot.write(|scope| {
-        scope.left.fill(0.0);
-        scope.right.fill(0.0);
-        scope.len = frames.min(VECTORSCOPE_SAMPLES);
-        scope.peak = 0.0;
-        if scope.len == 0 {
-            return;
-        }
-
-        let stride = (frames / scope.len).max(1);
-        for i in 0..scope.len {
-            let index = (i * stride).min(frames - 1);
-            let l = left[index].clamp(-1.0, 1.0);
-            let r = right[index].clamp(-1.0, 1.0);
-            scope.left[i] = l;
-            scope.right[i] = r;
-            scope.peak = scope.peak.max(l.abs()).max(r.abs());
-        }
-    });
-}
-
-impl SharedStateExt<ParamId> for SharedState {
-    fn params_get(&self, id: ParamId) -> f64 {
-        self.params.get(id)
-    }
-    fn set_gesture_active(&self, id: ParamId, active: bool) {
-        let bit = 1_u32 << (id.as_index() as u32);
-        if active {
-            self.active_local_gestures.fetch_or(bit, Ordering::AcqRel);
-        } else {
-            self.active_local_gestures.fetch_and(!bit, Ordering::AcqRel);
-        }
-    }
-    fn is_gesture_active(&self, id: ParamId) -> bool {
-        let bit = 1_u32 << (id.as_index() as u32);
-        (self.active_local_gestures.load(Ordering::Acquire) & bit) != 0
-    }
-    fn set_param_from_host(&self, id: ParamId, value: f64) {
-        self.set_param_from_host(id, value);
-    }
-    fn take_pending_param_notifications(&self) -> u64 {
-        self.take_pending_param_notifications()
-    }
-    fn requeue_pending_param_notifications(&self, bits: u64) {
-        self.requeue_pending_param_notifications(bits);
-    }
-    fn take_pending_gesture_begin(&self) -> u64 {
-        self.pending_gesture_begin.swap(0, Ordering::AcqRel) as u64
-    }
-    fn requeue_pending_gesture_begin(&self, bits: u64) {
-        if bits != 0 {
-            self.pending_gesture_begin
-                .fetch_or(bits as u32, Ordering::AcqRel);
-        }
-    }
-    fn take_pending_gesture_end(&self) -> u64 {
-        self.pending_gesture_end.swap(0, Ordering::AcqRel) as u64
-    }
-    fn requeue_pending_gesture_end(&self, bits: u64) {
-        if bits != 0 {
-            self.pending_gesture_end
-                .fetch_or(bits as u32, Ordering::AcqRel);
-        }
     }
 }
 
@@ -545,53 +360,27 @@ impl AudioProcessor {
     }
 }
 
-struct PluginInstance {
-    shared: Arc<SharedState>,
-    active: AtomicBool,
-    processor: AtomicPtr<AudioProcessor>,
-    retired_processors: Mutex<Vec<*mut AudioProcessor>>,
-    gui_bridge: Mutex<GuiBridge>,
-    bus_id: bus::InstanceId,
-    bus_data: bus::PluginSharedData,
-}
-
-impl PluginInstance {
-    fn new(host: *const clap_host) -> Self {
-        let shared = Arc::new(SharedState::default());
-        shared.set_host(host);
-        let bus_id = bus::next_instance_id();
-        let mut bus_data =
-            bus::PluginSharedData::new(bus::PluginType::Stereo).with_fft(bus::FftData::default());
-        bus_data = bus::register(bus_id, bus_data);
-        Self {
-            shared,
-            active: AtomicBool::new(false),
-            processor: AtomicPtr::new(null_mut()),
-            retired_processors: Mutex::new(Vec::new()),
-            gui_bridge: Mutex::new(GuiBridge::default()),
-            bus_id,
-            bus_data,
+fn write_vectorscope_data(slot: &SeqLockSlot<VectorscopeData>, left: &[f32], right: &[f32]) {
+    let frames = left.len().min(right.len());
+    slot.write(|scope| {
+        scope.left.fill(0.0);
+        scope.right.fill(0.0);
+        scope.len = frames.min(VECTORSCOPE_SAMPLES);
+        scope.peak = 0.0;
+        if scope.len == 0 {
+            return;
         }
-    }
-}
 
-impl Drop for PluginInstance {
-    fn drop(&mut self) {
-        let ptr = self.processor.swap(null_mut(), Ordering::AcqRel);
-        if !ptr.is_null() {
-            unsafe { drop(Box::from_raw(ptr)) };
+        let stride = (frames / scope.len).max(1);
+        for i in 0..scope.len {
+            let index = (i * stride).min(frames - 1);
+            let l = left[index].clamp(-1.0, 1.0);
+            let r = right[index].clamp(-1.0, 1.0);
+            scope.left[i] = l;
+            scope.right[i] = r;
+            scope.peak = scope.peak.max(l.abs()).max(r.abs());
         }
-        let retired = std::mem::take(&mut *self.retired_processors.lock());
-        for ptr in retired {
-            if !ptr.is_null() {
-                unsafe { drop(Box::from_raw(ptr)) };
-            }
-        }
-    }
-}
-
-unsafe fn instance<'a>(plugin: *const clap_plugin) -> &'a mut PluginInstance {
-    unsafe { &mut *((*plugin).plugin_data as *mut PluginInstance) }
+    });
 }
 
 fn param_text(id: ParamId, value: f64) -> String {
@@ -657,513 +446,53 @@ fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
     }
 }
 
-unsafe extern "C-unwind" fn plugin_init(plugin: *const clap_plugin) -> bool {
-    !plugin.is_null()
-}
-
-unsafe extern "C-unwind" fn plugin_destroy(plugin: *const clap_plugin) {
-    if plugin.is_null() {
-        return;
+impl Processor<SharedState> for AudioProcessor {
+    fn new(
+        sample_rate: f64,
+        max_frames: u32,
+        bus_data: Option<crate::common::bus::PluginSharedData>,
+    ) -> Self {
+        AudioProcessor::new(sample_rate, max_frames, bus_data)
     }
-    let instance = unsafe { &*((*plugin).plugin_data as *mut PluginInstance) };
-    bus::unregister(instance.bus_id);
-    let _ = unsafe { Box::from_raw((*plugin).plugin_data as *mut PluginInstance) };
-    let _ = unsafe { Box::from_raw(plugin as *mut clap_plugin) };
-}
 
-unsafe extern "C-unwind" fn plugin_activate(
-    plugin: *const clap_plugin,
-    sample_rate: f64,
-    _min_frames: u32,
-    max_frames: u32,
-) -> bool {
-    if plugin.is_null() {
-        return false;
+    fn reset(&mut self) {
+        AudioProcessor::reset(self)
     }
-    let instance = unsafe { instance(plugin) };
-    instance.shared.set_sample_rate(sample_rate);
-    let next = Box::into_raw(Box::new(AudioProcessor::new(
-        sample_rate,
-        max_frames,
-        Some(instance.bus_data),
-    )));
-    let old = instance.processor.swap(next, Ordering::AcqRel);
-    if !old.is_null() {
-        instance.retired_processors.lock().push(old);
-    }
-    instance.active.store(true, Ordering::Release);
-    true
-}
 
-unsafe extern "C-unwind" fn plugin_deactivate(plugin: *const clap_plugin) {
-    if plugin.is_null() {
-        return;
-    }
-    let instance = unsafe { instance(plugin) };
-    let old = instance.processor.swap(null_mut(), Ordering::AcqRel);
-    if !old.is_null() {
-        instance.retired_processors.lock().push(old);
-    }
-    instance.active.store(false, Ordering::Release);
-}
-
-unsafe extern "C-unwind" fn plugin_start_processing(_plugin: *const clap_plugin) -> bool {
-    true
-}
-
-unsafe extern "C-unwind" fn plugin_stop_processing(_plugin: *const clap_plugin) {}
-
-unsafe extern "C-unwind" fn plugin_reset(plugin: *const clap_plugin) {
-    if plugin.is_null() {
-        return;
-    }
-    let instance = unsafe { instance(plugin) };
-    let ptr = instance.processor.load(Ordering::Acquire);
-    if !ptr.is_null() {
-        unsafe { (&mut *ptr).reset() };
+    fn process(&mut self, shared: &SharedState, process: &mut Process) -> clap_process_status {
+        AudioProcessor::process(self, shared, process)
     }
 }
 
-unsafe extern "C-unwind" fn plugin_process(
-    plugin: *const clap_plugin,
-    process: *const clap_process,
-) -> clap_process_status {
-    if plugin.is_null() || process.is_null() {
-        return CLAP_PROCESS_CONTINUE;
+impl StateHooks<SharedState> for PluginState {
+    fn save(shared: &SharedState) -> Option<Vec<u8>> {
+        PluginState::from_runtime(&shared.params, shared.section_switches())
+            .to_bytes()
+            .ok()
     }
-    let instance = unsafe { instance(plugin) };
-    let processor_ptr = instance.processor.load(Ordering::Acquire);
-    if processor_ptr.is_null() {
-        return CLAP_PROCESS_CONTINUE;
-    }
-    let processor = unsafe { &mut *processor_ptr };
-    let process_ptr = unsafe { NonNull::new_unchecked(process as *mut clap_process) };
-    let mut process = unsafe { Process::new_unchecked(process_ptr) };
-    processor.process(&instance.shared, &mut process)
-}
 
-unsafe extern "C-unwind" fn plugin_on_main_thread(_plugin: *const clap_plugin) {}
-
-unsafe extern "C-unwind" fn ext_audio_ports_count(
-    _plugin: *const clap_plugin,
-    _is_input: bool,
-) -> u32 {
-    2
-}
-
-unsafe extern "C-unwind" fn ext_audio_ports_get(
-    plugin: *const clap_plugin,
-    index: u32,
-    _is_input: bool,
-    info: *mut clap_audio_port_info,
-) -> bool {
-    if plugin.is_null() || index >= 2 || info.is_null() {
-        return false;
-    }
-    let info = unsafe { &mut *info };
-    info.id = index;
-    info.flags = CLAP_AUDIO_PORT_IS_MAIN;
-    info.channel_count = 1;
-    info.port_type = CLAP_PORT_MONO.as_ptr();
-    info.in_place_pair = CLAP_INVALID_ID;
-    let name = if index == 0 { "Left" } else { "Right" };
-    copy_str_to_array(name, &mut info.name);
-    true
-}
-
-unsafe extern "C-unwind" fn ext_params_count(_plugin: *const clap_plugin) -> u32 {
-    PARAMS.len() as u32
-}
-
-unsafe extern "C-unwind" fn ext_params_get_info(
-    _plugin: *const clap_plugin,
-    index: u32,
-    info: *mut clap_param_info,
-) -> bool {
-    let Some(def) = PARAMS.get(index as usize) else {
-        return false;
-    };
-    if info.is_null() {
-        return false;
-    }
-    let info = unsafe { &mut *info };
-    info.id = def.id as clap_id;
-    info.flags = def.flags | CLAP_PARAM_REQUIRES_PROCESS;
-    info.cookie = null_mut();
-    info.min_value = def.min;
-    info.max_value = def.max;
-    info.default_value = def.default;
-    copy_str_to_array(def.name, &mut info.name);
-    copy_str_to_array(def.module, &mut info.module);
-    true
-}
-
-unsafe extern "C-unwind" fn ext_params_get_value(
-    plugin: *const clap_plugin,
-    param_id: clap_id,
-    out_value: *mut f64,
-) -> bool {
-    let Some(id) = ParamId::from_raw(param_id) else {
-        return false;
-    };
-    if out_value.is_null() {
-        return false;
-    }
-    let instance = unsafe { instance(plugin) };
-    unsafe {
-        *out_value = instance.shared.params.get(id);
-    }
-    true
-}
-
-unsafe extern "C-unwind" fn ext_params_value_to_text(
-    _plugin: *const clap_plugin,
-    param_id: clap_id,
-    value: f64,
-    out_buffer: *mut c_char,
-    out_buffer_capacity: u32,
-) -> bool {
-    let Some(id) = ParamId::from_raw(param_id) else {
-        return false;
-    };
-    if out_buffer.is_null() || out_buffer_capacity == 0 {
-        return false;
-    }
-    let text = param_text(id, value);
-    let bytes = text.as_bytes();
-    let cap = out_buffer_capacity as usize;
-    unsafe {
-        std::ptr::write_bytes(out_buffer, 0, cap);
-        for (index, byte) in bytes
-            .iter()
-            .copied()
-            .take(cap.saturating_sub(1))
-            .enumerate()
-        {
-            *out_buffer.add(index) = byte as c_char;
-        }
-    }
-    true
-}
-
-unsafe extern "C-unwind" fn ext_params_text_to_value(
-    _plugin: *const clap_plugin,
-    param_id: clap_id,
-    text: *const c_char,
-    out_value: *mut f64,
-) -> bool {
-    let Some(id) = ParamId::from_raw(param_id) else {
-        return false;
-    };
-    if text.is_null() || out_value.is_null() {
-        return false;
-    }
-    let Ok(text) = unsafe { CStr::from_ptr(text) }.to_str() else {
-        return false;
-    };
-    let Some(value) = parse_param_text(id, text) else {
-        return false;
-    };
-    unsafe {
-        *out_value = sanitize_param_value(id, value);
-    }
-    true
-}
-
-unsafe extern "C-unwind" fn ext_params_flush(
-    plugin: *const clap_plugin,
-    in_events: *const maolan_clap::ffi::clap_input_events,
-    out_events: *const maolan_clap::ffi::clap_output_events,
-) {
-    if plugin.is_null() {
-        return;
-    }
-    let instance = unsafe { instance(plugin) };
-    if !in_events.is_null() {
-        let input = unsafe { InputEvents::new_unchecked(&*in_events) };
-        apply_param_events(&instance.shared, &input, sanitize_param_value);
-    }
-    if !out_events.is_null() {
-        let mut output = unsafe { OutputEvents::new_unchecked(&*out_events) };
-        emit_pending_param_events_to_host(&instance.shared, &mut output);
-    }
-}
-
-unsafe extern "C-unwind" fn ext_state_save(
-    plugin: *const clap_plugin,
-    stream: *const clap_ostream,
-) -> bool {
-    if plugin.is_null() || stream.is_null() {
-        return false;
-    }
-    let instance = unsafe { instance(plugin) };
-    let state =
-        PluginState::from_runtime(&instance.shared.params, instance.shared.section_switches());
-    let Ok(bytes) = state.to_bytes() else {
-        return false;
-    };
-    let mut stream = unsafe { OStream::new_unchecked(stream) };
-    stream.write_all(&bytes).is_ok()
-}
-
-unsafe extern "C-unwind" fn ext_state_load(
-    plugin: *const clap_plugin,
-    stream: *const clap_istream,
-) -> bool {
-    if plugin.is_null() || stream.is_null() {
-        return false;
-    }
-    let instance = unsafe { instance(plugin) };
-    let mut stream = unsafe { IStream::new_unchecked(stream) };
-    let mut bytes = Vec::new();
-    if stream.read_to_end(&mut bytes).is_err() {
-        return false;
-    }
-    let Ok(state) = PluginState::from_bytes(&bytes) else {
-        return false;
-    };
-    let sections = state.apply(&instance.shared.params);
-    instance.shared.apply_section_switches(sections);
-    true
-}
-
-static AUDIO_PORTS_EXT: clap_plugin_audio_ports = clap_plugin_audio_ports {
-    count: Some(ext_audio_ports_count),
-    get: Some(ext_audio_ports_get),
-};
-
-static PARAMS_EXT: clap_plugin_params = clap_plugin_params {
-    count: Some(ext_params_count),
-    get_info: Some(ext_params_get_info),
-    get_value: Some(ext_params_get_value),
-    value_to_text: Some(ext_params_value_to_text),
-    text_to_value: Some(ext_params_text_to_value),
-    flush: Some(ext_params_flush),
-};
-
-static STATE_EXT: clap_plugin_state = clap_plugin_state {
-    save: Some(ext_state_save),
-    load: Some(ext_state_load),
-};
-
-static TAIL_EXT: clap_plugin_tail = clap_plugin_tail {
-    get: Some(ext_tail_get),
-};
-
-unsafe extern "C-unwind" fn ext_tail_get(_plugin: *const clap_plugin) -> u32 {
-    0
-}
-
-unsafe extern "C-unwind" fn ext_gui_is_api_supported(
-    _plugin: *const clap_plugin,
-    api: *const c_char,
-    is_floating: bool,
-) -> bool {
-    if api.is_null() {
-        return false;
-    }
-    let api = unsafe { CStr::from_ptr(api) };
-    crate::stereo::gui::is_api_supported(api, is_floating)
-}
-
-unsafe extern "C-unwind" fn ext_gui_get_preferred_api(
-    _plugin: *const clap_plugin,
-    api: *mut *const c_char,
-    is_floating: *mut bool,
-) -> bool {
-    if api.is_null() || is_floating.is_null() {
-        return false;
-    }
-    let preferred = crate::stereo::gui::preferred_api();
-    unsafe {
-        *api = preferred.as_ptr();
-        *is_floating = false;
-    }
-    true
-}
-
-unsafe extern "C-unwind" fn ext_gui_create(
-    plugin: *const clap_plugin,
-    api: *const c_char,
-    is_floating: bool,
-) -> bool {
-    if plugin.is_null() {
-        return false;
-    }
-    let instance = unsafe { instance(plugin) };
-    let api = unsafe { CStr::from_ptr(api) };
-    instance
-        .gui_bridge
-        .lock()
-        .create(instance.shared.clone(), api, is_floating)
-}
-
-unsafe extern "C-unwind" fn ext_gui_destroy(plugin: *const clap_plugin) {
-    if plugin.is_null() {
-        return;
-    }
-    let instance = unsafe { instance(plugin) };
-    instance.gui_bridge.lock().destroy();
-    instance
-        .shared
-        .host
-        .store(std::ptr::null_mut(), Ordering::Release);
-}
-
-unsafe extern "C-unwind" fn ext_gui_set_scale(_plugin: *const clap_plugin, _scale: f64) -> bool {
-    false
-}
-
-unsafe extern "C-unwind" fn ext_gui_get_size(
-    _plugin: *const clap_plugin,
-    width: *mut u32,
-    height: *mut u32,
-) -> bool {
-    if width.is_null() || height.is_null() {
-        return false;
-    }
-    unsafe {
-        *width = crate::stereo::gui::EDITOR_WIDTH;
-        *height = crate::stereo::gui::EDITOR_HEIGHT;
-    }
-    true
-}
-
-unsafe extern "C-unwind" fn ext_gui_can_resize(_plugin: *const clap_plugin) -> bool {
-    false
-}
-
-unsafe extern "C-unwind" fn ext_gui_get_resize_hints(
-    _plugin: *const clap_plugin,
-    _hints: *mut clap_gui_resize_hints,
-) -> bool {
-    false
-}
-
-unsafe extern "C-unwind" fn ext_gui_adjust_size(
-    _plugin: *const clap_plugin,
-    _width: *mut u32,
-    _height: *mut u32,
-) -> bool {
-    false
-}
-
-unsafe extern "C-unwind" fn ext_gui_set_size(
-    _plugin: *const clap_plugin,
-    _width: u32,
-    _height: u32,
-) -> bool {
-    false
-}
-
-#[cfg(any(
-    target_os = "windows",
-    target_os = "macos",
-    target_os = "linux",
-    target_os = "freebsd"
-))]
-#[allow(clippy::needless_bool)]
-unsafe extern "C-unwind" fn ext_gui_set_parent(
-    plugin: *const clap_plugin,
-    window: *const clap_window,
-) -> bool {
-    if plugin.is_null() || window.is_null() {
-        return false;
-    }
-    let instance = unsafe { instance(plugin) };
-    let window = unsafe { &*window };
-    let api = unsafe { CStr::from_ptr(window.api) };
-
-    let parent = if api == CLAP_WINDOW_API_X11 {
-        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-        {
-            crate::stereo::gui::ParentWindowHandle::X11(unsafe { window.clap_window__.x11 })
-        }
-        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
-        {
+    fn load(shared: &SharedState, bytes: &[u8]) -> bool {
+        let Ok(state) = PluginState::from_bytes(bytes) else {
             return false;
-        }
-    } else if api == CLAP_WINDOW_API_WIN32 {
-        #[cfg(target_os = "windows")]
-        {
-            crate::stereo::gui::ParentWindowHandle::Win32(unsafe { window.clap_window__.win32 })
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            return false;
-        }
-    } else if api == CLAP_WINDOW_API_COCOA {
-        #[cfg(target_os = "macos")]
-        {
-            crate::stereo::gui::ParentWindowHandle::Cocoa(unsafe { window.clap_window__.cocoa })
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            return false;
-        }
-    } else {
-        return false;
-    };
-
-    instance
-        .gui_bridge
-        .lock()
-        .set_parent(instance.shared.clone(), parent)
-}
-
-unsafe extern "C-unwind" fn ext_gui_set_transient(
-    _plugin: *const clap_plugin,
-    _window: *const clap_window,
-) -> bool {
-    false
-}
-
-unsafe extern "C-unwind" fn ext_gui_suggest_title(
-    _plugin: *const clap_plugin,
-    _title: *const c_char,
-) {
-}
-
-unsafe extern "C-unwind" fn ext_gui_show(plugin: *const clap_plugin) -> bool {
-    if plugin.is_null() {
-        return false;
+        };
+        let sections = state.apply(&shared.params);
+        shared.apply_section_switches(sections);
+        true
     }
-    let instance = unsafe { instance(plugin) };
-    instance.gui_bridge.lock().show()
 }
 
-unsafe extern "C-unwind" fn ext_gui_hide(plugin: *const clap_plugin) -> bool {
-    if plugin.is_null() {
-        return false;
-    }
-    let instance = unsafe { instance(plugin) };
-    instance.gui_bridge.lock().hide(instance.shared.clone())
-}
-
-static GUI_EXT: clap_plugin_gui = clap_plugin_gui {
-    is_api_supported: Some(ext_gui_is_api_supported),
-    get_preferred_api: Some(ext_gui_get_preferred_api),
-    create: Some(ext_gui_create),
-    destroy: Some(ext_gui_destroy),
-    set_scale: Some(ext_gui_set_scale),
-    get_size: Some(ext_gui_get_size),
-    can_resize: Some(ext_gui_can_resize),
-    get_resize_hints: Some(ext_gui_get_resize_hints),
-    adjust_size: Some(ext_gui_adjust_size),
-    set_size: Some(ext_gui_set_size),
-    set_parent: Some(ext_gui_set_parent),
-    set_transient: Some(ext_gui_set_transient),
-    suggest_title: Some(ext_gui_suggest_title),
-    show: Some(ext_gui_show),
-    hide: Some(ext_gui_hide),
-};
+clap_audio_ports_ext!(SharedState, AudioProcessor, GuiBridge);
+clap_params_ext!(SharedState, AudioProcessor, GuiBridge);
+clap_state_ext!(SharedState, AudioProcessor, GuiBridge, PluginState);
+clap_tail_ext!(SharedState, AudioProcessor, GuiBridge, 0);
+clap_gui_ext!(SharedState, AudioProcessor, GuiBridge);
 
 unsafe extern "C-unwind" fn plugin_get_extension(
     plugin: *const clap_plugin,
     id: *const c_char,
 ) -> *const c_void {
     if plugin.is_null() || id.is_null() {
-        return null();
+        return std::ptr::null();
     }
     let id = unsafe { CStr::from_ptr(id) };
     if id == CLAP_EXT_AUDIO_PORTS {
@@ -1177,73 +506,19 @@ unsafe extern "C-unwind" fn plugin_get_extension(
     } else if id == CLAP_EXT_GUI {
         &raw const GUI_EXT as *const _ as *const c_void
     } else {
-        null()
+        std::ptr::null()
     }
 }
 
-unsafe extern "C-unwind" fn factory_get_plugin_count(_factory: *const clap_plugin_factory) -> u32 {
-    1
-}
-
-unsafe extern "C-unwind" fn factory_get_plugin_descriptor(
-    _factory: *const clap_plugin_factory,
-    _index: u32,
-) -> *const clap_plugin_descriptor {
-    &raw const DESCRIPTOR.0
-}
-
-unsafe extern "C-unwind" fn factory_create_plugin(
-    _factory: *const clap_plugin_factory,
-    host: *const clap_host,
-    plugin_id: *const c_char,
-) -> *const clap_plugin {
-    if host.is_null() || plugin_id.is_null() {
-        return null();
-    }
-    let plugin_id = unsafe { CStr::from_ptr(plugin_id) };
-    if plugin_id != unsafe { CStr::from_ptr(PLUGIN_ID.as_ptr().cast()) } {
-        return null();
-    }
-    let instance = Box::new(PluginInstance::new(host));
-    let plugin = Box::new(clap_plugin {
-        desc: &raw const DESCRIPTOR.0,
-        plugin_data: Box::into_raw(instance).cast(),
-        init: Some(plugin_init),
-        destroy: Some(plugin_destroy),
-        activate: Some(plugin_activate),
-        deactivate: Some(plugin_deactivate),
-        start_processing: Some(plugin_start_processing),
-        stop_processing: Some(plugin_stop_processing),
-        reset: Some(plugin_reset),
-        process: Some(plugin_process),
-        get_extension: Some(plugin_get_extension),
-        on_main_thread: Some(plugin_on_main_thread),
-    });
-    Box::into_raw(plugin)
-}
-
-static FACTORY: clap_plugin_factory = clap_plugin_factory {
-    get_plugin_count: Some(factory_get_plugin_count),
-    get_plugin_descriptor: Some(factory_get_plugin_descriptor),
-    create_plugin: Some(factory_create_plugin),
+const PORTS: PortConfig = PortConfig {
+    inputs: mono_pair!("", ""),
+    outputs: mono_pair!("", ""),
 };
 
-/// # Safety
-///
-/// The returned pointer is valid for the lifetime of the program and points to
-/// a static CLAP plugin descriptor.
-pub unsafe fn descriptor_ptr() -> *const clap_plugin_descriptor {
-    &raw const DESCRIPTOR.0
-}
-
-/// # Safety
-///
-/// `host` and `plugin_id` must be valid pointers suitable for the CLAP plugin
-/// factory `create_plugin` callback. The returned plugin pointer must be handled
-/// according to the CLAP lifetime rules.
-pub unsafe fn create_plugin(
-    host: *const clap_host,
-    plugin_id: *const c_char,
-) -> *const clap_plugin {
-    unsafe { factory_create_plugin(&raw const FACTORY, host, plugin_id) }
-}
+clap_create_fn!(
+    SharedState,
+    AudioProcessor,
+    GuiBridge,
+    PORTS,
+    bus bus::PluginSharedData::new(bus::PluginType::Stereo).with_fft(bus::FftData::default())
+);

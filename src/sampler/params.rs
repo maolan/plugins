@@ -1,8 +1,7 @@
+use crate::common::ClapParamId;
 use maolan_clap::ffi::{
     CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_IS_STEPPED, CLAP_PARAM_REQUIRES_PROCESS,
 };
-
-use crate::common::ClapParamId;
 
 const AUTOMATABLE: u32 = CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_REQUIRES_PROCESS;
 const STEPPED: u32 =
