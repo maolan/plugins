@@ -142,20 +142,14 @@ mod tests {
 
     #[test]
     fn resource_file_in_dir_requires_absolute_path_inside_dir() {
-        let dir = Path::new("/session/resources");
-        assert!(resource_file_in_dir(
-            dir,
-            Path::new("/session/resources/model.nam")
-        ));
-        assert!(resource_file_in_dir(
-            dir,
-            Path::new("/session/resources/sub/ir.wav")
-        ));
-        assert!(!resource_file_in_dir(
-            dir,
-            Path::new("/session/other/model.nam")
-        ));
-        assert!(!resource_file_in_dir(dir, Path::new("model.nam")));
+        let dir = temp_test_dir("in_dir");
+        let outside = temp_test_dir("outside_dir");
+        assert!(resource_file_in_dir(&dir, &dir.join("model.nam")));
+        assert!(resource_file_in_dir(&dir, &dir.join("sub").join("ir.wav")));
+        assert!(!resource_file_in_dir(&dir, &outside.join("model.nam")));
+        assert!(!resource_file_in_dir(&dir, Path::new("model.nam")));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     #[test]
@@ -299,8 +293,15 @@ mod tests {
         assert_eq!(
             files,
             vec![
-                String::from("kit/drumkit.xml"),
-                String::from("kit/sub/kick.wav"),
+                Path::new("kit")
+                    .join("drumkit.xml")
+                    .to_string_lossy()
+                    .into_owned(),
+                Path::new("kit")
+                    .join("sub")
+                    .join("kick.wav")
+                    .to_string_lossy()
+                    .into_owned(),
                 String::from("other.txt"),
             ]
         );

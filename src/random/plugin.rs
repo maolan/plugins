@@ -4,10 +4,6 @@ use std::{
     ptr::{null, null_mut},
 };
 
-#[cfg(target_os = "macos")]
-use maolan_clap::ffi::CLAP_WINDOW_API_COCOA;
-#[cfg(target_os = "windows")]
-use maolan_clap::ffi::CLAP_WINDOW_API_WIN32;
 use maolan_clap::{
     events::{EventBuilder, InputEvents, Midi as ClapMidi, OutputEvents, TransportFlags},
     ffi::{

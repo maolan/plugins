@@ -1253,37 +1253,39 @@ mod tests {
 
     #[test]
     fn resource_files_only_counts_absolute_paths_inside_resource_dir() {
+        let dir = std::env::temp_dir().join(format!(
+            "maolan_modeler_resource_files_{}",
+            std::process::id()
+        ));
+        let outside = std::env::temp_dir().join(format!(
+            "maolan_modeler_resource_outside_{}",
+            std::process::id()
+        ));
+        let model_path = dir.join("model.nam").to_string_lossy().into_owned();
+        let ir_path = dir.join("ir.wav").to_string_lossy().into_owned();
+        let picture_path = dir.join("model-picture").to_string_lossy().into_owned();
+
         let shared = SharedState::default();
         assert!(resource_files(&shared).is_empty());
 
-        *shared.resource_dir.write() = Some("/session/resources".to_string());
-        *shared.model_path.write() = "/session/resources/model.nam".to_string();
-        *shared.ir_path.write() = "/library/ir.wav".to_string();
-        assert_eq!(
-            resource_files(&shared),
-            vec!["/session/resources/model.nam"]
-        );
+        *shared.resource_dir.write() = Some(dir.to_string_lossy().into_owned());
+        *shared.model_path.write() = model_path.clone();
+        *shared.ir_path.write() = outside.join("ir.wav").to_string_lossy().into_owned();
+        assert_eq!(resource_files(&shared), vec![model_path.as_str()]);
 
         *shared.ir_path.write() = "relative/ir.wav".to_string();
+        assert_eq!(resource_files(&shared), vec![model_path.as_str()]);
+
+        *shared.ir_path.write() = ir_path.clone();
         assert_eq!(
             resource_files(&shared),
-            vec!["/session/resources/model.nam"]
+            vec![model_path.as_str(), ir_path.as_str()]
         );
 
-        *shared.ir_path.write() = "/session/resources/ir.wav".to_string();
+        *shared.model_picture_path.write() = picture_path.clone();
         assert_eq!(
             resource_files(&shared),
-            vec!["/session/resources/model.nam", "/session/resources/ir.wav"]
-        );
-
-        *shared.model_picture_path.write() = "/session/resources/model-picture".to_string();
-        assert_eq!(
-            resource_files(&shared),
-            vec![
-                "/session/resources/model.nam",
-                "/session/resources/ir.wav",
-                "/session/resources/model-picture"
-            ]
+            vec![model_path.as_str(), ir_path.as_str(), picture_path.as_str()]
         );
     }
 

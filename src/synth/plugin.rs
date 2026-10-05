@@ -4005,25 +4005,31 @@ mod tests {
 
     #[test]
     fn resource_files_only_counts_absolute_paths_inside_resource_dir() {
+        let dir = std::env::temp_dir().join(format!(
+            "maolan_synth_resource_files_{}",
+            std::process::id()
+        ));
+        let outside = std::env::temp_dir().join(format!(
+            "maolan_synth_resource_outside_{}",
+            std::process::id()
+        ));
+        let wav_a = dir.join("a.wav").to_string_lossy().into_owned();
+        let wav_b = dir.join("b.wav").to_string_lossy().into_owned();
+
         let shared = SharedState::default();
         assert!(resource_files(&shared).is_empty());
 
-        *shared.resource_dir.write() = Some("/session/resources".to_string());
-        *shared.custom_wavetable_paths[0].lock() = Some("/session/resources/a.wav".to_string());
-        *shared.custom_wavetable_paths[1].lock() = Some("/library/b.wav".to_string());
+        *shared.resource_dir.write() = Some(dir.to_string_lossy().into_owned());
+        *shared.custom_wavetable_paths[0].lock() = Some(wav_a.clone());
+        *shared.custom_wavetable_paths[1].lock() =
+            Some(outside.join("b.wav").to_string_lossy().into_owned());
         *shared.custom_wavetable_paths[2].lock() = Some("relative/c.wav".to_string());
-        assert_eq!(
-            resource_files(&shared),
-            vec!["/session/resources/a.wav".to_string()]
-        );
+        assert_eq!(resource_files(&shared), vec![wav_a.as_str()]);
 
-        *shared.custom_wavetable_paths[1].lock() = Some("/session/resources/b.wav".to_string());
+        *shared.custom_wavetable_paths[1].lock() = Some(wav_b.clone());
         assert_eq!(
             resource_files(&shared),
-            vec![
-                "/session/resources/a.wav".to_string(),
-                "/session/resources/b.wav".to_string()
-            ]
+            vec![wav_a.as_str(), wav_b.as_str()]
         );
     }
 
