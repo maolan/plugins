@@ -2,13 +2,36 @@ name: Rust
 
 on:
   workflow_dispatch:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_call:
+    inputs:
+      release_build:
+        description: "Run the release packaging jobs instead of lint-and-test"
+        type: boolean
+        default: false
+      release_tag:
+        description: "Release tag to name and publish assets under"
+        type: string
+        default: ""
 
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: write
+  id-token: write
+
 jobs:
   lint-and-test:
-    runs-on: ubuntu-latest
+    if: ${{ !inputs.release_build }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
 
@@ -16,6 +39,64 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cache apt packages
+        if: contains(matrix.os, 'ubuntu')
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-cache
+          key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/rust.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-apt-
+
+      - name: Restore apt cache
+        if: contains(matrix.os, 'ubuntu')
+        run: |
+          sudo mkdir -p /var/cache/apt/archives
+          sudo cp -r ~/apt-cache/. /var/cache/apt/archives/ 2>/dev/null || true
+
+      - name: Install system packages
+        if: contains(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxcb1-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev
+
+      - name: Save apt cache
+        if: contains(matrix.os, 'ubuntu')
+        run: |
+          mkdir -p ~/apt-cache
+          cp /var/cache/apt/archives/*.deb ~/apt-cache/ 2>/dev/null || true
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --all-targets
+
+  build-release:
+    if: ${{ inputs.release_build }}
+    runs-on: ubuntu-latest
+    env:
+      ASSET_BASENAME: maolan-plugins-${{ inputs.release_tag }}-linux-x86_64
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
@@ -51,11 +132,141 @@ jobs:
           mkdir -p ~/apt-cache
           cp /var/cache/apt/archives/*.deb ~/apt-cache/ 2>/dev/null || true
 
-      - name: Check formatting
-        run: cargo fmt --check
+      - name: Build release library
+        run: cargo build --release
 
-      - name: Run Clippy
-        run: cargo clippy --all-targets -- -D warnings
+      - name: Package Linux library
+        run: |
+          mkdir -p dist
+          mkdir -p "$RUNNER_TEMP/maolan-plugins-pkg/${ASSET_BASENAME}"
+          cp target/release/libmaolan_plugins.so "$RUNNER_TEMP/maolan-plugins-pkg/${ASSET_BASENAME}/libmaolan_plugins.so"
+          cp README.md "$RUNNER_TEMP/maolan-plugins-pkg/${ASSET_BASENAME}/"
+          cp LICENSE "$RUNNER_TEMP/maolan-plugins-pkg/${ASSET_BASENAME}/"
+          tar -C "$RUNNER_TEMP/maolan-plugins-pkg" -czf "dist/${ASSET_BASENAME}.tar.gz" "${ASSET_BASENAME}"
 
-      - name: Run tests
-        run: cargo test --all-targets
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.ASSET_BASENAME }}
+          path: dist/
+
+  build-release-macos:
+    if: ${{ inputs.release_build }}
+    runs-on: macos-latest
+    env:
+      ASSET_BASENAME: maolan-plugins-${{ inputs.release_tag }}-macos-arm64
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      # The script runs `cargo build --release`, assembles and ad-hoc signs
+      # the Maolan.clap bundle, and produces
+      # dist/maolan-plugins-<version>-macos.<arch>.dmg
+      - name: Build .clap bundle and .dmg
+        run: bash scripts/build-mac.sh
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.ASSET_BASENAME }}
+          path: dist/
+
+  build-release-windows:
+    if: ${{ inputs.release_build }}
+    runs-on: windows-latest
+    env:
+      ASSET_BASENAME: maolan-plugins-${{ inputs.release_tag }}-windows-x86_64
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release library
+        run: cargo build --release
+
+      # Same NSIS flow as scripts/build.ps1: stage the library plus the
+      # VC++ redistributable in C:\maolan-staging\plugins, then compile
+      # scripts/installer.nsi with the version defines it expects.
+      - name: Install NSIS
+        run: choco install nsis --no-progress --yes
+
+      - name: Build NSIS installer
+        run: |
+          $staging = "C:\maolan-staging\plugins"
+          New-Item -ItemType Directory -Force $staging | Out-Null
+          Copy-Item target\release\maolan_plugins.dll $staging -Force
+          Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile "$staging\vc_redist.x64.exe"
+
+          $pkgVersion = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          $versionMatch = [regex]::Match($pkgVersion, '^(\d+)\.(\d+)\.(\d+)')
+          if ($versionMatch.Success) {
+              $productVersion = "$($versionMatch.Groups[1].Value).$($versionMatch.Groups[2].Value).$($versionMatch.Groups[3].Value).0"
+          } else {
+              $productVersion = "0.0.0.0"
+          }
+
+          $nsiTemp = Join-Path $env:RUNNER_TEMP "maolan-plugins-installer"
+          New-Item -ItemType Directory -Force $nsiTemp | Out-Null
+          Copy-Item scripts\installer.nsi "$nsiTemp\installer.nsi" -Force
+          Copy-Item LICENSE "$nsiTemp\LICENSE" -Force
+          Push-Location $nsiTemp
+          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" "/INPUTCHARSET" "UTF8" "/DMAOLAN_VERSION=$pkgVersion" "/DMAOLAN_PRODUCT_VERSION=$productVersion" "$nsiTemp\installer.nsi"
+          Pop-Location
+
+      - name: Package Windows binaries
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item (Join-Path $env:RUNNER_TEMP "maolan-plugins-installer\maolan-plugins-setup.exe") "dist/${{ env.ASSET_BASENAME }}.exe"
+          $stage = Join-Path $env:RUNNER_TEMP "maolan-plugins-pkg"
+          New-Item -ItemType Directory -Force "$stage/${{ env.ASSET_BASENAME }}" | Out-Null
+          Copy-Item target/release/maolan_plugins.dll "$stage/${{ env.ASSET_BASENAME }}/"
+          Copy-Item README.md "$stage/${{ env.ASSET_BASENAME }}/"
+          Copy-Item LICENSE "$stage/${{ env.ASSET_BASENAME }}/"
+          Compress-Archive -Path "$stage/${{ env.ASSET_BASENAME }}" -DestinationPath "dist/${{ env.ASSET_BASENAME }}.zip"
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.ASSET_BASENAME }}
+          path: dist/
+
+  publish-release-assets:
+    if: ${{ inputs.release_build }}
+    runs-on: ubuntu-latest
+    needs:
+      - build-release
+      - build-release-macos
+      - build-release-windows
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: Publish assets to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ inputs.release_tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          mapfile -t artifacts < <(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.deb' -o -name '*.rpm' -o -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \) | sort)
+
+          if [ "${#artifacts[@]}" -eq 0 ]; then
+            echo "No release artifacts found in dist/"
+            find dist -maxdepth 3 -print
+            exit 1
+          fi
+
+          gh release upload "$TAG_NAME" "${artifacts[@]}" --clobber --repo "$REPOSITORY"

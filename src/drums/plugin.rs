@@ -1629,9 +1629,20 @@ mod tests {
         assert_eq!(
             resource_files(&shared),
             vec![
-                String::from("Rock-7/drumkit.xml"),
-                String::from("Rock-7/midimap.xml"),
-                String::from("Rock-7/samples/kick/kick.wav"),
+                Path::new("Rock-7")
+                    .join("drumkit.xml")
+                    .to_string_lossy()
+                    .into_owned(),
+                Path::new("Rock-7")
+                    .join("midimap.xml")
+                    .to_string_lossy()
+                    .into_owned(),
+                Path::new("Rock-7")
+                    .join("samples")
+                    .join("kick")
+                    .join("kick.wav")
+                    .to_string_lossy()
+                    .into_owned(),
             ]
         );
 
@@ -1654,7 +1665,12 @@ mod tests {
         *shared.kit_path.write() = kit_dir.join("My Kit.xml").to_string_lossy().into_owned();
         assert_eq!(
             resource_files(&shared),
-            vec![String::from("Fusion-2/My Kit.xml")]
+            vec![
+                Path::new("Fusion-2")
+                    .join("My Kit.xml")
+                    .to_string_lossy()
+                    .into_owned()
+            ]
         );
 
         let _ = std::fs::remove_dir_all(&dir);

@@ -173,7 +173,7 @@ pub enum Message {
     Undo,
     OpenSamplerEditor(usize),
     CloseSamplerEditor,
-    AudioEditor(maolan_editor::app::Message),
+    AudioEditor(Box<maolan_editor::app::Message>),
     SetEditingZoneValue(ZoneEditField, f32),
     ToggleEditingZoneReverse(bool),
     SetEditingZonePlayMode(ZonePlayModeOption),
@@ -1714,7 +1714,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.audio_editor_path = zones
                     .get(index)
                     .and_then(|zone| zone.files.first().cloned());
-                return open_task.map(Message::AudioEditor);
+                return open_task.map(|msg| Message::AudioEditor(Box::new(msg)));
             }
             Message::CloseSamplerEditor => {
                 state.sampler_audition = None;
@@ -1729,6 +1729,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.extra_sfz_opcode_text.clear();
             }
             Message::AudioEditor(msg) => {
+                let msg = *msg;
                 if matches!(
                     msg,
                     maolan_editor::app::Message::Save | maolan_editor::app::Message::SaveAs
@@ -1757,7 +1758,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                                     editor,
                                     maolan_editor::app::Message::Play,
                                 )
-                                .map(Message::AudioEditor)
+                                .map(|editor_msg| Message::AudioEditor(Box::new(editor_msg)))
                             })
                             .unwrap_or_else(Task::none);
                         if let Some(index) = state.editing_zone_index {
@@ -1799,7 +1800,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                                     editor,
                                     maolan_editor::app::Message::Stop,
                                 )
-                                .map(Message::AudioEditor)
+                                .map(|editor_msg| Message::AudioEditor(Box::new(editor_msg)))
                             })
                             .unwrap_or_else(Task::none);
                         break 'task editor_task;
@@ -1816,11 +1817,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             editor,
                             maolan_editor::app::Message::DocumentSaved(Ok(path.clone())),
                         )
-                        .map(Message::AudioEditor);
+                        .map(|editor_msg| Message::AudioEditor(Box::new(editor_msg)));
                         reload_zone_sample(state, &path);
                         task
                     }
-                    _ => maolan_editor::app::update(editor, msg).map(Message::AudioEditor),
+                    _ => maolan_editor::app::update(editor, msg)
+                        .map(|editor_msg| Message::AudioEditor(Box::new(editor_msg))),
                 };
                 break 'task task;
             }
@@ -5173,7 +5175,8 @@ fn sampler_editor_view<'a>(state: &'a State, index: usize) -> Element<'a, Messag
         .audio_editor
         .as_ref()
         .map(|editor| {
-            maolan_editor::app::embedded_view_without_vu_meter(editor).map(Message::AudioEditor)
+            maolan_editor::app::embedded_view_without_vu_meter(editor)
+                .map(|editor_msg| Message::AudioEditor(Box::new(editor_msg)))
         })
         .unwrap_or_else(|| {
             container(text("No sample loaded"))
@@ -5572,10 +5575,10 @@ fn sampler_shortcuts(
 }
 
 fn subscription(state: &State) -> maolan_baseview::iced::Subscription<Message> {
-    let editor_sub = state
-        .audio_editor
-        .as_ref()
-        .map(|editor| maolan_editor::app::subscription(editor).map(Message::AudioEditor));
+    let editor_sub = state.audio_editor.as_ref().map(|editor| {
+        maolan_editor::app::subscription(editor)
+            .map(|editor_msg| Message::AudioEditor(Box::new(editor_msg)))
+    });
     let panel_shortcuts_sub = (state.editing_zone_name.is_none())
         .then(|| maolan_baseview::iced::event::listen_with(panel_shortcuts));
     let full_shortcuts_sub = (state.editing_zone_name.is_none() && state.audio_editor.is_none())

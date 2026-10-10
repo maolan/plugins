@@ -151,11 +151,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
 
         let prefix = root.file_name().unwrap().to_string_lossy();
+        let sub_category = Path::new("Basses").join("Sub");
         assert_eq!(presets.len(), 2);
         assert_eq!(presets[0].name, "Deep");
         assert_eq!(presets[0].category, format!("{prefix}/Basses"));
         assert_eq!(presets[1].name, "Wobble");
-        assert_eq!(presets[1].category, format!("{prefix}/Basses/Sub"));
+        assert_eq!(
+            presets[1].category,
+            format!("{prefix}/{}", sub_category.display())
+        );
     }
 
     /// Manual end-to-end check against the real Surge installation. Run with

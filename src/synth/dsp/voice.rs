@@ -4016,7 +4016,7 @@ mod tests {
     use std::io::Write;
 
     fn write_wav_stereo(
-        path: &str,
+        path: &std::path::Path,
         left: &[f32],
         right: &[f32],
         sample_rate: u32,
@@ -4082,8 +4082,8 @@ mod tests {
         ];
         voice.process_block(&mut out_l, &mut out_r, None, None, &scene_lfo_slices);
 
-        let path = "/tmp/maolan_saw_test.wav";
-        write_wav_stereo(path, &out_l, &out_r, sample_rate as u32).unwrap();
+        let path = std::env::temp_dir().join("maolan_saw_test.wav");
+        write_wav_stereo(&path, &out_l, &out_r, sample_rate as u32).unwrap();
 
         let (min, max) = out_l
             .iter()
@@ -4092,7 +4092,7 @@ mod tests {
             .fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), v| {
                 (min.min(v), max.max(v))
             });
-        println!("Wrote {path}");
+        println!("Wrote {}", path.display());
         println!("samples={frames} min={min:.6} max={max:.6}");
         for i in 0..20.min(frames) {
             println!("{i}: {:.6} {:.6}", out_l[i], out_r[i]);
