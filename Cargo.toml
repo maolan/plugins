@@ -13,6 +13,36 @@ categories = ["multimedia::audio"]
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[package.metadata.deb]
+name = "maolan-plugins"
+maintainer = "Maolan Team <studio@maolan.rs>"
+section = "sound"
+priority = "optional"
+copyright = "2026, Maolan Team <studio@maolan.rs>"
+depends = "libx11-6, libxcb1, libxkbcommon0, libxkbcommon-x11-0"
+assets = [
+  ["target/release/libmaolan_plugins.so", "usr/lib/clap/Maolan.clap", "755"],
+  ["README.md", "usr/share/doc/maolan-plugins/", "644"],
+  ["LICENSE", "usr/share/doc/maolan-plugins/", "644"],
+]
+
+[package.metadata.generate-rpm.requires]
+libX11 = "*"
+libxcb = "*"
+libxkbcommon = "*"
+libxkbcommon-x11 = "*"
+
+[package.metadata.generate-rpm]
+name = "maolan-plugins"
+summary = "Maolan CLAP audio plugins"
+license = "BSD-2-Clause"
+url = "https://github.com/maolan/plugins"
+assets = [
+  { source = "target/release/libmaolan_plugins.so", dest = "/usr/lib/clap/Maolan.clap", mode = "755" },
+  { source = "README.md", dest = "/usr/share/doc/maolan-plugins/README.md", mode = "644" },
+  { source = "LICENSE", dest = "/usr/share/doc/maolan-plugins/LICENSE", mode = "644" },
+]
+
 [profile.dev]
 opt-level = 3
 debug = true
