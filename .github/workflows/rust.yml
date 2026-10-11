@@ -135,6 +135,14 @@ jobs:
       - name: Build release library
         run: cargo build --release
 
+      - name: Install packaging tools
+        run: cargo install --locked cargo-deb cargo-generate-rpm
+
+      - name: Build .deb and .rpm packages
+        run: |
+          cargo deb --no-build
+          cargo generate-rpm
+
       - name: Package Linux library
         run: |
           mkdir -p dist
@@ -143,6 +151,8 @@ jobs:
           cp README.md "$RUNNER_TEMP/maolan-plugins-pkg/${ASSET_BASENAME}/"
           cp LICENSE "$RUNNER_TEMP/maolan-plugins-pkg/${ASSET_BASENAME}/"
           tar -C "$RUNNER_TEMP/maolan-plugins-pkg" -czf "dist/${ASSET_BASENAME}.tar.gz" "${ASSET_BASENAME}"
+          mv target/debian/*.deb dist/
+          mv target/generate-rpm/*.rpm dist/
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v7
