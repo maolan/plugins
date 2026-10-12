@@ -779,19 +779,11 @@ impl SamplerEngine {
             let part_bus_gain = 10.0f32.powf(self.patch.parts[pi].bus.gain_db / 20.0);
 
             let (p_l, p_r) = part_buf;
-            for s in p_l.iter_mut() {
-                *s *= part_bus_gain;
-            }
-            for s in p_r.iter_mut() {
-                *s *= part_bus_gain;
-            }
+            crate::simd::mul_inplace(p_l, part_bus_gain);
+            crate::simd::mul_inplace(p_r, part_bus_gain);
 
-            for (o, s) in out_l.iter_mut().zip(p_l.iter()) {
-                *o += s;
-            }
-            for (o, s) in out_r.iter_mut().zip(p_r.iter()) {
-                *o += s;
-            }
+            crate::simd::add_inplace(out_l, p_l);
+            crate::simd::add_inplace(out_r, p_r);
 
             for send in &self.patch.parts[pi].aux_sends {
                 if send.amount <= 0.0 || send.bus_index >= 4 {
@@ -801,28 +793,16 @@ impl SamplerEngine {
                 let (a_l, a_r) = &mut aux_bufs[bi];
                 match send.tap_point {
                     crate::sampler::dsp::bus::AuxTapPoint::PreFx => {
-                        for (a, s) in a_l.iter_mut().zip(p_l.iter()) {
-                            *a += s * send.amount;
-                        }
-                        for (a, s) in a_r.iter_mut().zip(p_r.iter()) {
-                            *a += s * send.amount;
-                        }
+                        crate::simd::add_scaled_inplace(a_l, p_l, send.amount);
+                        crate::simd::add_scaled_inplace(a_r, p_r, send.amount);
                     }
                     crate::sampler::dsp::bus::AuxTapPoint::PostFxPreVca => {
-                        for (a, s) in a_l.iter_mut().zip(p_l.iter()) {
-                            *a += s * send.amount;
-                        }
-                        for (a, s) in a_r.iter_mut().zip(p_r.iter()) {
-                            *a += s * send.amount;
-                        }
+                        crate::simd::add_scaled_inplace(a_l, p_l, send.amount);
+                        crate::simd::add_scaled_inplace(a_r, p_r, send.amount);
                     }
                     crate::sampler::dsp::bus::AuxTapPoint::PostVca => {
-                        for (a, s) in a_l.iter_mut().zip(p_l.iter()) {
-                            *a += s * send.amount;
-                        }
-                        for (a, s) in a_r.iter_mut().zip(p_r.iter()) {
-                            *a += s * send.amount;
-                        }
+                        crate::simd::add_scaled_inplace(a_l, p_l, send.amount);
+                        crate::simd::add_scaled_inplace(a_r, p_r, send.amount);
                     }
                 }
             }
@@ -834,35 +814,19 @@ impl SamplerEngine {
             }
             let bus_gain = 10.0f32.powf(self.patch.aux_busses[bi].gain_db / 20.0);
             let (a_l, a_r) = aux_buf;
-            for s in a_l.iter_mut() {
-                *s *= bus_gain;
-            }
-            for s in a_r.iter_mut() {
-                *s *= bus_gain;
-            }
-            for (o, s) in out_l.iter_mut().zip(a_l.iter()) {
-                *o += s;
-            }
-            for (o, s) in out_r.iter_mut().zip(a_r.iter()) {
-                *o += s;
-            }
+            crate::simd::mul_inplace(a_l, bus_gain);
+            crate::simd::mul_inplace(a_r, bus_gain);
+            crate::simd::add_inplace(out_l, a_l);
+            crate::simd::add_inplace(out_r, a_r);
         }
 
         let main_gain = 10.0f32.powf(self.patch.main_bus.gain_db / 20.0);
-        for s in out_l.iter_mut() {
-            *s *= main_gain;
-        }
-        for s in out_r.iter_mut() {
-            *s *= main_gain;
-        }
+        crate::simd::mul_inplace(out_l, main_gain);
+        crate::simd::mul_inplace(out_r, main_gain);
 
         let effective_gain = self.master_gain * self.channel_volume * self.expression;
-        for s in out_l.iter_mut() {
-            *s *= effective_gain;
-        }
-        for s in out_r.iter_mut() {
-            *s *= effective_gain;
-        }
+        crate::simd::mul_inplace(out_l, effective_gain);
+        crate::simd::mul_inplace(out_r, effective_gain);
     }
 
     pub fn process_group_outputs(&mut self, outputs: &mut [(Vec<f32>, Vec<f32>)], frames: usize) {
@@ -889,12 +853,8 @@ impl SamplerEngine {
         let main_gain = 10.0f32.powf(self.patch.main_bus.gain_db / 20.0);
         let effective_gain = main_gain * self.master_gain * self.channel_volume * self.expression;
         for (out_l, out_r) in outputs.iter_mut() {
-            for sample in &mut out_l[..frames] {
-                *sample *= effective_gain;
-            }
-            for sample in &mut out_r[..frames] {
-                *sample *= effective_gain;
-            }
+            crate::simd::mul_inplace(&mut out_l[..frames], effective_gain);
+            crate::simd::mul_inplace(&mut out_r[..frames], effective_gain);
         }
     }
 

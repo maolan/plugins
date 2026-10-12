@@ -1,12 +1,6 @@
-#![allow(unsafe_op_in_unsafe_fn)]
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-mod x86 {
-    pub use std::arch::x86_64::*;
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-use x86::*;
+use fearless_simd::prelude::*;
+use fearless_simd::{Level, dispatch};
+use fearless_simd_macros::simd;
 
 /// Enables flush-to-zero (FTZ) and denormals-are-zero (DAZ) for the calling
 /// thread so recursive filter/delay states decay to exact zero instead of
@@ -32,870 +26,51 @@ pub fn enable_flush_to_zero() {
 }
 
 pub fn add_inplace(dst: &mut [f32], src: &[f32]) {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    unsafe {
-        if is_x86_feature_detected!("avx") {
-            add_inplace_avx(dst, src);
-            return;
-        }
-        if is_x86_feature_detected!("sse") {
-            add_inplace_sse(dst, src);
-            return;
-        }
-    }
-    add_inplace_scalar(dst, src);
+    dispatch!(Level::new(), simd => add_inplace_kernel(simd, dst, src));
 }
 
 pub fn add_scaled_inplace(dst: &mut [f32], src: &[f32], gain: f32) {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    unsafe {
-        if is_x86_feature_detected!("avx") && is_x86_feature_detected!("fma") {
-            add_scaled_inplace_avx_fma(dst, src, gain);
-            return;
-        }
-        if is_x86_feature_detected!("avx") {
-            add_scaled_inplace_avx(dst, src, gain);
-            return;
-        }
-        if is_x86_feature_detected!("sse") {
-            add_scaled_inplace_sse(dst, src, gain);
-            return;
-        }
-    }
-    add_scaled_inplace_scalar(dst, src, gain);
+    dispatch!(Level::new(), simd => add_scaled_inplace_kernel(simd, dst, src, gain));
 }
 
 pub fn affine_inplace(dst: &mut [f32], scale: &[f32], loc: &[f32]) {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    unsafe {
-        if is_x86_feature_detected!("avx") && is_x86_feature_detected!("fma") {
-            affine_inplace_avx_fma(dst, scale, loc);
-            return;
-        }
-        if is_x86_feature_detected!("avx") {
-            affine_inplace_avx(dst, scale, loc);
-            return;
-        }
-        if is_x86_feature_detected!("sse") {
-            affine_inplace_sse(dst, scale, loc);
-            return;
-        }
-    }
-    affine_inplace_scalar(dst, scale, loc);
+    dispatch!(Level::new(), simd => affine_inplace_kernel(simd, dst, scale, loc));
 }
 
 pub fn mul_inplace(dst: &mut [f32], gain: f32) {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    unsafe {
-        if is_x86_feature_detected!("avx") {
-            mul_inplace_avx(dst, gain);
-            return;
-        }
-        if is_x86_feature_detected!("sse") {
-            mul_inplace_sse(dst, gain);
-            return;
-        }
-    }
-    mul_inplace_scalar(dst, gain);
+    dispatch!(Level::new(), simd => mul_inplace_kernel(simd, dst, gain));
 }
 
 pub fn mul_per_sample_inplace(dst: &mut [f32], src: &[f32]) {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    unsafe {
-        if is_x86_feature_detected!("avx") {
-            mul_per_sample_inplace_avx(dst, src);
-            return;
-        }
-        if is_x86_feature_detected!("sse") {
-            mul_per_sample_inplace_sse(dst, src);
-            return;
-        }
-    }
-    mul_per_sample_inplace_scalar(dst, src);
+    dispatch!(Level::new(), simd => mul_per_sample_inplace_kernel(simd, dst, src));
 }
 
 pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    unsafe {
-        if is_x86_feature_detected!("avx") && is_x86_feature_detected!("fma") {
-            return dot_product_avx_fma(a, b);
-        }
-        if is_x86_feature_detected!("avx") {
-            return dot_product_avx(a, b);
-        }
-        if is_x86_feature_detected!("sse") {
-            return dot_product_sse(a, b);
-        }
-    }
-    dot_product_scalar(a, b)
+    dispatch!(Level::new(), simd => dot_product_kernel(simd, a, b))
 }
 
 pub fn copy_scaled_inplace(dst: &mut [f32], src: &[f32], gain: f32) {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    unsafe {
-        if is_x86_feature_detected!("avx") {
-            copy_scaled_inplace_avx(dst, src, gain);
-            return;
-        }
-        if is_x86_feature_detected!("sse") {
-            copy_scaled_inplace_sse(dst, src, gain);
-            return;
-        }
-    }
-    copy_scaled_inplace_scalar(dst, src, gain);
+    dispatch!(Level::new(), simd => copy_scaled_inplace_kernel(simd, dst, src, gain));
 }
 
 pub fn sanitize_finite_inplace(buf: &mut [f32]) {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    unsafe {
-        if is_x86_feature_detected!("avx") {
-            sanitize_finite_inplace_avx(buf);
-            return;
-        }
-        if is_x86_feature_detected!("sse") {
-            sanitize_finite_inplace_sse(buf);
-            return;
-        }
-    }
-    sanitize_finite_inplace_scalar(buf);
+    dispatch!(Level::new(), simd => sanitize_finite_inplace_kernel(simd, buf));
 }
 
 pub fn peak_abs(buf: &[f32]) -> f32 {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    unsafe {
-        if is_x86_feature_detected!("avx") {
-            return peak_abs_avx(buf);
-        }
-        if is_x86_feature_detected!("sse") {
-            return peak_abs_sse(buf);
-        }
-    }
-    peak_abs_scalar(buf)
+    dispatch!(Level::new(), simd => peak_abs_kernel(simd, buf))
 }
 
-fn add_inplace_scalar(dst: &mut [f32], src: &[f32]) {
-    for (d, s) in dst.iter_mut().zip(src.iter()) {
-        *d += *s;
-    }
-}
-
-fn add_scaled_inplace_scalar(dst: &mut [f32], src: &[f32], gain: f32) {
-    for (d, s) in dst.iter_mut().zip(src.iter()) {
-        *d += *s * gain;
-    }
-}
-
-fn affine_inplace_scalar(dst: &mut [f32], scale: &[f32], loc: &[f32]) {
-    for ((d, s), l) in dst.iter_mut().zip(scale.iter()).zip(loc.iter()) {
-        *d = *d * *s + *l;
-    }
-}
-
-fn mul_inplace_scalar(dst: &mut [f32], gain: f32) {
-    for d in dst.iter_mut() {
-        *d *= gain;
-    }
-}
-
-fn mul_per_sample_inplace_scalar(dst: &mut [f32], src: &[f32]) {
-    for (d, s) in dst.iter_mut().zip(src.iter()) {
-        *d *= *s;
-    }
-}
-
-fn dot_product_scalar(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
-}
-
-fn copy_scaled_inplace_scalar(dst: &mut [f32], src: &[f32], gain: f32) {
-    for (d, s) in dst.iter_mut().zip(src.iter()) {
-        *d = *s * gain;
-    }
-}
-
-fn sanitize_finite_inplace_scalar(buf: &mut [f32]) {
-    for s in buf.iter_mut() {
-        if !s.is_finite() {
-            *s = 0.0;
-        }
-    }
-}
-
-fn peak_abs_scalar(buf: &[f32]) -> f32 {
-    buf.iter().fold(0.0f32, |acc, s| acc.max(s.abs()))
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "sse")]
-unsafe fn add_inplace_sse(dst: &mut [f32], src: &[f32]) {
-    let len = dst.len().min(src.len());
-    let dst_head = &mut dst[..len];
-    let src_head = &src[..len];
-    let mut i = 0usize;
-    while i + 4 <= dst_head.len() {
-        let d = _mm_loadu_ps(dst_head.as_ptr().add(i));
-        let s = _mm_loadu_ps(src_head.as_ptr().add(i));
-        let r = _mm_add_ps(d, s);
-        _mm_storeu_ps(dst_head.as_mut_ptr().add(i), r);
-        i += 4;
-    }
-    for (d, s) in dst_head[i..].iter_mut().zip(src_head[i..].iter()) {
-        *d += *s;
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "sse")]
-unsafe fn add_scaled_inplace_sse(dst: &mut [f32], src: &[f32], gain: f32) {
-    let len = dst.len().min(src.len());
-    let dst_head = &mut dst[..len];
-    let src_head = &src[..len];
-    let g = _mm_set1_ps(gain);
-    let mut i = 0usize;
-    while i + 4 <= dst_head.len() {
-        let d = _mm_loadu_ps(dst_head.as_ptr().add(i));
-        let s = _mm_loadu_ps(src_head.as_ptr().add(i));
-        let r = _mm_add_ps(d, _mm_mul_ps(s, g));
-        _mm_storeu_ps(dst_head.as_mut_ptr().add(i), r);
-        i += 4;
-    }
-    for (d, s) in dst_head[i..].iter_mut().zip(src_head[i..].iter()) {
-        *d += *s * gain;
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "sse")]
-unsafe fn affine_inplace_sse(dst: &mut [f32], scale: &[f32], loc: &[f32]) {
-    let len = dst.len().min(scale.len()).min(loc.len());
-    let mut i = 0usize;
-    while i + 4 <= len {
-        let d = _mm_loadu_ps(dst.as_ptr().add(i));
-        let s = _mm_loadu_ps(scale.as_ptr().add(i));
-        let l = _mm_loadu_ps(loc.as_ptr().add(i));
-        let r = _mm_add_ps(_mm_mul_ps(d, s), l);
-        _mm_storeu_ps(dst.as_mut_ptr().add(i), r);
-        i += 4;
-    }
-    for ((d, s), l) in dst[i..len]
-        .iter_mut()
-        .zip(scale[i..len].iter())
-        .zip(loc[i..len].iter())
-    {
-        *d = *d * *s + *l;
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "sse")]
-unsafe fn mul_inplace_sse(dst: &mut [f32], gain: f32) {
-    let g = _mm_set1_ps(gain);
-    let mut i = 0usize;
-    while i + 4 <= dst.len() {
-        let d = _mm_loadu_ps(dst.as_ptr().add(i));
-        let r = _mm_mul_ps(d, g);
-        _mm_storeu_ps(dst.as_mut_ptr().add(i), r);
-        i += 4;
-    }
-    for d in &mut dst[i..] {
-        *d *= gain;
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "sse")]
-unsafe fn mul_per_sample_inplace_sse(dst: &mut [f32], src: &[f32]) {
-    let len = dst.len().min(src.len());
-    let mut i = 0usize;
-    while i + 4 <= len {
-        let d = _mm_loadu_ps(dst.as_ptr().add(i));
-        let s = _mm_loadu_ps(src.as_ptr().add(i));
-        let r = _mm_mul_ps(d, s);
-        _mm_storeu_ps(dst.as_mut_ptr().add(i), r);
-        i += 4;
-    }
-    for (d, s) in dst[i..len].iter_mut().zip(src[i..len].iter()) {
-        *d *= *s;
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "sse")]
-unsafe fn copy_scaled_inplace_sse(dst: &mut [f32], src: &[f32], gain: f32) {
-    let len = dst.len().min(src.len());
-    let dst_head = &mut dst[..len];
-    let src_head = &src[..len];
-    let g = _mm_set1_ps(gain);
-    let mut i = 0usize;
-    while i + 4 <= dst_head.len() {
-        let s = _mm_loadu_ps(src_head.as_ptr().add(i));
-        let r = _mm_mul_ps(s, g);
-        _mm_storeu_ps(dst_head.as_mut_ptr().add(i), r);
-        i += 4;
-    }
-    for (d, s) in dst_head[i..].iter_mut().zip(src_head[i..].iter()) {
-        *d = *s * gain;
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "sse")]
-unsafe fn sanitize_finite_inplace_sse(buf: &mut [f32]) {
-    let sign_mask = _mm_set1_ps(-0.0);
-    let finite_max = _mm_set1_ps(f32::MAX);
-    let mut i = 0usize;
-    while i + 4 <= buf.len() {
-        let v = _mm_loadu_ps(buf.as_ptr().add(i));
-        let abs_v = _mm_andnot_ps(sign_mask, v);
-        let finite_mask = _mm_cmple_ps(abs_v, finite_max);
-        let r = _mm_and_ps(v, finite_mask);
-        _mm_storeu_ps(buf.as_mut_ptr().add(i), r);
-        i += 4;
-    }
-    for s in &mut buf[i..] {
-        if !s.is_finite() {
-            *s = 0.0;
-        }
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "sse")]
-unsafe fn peak_abs_sse(buf: &[f32]) -> f32 {
-    let sign_mask = _mm_set1_ps(-0.0);
-    let mut peak = _mm_setzero_ps();
-    let mut i = 0usize;
-    while i + 4 <= buf.len() {
-        let v = _mm_loadu_ps(buf.as_ptr().add(i));
-        let abs_v = _mm_andnot_ps(sign_mask, v);
-        peak = _mm_max_ps(peak, abs_v);
-        i += 4;
-    }
-    let mut arr = [0.0f32; 4];
-    _mm_storeu_ps(arr.as_mut_ptr(), peak);
-    let mut max_scalar = arr.into_iter().fold(0.0f32, |a, b| a.max(b));
-    for s in &buf[i..] {
-        max_scalar = max_scalar.max(s.abs());
-    }
-    max_scalar
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "sse")]
-unsafe fn dot_product_sse(a: &[f32], b: &[f32]) -> f32 {
-    let len = a.len().min(b.len());
-    let mut sum = _mm_setzero_ps();
-    let mut i = 0usize;
-    while i + 4 <= len {
-        let av = _mm_loadu_ps(a.as_ptr().add(i));
-        let bv = _mm_loadu_ps(b.as_ptr().add(i));
-        sum = _mm_add_ps(sum, _mm_mul_ps(av, bv));
-        i += 4;
-    }
-    let mut arr = [0.0f32; 4];
-    _mm_storeu_ps(arr.as_mut_ptr(), sum);
-    let mut scalar = arr.into_iter().sum::<f32>();
-    for j in i..len {
-        scalar += a[j] * b[j];
-    }
-    scalar
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx")]
-unsafe fn add_inplace_avx(dst: &mut [f32], src: &[f32]) {
-    let len = dst.len().min(src.len());
-    let dst_head = &mut dst[..len];
-    let src_head = &src[..len];
-    let mut i = 0;
-    while i + 8 <= dst_head.len() {
-        let d = _mm256_loadu_ps(dst_head.as_ptr().add(i));
-        let s = _mm256_loadu_ps(src_head.as_ptr().add(i));
-        let r = _mm256_add_ps(d, s);
-        _mm256_storeu_ps(dst_head.as_mut_ptr().add(i), r);
-        i += 8;
-    }
-    for (d, s) in dst_head[i..].iter_mut().zip(src_head[i..].iter()) {
-        *d += *s;
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx")]
-unsafe fn add_scaled_inplace_avx(dst: &mut [f32], src: &[f32], gain: f32) {
-    let len = dst.len().min(src.len());
-    let dst_head = &mut dst[..len];
-    let src_head = &src[..len];
-    let g = _mm256_set1_ps(gain);
-    let mut i = 0;
-    while i + 8 <= dst_head.len() {
-        let d = _mm256_loadu_ps(dst_head.as_ptr().add(i));
-        let s = _mm256_loadu_ps(src_head.as_ptr().add(i));
-        let r = _mm256_add_ps(d, _mm256_mul_ps(s, g));
-        _mm256_storeu_ps(dst_head.as_mut_ptr().add(i), r);
-        i += 8;
-    }
-    for (d, s) in dst_head[i..].iter_mut().zip(src_head[i..].iter()) {
-        *d += *s * gain;
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx,fma")]
-unsafe fn add_scaled_inplace_avx_fma(dst: &mut [f32], src: &[f32], gain: f32) {
-    let len = dst.len().min(src.len());
-    let dst_head = &mut dst[..len];
-    let src_head = &src[..len];
-    let g = _mm256_set1_ps(gain);
-    let mut i = 0;
-    while i + 8 <= dst_head.len() {
-        let d = _mm256_loadu_ps(dst_head.as_ptr().add(i));
-        let s = _mm256_loadu_ps(src_head.as_ptr().add(i));
-        let r = _mm256_fmadd_ps(s, g, d);
-        _mm256_storeu_ps(dst_head.as_mut_ptr().add(i), r);
-        i += 8;
-    }
-    for (d, s) in dst_head[i..].iter_mut().zip(src_head[i..].iter()) {
-        *d += *s * gain;
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx")]
-unsafe fn affine_inplace_avx(dst: &mut [f32], scale: &[f32], loc: &[f32]) {
-    let len = dst.len().min(scale.len()).min(loc.len());
-    let mut i = 0;
-    while i + 8 <= len {
-        let d = _mm256_loadu_ps(dst.as_ptr().add(i));
-        let s = _mm256_loadu_ps(scale.as_ptr().add(i));
-        let l = _mm256_loadu_ps(loc.as_ptr().add(i));
-        let r = _mm256_add_ps(_mm256_mul_ps(d, s), l);
-        _mm256_storeu_ps(dst.as_mut_ptr().add(i), r);
-        i += 8;
-    }
-    for ((d, s), l) in dst[i..len]
-        .iter_mut()
-        .zip(scale[i..len].iter())
-        .zip(loc[i..len].iter())
-    {
-        *d = *d * *s + *l;
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx,fma")]
-unsafe fn affine_inplace_avx_fma(dst: &mut [f32], scale: &[f32], loc: &[f32]) {
-    let len = dst.len().min(scale.len()).min(loc.len());
-    let mut i = 0;
-    while i + 8 <= len {
-        let d = _mm256_loadu_ps(dst.as_ptr().add(i));
-        let s = _mm256_loadu_ps(scale.as_ptr().add(i));
-        let l = _mm256_loadu_ps(loc.as_ptr().add(i));
-        let r = _mm256_fmadd_ps(d, s, l);
-        _mm256_storeu_ps(dst.as_mut_ptr().add(i), r);
-        i += 8;
-    }
-    for ((d, s), l) in dst[i..len]
-        .iter_mut()
-        .zip(scale[i..len].iter())
-        .zip(loc[i..len].iter())
-    {
-        *d = *d * *s + *l;
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx")]
-unsafe fn mul_inplace_avx(dst: &mut [f32], gain: f32) {
-    let g = _mm256_set1_ps(gain);
-    let mut i = 0;
-    while i + 8 <= dst.len() {
-        let d = _mm256_loadu_ps(dst.as_ptr().add(i));
-        let r = _mm256_mul_ps(d, g);
-        _mm256_storeu_ps(dst.as_mut_ptr().add(i), r);
-        i += 8;
-    }
-    for d in &mut dst[i..] {
-        *d *= gain;
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx")]
-unsafe fn mul_per_sample_inplace_avx(dst: &mut [f32], src: &[f32]) {
-    let len = dst.len().min(src.len());
-    let mut i = 0;
-    while i + 8 <= len {
-        let d = _mm256_loadu_ps(dst.as_ptr().add(i));
-        let s = _mm256_loadu_ps(src.as_ptr().add(i));
-        let r = _mm256_mul_ps(d, s);
-        _mm256_storeu_ps(dst.as_mut_ptr().add(i), r);
-        i += 8;
-    }
-    for (d, s) in dst[i..len].iter_mut().zip(src[i..len].iter()) {
-        *d *= *s;
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx")]
-unsafe fn copy_scaled_inplace_avx(dst: &mut [f32], src: &[f32], gain: f32) {
-    let len = dst.len().min(src.len());
-    let dst_head = &mut dst[..len];
-    let src_head = &src[..len];
-    let g = _mm256_set1_ps(gain);
-    let mut i = 0;
-    while i + 8 <= dst_head.len() {
-        let s = _mm256_loadu_ps(src_head.as_ptr().add(i));
-        let r = _mm256_mul_ps(s, g);
-        _mm256_storeu_ps(dst_head.as_mut_ptr().add(i), r);
-        i += 8;
-    }
-    for (d, s) in dst_head[i..].iter_mut().zip(src_head[i..].iter()) {
-        *d = *s * gain;
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx")]
-unsafe fn sanitize_finite_inplace_avx(buf: &mut [f32]) {
-    let zero = _mm256_setzero_ps();
-    let max_val = _mm256_set1_ps(f32::MAX);
-    let mut i = 0;
-    while i + 8 <= buf.len() {
-        let v = _mm256_loadu_ps(buf.as_ptr().add(i));
-        let abs_v = _mm256_andnot_ps(_mm256_set1_ps(-0.0), v);
-        let mask = _mm256_cmp_ps(abs_v, max_val, _CMP_LE_OQ);
-        let r = _mm256_blendv_ps(zero, v, mask);
-        _mm256_storeu_ps(buf.as_mut_ptr().add(i), r);
-        i += 8;
-    }
-    for s in &mut buf[i..] {
-        if !s.is_finite() {
-            *s = 0.0;
-        }
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx")]
-unsafe fn peak_abs_avx(buf: &[f32]) -> f32 {
-    let mut peak = _mm256_setzero_ps();
-    let mut i = 0;
-    while i + 8 <= buf.len() {
-        let v = _mm256_loadu_ps(buf.as_ptr().add(i));
-        let abs_v = _mm256_andnot_ps(_mm256_set1_ps(-0.0), v);
-        peak = _mm256_max_ps(peak, abs_v);
-        i += 8;
-    }
-    let mut arr = [0.0f32; 8];
-    _mm256_storeu_ps(arr.as_mut_ptr(), peak);
-    let mut max_scalar = arr.iter().fold(0.0f32, |a, &b| a.max(b));
-    for s in &buf[i..] {
-        max_scalar = max_scalar.max(s.abs());
-    }
-    max_scalar
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx")]
-unsafe fn dot_product_avx(a: &[f32], b: &[f32]) -> f32 {
-    let len = a.len().min(b.len());
-    let mut sum = _mm256_setzero_ps();
-    let mut i = 0;
-    while i + 8 <= len {
-        let av = _mm256_loadu_ps(a.as_ptr().add(i));
-        let bv = _mm256_loadu_ps(b.as_ptr().add(i));
-        sum = _mm256_add_ps(sum, _mm256_mul_ps(av, bv));
-        i += 8;
-    }
-    let mut arr = [0.0f32; 8];
-    _mm256_storeu_ps(arr.as_mut_ptr(), sum);
-    let mut scalar = arr.iter().sum::<f32>();
-    for j in i..len {
-        scalar += a[j] * b[j];
-    }
-    scalar
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx,fma")]
-unsafe fn dot_product_avx_fma(a: &[f32], b: &[f32]) -> f32 {
-    let len = a.len().min(b.len());
-    let mut sum = _mm256_setzero_ps();
-    let mut i = 0;
-    while i + 8 <= len {
-        let av = _mm256_loadu_ps(a.as_ptr().add(i));
-        let bv = _mm256_loadu_ps(b.as_ptr().add(i));
-        sum = _mm256_fmadd_ps(av, bv, sum);
-        i += 8;
-    }
-    let mut arr = [0.0f32; 8];
-    _mm256_storeu_ps(arr.as_mut_ptr(), sum);
-    let mut scalar = arr.iter().sum::<f32>();
-    for j in i..len {
-        scalar += a[j] * b[j];
-    }
-    scalar
+pub fn clip_inplace(buf: &mut [f32], limit: f32) {
+    dispatch!(Level::new(), simd => clip_inplace_kernel(simd, buf, limit));
 }
 
 pub fn copy_ramp_scaled_inplace(dst: &mut [f32], src: &[f32], start_gain: f32, end_gain: f32) {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    unsafe {
-        if is_x86_feature_detected!("avx") {
-            copy_ramp_scaled_inplace_avx(dst, src, start_gain, end_gain);
-            return;
-        }
-        if is_x86_feature_detected!("sse") {
-            copy_ramp_scaled_inplace_sse(dst, src, start_gain, end_gain);
-            return;
-        }
-    }
-    copy_ramp_scaled_inplace_scalar(dst, src, start_gain, end_gain);
+    dispatch!(Level::new(), simd => copy_ramp_scaled_inplace_kernel(simd, dst, src, start_gain, end_gain));
 }
 
 pub fn add_ramp_scaled_inplace(dst: &mut [f32], src: &[f32], start_gain: f32, end_gain: f32) {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    unsafe {
-        if is_x86_feature_detected!("avx") && is_x86_feature_detected!("fma") {
-            add_ramp_scaled_inplace_avx_fma(dst, src, start_gain, end_gain);
-            return;
-        }
-        if is_x86_feature_detected!("avx") {
-            add_ramp_scaled_inplace_avx(dst, src, start_gain, end_gain);
-            return;
-        }
-        if is_x86_feature_detected!("sse") {
-            add_ramp_scaled_inplace_sse(dst, src, start_gain, end_gain);
-            return;
-        }
-    }
-    add_ramp_scaled_inplace_scalar(dst, src, start_gain, end_gain);
-}
-
-fn copy_ramp_scaled_inplace_scalar(dst: &mut [f32], src: &[f32], start_gain: f32, end_gain: f32) {
-    let len = dst.len().min(src.len());
-    if len == 0 {
-        return;
-    }
-    let delta = if len > 1 {
-        (end_gain - start_gain) / (len - 1) as f32
-    } else {
-        0.0
-    };
-    for i in 0..len {
-        dst[i] = src[i] * (start_gain + i as f32 * delta);
-    }
-}
-
-fn add_ramp_scaled_inplace_scalar(dst: &mut [f32], src: &[f32], start_gain: f32, end_gain: f32) {
-    let len = dst.len().min(src.len());
-    if len == 0 {
-        return;
-    }
-    let delta = if len > 1 {
-        (end_gain - start_gain) / (len - 1) as f32
-    } else {
-        0.0
-    };
-    for i in 0..len {
-        dst[i] += src[i] * (start_gain + i as f32 * delta);
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "sse")]
-unsafe fn copy_ramp_scaled_inplace_sse(
-    dst: &mut [f32],
-    src: &[f32],
-    start_gain: f32,
-    end_gain: f32,
-) {
-    let len = dst.len().min(src.len());
-    if len == 0 {
-        return;
-    }
-    let delta = if len > 1 {
-        (end_gain - start_gain) / (len - 1) as f32
-    } else {
-        0.0
-    };
-    let delta4 = _mm_set_ps(3.0 * delta, 2.0 * delta, 1.0 * delta, 0.0 * delta);
-    let stride4 = _mm_set1_ps(4.0 * delta);
-    let mut gain_vec = _mm_add_ps(_mm_set1_ps(start_gain), delta4);
-    let mut i = 0usize;
-    while i + 4 <= len {
-        let s = _mm_loadu_ps(src.as_ptr().add(i));
-        let r = _mm_mul_ps(s, gain_vec);
-        _mm_storeu_ps(dst.as_mut_ptr().add(i), r);
-        gain_vec = _mm_add_ps(gain_vec, stride4);
-        i += 4;
-    }
-    for j in i..len {
-        dst[j] = src[j] * (start_gain + j as f32 * delta);
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "sse")]
-unsafe fn add_ramp_scaled_inplace_sse(
-    dst: &mut [f32],
-    src: &[f32],
-    start_gain: f32,
-    end_gain: f32,
-) {
-    let len = dst.len().min(src.len());
-    if len == 0 {
-        return;
-    }
-    let delta = if len > 1 {
-        (end_gain - start_gain) / (len - 1) as f32
-    } else {
-        0.0
-    };
-    let delta4 = _mm_set_ps(3.0 * delta, 2.0 * delta, 1.0 * delta, 0.0 * delta);
-    let stride4 = _mm_set1_ps(4.0 * delta);
-    let mut gain_vec = _mm_add_ps(_mm_set1_ps(start_gain), delta4);
-    let mut i = 0usize;
-    while i + 4 <= len {
-        let d = _mm_loadu_ps(dst.as_ptr().add(i));
-        let s = _mm_loadu_ps(src.as_ptr().add(i));
-        let r = _mm_add_ps(d, _mm_mul_ps(s, gain_vec));
-        _mm_storeu_ps(dst.as_mut_ptr().add(i), r);
-        gain_vec = _mm_add_ps(gain_vec, stride4);
-        i += 4;
-    }
-    for j in i..len {
-        dst[j] += src[j] * (start_gain + j as f32 * delta);
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx")]
-unsafe fn copy_ramp_scaled_inplace_avx(
-    dst: &mut [f32],
-    src: &[f32],
-    start_gain: f32,
-    end_gain: f32,
-) {
-    let len = dst.len().min(src.len());
-    if len == 0 {
-        return;
-    }
-    let delta = if len > 1 {
-        (end_gain - start_gain) / (len - 1) as f32
-    } else {
-        0.0
-    };
-    let delta8 = _mm256_set_ps(
-        7.0 * delta,
-        6.0 * delta,
-        5.0 * delta,
-        4.0 * delta,
-        3.0 * delta,
-        2.0 * delta,
-        1.0 * delta,
-        0.0 * delta,
-    );
-    let stride8 = _mm256_set1_ps(8.0 * delta);
-    let mut gain_vec = _mm256_add_ps(_mm256_set1_ps(start_gain), delta8);
-    let mut i = 0;
-    while i + 8 <= len {
-        let s = _mm256_loadu_ps(src.as_ptr().add(i));
-        let r = _mm256_mul_ps(s, gain_vec);
-        _mm256_storeu_ps(dst.as_mut_ptr().add(i), r);
-        gain_vec = _mm256_add_ps(gain_vec, stride8);
-        i += 8;
-    }
-    for j in i..len {
-        dst[j] = src[j] * (start_gain + j as f32 * delta);
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx")]
-unsafe fn add_ramp_scaled_inplace_avx(
-    dst: &mut [f32],
-    src: &[f32],
-    start_gain: f32,
-    end_gain: f32,
-) {
-    let len = dst.len().min(src.len());
-    if len == 0 {
-        return;
-    }
-    let delta = if len > 1 {
-        (end_gain - start_gain) / (len - 1) as f32
-    } else {
-        0.0
-    };
-    let delta8 = _mm256_set_ps(
-        7.0 * delta,
-        6.0 * delta,
-        5.0 * delta,
-        4.0 * delta,
-        3.0 * delta,
-        2.0 * delta,
-        1.0 * delta,
-        0.0 * delta,
-    );
-    let stride8 = _mm256_set1_ps(8.0 * delta);
-    let mut gain_vec = _mm256_add_ps(_mm256_set1_ps(start_gain), delta8);
-    let mut i = 0;
-    while i + 8 <= len {
-        let d = _mm256_loadu_ps(dst.as_ptr().add(i));
-        let s = _mm256_loadu_ps(src.as_ptr().add(i));
-        let r = _mm256_add_ps(d, _mm256_mul_ps(s, gain_vec));
-        _mm256_storeu_ps(dst.as_mut_ptr().add(i), r);
-        gain_vec = _mm256_add_ps(gain_vec, stride8);
-        i += 8;
-    }
-    for j in i..len {
-        dst[j] += src[j] * (start_gain + j as f32 * delta);
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx,fma")]
-unsafe fn add_ramp_scaled_inplace_avx_fma(
-    dst: &mut [f32],
-    src: &[f32],
-    start_gain: f32,
-    end_gain: f32,
-) {
-    let len = dst.len().min(src.len());
-    if len == 0 {
-        return;
-    }
-    let delta = if len > 1 {
-        (end_gain - start_gain) / (len - 1) as f32
-    } else {
-        0.0
-    };
-    let delta8 = _mm256_set_ps(
-        7.0 * delta,
-        6.0 * delta,
-        5.0 * delta,
-        4.0 * delta,
-        3.0 * delta,
-        2.0 * delta,
-        1.0 * delta,
-        0.0 * delta,
-    );
-    let stride8 = _mm256_set1_ps(8.0 * delta);
-    let mut gain_vec = _mm256_add_ps(_mm256_set1_ps(start_gain), delta8);
-    let mut i = 0;
-    while i + 8 <= len {
-        let d = _mm256_loadu_ps(dst.as_ptr().add(i));
-        let s = _mm256_loadu_ps(src.as_ptr().add(i));
-        let r = _mm256_fmadd_ps(s, gain_vec, d);
-        _mm256_storeu_ps(dst.as_mut_ptr().add(i), r);
-        gain_vec = _mm256_add_ps(gain_vec, stride8);
-        i += 8;
-    }
-    for j in i..len {
-        dst[j] += src[j] * (start_gain + j as f32 * delta);
-    }
+    dispatch!(Level::new(), simd => add_ramp_scaled_inplace_kernel(simd, dst, src, start_gain, end_gain));
 }
 
 #[inline]
@@ -913,519 +88,486 @@ pub fn fast_sigmoid(x: f32) -> f32 {
 }
 
 pub fn fast_tanh_inplace(buf: &mut [f32]) {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    unsafe {
-        if is_x86_feature_detected!("avx") {
-            fast_tanh_inplace_avx(buf);
-            return;
-        }
-        if is_x86_feature_detected!("sse") {
-            fast_tanh_inplace_sse(buf);
-            return;
+    dispatch!(Level::new(), simd => fast_tanh_inplace_kernel(simd, buf));
+}
+
+pub fn fast_sigmoid_inplace(buf: &mut [f32]) {
+    dispatch!(Level::new(), simd => fast_sigmoid_inplace_kernel(simd, buf));
+}
+
+pub fn relu_inplace(buf: &mut [f32]) {
+    dispatch!(Level::new(), simd => relu_inplace_kernel(simd, buf));
+}
+
+pub fn hardtanh_inplace(buf: &mut [f32]) {
+    dispatch!(Level::new(), simd => hardtanh_inplace_kernel(simd, buf));
+}
+
+pub fn leaky_relu_inplace(buf: &mut [f32], negative_slope: f32) {
+    dispatch!(Level::new(), simd => leaky_relu_inplace_kernel(simd, buf, negative_slope));
+}
+
+pub fn sigmoid_mul_add_inplace(dst: &mut [f32], src: &[f32], mul_src: &[f32]) {
+    dispatch!(Level::new(), simd => sigmoid_mul_add_inplace_kernel(simd, dst, src, mul_src));
+}
+
+pub fn softsign_inplace(buf: &mut [f32]) {
+    dispatch!(Level::new(), simd => softsign_inplace_kernel(simd, buf));
+}
+
+/// Tanh-based soft clipper: identity for `|x| <= knee`, saturating smoothly
+/// toward ±1 above it. Bit-identical to applying the scalar per-sample
+/// formula; the tanh evaluation itself stays scalar libm, the surrounding
+/// arithmetic is vectorized.
+pub fn soft_clip_inplace(buf: &mut [f32], knee: f32) {
+    dispatch!(Level::new(), simd => soft_clip_inplace_kernel(simd, buf, knee));
+}
+
+pub fn hardswish_inplace(buf: &mut [f32]) {
+    dispatch!(Level::new(), simd => hardswish_inplace_kernel(simd, buf));
+}
+
+#[simd]
+fn add_inplace_kernel<S: Simd>(simd: S, dst: &mut [f32], src: &[f32]) {
+    let n = dst.len().min(src.len());
+    let dst = &mut dst[..n];
+    let src = &src[..n];
+    let mut dchunks = dst.chunks_exact_mut(S::f32s::LEN);
+    let mut schunks = src.chunks_exact(S::f32s::LEN);
+    for (d, s) in dchunks.by_ref().zip(schunks.by_ref()) {
+        let dv = S::f32s::from_slice(simd, d);
+        let sv = S::f32s::from_slice(simd, s);
+        (dv + sv).store_slice(d);
+    }
+    for (d, s) in dchunks.into_remainder().iter_mut().zip(schunks.remainder()) {
+        *d += *s;
+    }
+}
+
+#[simd]
+fn add_scaled_inplace_kernel<S: Simd>(simd: S, dst: &mut [f32], src: &[f32], gain: f32) {
+    let n = dst.len().min(src.len());
+    let dst = &mut dst[..n];
+    let src = &src[..n];
+    let mut dchunks = dst.chunks_exact_mut(S::f32s::LEN);
+    let mut schunks = src.chunks_exact(S::f32s::LEN);
+    for (d, s) in dchunks.by_ref().zip(schunks.by_ref()) {
+        let dv = S::f32s::from_slice(simd, d);
+        let sv = S::f32s::from_slice(simd, s);
+        (dv + sv * gain).store_slice(d);
+    }
+    for (d, s) in dchunks.into_remainder().iter_mut().zip(schunks.remainder()) {
+        *d += *s * gain;
+    }
+}
+
+#[simd]
+fn affine_inplace_kernel<S: Simd>(simd: S, dst: &mut [f32], scale: &[f32], loc: &[f32]) {
+    let n = dst.len().min(scale.len()).min(loc.len());
+    let dst = &mut dst[..n];
+    let scale = &scale[..n];
+    let loc = &loc[..n];
+    let mut dchunks = dst.chunks_exact_mut(S::f32s::LEN);
+    let mut schunks = scale.chunks_exact(S::f32s::LEN);
+    let mut lchunks = loc.chunks_exact(S::f32s::LEN);
+    for ((d, s), l) in dchunks.by_ref().zip(schunks.by_ref()).zip(lchunks.by_ref()) {
+        let dv = S::f32s::from_slice(simd, d);
+        let sv = S::f32s::from_slice(simd, s);
+        let lv = S::f32s::from_slice(simd, l);
+        (dv * sv + lv).store_slice(d);
+    }
+    for ((d, s), l) in dchunks
+        .into_remainder()
+        .iter_mut()
+        .zip(schunks.remainder())
+        .zip(lchunks.remainder())
+    {
+        *d = *d * *s + *l;
+    }
+}
+
+#[simd]
+fn mul_inplace_kernel<S: Simd>(simd: S, dst: &mut [f32], gain: f32) {
+    let mut chunks = dst.chunks_exact_mut(S::f32s::LEN);
+    for d in chunks.by_ref() {
+        (S::f32s::from_slice(simd, d) * gain).store_slice(d);
+    }
+    for d in chunks.into_remainder() {
+        *d *= gain;
+    }
+}
+
+#[simd]
+fn mul_per_sample_inplace_kernel<S: Simd>(simd: S, dst: &mut [f32], src: &[f32]) {
+    let n = dst.len().min(src.len());
+    let dst = &mut dst[..n];
+    let src = &src[..n];
+    let mut dchunks = dst.chunks_exact_mut(S::f32s::LEN);
+    let mut schunks = src.chunks_exact(S::f32s::LEN);
+    for (d, s) in dchunks.by_ref().zip(schunks.by_ref()) {
+        let dv = S::f32s::from_slice(simd, d);
+        let sv = S::f32s::from_slice(simd, s);
+        (dv * sv).store_slice(d);
+    }
+    for (d, s) in dchunks.into_remainder().iter_mut().zip(schunks.remainder()) {
+        *d *= *s;
+    }
+}
+
+#[simd]
+fn dot_product_kernel<S: Simd>(simd: S, a: &[f32], b: &[f32]) -> f32 {
+    let n = a.len().min(b.len());
+    let a = &a[..n];
+    let b = &b[..n];
+    let mut acc = S::f32s::splat(simd, 0.0);
+    let mut achunks = a.chunks_exact(S::f32s::LEN);
+    let mut bchunks = b.chunks_exact(S::f32s::LEN);
+    for (ac, bc) in achunks.by_ref().zip(bchunks.by_ref()) {
+        let av = S::f32s::from_slice(simd, ac);
+        let bv = S::f32s::from_slice(simd, bc);
+        acc += av * bv;
+    }
+    let mut sum = acc.reduce_sum();
+    for (x, y) in achunks.remainder().iter().zip(bchunks.remainder()) {
+        sum += x * y;
+    }
+    sum
+}
+
+#[simd]
+fn copy_scaled_inplace_kernel<S: Simd>(simd: S, dst: &mut [f32], src: &[f32], gain: f32) {
+    let n = dst.len().min(src.len());
+    let dst = &mut dst[..n];
+    let src = &src[..n];
+    let mut dchunks = dst.chunks_exact_mut(S::f32s::LEN);
+    let mut schunks = src.chunks_exact(S::f32s::LEN);
+    for (d, s) in dchunks.by_ref().zip(schunks.by_ref()) {
+        let sv = S::f32s::from_slice(simd, s);
+        (sv * gain).store_slice(d);
+    }
+    for (d, s) in dchunks.into_remainder().iter_mut().zip(schunks.remainder()) {
+        *d = *s * gain;
+    }
+}
+
+#[simd]
+fn sanitize_finite_inplace_kernel<S: Simd>(simd: S, buf: &mut [f32]) {
+    let zero = S::f32s::splat(simd, 0.0);
+    let mut chunks = buf.chunks_exact_mut(S::f32s::LEN);
+    for b in chunks.by_ref() {
+        let v = S::f32s::from_slice(simd, b);
+        v.is_finite().select(v, zero).store_slice(b);
+    }
+    for s in chunks.into_remainder() {
+        if !s.is_finite() {
+            *s = 0.0;
         }
     }
-    for x in buf {
+}
+
+#[simd]
+fn peak_abs_kernel<S: Simd>(simd: S, buf: &[f32]) -> f32 {
+    let mut acc = S::f32s::splat(simd, 0.0);
+    let mut chunks = buf.chunks_exact(S::f32s::LEN);
+    for c in chunks.by_ref() {
+        acc = acc.max(S::f32s::from_slice(simd, c).abs());
+    }
+    let mut m = acc.reduce_max();
+    for v in chunks.remainder() {
+        m = m.max(v.abs());
+    }
+    m
+}
+
+#[simd]
+fn clip_inplace_kernel<S: Simd>(simd: S, buf: &mut [f32], limit: f32) {
+    let neg = S::f32s::splat(simd, -limit);
+    let pos = S::f32s::splat(simd, limit);
+    let mut chunks = buf.chunks_exact_mut(S::f32s::LEN);
+    for b in chunks.by_ref() {
+        let v = S::f32s::from_slice(simd, b);
+        v.max(neg).min(pos).store_slice(b);
+    }
+    for s in chunks.into_remainder() {
+        *s = s.clamp(-limit, limit);
+    }
+}
+
+#[simd]
+fn copy_ramp_scaled_inplace_kernel<S: Simd>(
+    simd: S,
+    dst: &mut [f32],
+    src: &[f32],
+    start_gain: f32,
+    end_gain: f32,
+) {
+    let n = dst.len().min(src.len());
+    if n == 0 {
+        return;
+    }
+    let dst = &mut dst[..n];
+    let src = &src[..n];
+    let delta = if n > 1 {
+        (end_gain - start_gain) / (n - 1) as f32
+    } else {
+        0.0
+    };
+    let len = S::f32s::LEN;
+    let mut dchunks = dst.chunks_exact_mut(len);
+    let mut schunks = src.chunks_exact(len);
+    let mut base = 0usize;
+    for (d, s) in dchunks.by_ref().zip(schunks.by_ref()) {
+        // Per-lane gains match the scalar reference bit-for-bit (start + i*delta).
+        let mut gains = [0.0f32; 16];
+        for (lane, g) in gains.iter_mut().enumerate() {
+            *g = start_gain + (base + lane) as f32 * delta;
+        }
+        let gv = S::f32s::from_slice(simd, &gains[..len]);
+        (S::f32s::from_slice(simd, s) * gv).store_slice(d);
+        base += len;
+    }
+    for (j, (d, s)) in dchunks
+        .into_remainder()
+        .iter_mut()
+        .zip(schunks.remainder())
+        .enumerate()
+    {
+        *d = *s * (start_gain + (base + j) as f32 * delta);
+    }
+}
+
+#[simd]
+fn add_ramp_scaled_inplace_kernel<S: Simd>(
+    simd: S,
+    dst: &mut [f32],
+    src: &[f32],
+    start_gain: f32,
+    end_gain: f32,
+) {
+    let n = dst.len().min(src.len());
+    if n == 0 {
+        return;
+    }
+    let dst = &mut dst[..n];
+    let src = &src[..n];
+    let delta = if n > 1 {
+        (end_gain - start_gain) / (n - 1) as f32
+    } else {
+        0.0
+    };
+    let len = S::f32s::LEN;
+    let mut dchunks = dst.chunks_exact_mut(len);
+    let mut schunks = src.chunks_exact(len);
+    let mut base = 0usize;
+    for (d, s) in dchunks.by_ref().zip(schunks.by_ref()) {
+        let mut gains = [0.0f32; 16];
+        for (lane, g) in gains.iter_mut().enumerate() {
+            *g = start_gain + (base + lane) as f32 * delta;
+        }
+        let gv = S::f32s::from_slice(simd, &gains[..len]);
+        let dv = S::f32s::from_slice(simd, d);
+        (dv + S::f32s::from_slice(simd, s) * gv).store_slice(d);
+        base += len;
+    }
+    for (j, (d, s)) in dchunks
+        .into_remainder()
+        .iter_mut()
+        .zip(schunks.remainder())
+        .enumerate()
+    {
+        *d += *s * (start_gain + (base + j) as f32 * delta);
+    }
+}
+
+/// Vectorized `fast_tanh` with the same operation order as the scalar
+/// version, so both produce bit-identical results per lane.
+#[inline(always)]
+fn fast_tanh_vec<S: Simd>(_simd: S, x: S::f32s) -> S::f32s {
+    let ax = x.abs();
+    let x2 = x * x;
+    let c1 = 2.455_507_5;
+    let c2 = 0.893_229_85;
+    let c3 = 0.821_226_67;
+    let c4 = 2.445_066_4;
+    let c5 = 0.814_642_7;
+    // Scalar on the left is not available for a generic vector type, so the
+    // constants sit on the right; float add/mul are commutative, so the
+    // results are bit-identical to the scalar `fast_tanh`.
+    let num_inner = ax * c1 + c1;
+    let num_tail = (ax * c3 + c2) * x2;
+    let num = x * (num_inner + num_tail);
+    let den_inner = x + (x * c5) * ax;
+    let den = (x2 + c4) * den_inner.abs() + c4;
+    num / den
+}
+
+#[inline(always)]
+fn fast_sigmoid_vec<S: Simd>(simd: S, x: S::f32s) -> S::f32s {
+    (fast_tanh_vec(simd, x * 0.5) + 1.0) * 0.5
+}
+
+#[simd]
+fn fast_tanh_inplace_kernel<S: Simd>(simd: S, buf: &mut [f32]) {
+    let mut chunks = buf.chunks_exact_mut(S::f32s::LEN);
+    for b in chunks.by_ref() {
+        let x = S::f32s::from_slice(simd, b);
+        fast_tanh_vec(simd, x).store_slice(b);
+    }
+    for x in chunks.into_remainder() {
         *x = fast_tanh(*x);
     }
 }
 
-pub fn fast_sigmoid_inplace(buf: &mut [f32]) {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    unsafe {
-        if is_x86_feature_detected!("avx") {
-            fast_sigmoid_inplace_avx(buf);
-            return;
-        }
-        if is_x86_feature_detected!("sse") {
-            fast_sigmoid_inplace_sse(buf);
-            return;
-        }
+#[simd]
+fn fast_sigmoid_inplace_kernel<S: Simd>(simd: S, buf: &mut [f32]) {
+    let mut chunks = buf.chunks_exact_mut(S::f32s::LEN);
+    for b in chunks.by_ref() {
+        let x = S::f32s::from_slice(simd, b);
+        fast_sigmoid_vec(simd, x).store_slice(b);
     }
-    for x in buf {
+    for x in chunks.into_remainder() {
         *x = fast_sigmoid(*x);
     }
 }
 
-pub fn relu_inplace(buf: &mut [f32]) {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    unsafe {
-        if is_x86_feature_detected!("avx") {
-            relu_inplace_avx(buf);
-            return;
-        }
-        if is_x86_feature_detected!("sse") {
-            relu_inplace_sse(buf);
-            return;
-        }
+#[simd]
+fn relu_inplace_kernel<S: Simd>(simd: S, buf: &mut [f32]) {
+    let zero = S::f32s::splat(simd, 0.0);
+    let mut chunks = buf.chunks_exact_mut(S::f32s::LEN);
+    for b in chunks.by_ref() {
+        let x = S::f32s::from_slice(simd, b);
+        x.max(zero).store_slice(b);
     }
-    for x in buf {
+    for x in chunks.into_remainder() {
         if *x < 0.0 {
             *x = 0.0;
         }
     }
 }
 
-pub fn hardtanh_inplace(buf: &mut [f32]) {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    unsafe {
-        if is_x86_feature_detected!("avx") {
-            hardtanh_inplace_avx(buf);
-            return;
-        }
-        if is_x86_feature_detected!("sse") {
-            hardtanh_inplace_sse(buf);
-            return;
-        }
+#[simd]
+fn hardtanh_inplace_kernel<S: Simd>(simd: S, buf: &mut [f32]) {
+    let neg = S::f32s::splat(simd, -1.0);
+    let pos = S::f32s::splat(simd, 1.0);
+    let mut chunks = buf.chunks_exact_mut(S::f32s::LEN);
+    for b in chunks.by_ref() {
+        let x = S::f32s::from_slice(simd, b);
+        x.max(neg).min(pos).store_slice(b);
     }
-    for x in buf {
+    for x in chunks.into_remainder() {
         *x = x.clamp(-1.0, 1.0);
     }
 }
 
-pub fn leaky_relu_inplace(buf: &mut [f32], negative_slope: f32) {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    unsafe {
-        if is_x86_feature_detected!("avx") {
-            leaky_relu_inplace_avx(buf, negative_slope);
-            return;
-        }
-        if is_x86_feature_detected!("sse") {
-            leaky_relu_inplace_sse(buf, negative_slope);
-            return;
-        }
+#[simd]
+fn leaky_relu_inplace_kernel<S: Simd>(simd: S, buf: &mut [f32], negative_slope: f32) {
+    let slope = S::f32s::splat(simd, negative_slope);
+    let mut chunks = buf.chunks_exact_mut(S::f32s::LEN);
+    for b in chunks.by_ref() {
+        let x = S::f32s::from_slice(simd, b);
+        let scaled = x * slope;
+        x.simd_gt(0.0).select(x, scaled).store_slice(b);
     }
-    for x in buf {
+    for x in chunks.into_remainder() {
         if *x < 0.0 {
             *x *= negative_slope;
         }
     }
 }
 
-pub fn sigmoid_mul_add_inplace(dst: &mut [f32], src: &[f32], mul_src: &[f32]) {
+#[simd]
+fn sigmoid_mul_add_inplace_kernel<S: Simd>(simd: S, dst: &mut [f32], src: &[f32], mul_src: &[f32]) {
     let n = dst.len().min(src.len()).min(mul_src.len());
     if n == 0 {
         return;
     }
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    unsafe {
-        if is_x86_feature_detected!("avx") {
-            sigmoid_mul_add_inplace_avx(&mut dst[..n], &src[..n], &mul_src[..n]);
-            return;
-        }
-        if is_x86_feature_detected!("sse") {
-            sigmoid_mul_add_inplace_sse(&mut dst[..n], &src[..n], &mul_src[..n]);
-            return;
-        }
+    let dst = &mut dst[..n];
+    let src = &src[..n];
+    let mul_src = &mul_src[..n];
+    let mut dchunks = dst.chunks_exact_mut(S::f32s::LEN);
+    let mut schunks = src.chunks_exact(S::f32s::LEN);
+    let mut mchunks = mul_src.chunks_exact(S::f32s::LEN);
+    for ((d, s), m) in dchunks.by_ref().zip(schunks.by_ref()).zip(mchunks.by_ref()) {
+        let dv = S::f32s::from_slice(simd, d);
+        let sv = S::f32s::from_slice(simd, s);
+        let mv = S::f32s::from_slice(simd, m);
+        (dv + fast_sigmoid_vec(simd, sv) * mv).store_slice(d);
     }
-    for j in 0..n {
-        dst[j] += fast_sigmoid(src[j]) * mul_src[j];
+    for ((d, s), m) in dchunks
+        .into_remainder()
+        .iter_mut()
+        .zip(schunks.remainder())
+        .zip(mchunks.remainder())
+    {
+        *d += fast_sigmoid(*s) * *m;
     }
 }
 
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+#[simd]
+fn soft_clip_inplace_kernel<S: Simd>(simd: S, buf: &mut [f32], knee: f32) {
+    let range = 1.0 - knee;
+    let len = S::f32s::LEN;
+    let mut chunks = buf.chunks_exact_mut(len);
+    for b in chunks.by_ref() {
+        let x = S::f32s::from_slice(simd, b);
+        let ax = x.abs();
+        let below = ax.simd_le(knee);
+        if below.all_true() {
+            continue;
+        }
+        let over = (ax - knee) / range;
+        let mut over_arr = [0.0f32; 16];
+        over.store_slice(&mut over_arr[..len]);
+        let mut clipped_arr = [0.0f32; 16];
+        for (lane, o) in over_arr.iter().enumerate() {
+            clipped_arr[lane] = knee + range * o.tanh();
+        }
+        let clipped = S::f32s::from_slice(simd, &clipped_arr[..len]);
+        below.select(x, clipped.copysign(x)).store_slice(b);
+    }
+    for x in chunks.into_remainder() {
+        *x = soft_clip_scalar(*x, knee);
+    }
+}
+
 #[inline]
-unsafe fn fast_tanh_m128(x: __m128) -> __m128 {
-    let sign_mask = _mm_set1_ps(-0.0);
-    let ax = _mm_andnot_ps(sign_mask, x);
-    let x2 = _mm_mul_ps(x, x);
-    let c1 = _mm_set1_ps(2.455_507_5);
-    let c2 = _mm_set1_ps(0.893_229_85);
-    let c3 = _mm_set1_ps(0.821_226_67);
-    let c4 = _mm_set1_ps(2.445_066_4);
-    let c5 = _mm_set1_ps(0.814_642_7);
-    let num_inner = _mm_add_ps(c1, _mm_mul_ps(c1, ax));
-    let num_tail = _mm_mul_ps(_mm_add_ps(c2, _mm_mul_ps(c3, ax)), x2);
-    let num = _mm_mul_ps(x, _mm_add_ps(num_inner, num_tail));
-    let den_inner = _mm_add_ps(x, _mm_mul_ps(_mm_mul_ps(c5, x), ax));
-    let den_inner_abs = _mm_andnot_ps(sign_mask, den_inner);
-    let den = _mm_add_ps(c4, _mm_mul_ps(_mm_add_ps(c4, x2), den_inner_abs));
-    _mm_div_ps(num, den)
+fn soft_clip_scalar(x: f32, knee: f32) -> f32 {
+    let ax = x.abs();
+    if ax <= knee {
+        return x;
+    }
+    let over = (ax - knee) / (1.0 - knee);
+    x.signum() * (knee + (1.0 - knee) * over.tanh())
 }
 
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[inline]
-unsafe fn fast_sigmoid_m128(x: __m128) -> __m128 {
-    let half = _mm_set1_ps(0.5);
-    let one = _mm_set1_ps(1.0);
-    _mm_mul_ps(half, _mm_add_ps(fast_tanh_m128(_mm_mul_ps(x, half)), one))
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[inline]
-#[target_feature(enable = "avx")]
-unsafe fn fast_tanh_m256(x: __m256) -> __m256 {
-    let sign_mask = _mm256_set1_ps(-0.0);
-    let ax = _mm256_andnot_ps(sign_mask, x);
-    let x2 = _mm256_mul_ps(x, x);
-    let c1 = _mm256_set1_ps(2.455_507_5);
-    let c2 = _mm256_set1_ps(0.893_229_85);
-    let c3 = _mm256_set1_ps(0.821_226_67);
-    let c4 = _mm256_set1_ps(2.445_066_4);
-    let c5 = _mm256_set1_ps(0.814_642_7);
-    let num_inner = _mm256_add_ps(c1, _mm256_mul_ps(c1, ax));
-    let num_tail = _mm256_mul_ps(_mm256_add_ps(c2, _mm256_mul_ps(c3, ax)), x2);
-    let num = _mm256_mul_ps(x, _mm256_add_ps(num_inner, num_tail));
-    let den_inner = _mm256_add_ps(x, _mm256_mul_ps(_mm256_mul_ps(c5, x), ax));
-    let den_inner_abs = _mm256_andnot_ps(sign_mask, den_inner);
-    let den = _mm256_add_ps(c4, _mm256_mul_ps(_mm256_add_ps(c4, x2), den_inner_abs));
-    _mm256_div_ps(num, den)
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[inline]
-#[target_feature(enable = "avx")]
-unsafe fn fast_sigmoid_m256(x: __m256) -> __m256 {
-    let half = _mm256_set1_ps(0.5);
-    let one = _mm256_set1_ps(1.0);
-    _mm256_mul_ps(
-        half,
-        _mm256_add_ps(fast_tanh_m256(_mm256_mul_ps(x, half)), one),
-    )
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "sse")]
-unsafe fn fast_tanh_inplace_sse(buf: &mut [f32]) {
-    let mut i = 0usize;
-    while i + 4 <= buf.len() {
-        let x = _mm_loadu_ps(buf.as_ptr().add(i));
-        let r = fast_tanh_m128(x);
-        _mm_storeu_ps(buf.as_mut_ptr().add(i), r);
-        i += 4;
+#[simd]
+fn softsign_inplace_kernel<S: Simd>(simd: S, buf: &mut [f32]) {
+    let one = S::f32s::splat(simd, 1.0);
+    let mut chunks = buf.chunks_exact_mut(S::f32s::LEN);
+    for b in chunks.by_ref() {
+        let x = S::f32s::from_slice(simd, b);
+        (x / (one + x.abs())).store_slice(b);
     }
-    for x in &mut buf[i..] {
-        *x = fast_tanh(*x);
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "sse")]
-unsafe fn fast_sigmoid_inplace_sse(buf: &mut [f32]) {
-    let mut i = 0usize;
-    while i + 4 <= buf.len() {
-        let x = _mm_loadu_ps(buf.as_ptr().add(i));
-        let r = fast_sigmoid_m128(x);
-        _mm_storeu_ps(buf.as_mut_ptr().add(i), r);
-        i += 4;
-    }
-    for x in &mut buf[i..] {
-        *x = fast_sigmoid(*x);
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "sse")]
-unsafe fn relu_inplace_sse(buf: &mut [f32]) {
-    let zero = _mm_setzero_ps();
-    let mut i = 0usize;
-    while i + 4 <= buf.len() {
-        let x = _mm_loadu_ps(buf.as_ptr().add(i));
-        let r = _mm_max_ps(x, zero);
-        _mm_storeu_ps(buf.as_mut_ptr().add(i), r);
-        i += 4;
-    }
-    for x in &mut buf[i..] {
-        if *x < 0.0 {
-            *x = 0.0;
-        }
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "sse")]
-unsafe fn hardtanh_inplace_sse(buf: &mut [f32]) {
-    let neg = _mm_set1_ps(-1.0);
-    let pos = _mm_set1_ps(1.0);
-    let mut i = 0usize;
-    while i + 4 <= buf.len() {
-        let x = _mm_loadu_ps(buf.as_ptr().add(i));
-        let r = _mm_min_ps(_mm_max_ps(x, neg), pos);
-        _mm_storeu_ps(buf.as_mut_ptr().add(i), r);
-        i += 4;
-    }
-    for x in &mut buf[i..] {
-        *x = x.clamp(-1.0, 1.0);
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "sse")]
-unsafe fn leaky_relu_inplace_sse(buf: &mut [f32], negative_slope: f32) {
-    let zero = _mm_setzero_ps();
-    let slope = _mm_set1_ps(negative_slope);
-    let mut i = 0usize;
-    while i + 4 <= buf.len() {
-        let x = _mm_loadu_ps(buf.as_ptr().add(i));
-        let scaled = _mm_mul_ps(x, slope);
-        let mask = _mm_cmpgt_ps(x, zero);
-        let r = _mm_or_ps(_mm_and_ps(mask, x), _mm_andnot_ps(mask, scaled));
-        _mm_storeu_ps(buf.as_mut_ptr().add(i), r);
-        i += 4;
-    }
-    for x in &mut buf[i..] {
-        if *x < 0.0 {
-            *x *= negative_slope;
-        }
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "sse")]
-unsafe fn sigmoid_mul_add_inplace_sse(dst: &mut [f32], src: &[f32], mul_src: &[f32]) {
-    let n = dst.len().min(src.len()).min(mul_src.len());
-    let mut i = 0usize;
-    while i + 4 <= n {
-        let s = _mm_loadu_ps(src.as_ptr().add(i));
-        let m = _mm_loadu_ps(mul_src.as_ptr().add(i));
-        let d = _mm_loadu_ps(dst.as_ptr().add(i));
-        let sig = fast_sigmoid_m128(s);
-        let r = _mm_add_ps(d, _mm_mul_ps(sig, m));
-        _mm_storeu_ps(dst.as_mut_ptr().add(i), r);
-        i += 4;
-    }
-    for j in i..n {
-        dst[j] += fast_sigmoid(src[j]) * mul_src[j];
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx")]
-unsafe fn fast_tanh_inplace_avx(buf: &mut [f32]) {
-    let mut i = 0usize;
-    while i + 8 <= buf.len() {
-        let x = _mm256_loadu_ps(buf.as_ptr().add(i));
-        let r = fast_tanh_m256(x);
-        _mm256_storeu_ps(buf.as_mut_ptr().add(i), r);
-        i += 8;
-    }
-    if i + 4 <= buf.len() {
-        let x = _mm_loadu_ps(buf.as_ptr().add(i));
-        let r = fast_tanh_m128(x);
-        _mm_storeu_ps(buf.as_mut_ptr().add(i), r);
-        i += 4;
-    }
-    for x in &mut buf[i..] {
-        *x = fast_tanh(*x);
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx")]
-unsafe fn fast_sigmoid_inplace_avx(buf: &mut [f32]) {
-    let mut i = 0usize;
-    while i + 8 <= buf.len() {
-        let x = _mm256_loadu_ps(buf.as_ptr().add(i));
-        let r = fast_sigmoid_m256(x);
-        _mm256_storeu_ps(buf.as_mut_ptr().add(i), r);
-        i += 8;
-    }
-    if i + 4 <= buf.len() {
-        let x = _mm_loadu_ps(buf.as_ptr().add(i));
-        let r = fast_sigmoid_m128(x);
-        _mm_storeu_ps(buf.as_mut_ptr().add(i), r);
-        i += 4;
-    }
-    for x in &mut buf[i..] {
-        *x = fast_sigmoid(*x);
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx")]
-unsafe fn relu_inplace_avx(buf: &mut [f32]) {
-    let zero = _mm256_setzero_ps();
-    let mut i = 0usize;
-    while i + 8 <= buf.len() {
-        let x = _mm256_loadu_ps(buf.as_ptr().add(i));
-        let r = _mm256_max_ps(x, zero);
-        _mm256_storeu_ps(buf.as_mut_ptr().add(i), r);
-        i += 8;
-    }
-    for x in &mut buf[i..] {
-        if *x < 0.0 {
-            *x = 0.0;
-        }
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx")]
-unsafe fn hardtanh_inplace_avx(buf: &mut [f32]) {
-    let neg = _mm256_set1_ps(-1.0);
-    let pos = _mm256_set1_ps(1.0);
-    let mut i = 0usize;
-    while i + 8 <= buf.len() {
-        let x = _mm256_loadu_ps(buf.as_ptr().add(i));
-        let r = _mm256_min_ps(_mm256_max_ps(x, neg), pos);
-        _mm256_storeu_ps(buf.as_mut_ptr().add(i), r);
-        i += 8;
-    }
-    for x in &mut buf[i..] {
-        *x = x.clamp(-1.0, 1.0);
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx")]
-unsafe fn leaky_relu_inplace_avx(buf: &mut [f32], negative_slope: f32) {
-    let zero = _mm256_setzero_ps();
-    let slope = _mm256_set1_ps(negative_slope);
-    let mut i = 0usize;
-    while i + 8 <= buf.len() {
-        let x = _mm256_loadu_ps(buf.as_ptr().add(i));
-        let scaled = _mm256_mul_ps(x, slope);
-        let mask = _mm256_cmp_ps(x, zero, _CMP_GT_OQ);
-        let r = _mm256_blendv_ps(scaled, x, mask);
-        _mm256_storeu_ps(buf.as_mut_ptr().add(i), r);
-        i += 8;
-    }
-    for x in &mut buf[i..] {
-        if *x < 0.0 {
-            *x *= negative_slope;
-        }
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx")]
-unsafe fn sigmoid_mul_add_inplace_avx(dst: &mut [f32], src: &[f32], mul_src: &[f32]) {
-    let n = dst.len().min(src.len()).min(mul_src.len());
-    let mut i = 0usize;
-    while i + 8 <= n {
-        let s = _mm256_loadu_ps(src.as_ptr().add(i));
-        let m = _mm256_loadu_ps(mul_src.as_ptr().add(i));
-        let d = _mm256_loadu_ps(dst.as_ptr().add(i));
-        let sig = fast_sigmoid_m256(s);
-        let r = _mm256_add_ps(d, _mm256_mul_ps(sig, m));
-        _mm256_storeu_ps(dst.as_mut_ptr().add(i), r);
-        i += 8;
-    }
-    if i + 4 <= n {
-        let s = _mm_loadu_ps(src.as_ptr().add(i));
-        let m = _mm_loadu_ps(mul_src.as_ptr().add(i));
-        let d = _mm_loadu_ps(dst.as_ptr().add(i));
-        let sig = fast_sigmoid_m128(s);
-        let r = _mm_add_ps(d, _mm_mul_ps(sig, m));
-        _mm_storeu_ps(dst.as_mut_ptr().add(i), r);
-        i += 4;
-    }
-    for j in i..n {
-        dst[j] += fast_sigmoid(src[j]) * mul_src[j];
-    }
-}
-
-pub fn softsign_inplace(buf: &mut [f32]) {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    unsafe {
-        if is_x86_feature_detected!("avx") {
-            softsign_inplace_avx(buf);
-            return;
-        }
-        if is_x86_feature_detected!("sse") {
-            softsign_inplace_sse(buf);
-            return;
-        }
-    }
-    for x in buf {
+    for x in chunks.into_remainder() {
         *x /= 1.0 + x.abs();
     }
 }
 
-pub fn hardswish_inplace(buf: &mut [f32]) {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    unsafe {
-        if is_x86_feature_detected!("avx") {
-            hardswish_inplace_avx(buf);
-            return;
-        }
-        if is_x86_feature_detected!("sse") {
-            hardswish_inplace_sse(buf);
-            return;
-        }
+#[simd]
+fn hardswish_inplace_kernel<S: Simd>(simd: S, buf: &mut [f32]) {
+    let three = S::f32s::splat(simd, 3.0);
+    let zero = S::f32s::splat(simd, 0.0);
+    let six = S::f32s::splat(simd, 6.0);
+    let inv6 = 1.0 / 6.0;
+    let mut chunks = buf.chunks_exact_mut(S::f32s::LEN);
+    for b in chunks.by_ref() {
+        let x = S::f32s::from_slice(simd, b);
+        let t = x + three;
+        let clamped = t.max(zero).min(six);
+        // Same association as the scalar reference: (x * clamped) * (1/6).
+        ((x * clamped) * inv6).store_slice(b);
     }
-    for x in buf {
-        let t = *x + 3.0;
-        let clamped = t.clamp(0.0, 6.0);
-        *x = *x * clamped * (1.0 / 6.0);
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "sse")]
-unsafe fn softsign_inplace_sse(buf: &mut [f32]) {
-    let one = _mm_set1_ps(1.0);
-    let mut i = 0usize;
-    while i + 4 <= buf.len() {
-        let x = _mm_loadu_ps(buf.as_ptr().add(i));
-        let abs_x = _mm_andnot_ps(_mm_set1_ps(-0.0), x);
-        let den = _mm_add_ps(one, abs_x);
-        let r = _mm_div_ps(x, den);
-        _mm_storeu_ps(buf.as_mut_ptr().add(i), r);
-        i += 4;
-    }
-    for x in &mut buf[i..] {
-        *x /= 1.0 + x.abs();
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "sse")]
-unsafe fn hardswish_inplace_sse(buf: &mut [f32]) {
-    let three = _mm_set1_ps(3.0);
-    let zero = _mm_setzero_ps();
-    let six = _mm_set1_ps(6.0);
-    let inv6 = _mm_set1_ps(1.0 / 6.0);
-    let mut i = 0usize;
-    while i + 4 <= buf.len() {
-        let x = _mm_loadu_ps(buf.as_ptr().add(i));
-        let t = _mm_add_ps(x, three);
-        let clamped = _mm_min_ps(_mm_max_ps(t, zero), six);
-        let r = _mm_mul_ps(x, _mm_mul_ps(clamped, inv6));
-        _mm_storeu_ps(buf.as_mut_ptr().add(i), r);
-        i += 4;
-    }
-    for x in &mut buf[i..] {
-        let t = *x + 3.0;
-        let clamped = t.clamp(0.0, 6.0);
-        *x = *x * clamped * (1.0 / 6.0);
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx")]
-unsafe fn softsign_inplace_avx(buf: &mut [f32]) {
-    let one = _mm256_set1_ps(1.0);
-    let mut i = 0usize;
-    while i + 8 <= buf.len() {
-        let x = _mm256_loadu_ps(buf.as_ptr().add(i));
-        let abs_x = _mm256_andnot_ps(_mm256_set1_ps(-0.0), x);
-        let den = _mm256_add_ps(one, abs_x);
-        let r = _mm256_div_ps(x, den);
-        _mm256_storeu_ps(buf.as_mut_ptr().add(i), r);
-        i += 8;
-    }
-    for x in &mut buf[i..] {
-        *x /= 1.0 + x.abs();
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-#[target_feature(enable = "avx")]
-unsafe fn hardswish_inplace_avx(buf: &mut [f32]) {
-    let three = _mm256_set1_ps(3.0);
-    let zero = _mm256_setzero_ps();
-    let six = _mm256_set1_ps(6.0);
-    let inv6 = _mm256_set1_ps(1.0 / 6.0);
-    let mut i = 0usize;
-    while i + 8 <= buf.len() {
-        let x = _mm256_loadu_ps(buf.as_ptr().add(i));
-        let t = _mm256_add_ps(x, three);
-        let clamped = _mm256_min_ps(_mm256_max_ps(t, zero), six);
-        let r = _mm256_mul_ps(x, _mm256_mul_ps(clamped, inv6));
-        _mm256_storeu_ps(buf.as_mut_ptr().add(i), r);
-        i += 8;
-    }
-    for x in &mut buf[i..] {
+    for x in chunks.into_remainder() {
         let t = *x + 3.0;
         let clamped = t.clamp(0.0, 6.0);
         *x = *x * clamped * (1.0 / 6.0);
@@ -1592,5 +734,134 @@ mod tests {
         assert!(a[2].abs() < 1e-6);
         assert!((a[3] - 3.0).abs() < 1e-6);
         assert!((a[4] - 4.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn affine_inplace_matches_scalar() {
+        let scale: Vec<f32> = (0..13).map(|i| 0.25 + i as f32 * 0.125).collect();
+        let loc: Vec<f32> = (0..13).map(|i| 0.5 - i as f32 * 0.0625).collect();
+        let base: Vec<f32> = (0..13).map(|i| (i % 5) as f32 * 0.4 - 0.8).collect();
+        let mut buf = base.clone();
+        affine_inplace(&mut buf, &scale, &loc);
+        for i in 0..buf.len() {
+            let expected = base[i] * scale[i] + loc[i];
+            assert!((buf[i] - expected).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn mul_per_sample_inplace_matches_scalar() {
+        let src: Vec<f32> = (0..11).map(|i| (i % 4) as f32 * 0.5 - 0.75).collect();
+        let mut buf = src.clone();
+        mul_per_sample_inplace(&mut buf, &src);
+        for i in 0..buf.len() {
+            assert!((buf[i] - src[i] * src[i]).abs() < 1e-7);
+        }
+    }
+
+    #[test]
+    fn dot_product_matches_scalar() {
+        let a: Vec<f32> = (0..29).map(|i| (i % 7) as f32 * 0.25 - 0.5).collect();
+        let b: Vec<f32> = (0..29).map(|i| 1.0 - (i % 3) as f32 * 0.375).collect();
+        let expected: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+        assert!((dot_product(&a, &b) - expected).abs() < 1e-5);
+    }
+
+    #[test]
+    fn ramp_scaled_matches_scalar() {
+        let src: Vec<f32> = (0..17).map(|i| (i % 6) as f32 * 0.2 - 0.5).collect();
+        let mut copied = vec![0.0f32; src.len()];
+        copy_ramp_scaled_inplace(&mut copied, &src, 0.1, 1.3);
+        let mut added = src.clone();
+        add_ramp_scaled_inplace(&mut added, &src, 0.1, 1.3);
+        let delta = (1.3 - 0.1) / (src.len() - 1) as f32;
+        for i in 0..src.len() {
+            let g = 0.1 + i as f32 * delta;
+            assert!((copied[i] - src[i] * g).abs() < 1e-6);
+            assert!((added[i] - (src[i] + src[i] * g)).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn soft_clip_inplace_matches_scalar() {
+        let mut buf: Vec<f32> = (0..37).map(|i| (i % 13) as f32 * 0.31 - 1.9).collect();
+        buf.extend([0.97, 0.98, 0.981, 1.0, 1.5, -0.98, -0.99, -2.0]);
+        let knee = 0.98f32;
+        let expected: Vec<f32> = buf
+            .iter()
+            .map(|&x| {
+                let ax = x.abs();
+                if ax <= knee {
+                    x
+                } else {
+                    let over = (ax - knee) / (1.0 - knee);
+                    x.signum() * (knee + (1.0 - knee) * over.tanh())
+                }
+            })
+            .collect();
+        soft_clip_inplace(&mut buf, knee);
+        assert_eq!(buf, expected);
+    }
+
+    #[test]
+    fn activations_match_scalar() {
+        let base: Vec<f32> = (0..19).map(|i| (i % 9) as f32 * 0.5 - 2.0).collect();
+
+        let mut buf = base.clone();
+        fast_tanh_inplace(&mut buf);
+        for i in 0..buf.len() {
+            assert!((buf[i] - fast_tanh(base[i])).abs() < 1e-6);
+        }
+
+        let mut buf = base.clone();
+        fast_sigmoid_inplace(&mut buf);
+        for i in 0..buf.len() {
+            assert!((buf[i] - fast_sigmoid(base[i])).abs() < 1e-6);
+        }
+
+        let mut buf = base.clone();
+        relu_inplace(&mut buf);
+        for i in 0..buf.len() {
+            assert_eq!(buf[i], if base[i] < 0.0 { 0.0 } else { base[i] });
+        }
+
+        let mut buf = base.clone();
+        hardtanh_inplace(&mut buf);
+        for i in 0..buf.len() {
+            assert_eq!(buf[i], base[i].clamp(-1.0, 1.0));
+        }
+
+        let mut buf = base.clone();
+        leaky_relu_inplace(&mut buf, 0.1);
+        for i in 0..buf.len() {
+            let expected = if base[i] < 0.0 {
+                base[i] * 0.1
+            } else {
+                base[i]
+            };
+            assert!((buf[i] - expected).abs() < 1e-7);
+        }
+
+        let mut buf = base.clone();
+        softsign_inplace(&mut buf);
+        for i in 0..buf.len() {
+            assert!((buf[i] - base[i] / (1.0 + base[i].abs())).abs() < 1e-6);
+        }
+
+        let mut buf = base.clone();
+        hardswish_inplace(&mut buf);
+        for i in 0..buf.len() {
+            let t = base[i] + 3.0;
+            let expected = base[i] * t.clamp(0.0, 6.0) * (1.0 / 6.0);
+            assert!((buf[i] - expected).abs() < 1e-6);
+        }
+
+        let mul: Vec<f32> = (0..19).map(|i| 0.5 + (i % 4) as f32 * 0.25).collect();
+        let mut dst = base.clone();
+        sigmoid_mul_add_inplace(&mut dst, &base, &mul);
+        for i in 0..dst.len() {
+            let expected = base[i] + fast_sigmoid(base[i]) * mul[i];
+            assert!((dst[i] - expected).abs() < 1e-6);
+        }
     }
 }

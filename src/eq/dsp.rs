@@ -730,19 +730,33 @@ impl ParametricEqualizer {
         if !active_ms.is_empty() {
             self.mid_buf.resize(frames, 0.0);
             self.side_buf.resize(frames, 0.0);
-            for i in 0..frames {
-                let l = left[i];
-                let r = right[i];
-                self.mid_buf[i] = 0.5 * (l + r);
-                self.side_buf[i] = 0.5 * (l - r);
-            }
+            crate::simd::copy_scaled_inplace(&mut self.mid_buf[..frames], &left[..frames], 0.5);
+            crate::simd::add_scaled_inplace(&mut self.mid_buf[..frames], &right[..frames], 0.5);
+            crate::simd::copy_scaled_inplace(&mut self.side_buf[..frames], &left[..frames], 0.5);
+            crate::simd::add_scaled_inplace(&mut self.side_buf[..frames], &right[..frames], -0.5);
             let sc_ms = if let Some((sc_l, sc_r)) = sidechain {
                 self.sc_mid_buf.resize(frames, 0.0);
                 self.sc_side_buf.resize(frames, 0.0);
-                for i in 0..frames {
-                    self.sc_mid_buf[i] = 0.5 * (sc_l[i] + sc_r[i]);
-                    self.sc_side_buf[i] = 0.5 * (sc_l[i] - sc_r[i]);
-                }
+                crate::simd::copy_scaled_inplace(
+                    &mut self.sc_mid_buf[..frames],
+                    &sc_l[..frames],
+                    0.5,
+                );
+                crate::simd::add_scaled_inplace(
+                    &mut self.sc_mid_buf[..frames],
+                    &sc_r[..frames],
+                    0.5,
+                );
+                crate::simd::copy_scaled_inplace(
+                    &mut self.sc_side_buf[..frames],
+                    &sc_l[..frames],
+                    0.5,
+                );
+                crate::simd::add_scaled_inplace(
+                    &mut self.sc_side_buf[..frames],
+                    &sc_r[..frames],
+                    -0.5,
+                );
                 Some((
                     &self.sc_mid_buf[..frames] as &[f32],
                     &self.sc_side_buf[..frames] as &[f32],
@@ -911,19 +925,33 @@ impl ParametricEqualizer {
         if need_ms {
             self.mid_buf.resize(frames, 0.0);
             self.side_buf.resize(frames, 0.0);
-            for i in 0..frames {
-                let l = left[i];
-                let r = right[i];
-                self.mid_buf[i] = 0.5 * (l + r);
-                self.side_buf[i] = 0.5 * (l - r);
-            }
+            crate::simd::copy_scaled_inplace(&mut self.mid_buf[..frames], &left[..frames], 0.5);
+            crate::simd::add_scaled_inplace(&mut self.mid_buf[..frames], &right[..frames], 0.5);
+            crate::simd::copy_scaled_inplace(&mut self.side_buf[..frames], &left[..frames], 0.5);
+            crate::simd::add_scaled_inplace(&mut self.side_buf[..frames], &right[..frames], -0.5);
             let sc_ms = if let Some((sc_l, sc_r)) = sidechain {
                 self.sc_mid_buf.resize(frames, 0.0);
                 self.sc_side_buf.resize(frames, 0.0);
-                for i in 0..frames {
-                    self.sc_mid_buf[i] = 0.5 * (sc_l[i] + sc_r[i]);
-                    self.sc_side_buf[i] = 0.5 * (sc_l[i] - sc_r[i]);
-                }
+                crate::simd::copy_scaled_inplace(
+                    &mut self.sc_mid_buf[..frames],
+                    &sc_l[..frames],
+                    0.5,
+                );
+                crate::simd::add_scaled_inplace(
+                    &mut self.sc_mid_buf[..frames],
+                    &sc_r[..frames],
+                    0.5,
+                );
+                crate::simd::copy_scaled_inplace(
+                    &mut self.sc_side_buf[..frames],
+                    &sc_l[..frames],
+                    0.5,
+                );
+                crate::simd::add_scaled_inplace(
+                    &mut self.sc_side_buf[..frames],
+                    &sc_r[..frames],
+                    -0.5,
+                );
                 Some((
                     &self.sc_mid_buf[..frames] as &[f32],
                     &self.sc_side_buf[..frames] as &[f32],
@@ -941,12 +969,12 @@ impl ParametricEqualizer {
                 }
                 self.bands[b].process_domain(&ctx, &mut mid[..frames], &mut side[..frames], sc_ms);
             }
-            for i in 0..frames {
-                let m = mid[i];
-                let s = side[i];
-                left[i] = m + s;
-                right[i] = m - s;
-            }
+            // left = mid + side, right = mid - side; mid/side are owned
+            // scratch buffers, so both channels can be rebuilt in place.
+            crate::simd::copy_scaled_inplace(&mut right[..frames], &mid[..frames], 1.0);
+            crate::simd::add_scaled_inplace(&mut right[..frames], &side[..frames], -1.0);
+            crate::simd::copy_scaled_inplace(&mut left[..frames], &side[..frames], 1.0);
+            crate::simd::add_inplace(&mut left[..frames], &mid[..frames]);
             self.mid_buf = mid;
             self.side_buf = side;
         }
@@ -1032,15 +1060,12 @@ impl ParametricEqualizer {
 }
 
 fn block_rms_stereo(left: &[f32], right: &[f32]) -> f32 {
-    let mut sum = 0.0_f32;
-    for (&l, &r) in left.iter().zip(right.iter()) {
-        sum += l * l + r * r;
-    }
+    let sum = crate::simd::dot_product(left, left) + crate::simd::dot_product(right, right);
     (sum / (2.0 * left.len().max(1) as f32)).sqrt()
 }
 
 fn block_rms_mono(buffer: &[f32]) -> f32 {
-    let sum: f32 = buffer.iter().map(|s| s * s).sum();
+    let sum = crate::simd::dot_product(buffer, buffer);
     (sum / buffer.len().max(1) as f32).sqrt()
 }
 
@@ -1294,21 +1319,42 @@ pub fn db_to_gain(db: f32) -> f32 {
     10.0_f32.powf(db * 0.05)
 }
 
+// Grow-only scratch of constant values feeding `add_inplace` in
+// `apply_character` (the SIMD layer has no add-constant kernel). Shared per
+// thread; resized only when a larger block arrives, never per block.
+thread_local! {
+    static CHARACTER_OFFSET_SCRATCH: std::cell::RefCell<Vec<f32>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn add_character_offset(buffer: &mut [f32], offset: f32) {
+    CHARACTER_OFFSET_SCRATCH.with(|scratch| {
+        let mut scratch = scratch.borrow_mut();
+        if scratch.len() < buffer.len() {
+            scratch.resize(buffer.len(), 0.0);
+        }
+        scratch[..buffer.len()].fill(offset);
+        crate::simd::add_inplace(buffer, &scratch[..buffer.len()]);
+    });
+}
+
 /// Gentle/Warm analog-character output saturation (Q4 Character modes).
 pub fn apply_character(buffer: &mut [f32], character: u8) {
     match character {
         // Gentle: symmetric soft clip, mostly odd harmonics.
         1 => {
-            for s in buffer.iter_mut() {
-                *s = crate::simd::fast_tanh(*s * 1.5) / 0.9051;
-            }
+            crate::simd::mul_inplace(buffer, 1.5);
+            crate::simd::fast_tanh_inplace(buffer);
+            crate::simd::mul_inplace(buffer, 1.0 / 0.9051);
         }
         // Warm: asymmetric drive giving even + odd harmonics; the constant
         // tanh offset keeps the path DC-free.
         2 => {
-            for s in buffer.iter_mut() {
-                *s = (crate::simd::fast_tanh(*s * 1.8 + 0.15) - 0.1489) / 0.85;
-            }
+            crate::simd::mul_inplace(buffer, 1.8);
+            add_character_offset(buffer, 0.15);
+            crate::simd::fast_tanh_inplace(buffer);
+            add_character_offset(buffer, -0.1489);
+            crate::simd::mul_inplace(buffer, 1.0 / 0.85);
         }
         _ => {}
     }
