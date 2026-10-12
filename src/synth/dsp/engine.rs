@@ -856,10 +856,8 @@ impl SynthEngine {
         // Final clip protection on the summed master output: stacked voices
         // and drive stages can push the sum past ±1, so run every output
         // sample through the knee clipper (transparent below the knee).
-        for i in 0..frames {
-            out_l[i] = soft_clip_master(out_l[i]);
-            out_r[i] = soft_clip_master(out_r[i]);
-        }
+        crate::simd::soft_clip_inplace(&mut out_l[..frames], MASTER_CLIP_KNEE);
+        crate::simd::soft_clip_inplace(&mut out_r[..frames], MASTER_CLIP_KNEE);
 
         // Reclaim voices that temporarily exceeded the pool for an uber
         // release once they are fully faded. This also drops inactive pool

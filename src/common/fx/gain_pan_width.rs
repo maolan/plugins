@@ -21,9 +21,8 @@ impl Gain {
     }
 
     pub fn process_block(&self, buf_l: &mut [f32], buf_r: &mut [f32]) {
-        for (l, r) in buf_l.iter_mut().zip(buf_r.iter_mut()) {
-            (*l, *r) = self.process(*l, *r);
-        }
+        crate::simd::mul_inplace(buf_l, self.gain_linear);
+        crate::simd::mul_inplace(buf_r, self.gain_linear);
     }
 }
 
@@ -56,20 +55,24 @@ impl Pan {
     }
 
     pub fn process_block(&self, buf_l: &mut [f32], buf_r: &mut [f32]) {
-        for (l, r) in buf_l.iter_mut().zip(buf_r.iter_mut()) {
-            (*l, *r) = self.process(*l, *r);
-        }
+        crate::simd::mul_inplace(buf_l, self.gain_l);
+        crate::simd::mul_inplace(buf_r, self.gain_r);
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Default)]
 pub struct Width {
     width: f32,
+    /// Reusable mid buffer; only grows, never allocated per block.
+    scratch: std::cell::RefCell<Vec<f32>>,
 }
 
 impl Width {
     pub fn new() -> Self {
-        Self { width: 1.0 }
+        Self {
+            width: 1.0,
+            scratch: std::cell::RefCell::new(Vec::new()),
+        }
     }
 
     pub fn set_width(&mut self, width: f32) {
@@ -83,9 +86,25 @@ impl Width {
     }
 
     pub fn process_block(&self, buf_l: &mut [f32], buf_r: &mut [f32]) {
-        for (l, r) in buf_l.iter_mut().zip(buf_r.iter_mut()) {
-            (*l, *r) = self.process(*l, *r);
+        let frames = buf_l.len().min(buf_r.len());
+        if frames == 0 {
+            return;
         }
+        let mut scratch = self.scratch.borrow_mut();
+        if scratch.len() < frames {
+            scratch.resize(frames, 0.0);
+        }
+        // mid = 0.5 * (l + r) into the scratch, then side = 0.5 * (l - r) * w
+        // in place of l; r is rebuilt as mid - side before l becomes mid + side.
+        let mid = &mut scratch[..frames];
+        crate::simd::copy_scaled_inplace(mid, &buf_l[..frames], 0.5);
+        crate::simd::add_scaled_inplace(mid, &buf_r[..frames], 0.5);
+        crate::simd::add_scaled_inplace(&mut buf_l[..frames], &buf_r[..frames], -1.0);
+        crate::simd::mul_inplace(&mut buf_l[..frames], 0.5);
+        crate::simd::mul_inplace(&mut buf_l[..frames], self.width);
+        crate::simd::copy_scaled_inplace(&mut buf_r[..frames], mid, 1.0);
+        crate::simd::add_scaled_inplace(&mut buf_r[..frames], &buf_l[..frames], -1.0);
+        crate::simd::add_scaled_inplace(&mut buf_l[..frames], mid, 1.0);
     }
 }
 
