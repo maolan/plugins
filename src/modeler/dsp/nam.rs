@@ -810,7 +810,11 @@ impl LstmModel {
 struct WaveNetLayer {
     conv: Conv1D,
     input_mixin: Conv1x1,
-    post: Conv1x1,
+    // Post-activation 1x1 convolution toward the next layer ("layer1x1" in
+    // the current NAM format; absent → the residual connection is identity).
+    post: Option<Conv1x1>,
+    // Optional 1x1 convolution producing this layer's head contribution.
+    head1x1: Option<Conv1x1>,
     activation: Arc<dyn activations::Activation>,
     gated: bool,
     frame_capacity: usize,
@@ -818,28 +822,275 @@ struct WaveNetLayer {
     mixin_block: Vec<f32>,
     z_block: Vec<f32>,
     post_block: Vec<f32>,
+    head1x1_block: Vec<f32>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 struct LayerArrayParams {
     input_size: usize,
     condition_size: usize,
     head_size: usize,
-    channels: usize,
-    kernel_size: usize,
-    dilations: Vec<usize>,
-    activation: String,
-    gated: bool,
     head_bias: bool,
+    head_kernel_size: usize,
+    channels: usize,
+    bottleneck: usize,
+    kernel_sizes: Vec<usize>,
+    dilations: Vec<usize>,
+    activations: Vec<Value>,
+    gated: bool,
+    layer1x1: bool,
+    head1x1_out: Option<usize>,
+}
+
+impl LayerArrayParams {
+    fn parse(entry: &Value) -> Result<Self, NamError> {
+        let req_usize = |key: &str| -> Result<usize, NamError> {
+            entry
+                .get(key)
+                .and_then(Value::as_u64)
+                .map(|v| v as usize)
+                .ok_or_else(|| NamError::InvalidConfig(format!("WaveNet layer: {key} missing")))
+        };
+        let input_size = req_usize("input_size")?;
+        let condition_size = req_usize("condition_size")?;
+        let channels = req_usize("channels")?;
+        let dilations: Vec<usize> = entry
+            .get("dilations")
+            .and_then(Value::as_array)
+            .ok_or_else(|| NamError::InvalidConfig("WaveNet layer: dilations missing".into()))?
+            .iter()
+            .map(|v| {
+                v.as_u64().map(|d| d as usize).ok_or_else(|| {
+                    NamError::InvalidConfig("WaveNet layer: invalid dilation".into())
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if dilations.is_empty() {
+            return Err(NamError::InvalidConfig(
+                "WaveNet layer: dilations must be non-empty".into(),
+            ));
+        }
+
+        // Head rechannel: the current format uses a "head" object (a Conv1D
+        // with kernel_size); the legacy format used head_size/head_bias
+        // (equivalent to a 1x1 convolution).
+        let (head_size, head_bias, head_kernel_size) =
+            if let Some(head) = entry.get("head").and_then(Value::as_object) {
+                let out_channels = head
+                    .get("out_channels")
+                    .and_then(Value::as_u64)
+                    .map(|v| v as usize)
+                    .ok_or_else(|| {
+                        NamError::InvalidConfig("WaveNet layer: head.out_channels missing".into())
+                    })?;
+                let kernel_size = head
+                    .get("kernel_size")
+                    .and_then(Value::as_u64)
+                    .map(|v| v as usize)
+                    .unwrap_or(1);
+                let bias = head.get("bias").and_then(Value::as_bool).unwrap_or(false);
+                (out_channels, bias, kernel_size)
+            } else {
+                (
+                    req_usize("head_size")?,
+                    entry
+                        .get("head_bias")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    1,
+                )
+            };
+
+        let kernel_sizes: Vec<usize> =
+            if let Some(arr) = entry.get("kernel_sizes").and_then(Value::as_array) {
+                let sizes: Vec<usize> = arr
+                    .iter()
+                    .map(|v| {
+                        v.as_u64().map(|k| k as usize).ok_or_else(|| {
+                            NamError::InvalidConfig("WaveNet layer: invalid kernel_size".into())
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if sizes.len() != dilations.len() {
+                    return Err(NamError::InvalidConfig(format!(
+                        "WaveNet layer: kernel_sizes length ({}) must match dilations length ({})",
+                        sizes.len(),
+                        dilations.len()
+                    )));
+                }
+                sizes
+            } else {
+                vec![req_usize("kernel_size")?; dilations.len()]
+            };
+
+        let activations: Vec<Value> = match entry.get("activation") {
+            Some(activation @ Value::String(_)) => vec![activation.clone(); dilations.len()],
+            Some(Value::Array(arr)) => {
+                if arr.len() != dilations.len() {
+                    return Err(NamError::InvalidConfig(format!(
+                        "WaveNet layer: activation length ({}) must match dilations length ({})",
+                        arr.len(),
+                        dilations.len()
+                    )));
+                }
+                arr.clone()
+            }
+            _ => {
+                return Err(NamError::InvalidConfig(
+                    "WaveNet layer: activation missing".into(),
+                ));
+            }
+        };
+
+        let mut gated = entry.get("gated").and_then(Value::as_bool).unwrap_or(false);
+        if let Some(modes) = entry.get("gating_mode").and_then(Value::as_array) {
+            for mode in modes {
+                if mode.as_str() != Some("none") {
+                    return Err(NamError::InvalidConfig(
+                        "WaveNet layer: gating/blending is not supported".into(),
+                    ));
+                }
+            }
+            gated = false;
+        }
+
+        let (layer1x1, bottleneck) = match entry.get("layer1x1").and_then(Value::as_object) {
+            Some(layer1x1) => {
+                let active = layer1x1
+                    .get("active")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let groups = layer1x1
+                    .get("groups")
+                    .and_then(Value::as_u64)
+                    .map(|g| g as usize)
+                    .unwrap_or(1);
+                if groups != 1 {
+                    return Err(NamError::InvalidConfig(
+                        "WaveNet layer: grouped layer1x1 is not supported".into(),
+                    ));
+                }
+                let bottleneck = entry
+                    .get("bottleneck")
+                    .and_then(Value::as_u64)
+                    .map(|b| b as usize)
+                    .unwrap_or(channels);
+                if !active && bottleneck != channels {
+                    return Err(NamError::InvalidConfig(
+                        "WaveNet layer: bottleneck must equal channels when layer1x1 is inactive"
+                            .into(),
+                    ));
+                }
+                (active, bottleneck)
+            }
+            // Legacy format always has the post-activation 1x1 convolution.
+            None => (true, channels),
+        };
+
+        let head1x1_out = match entry.get("head1x1").and_then(Value::as_object) {
+            Some(head1x1) => {
+                if head1x1
+                    .get("active")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    let groups = head1x1
+                        .get("groups")
+                        .and_then(Value::as_u64)
+                        .map(|g| g as usize)
+                        .unwrap_or(1);
+                    if groups != 1 {
+                        return Err(NamError::InvalidConfig(
+                            "WaveNet layer: grouped head1x1 is not supported".into(),
+                        ));
+                    }
+                    Some(
+                        head1x1
+                            .get("out_channels")
+                            .and_then(Value::as_u64)
+                            .map(|v| v as usize)
+                            .ok_or_else(|| {
+                                NamError::InvalidConfig(
+                                    "WaveNet layer: head1x1.out_channels missing".into(),
+                                )
+                            })?,
+                    )
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
+
+        const FILM_KEYS: [&str; 8] = [
+            "conv_pre_film",
+            "conv_post_film",
+            "input_mixin_pre_film",
+            "input_mixin_post_film",
+            "activation_pre_film",
+            "activation_post_film",
+            "layer1x1_post_film",
+            "head1x1_post_film",
+        ];
+        for key in FILM_KEYS {
+            if entry
+                .get(key)
+                .and_then(|film| film.get("active"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                return Err(NamError::InvalidConfig(format!(
+                    "WaveNet layer: FiLM ({key}) is not supported"
+                )));
+            }
+        }
+        for key in ["groups_input", "groups_input_mixin"] {
+            if entry
+                .get(key)
+                .and_then(Value::as_u64)
+                .is_some_and(|g| g != 1)
+            {
+                return Err(NamError::InvalidConfig(format!(
+                    "WaveNet layer: grouped {key} is not supported"
+                )));
+            }
+        }
+        if entry.get("slimmable").is_some_and(|value| !value.is_null()) {
+            return Err(NamError::InvalidConfig(
+                "WaveNet layer: per-layer slimmable configs are not supported".into(),
+            ));
+        }
+
+        Ok(Self {
+            input_size,
+            condition_size,
+            head_size,
+            head_bias,
+            head_kernel_size,
+            channels,
+            bottleneck,
+            kernel_sizes,
+            dilations,
+            activations,
+            gated,
+            layer1x1,
+            head1x1_out,
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
 struct WaveNetLayerArray {
     channels: usize,
+    bottleneck: usize,
     head_size: usize,
     rechannel: Conv1x1,
     layers: Vec<WaveNetLayer>,
-    head_rechannel: Conv1x1,
+    // Head rechannel: a causal Conv1D (kernel size 1 in the legacy format)
+    // over the accumulated head inputs, with its own streaming history.
+    head_rechannel: Conv1D,
+    head_rechannel_history: Vec<f32>,
+    head_rechannel_staging: Vec<f32>,
     receptive_field: usize,
     buffer_size: usize,
     buffer_start: usize,
@@ -872,7 +1123,7 @@ impl WaveNetHead {
                 "WaveNet Head: kernel_sizes must be non-empty".into(),
             ));
         }
-        let activation = activations::parse_activation(&Value::String(params.activation.clone()))?;
+        let activation = activations::parse_activation(&params.activation)?;
         let mut layers = Vec::with_capacity(params.kernel_sizes.len());
         let mut cin = params.in_channels;
         for (i, &k) in params.kernel_sizes.iter().enumerate() {
@@ -927,7 +1178,7 @@ struct HeadParams {
     channels: usize,
     out_channels: usize,
     kernel_sizes: Vec<usize>,
-    activation: String,
+    activation: Value,
 }
 
 #[derive(Debug, Clone)]
@@ -1064,7 +1315,9 @@ impl WaveNetModel {
                 array
                     .layer_output_block
                     .resize(array.channels * frames, 0.0);
-                array.head_input_block.resize(array.channels * frames, 0.0);
+                array
+                    .head_input_block
+                    .resize(array.bottleneck * frames, 0.0);
                 array
                     .head_output_block
                     .resize(array.head_size * frames, 0.0);
@@ -1073,11 +1326,15 @@ impl WaveNetModel {
             for layer in &mut array.layers {
                 if layer.frame_capacity < frames {
                     let conv_out = layer.conv.out_channels;
-                    let channels = layer.post.out_channels;
                     layer.conv_out_block.resize(conv_out * frames, 0.0);
                     layer.mixin_block.resize(conv_out * frames, 0.0);
-                    layer.z_block.resize(channels * frames, 0.0);
-                    layer.post_block.resize(channels * frames, 0.0);
+                    layer.z_block.resize(array.bottleneck * frames, 0.0);
+                    layer.post_block.resize(array.channels * frames, 0.0);
+                    if let Some(head1x1) = &layer.head1x1 {
+                        layer
+                            .head1x1_block
+                            .resize(head1x1.out_channels * frames, 0.0);
+                    }
                     layer.frame_capacity = frames;
                 }
             }
@@ -1130,17 +1387,20 @@ impl WaveNetModel {
             dst.copy_from_slice(src);
         }
 
+        let head_channels = array.head_rechannel.in_channels;
         if let Some(init) = initial_head_input {
-            let len = array.channels * frames;
+            let len = head_channels * frames;
             if init.len() >= len {
                 array.head_input_block[..len].copy_from_slice(&init[..len]);
             } else {
                 array.head_input_block[..len].fill(0.0);
             }
         } else {
-            array.head_input_block[..array.channels * frames].fill(0.0);
+            array.head_input_block[..head_channels * frames].fill(0.0);
         }
         let last_layer = array.layers.len().saturating_sub(1);
+        let bottleneck = array.bottleneck;
+        let channels = array.channels;
 
         for layer_idx in 0..array.layers.len() {
             let layer = &mut array.layers[layer_idx];
@@ -1170,11 +1430,10 @@ impl WaveNetModel {
                 &layer.mixin_block[..layer.conv.out_channels * frames],
             );
 
-            let channels = array.channels;
             if layer.gated {
-                for c in 0..channels {
+                for c in 0..bottleneck {
                     let z_base = c * frames;
-                    let g_base = (channels + c) * frames;
+                    let g_base = (bottleneck + c) * frames;
                     layer.z_block[z_base..z_base + frames]
                         .copy_from_slice(&layer.conv_out_block[z_base..z_base + frames]);
                     layer
@@ -1187,37 +1446,61 @@ impl WaveNetModel {
                     );
                 }
             } else {
-                for c in 0..channels {
+                for c in 0..bottleneck {
                     let z_base = c * frames;
                     layer.z_block[z_base..z_base + frames]
                         .copy_from_slice(&layer.conv_out_block[z_base..z_base + frames]);
                     layer
                         .activation
                         .apply(&mut layer.z_block[z_base..z_base + frames]);
+                }
+                if let Some(head1x1) = &layer.head1x1 {
+                    let head1x1_out = head1x1.out_channels;
+                    Self::conv1x1_process_block(
+                        head1x1,
+                        &layer.z_block[..bottleneck * frames],
+                        frames,
+                        &mut layer.head1x1_block[..head1x1_out * frames],
+                    );
                     crate::simd::add_inplace(
-                        &mut array.head_input_block[z_base..z_base + frames],
-                        &layer.z_block[z_base..z_base + frames],
+                        &mut array.head_input_block[..head1x1_out * frames],
+                        &layer.head1x1_block[..head1x1_out * frames],
+                    );
+                } else {
+                    crate::simd::add_inplace(
+                        &mut array.head_input_block[..bottleneck * frames],
+                        &layer.z_block[..bottleneck * frames],
                     );
                 }
             }
 
-            Self::conv1x1_process_block(
-                &layer.post,
-                &layer.z_block[..channels * frames],
-                frames,
-                &mut layer.post_block[..channels * frames],
-            );
+            let post_block: Option<&[f32]> = if let Some(post) = &layer.post {
+                Self::conv1x1_process_block(
+                    post,
+                    &layer.z_block[..bottleneck * frames],
+                    frames,
+                    &mut layer.post_block[..channels * frames],
+                );
+                Some(&layer.post_block[..channels * frames])
+            } else {
+                None
+            };
 
             if layer_idx == last_layer {
                 for c in 0..channels {
                     let in_base = c * array.buffer_size + array.buffer_start;
                     let out_base = c * frames;
-                    array.layer_output_block[out_base..out_base + frames]
-                        .copy_from_slice(&layer.post_block[out_base..out_base + frames]);
-                    crate::simd::add_inplace(
-                        &mut array.layer_output_block[out_base..out_base + frames],
-                        &input_buffer[in_base..in_base + frames],
-                    );
+                    if let Some(post_block) = &post_block {
+                        array.layer_output_block[out_base..out_base + frames]
+                            .copy_from_slice(&post_block[out_base..out_base + frames]);
+                        crate::simd::add_inplace(
+                            &mut array.layer_output_block[out_base..out_base + frames],
+                            &input_buffer[in_base..in_base + frames],
+                        );
+                    } else {
+                        array.layer_output_block[out_base..out_base + frames]
+                            .copy_from_slice(&input_buffer[in_base..in_base + frames]);
+                    }
                 }
             } else {
                 let next_layer_buffer =
@@ -1225,27 +1508,83 @@ impl WaveNetModel {
                 for c in 0..channels {
                     let in_base = c * array.buffer_size + array.buffer_start;
                     let out_base = c * frames;
-                    next_layer_buffer[in_base..in_base + frames]
-                        .copy_from_slice(&layer.post_block[out_base..out_base + frames]);
-                    crate::simd::add_inplace(
-                        &mut next_layer_buffer[in_base..in_base + frames],
-                        &input_buffer[in_base..in_base + frames],
-                    );
+                    if let Some(post_block) = &post_block {
+                        next_layer_buffer[in_base..in_base + frames]
+                            .copy_from_slice(&post_block[out_base..out_base + frames]);
+                        crate::simd::add_inplace(
+                            &mut next_layer_buffer[in_base..in_base + frames],
+                            &input_buffer[in_base..in_base + frames],
+                        );
+                    } else {
+                        next_layer_buffer[in_base..in_base + frames]
+                            .copy_from_slice(&input_buffer[in_base..in_base + frames]);
+                    }
                 }
             }
         }
 
-        Self::conv1x1_process_block(
-            &array.head_rechannel,
-            &array.head_input_block[..array.channels * frames],
-            frames,
-            &mut array.head_output_block[..array.head_size * frames],
-        );
+        Self::process_head_rechannel(array, frames);
         array.buffer_start += frames;
     }
 
+    fn process_head_rechannel(array: &mut WaveNetLayerArray, frames: usize) {
+        let WaveNetLayerArray {
+            head_rechannel,
+            head_rechannel_history,
+            head_rechannel_staging,
+            head_input_block,
+            head_output_block,
+            ..
+        } = array;
+        let history = (head_rechannel.required_history() - 1) * head_rechannel.dilation;
+        let in_channels = head_rechannel.in_channels;
+        if history == 0 {
+            Self::conv1d_process_block_from_buffer(
+                head_rechannel,
+                &head_input_block[..in_channels * frames],
+                frames,
+                0,
+                frames,
+                &mut head_output_block[..head_rechannel.out_channels * frames],
+            );
+            return;
+        }
+        let stride = history + frames;
+        if head_rechannel_staging.len() < in_channels * stride {
+            head_rechannel_staging.resize(in_channels * stride, 0.0);
+        }
+        if head_rechannel_history.len() < in_channels * history {
+            head_rechannel_history.resize(in_channels * history, 0.0);
+        }
+        for c in 0..in_channels {
+            let row = &mut head_rechannel_staging[c * stride..(c + 1) * stride];
+            row[..history].copy_from_slice(&head_rechannel_history[c * history..(c + 1) * history]);
+            row[history..history + frames]
+                .copy_from_slice(&head_input_block[c * frames..(c + 1) * frames]);
+        }
+        Self::conv1d_process_block_from_buffer(
+            head_rechannel,
+            head_rechannel_staging,
+            stride,
+            history,
+            frames,
+            &mut head_output_block[..head_rechannel.out_channels * frames],
+        );
+        for c in 0..in_channels {
+            let src = &head_rechannel_staging[c * stride + frames..(c + 1) * stride];
+            head_rechannel_history[c * history..(c + 1) * history].copy_from_slice(src);
+        }
+    }
+
     fn new(config: &Value, weights: &mut &[f32]) -> Result<Self, NamError> {
-        let layers: Vec<LayerArrayParams> = serde_json::from_value(config["layers"].clone())?;
+        let layers: Vec<LayerArrayParams> = config["layers"]
+            .as_array()
+            .ok_or_else(|| {
+                NamError::InvalidConfig("WaveNet.layers must be a non-empty array".into())
+            })?
+            .iter()
+            .map(LayerArrayParams::parse)
+            .collect::<Result<Vec<_>, _>>()?;
         if layers.is_empty() {
             return Err(NamError::InvalidConfig(
                 "WaveNet.layers must be non-empty".into(),
@@ -1293,12 +1632,13 @@ impl WaveNetModel {
                             .map(|v| v as usize)
                     })
                     .collect::<Result<Vec<_>, _>>()?,
-                activation: head_json["activation"]
-                    .as_str()
+                activation: head_json
+                    .get("activation")
+                    .filter(|value| !value.is_null())
+                    .cloned()
                     .ok_or_else(|| {
                         NamError::InvalidConfig("WaveNet Head: activation missing".into())
-                    })?
-                    .to_string(),
+                    })?,
             };
             Some(WaveNetHead::new(&head_params, weights)?)
         } else {
@@ -1308,49 +1648,67 @@ impl WaveNetModel {
         for params in &layers {
             let rechannel =
                 Conv1x1::from_weights(params.input_size, params.channels, false, weights)?;
-            let activation =
-                activations::parse_activation(&Value::String(params.activation.clone()))?;
+            let conv_out = if params.gated {
+                2 * params.bottleneck
+            } else {
+                params.bottleneck
+            };
             let mut array_layers = Vec::new();
-            for dilation in &params.dilations {
-                let conv_out = if params.gated {
-                    2 * params.channels
-                } else {
-                    params.channels
-                };
+            for (layer_index, dilation) in params.dilations.iter().enumerate() {
                 let conv = Conv1D::from_weights(
                     params.channels,
                     conv_out,
-                    params.kernel_size,
+                    params.kernel_sizes[layer_index],
                     *dilation,
                     true,
                     weights,
                 )?;
                 let input_mixin =
                     Conv1x1::from_weights(params.condition_size, conv_out, false, weights)?;
-                let post = Conv1x1::from_weights(params.channels, params.channels, true, weights)?;
+                let activation = activations::parse_activation(&params.activations[layer_index])?;
+                let post = if params.layer1x1 {
+                    Some(Conv1x1::from_weights(
+                        params.bottleneck,
+                        params.channels,
+                        true,
+                        weights,
+                    )?)
+                } else {
+                    None
+                };
+                let head1x1 = params
+                    .head1x1_out
+                    .map(|out| Conv1x1::from_weights(params.bottleneck, out, true, weights))
+                    .transpose()?;
                 array_layers.push(WaveNetLayer {
                     conv,
                     input_mixin,
                     post,
-                    activation: activation.clone(),
+                    head1x1,
+                    activation,
                     gated: params.gated,
                     frame_capacity: 0,
                     conv_out_block: Vec::new(),
                     mixin_block: Vec::new(),
                     z_block: Vec::new(),
                     post_block: Vec::new(),
+                    head1x1_block: Vec::new(),
                 });
             }
-            let head_rechannel = Conv1x1::from_weights(
-                params.channels,
+            let head_rechannel_in = params.head1x1_out.unwrap_or(params.bottleneck);
+            let head_rechannel = Conv1D::from_weights(
+                head_rechannel_in,
                 params.head_size,
+                params.head_kernel_size,
+                1,
                 params.head_bias,
                 weights,
             )?;
             let receptive_field = 1 + params
                 .dilations
                 .iter()
-                .map(|d| d * (params.kernel_size - 1))
+                .zip(&params.kernel_sizes)
+                .map(|(d, k)| d * (k - 1))
                 .sum::<usize>();
             let buffer_size = Self::LAYER_ARRAY_BUFFER_SIZE + receptive_field - 1;
             let mut layer_buffers = Vec::with_capacity(array_layers.len());
@@ -1359,10 +1717,13 @@ impl WaveNetModel {
             }
             arrays.push(WaveNetLayerArray {
                 channels: params.channels,
+                bottleneck: params.bottleneck,
                 head_size: params.head_size,
                 rechannel,
                 layers: array_layers,
                 head_rechannel,
+                head_rechannel_history: Vec::new(),
+                head_rechannel_staging: Vec::new(),
                 receptive_field,
                 buffer_size,
                 buffer_start: receptive_field - 1,
@@ -1390,6 +1751,8 @@ impl WaveNetModel {
             for layer in &array.layers {
                 prewarm_samples += layer.conv.dilation * (layer.conv.kernel_size - 1);
             }
+            prewarm_samples +=
+                array.head_rechannel.dilation * (array.head_rechannel.kernel_size - 1);
         }
         Ok(Self {
             arrays,
@@ -1408,6 +1771,7 @@ impl WaveNetModel {
                 buf.fill(0.0);
             }
             array.buffer_start = array.receptive_field - 1;
+            array.head_rechannel_history.fill(0.0);
         }
         if let Some(head) = &mut self.post_stack_head {
             head.reset();
@@ -1450,7 +1814,7 @@ impl WaveNetModel {
                 let prev = &left[array_idx - 1];
                 let current = &mut right[0];
                 let input_len = current.rechannel.in_channels * frames;
-                let init_len = current.channels * frames;
+                let init_len = current.head_rechannel.in_channels * frames;
                 let initial_head_input = &prev.head_output_block[..init_len];
                 Self::process_layer_array(
                     current,

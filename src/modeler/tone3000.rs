@@ -553,7 +553,7 @@ fn drain_oauth_listeners(listener_v4: &TcpListener, listener_v6: Option<&TcpList
     }
 }
 
-fn open_url_in_browser(url: &str) -> Result<(), String> {
+pub(crate) fn open_url_in_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         Command::new("cmd")
@@ -890,6 +890,12 @@ pub fn search(
         AssetKind::Nam => append_query_param(&mut url, "format", "nam"),
         AssetKind::Ir => {}
     }
+    // Omitting `architecture` selects the legacy A1/custom model set and
+    // excludes A2-only tones; the site search defaults to A2, so request it
+    // explicitly to match the web results.
+    if kind == AssetKind::Nam {
+        append_query_param(&mut url, "architecture", "2");
+    }
     if !filters.tags.is_empty() {
         append_query_param(&mut url, "tags", &filters.tags.join("_"));
     }
@@ -897,7 +903,7 @@ pub fn search(
         append_query_param(&mut url, "makes", &filters.makes.join("_"));
     }
     if !filters.creators.is_empty() {
-        append_query_param(&mut url, "creators", &filters.creators.join("_"));
+        append_query_param(&mut url, "creators", &filters.creators.join(","));
     }
     let mut fallback_urls = Vec::new();
     if let Some(url) = fallback_search_url(kind, &url) {
@@ -1459,18 +1465,31 @@ fn fetch_tone_variations(kind: AssetKind, config: &Config, tone_id: &str) -> Vec
         AssetKind::Ir => &config.ir_download_template,
     };
     let url = render_template(template, &config.base, &urlencoding::encode(tone_id), 1, 25);
-    let body = match get_bytes(&url, config.auth_token.as_deref(), 2) {
-        Ok(body) => body,
-        Err(_) => {
-            return Vec::new();
+    // Omitting `architecture` selects the legacy A1/custom model set and
+    // excludes A2, so request A2 explicitly for NAM and fall back to the
+    // legacy default for tones without A2 models.
+    let mut urls = vec![url];
+    if kind == AssetKind::Nam {
+        let mut a2_url = urls[0].clone();
+        append_query_param(&mut a2_url, "architecture", "2");
+        urls.insert(0, a2_url);
+    }
+    for url in urls {
+        let Ok(body) = get_bytes(&url, config.auth_token.as_deref(), 2) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_slice::<Value>(&body) else {
+            continue;
+        };
+        let variations = parse_tone_variations(kind, &value);
+        if !variations.is_empty() {
+            return variations;
         }
-    };
-    let value: Value = match serde_json::from_slice(&body) {
-        Ok(value) => value,
-        Err(_) => {
-            return Vec::new();
-        }
-    };
+    }
+    Vec::new()
+}
+
+fn parse_tone_variations(kind: AssetKind, value: &Value) -> Vec<SearchVariation> {
     let arrays = [
         value.get("data").and_then(Value::as_array),
         value.get("items").and_then(Value::as_array),

@@ -40,6 +40,7 @@ use crate::{
 
 pub const EDITOR_WIDTH: u32 = 720;
 pub const EDITOR_HEIGHT: u32 = 560;
+const TONE_KEY_SETTINGS_URL: &str = "https://www.tone3000.com/settings";
 
 pub fn preferred_api() -> &'static CStr {
     #[cfg(target_os = "windows")]
@@ -147,6 +148,8 @@ pub enum Message {
     ToneOAuthBrowserLogin,
     ToneOAuthCompleted,
     ToneOAuthClear,
+    ToneKeyHelpLinkClicked,
+    ToneKeyHelpLinkHandled,
     ToggleToneSettings,
     ToggleBassModeMenu,
     ToggleTrebleModeMenu,
@@ -303,7 +306,7 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             tone_model_page: 1,
             tone_model_total_pages: 0,
             tone_model_gear_amp: true,
-            tone_model_gear_full_rig: true,
+            tone_model_gear_full_rig: false,
             tone_model_gear_pedal: false,
             tone_model_gear_outboard: false,
             tone_model_selected_variation: None,
@@ -946,6 +949,25 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::ToneOAuthClear => clear_tone_oauth(state),
+        Message::ToneKeyHelpLinkClicked => {
+            let shared = state.shared.clone();
+            Task::perform(
+                async move {
+                    std::thread::spawn(move || {
+                        if let Err(err) = tone3000::open_url_in_browser(TONE_KEY_SETTINGS_URL) {
+                            *shared.last_error.write() = Some(err);
+                        }
+                    })
+                    .join()
+                    .unwrap()
+                },
+                |_| Message::ToneKeyHelpLinkHandled,
+            )
+        }
+        Message::ToneKeyHelpLinkHandled => {
+            sync_error_from_shared(state);
+            Task::none()
+        }
         Message::ToggleToneSettings => {
             state.tone_settings_open = !state.tone_settings_open;
             Task::none()
@@ -1034,23 +1056,38 @@ fn view(state: &State) -> Element<'_, Message> {
         .width(Length::Fill);
 
     if state.tone_settings_open {
-        content = content.push(
-            column![
-                row![
-                    text_input(
-                        "Tone3000 publishable key (client_id)",
-                        &state.tone_oauth_client_id
-                    )
-                    .on_input(Message::ToneOAuthClientIdChanged)
-                    .width(Length::Fixed(320.0)),
-                    button(text("OAuth Login")).on_press(Message::ToneOAuthBrowserLogin),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
+        let mut settings = column![
+            row![
+                text_input(
+                    "Tone3000 publishable key (client_id)",
+                    &state.tone_oauth_client_id
+                )
+                .on_input(Message::ToneOAuthClientIdChanged)
+                .width(Length::Fixed(320.0)),
+                button(text("OAuth Login")).on_press_maybe(
+                    (!state.tone_oauth_client_id.trim().is_empty())
+                        .then_some(Message::ToneOAuthBrowserLogin),
+                ),
             ]
-            .align_x(Alignment::End)
-            .width(Length::Fill),
-        );
+            .spacing(8)
+            .align_y(Alignment::Center),
+        ]
+        .align_x(Alignment::End)
+        .width(Length::Fill);
+
+        if state.tone_oauth_client_id.trim().is_empty() {
+            settings = settings.push(
+                maolan_baseview::iced::widget::rich_text([
+                    maolan_baseview::iced::core::text::Span::new("Get Publishable Key from "),
+                    maolan_baseview::iced::core::text::Span::new(TONE_KEY_SETTINGS_URL)
+                        .link(TONE_KEY_SETTINGS_URL)
+                        .color(Color::from_rgb(0.35, 0.6, 0.95)),
+                ])
+                .on_link_click(|_link: String| Message::ToneKeyHelpLinkClicked),
+            );
+        }
+
+        content = content.push(settings);
     }
 
     content = content.push(
