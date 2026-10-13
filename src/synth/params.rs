@@ -1008,16 +1008,16 @@ pub static PARAMS: &[ParamDef] = &[
     def_automatable!(ParamId::F2Drive, "Drive", "Filter2", 0.0, 1.0, 0.0, 0.01),
     def_toggle!(ParamId::F2Enabled, "Enabled", "Filter2", 0.0),
     def_enum!(ParamId::FilterRouting, "Routing", "Filter", 7.0, 0.0),
-    def_automatable!(ParamId::AmpAttack, "Attack", "AmpEG", 0.0, 10.0, 0.01, 0.01),
-    def_automatable!(ParamId::AmpDecay, "Decay", "AmpEG", 0.0, 10.0, 0.2, 0.01),
-    def_automatable!(ParamId::AmpSustain, "Sustain", "AmpEG", 0.0, 1.0, 0.7, 0.01),
+    def_automatable!(ParamId::AmpAttack, "Attack", "AmpEG", 0.0, 10.0, 0.0, 0.01),
+    def_automatable!(ParamId::AmpDecay, "Decay", "AmpEG", 0.0, 10.0, 0.0, 0.01),
+    def_automatable!(ParamId::AmpSustain, "Sustain", "AmpEG", 0.0, 1.0, 1.0, 0.01),
     def_automatable!(
         ParamId::AmpRelease,
         "Release",
         "AmpEG",
         0.0,
         10.0,
-        0.3,
+        0.0,
         0.01
     ),
     def_enum!(ParamId::AmpEgMode, "Mode", "AmpEG", 1.0, 0.0),
@@ -1027,7 +1027,7 @@ pub static PARAMS: &[ParamDef] = &[
         "FilterEG",
         0.0,
         10.0,
-        0.01,
+        0.0,
         0.01
     ),
     def_automatable!(
@@ -1036,7 +1036,7 @@ pub static PARAMS: &[ParamDef] = &[
         "FilterEG",
         0.0,
         10.0,
-        0.3,
+        0.0,
         0.01
     ),
     def_automatable!(
@@ -1045,7 +1045,7 @@ pub static PARAMS: &[ParamDef] = &[
         "FilterEG",
         0.0,
         1.0,
-        0.5,
+        1.0,
         0.01
     ),
     def_automatable!(
@@ -1054,7 +1054,7 @@ pub static PARAMS: &[ParamDef] = &[
         "FilterEG",
         0.0,
         10.0,
-        0.4,
+        0.0,
         0.01
     ),
     def_enum!(ParamId::FilterEgMode, "Mode", "FilterEG", 1.0, 0.0),
@@ -1064,7 +1064,7 @@ pub static PARAMS: &[ParamDef] = &[
         "PitchEG",
         0.0,
         10.0,
-        0.01,
+        0.0,
         0.01
     ),
     def_automatable!(
@@ -1073,7 +1073,7 @@ pub static PARAMS: &[ParamDef] = &[
         "PitchEG",
         0.0,
         10.0,
-        0.2,
+        0.0,
         0.01
     ),
     def_automatable!(
@@ -1091,7 +1091,7 @@ pub static PARAMS: &[ParamDef] = &[
         "PitchEG",
         0.0,
         10.0,
-        0.2,
+        0.0,
         0.01
     ),
     def_enum!(ParamId::PitchEgMode, "Mode", "PitchEG", 1.0, 0.0),
