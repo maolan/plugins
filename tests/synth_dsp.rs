@@ -871,6 +871,29 @@ fn zero_cross_period_jitter(samples: &[f32], start: usize) -> f32 {
     variance.sqrt() / mean
 }
 
+/// Normalized autocorrelation of `samples[start..start + len]` against the
+/// same signal one (fractional) period later. Unlike zero-crossing period
+/// jitter, this is independent of how many times the waveform crosses zero
+/// per period, so it measures periodicity for any phase alignment.
+fn one_period_correlation(samples: &[f32], start: usize, period_samples: f32, len: usize) -> f32 {
+    let period = period_samples as f64;
+    let mut num = 0.0f64;
+    let mut d1 = 0.0f64;
+    let mut d2 = 0.0f64;
+    for i in 0..len {
+        let x = samples[start + i] as f64;
+        let j = (start + i) as f64 + period;
+        let j0 = j as usize;
+        let frac = (j - j0 as f64) as f32;
+        let y = samples[j0] * (1.0 - frac) + samples[j0 + 1] * frac;
+        num += x * y as f64;
+        d1 += x * x;
+        let y = y as f64;
+        d2 += y * y;
+    }
+    (num / (d1.sqrt() * d2.sqrt())) as f32
+}
+
 #[test]
 fn test_unison_detune_full_range_produces_beats() {
     fn render_mono_mid(detune: f32) -> Vec<f32> {
@@ -898,21 +921,29 @@ fn test_unison_detune_full_range_produces_beats() {
     // detune=1.0 puts the two voices at ±1 semitone around 261.63 Hz
     // (~246.9 Hz and ~277.2 Hz), so the summed waveform's zero-crossing
     // periods must jitter by a few percent. The old ±5-cent mapping kept
-    // the voices within ~0.3% of each other (jitter ~0.002), and detune=0
-    // is exactly periodic (jitter 0).
+    // the voices within ~0.3% of each other (jitter ~0.002).
+    //
+    // detune=0 must be perfectly periodic, but zero-crossing jitter cannot
+    // measure that: with random voice phases the two saws' discontinuities
+    // occasionally land within a few samples of each other (~2-3% of
+    // draws), the sum then has three positive-going crossings per period,
+    // and the every-second-crossing estimate reports spurious jitter (~0.2)
+    // on a perfectly periodic signal. A one-period autocorrelation is
+    // shape-independent: detune=0 always gives > 0.998, while detune=1.0
+    // stays below 0.70.
     let full = render_mono_mid(1.0);
     let none = render_mono_mid(0.0);
 
     let jitter_full = zero_cross_period_jitter(&full, 4096);
-    let jitter_none = zero_cross_period_jitter(&none, 4096);
+    let corr_none = one_period_correlation(&none, 4096, 48000.0 / 261.63, 8192);
 
     assert!(
         jitter_full > 0.01,
         "detune=1.0 (±1 semitone) should jitter zero crossings, got {jitter_full}"
     );
     assert!(
-        jitter_none < 0.005,
-        "detune=0 should be periodic, got jitter {jitter_none}"
+        corr_none > 0.99,
+        "detune=0 should be periodic, got one-period correlation {corr_none}"
     );
 }
 
