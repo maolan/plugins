@@ -61,16 +61,20 @@ impl Limiter {
 
         #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
         unsafe {
+            #[cfg(target_arch = "x86")]
+            use std::arch::x86::*;
+            #[cfg(target_arch = "x86_64")]
+            use std::arch::x86_64::*;
             if std::arch::is_x86_feature_detected!("sse") {
-                let sign_mask = std::arch::x86_64::_mm_set1_ps(-0.0);
+                let sign_mask = _mm_set1_ps(-0.0);
                 let mut i = 0usize;
                 while i + 4 <= frames {
-                    let mut peak_vec = std::arch::x86_64::_mm_setzero_ps();
+                    let mut peak_vec = _mm_setzero_ps();
                     for s in slices.iter() {
                         if i < s.len() {
-                            let v = std::arch::x86_64::_mm_loadu_ps(s.as_ptr().add(i));
-                            let abs_v = std::arch::x86_64::_mm_andnot_ps(sign_mask, v);
-                            peak_vec = std::arch::x86_64::_mm_max_ps(peak_vec, abs_v);
+                            let v = _mm_loadu_ps(s.as_ptr().add(i));
+                            let abs_v = _mm_andnot_ps(sign_mask, v);
+                            peak_vec = _mm_max_ps(peak_vec, abs_v);
                         }
                     }
                     let peaks: [f32; 4] = std::mem::transmute(peak_vec);

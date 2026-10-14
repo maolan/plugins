@@ -2734,8 +2734,9 @@ unsafe extern "C-unwind" fn ext_gui_set_parent(
 
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     if api == CLAP_WINDOW_API_X11 {
-        let parent =
-            crate::sampler::gui::ParentWindowHandle::X11(unsafe { window.clap_window__.x11 });
+        let parent = crate::sampler::gui::ParentWindowHandle::X11(unsafe {
+            window.clap_window__.x11 as usize
+        });
         return inst
             .gui_bridge
             .lock()
@@ -2978,7 +2979,7 @@ impl crate::common::clap_harness::GuiHooks<SharedState> for GuiBridge {
             #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             {
                 Some(crate::sampler::gui::ParentWindowHandle::X11(unsafe {
-                    window.clap_window__.x11
+                    window.clap_window__.x11 as usize
                 }))
             }
             #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
