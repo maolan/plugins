@@ -49,7 +49,7 @@ pub fn is_api_supported(api: &CStr, _is_floating: bool) -> bool {
 
 pub enum ParentWindowHandle {
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    X11(u64),
+    X11(usize),
     #[cfg(target_os = "macos")]
     Cocoa(*mut std::ffi::c_void),
     #[cfg(target_os = "windows")]
@@ -61,7 +61,7 @@ impl HasWindowHandle for ParentWindowHandle {
         match self {
             #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             ParentWindowHandle::X11(window) => {
-                let handle = raw_window_handle::XlibWindowHandle::new(*window);
+                let handle = raw_window_handle::XlibWindowHandle::new(*window as _);
                 Ok(unsafe { WindowHandle::borrow_raw(RawWindowHandle::Xlib(handle)) })
             }
             #[cfg(target_os = "windows")]
@@ -241,7 +241,9 @@ pub fn parent_from_window(
     if api == CLAP_WINDOW_API_X11 {
         #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         {
-            Some(ParentWindowHandle::X11(unsafe { window.clap_window__.x11 }))
+            Some(ParentWindowHandle::X11(unsafe {
+                window.clap_window__.x11 as usize
+            }))
         }
         #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
         {
