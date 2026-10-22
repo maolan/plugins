@@ -140,9 +140,9 @@ pub enum Message {
     ToneModelGearFullRig(bool),
     ToneModelGearPedal(bool),
     ToneModelGearOutboard(bool),
-    ToneModelVariationSelected(String, String, Option<String>),
+    ToneModelVariationSelected(String, String, Option<String>, Option<String>),
     ToneModelDownloaded,
-    ToneIrVariationSelected(String, String, Option<String>),
+    ToneIrVariationSelected(String, String, Option<String>, Option<String>),
     ToneIrDownloaded,
     ToneOAuthClientIdChanged(String),
     ToneOAuthBrowserLogin,
@@ -290,11 +290,14 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
         Err(err) => (String::new(), Some(err)),
     };
     let tone_oauth_authenticated = tone3000::has_valid_oauth_token();
+    // Surface a restore-time load failure (e.g. a missing NAM/IR file) that was
+    // recorded before the editor opened.
+    let error = init_error.or_else(|| shared.last_error.read().clone());
     (
         State {
             shared,
             active_gestures: vec![false; ParamId::COUNT],
-            error: init_error,
+            error,
             loading: None,
             tone_oauth_client_id,
             tone_browser_mode: ToneBrowserMode::Nam,
@@ -382,7 +385,7 @@ fn file_stem_label(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
-fn write_tone_picture_to_temp(id: &str, picture: &[u8]) -> Option<String> {
+fn write_tone_picture_to_cache(id: &str, picture: &[u8]) -> Option<String> {
     if picture.is_empty() {
         return None;
     }
@@ -395,7 +398,8 @@ fn write_tone_picture_to_temp(id: &str, picture: &[u8]) -> Option<String> {
     } else {
         format!("tone3000-picture-{safe_id}")
     };
-    let path = std::env::temp_dir().join(name);
+    let dir = tone3000::download_cache_dir().ok()?;
+    let path = dir.join(name);
     std::fs::write(&path, picture)
         .ok()
         .map(|()| path.to_string_lossy().into_owned())
@@ -706,7 +710,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 ));
             }
             if let Some(slot) = picture_paths.get_mut(index) {
-                *slot = write_tone_picture_to_temp(&id, &bytes);
+                *slot = write_tone_picture_to_cache(&id, &bytes);
             }
             Task::none()
         }
@@ -872,7 +876,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.tone_model_gear_outboard = value;
             Task::none()
         }
-        Message::ToneModelVariationSelected(reference, display_name, picture_path) => {
+        Message::ToneModelVariationSelected(
+            reference,
+            display_name,
+            picture_path,
+            tone3000_name,
+        ) => {
             let reference = reference.trim();
             if reference.is_empty() {
                 set_error(state, "Tone3000 NAM variation reference is empty");
@@ -886,13 +895,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             Task::perform(
                 async move {
                     std::thread::spawn(move || {
-                        match tone3000::download_to_temp(AssetKind::Nam, &reference) {
-                            Ok(path) => shared.load_model_with_preview(
-                                path.display().to_string(),
-                                true,
-                                Some(display_name),
-                                picture_path,
-                            ),
+                        match tone3000::download_to_cache(AssetKind::Nam, &reference) {
+                            Ok(path) => {
+                                shared.load_model_with_preview(
+                                    path.display().to_string(),
+                                    true,
+                                    Some(display_name),
+                                    picture_path,
+                                    Some(reference),
+                                    tone3000_name,
+                                );
+                            }
                             Err(err) => {
                                 *shared.last_error.write() = Some(err);
                             }
@@ -980,7 +993,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.treble_mode_menu_open = !state.treble_mode_menu_open;
             Task::none()
         }
-        Message::ToneIrVariationSelected(reference, display_name, picture_path) => {
+        Message::ToneIrVariationSelected(reference, display_name, picture_path, tone3000_name) => {
             let reference = reference.trim();
             if reference.is_empty() {
                 set_error(state, "Tone3000 IR variation reference is empty");
@@ -994,13 +1007,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             Task::perform(
                 async move {
                     std::thread::spawn(move || {
-                        match tone3000::download_to_temp(AssetKind::Ir, &reference) {
-                            Ok(path) => shared.load_ir_with_preview(
-                                path.display().to_string(),
-                                true,
-                                Some(display_name),
-                                picture_path,
-                            ),
+                        match tone3000::download_to_cache(AssetKind::Ir, &reference) {
+                            Ok(path) => {
+                                shared.load_ir_with_preview(
+                                    path.display().to_string(),
+                                    true,
+                                    Some(display_name),
+                                    picture_path,
+                                    Some(reference),
+                                    tone3000_name,
+                                );
+                            }
                             Err(err) => {
                                 *shared.last_error.write() = Some(err);
                             }
@@ -1035,6 +1052,7 @@ fn view(state: &State) -> Element<'_, Message> {
         model_display_name
     };
     let model_picture_path = state.shared.model_picture_path.read().clone();
+    let model_tone3000_name = state.shared.model_tone3000_name.read().clone();
 
     let ir_path = state.shared.ir_path.read().clone();
     let ir_display_name = state.shared.ir_display_name.read().clone();
@@ -1046,6 +1064,7 @@ fn view(state: &State) -> Element<'_, Message> {
         ir_display_name
     };
     let ir_picture_path = state.shared.ir_picture_path.read().clone();
+    let ir_tone3000_name = state.shared.ir_tone3000_name.read().clone();
 
     let p = |id: ParamId| state.shared.params.get(id) as f32;
     let b = |id: ParamId| state.shared.params.get_bool(id);
@@ -1209,6 +1228,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 &model_path,
                 &model_label,
                 &model_picture_path,
+                model_tone3000_name.as_deref(),
                 "NAM",
                 Message::LoadModel,
                 Message::ClearModel,
@@ -1217,12 +1237,14 @@ fn view(state: &State) -> Element<'_, Message> {
                 &ir_path,
                 &ir_label,
                 &ir_picture_path,
+                ir_tone3000_name.as_deref(),
                 "IR",
                 Message::LoadIr,
                 Message::ClearIr,
             ),
         ]
-        .spacing(16),
+        .spacing(16)
+        .align_y(Alignment::Start),
     );
 
     if state.tone_oauth_authenticated {
@@ -1383,6 +1405,7 @@ fn view(state: &State) -> Element<'_, Message> {
                     }
                 } else {
                     let ir_name = item.name.clone();
+                    let ir_creator = item.creator.clone();
                     let picture_path = state
                         .tone_ir_picture_paths
                         .get(idx)
@@ -1392,6 +1415,11 @@ fn view(state: &State) -> Element<'_, Message> {
                             choice.reference,
                             ir_name.clone(),
                             picture_path.clone(),
+                            tone3000::format_asset_slug(
+                                ir_creator.as_deref(),
+                                &ir_name,
+                                Some(&choice.title),
+                            ),
                         )
                     })
                     .placeholder("Variation")
@@ -1456,6 +1484,7 @@ fn view(state: &State) -> Element<'_, Message> {
                     })
                     .cloned();
                 let model_name = item.name.clone();
+                let model_creator = item.creator.clone();
                 let picture_path = state
                     .tone_model_picture_paths
                     .get(idx)
@@ -1477,6 +1506,11 @@ fn view(state: &State) -> Element<'_, Message> {
                             choice.reference,
                             model_name.clone(),
                             picture_path.clone(),
+                            tone3000::format_asset_slug(
+                                model_creator.as_deref(),
+                                &model_name,
+                                Some(&choice.title),
+                            ),
                         )
                     })
                     .placeholder("Variation")
@@ -1549,6 +1583,7 @@ fn asset_preview<'a>(
     path: &str,
     label: &str,
     picture_path: &str,
+    tone3000_name: Option<&str>,
     empty_label: &'static str,
     load_message: Message,
     clear_message: Message,
@@ -1595,7 +1630,18 @@ fn asset_preview<'a>(
                 style
             });
 
-    mouse_area(button).on_right_press(clear_message).into()
+    let widget = mouse_area(button).on_right_press(clear_message);
+    // Tone3000 assets show their `user/profile/variant` slug under the preview.
+    match tone3000_name {
+        Some(slug) if !slug.is_empty() => column![
+            widget,
+            text(slug.to_string()).size(11).width(Length::Fixed(160.0)),
+        ]
+        .spacing(2)
+        .align_x(Alignment::Center)
+        .into(),
+        _ => widget.into(),
+    }
 }
 
 fn knob(

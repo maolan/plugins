@@ -6,7 +6,7 @@ use std::fmt;
 
 use crate::modeler::params::{PARAMS, ParamStore, sanitize_param_value};
 
-const CURRENT_STATE_VERSION: &str = "0.1.0";
+const CURRENT_STATE_VERSION: &str = "0.3.0";
 const STATE_HEADER_PREFIX: &str = "maolan-modeler-state-v";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,10 +27,41 @@ pub struct PluginState {
     pub ir_display_name: String,
     #[serde(default, rename = "IRPicturePath")]
     pub ir_picture_path: String,
+    /// Tone3000 download reference (tone id or asset URL) for the NAM model,
+    /// recorded only when the file was downloaded from Tone3000. Used to
+    /// re-download the file when the stored path no longer exists.
+    #[serde(default, rename = "NAMTone3000Ref")]
+    pub model_tone3000_reference: Option<String>,
+    /// Same as `model_tone3000_reference` for the impulse response.
+    #[serde(default, rename = "IRTone3000Ref")]
+    pub ir_tone3000_reference: Option<String>,
+    /// Display slug (`user/profile/variant`) for a Tone3000-downloaded NAM
+    /// model; empty for locally loaded files.
+    #[serde(default, rename = "NAMTone3000Name")]
+    pub model_tone3000_name: Option<String>,
+    /// Same as `model_tone3000_name` for the impulse response.
+    #[serde(default, rename = "IRTone3000Name")]
+    pub ir_tone3000_name: Option<String>,
 }
 
 fn default_version() -> String {
     CURRENT_STATE_VERSION.to_string()
+}
+
+/// File paths, preview labels, and Tone3000 download references that
+/// `PluginState` persists for the loaded NAM model and impulse response.
+#[derive(Debug, Clone, Default)]
+pub struct AssetPaths {
+    pub model_path: String,
+    pub ir_path: String,
+    pub model_display_name: String,
+    pub model_picture_path: String,
+    pub ir_display_name: String,
+    pub ir_picture_path: String,
+    pub model_tone3000_reference: Option<String>,
+    pub ir_tone3000_reference: Option<String>,
+    pub model_tone3000_name: Option<String>,
+    pub ir_tone3000_name: Option<String>,
 }
 
 impl Default for PluginState {
@@ -44,20 +75,16 @@ impl Default for PluginState {
             model_picture_path: String::new(),
             ir_display_name: String::new(),
             ir_picture_path: String::new(),
+            model_tone3000_reference: None,
+            ir_tone3000_reference: None,
+            model_tone3000_name: None,
+            ir_tone3000_name: None,
         }
     }
 }
 
 impl PluginState {
-    pub fn from_runtime(
-        params: &ParamStore,
-        model_path: String,
-        ir_path: String,
-        model_display_name: String,
-        model_picture_path: String,
-        ir_display_name: String,
-        ir_picture_path: String,
-    ) -> Self {
+    pub fn from_runtime(params: &ParamStore, paths: AssetPaths) -> Self {
         let mut params_map = BTreeMap::new();
         for def in PARAMS.iter() {
             params_map.insert(def.name.to_string(), params.get(def.id));
@@ -65,16 +92,20 @@ impl PluginState {
         Self {
             version: CURRENT_STATE_VERSION.to_string(),
             params: params_map,
-            model_path,
-            ir_path,
-            model_display_name,
-            model_picture_path,
-            ir_display_name,
-            ir_picture_path,
+            model_path: paths.model_path,
+            ir_path: paths.ir_path,
+            model_display_name: paths.model_display_name,
+            model_picture_path: paths.model_picture_path,
+            ir_display_name: paths.ir_display_name,
+            ir_picture_path: paths.ir_picture_path,
+            model_tone3000_reference: paths.model_tone3000_reference,
+            ir_tone3000_reference: paths.ir_tone3000_reference,
+            model_tone3000_name: paths.model_tone3000_name,
+            ir_tone3000_name: paths.ir_tone3000_name,
         }
     }
 
-    pub fn apply(self, params: &ParamStore) -> (String, String, String, String, String, String) {
+    pub fn apply(self, params: &ParamStore) -> AssetPaths {
         for def in PARAMS.iter() {
             if let Some(&value) = self.params.get(def.name) {
                 params.set(def.id, sanitize_param_value(def.id, value));
@@ -82,14 +113,18 @@ impl PluginState {
                 params.set(def.id, def.default);
             }
         }
-        (
-            self.model_path,
-            self.ir_path,
-            self.model_display_name,
-            self.model_picture_path,
-            self.ir_display_name,
-            self.ir_picture_path,
-        )
+        AssetPaths {
+            model_path: self.model_path,
+            ir_path: self.ir_path,
+            model_display_name: self.model_display_name,
+            model_picture_path: self.model_picture_path,
+            ir_display_name: self.ir_display_name,
+            ir_picture_path: self.ir_picture_path,
+            model_tone3000_reference: self.model_tone3000_reference,
+            ir_tone3000_reference: self.ir_tone3000_reference,
+            model_tone3000_name: self.model_tone3000_name,
+            ir_tone3000_name: self.ir_tone3000_name,
+        }
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
@@ -158,4 +193,103 @@ where
     }
 
     deserializer.deserialize_any(ParamsVisitor)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_state() -> PluginState {
+        PluginState {
+            model_path: "/home/user/.cache/maolan/tone3000/m.nam".to_string(),
+            ir_path: "/home/user/.cache/maolan/tone3000/ir.wav".to_string(),
+            model_display_name: "Lead".to_string(),
+            ir_display_name: "Cab".to_string(),
+            model_tone3000_reference: Some("12345".to_string()),
+            ir_tone3000_reference: Some("67890".to_string()),
+            model_tone3000_name: Some("jane/ENGL E650/SM57".to_string()),
+            ir_tone3000_name: Some("jane/OwnHammer 4x12/MD421".to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn state_round_trip_preserves_tone3000_references() {
+        let state = sample_state();
+        let bytes = state.to_bytes().expect("serialize state");
+        let parsed = PluginState::from_bytes(&bytes).expect("parse state");
+
+        assert_eq!(parsed.model_tone3000_reference, Some("12345".to_string()));
+        assert_eq!(parsed.ir_tone3000_reference, Some("67890".to_string()));
+        assert_eq!(
+            parsed.model_tone3000_name,
+            Some("jane/ENGL E650/SM57".to_string())
+        );
+        assert_eq!(
+            parsed.ir_tone3000_name,
+            Some("jane/OwnHammer 4x12/MD421".to_string())
+        );
+        assert_eq!(parsed.model_path, state.model_path);
+        assert_eq!(parsed.model_display_name, state.model_display_name);
+    }
+
+    #[test]
+    fn legacy_state_without_tone3000_fields_still_loads() {
+        let legacy = r#"{
+            "version": "0.1.0",
+            "params": {"Input": -6.0},
+            "NAMPath": "/tmp/gone.nam",
+            "IRPath": "/tmp/gone.wav",
+            "NAMDisplayName": "Old",
+            "NAMPicturePath": "",
+            "IRDisplayName": "Old IR",
+            "IRPicturePath": ""
+        }"#;
+        let mut text = format!("{STATE_HEADER_PREFIX}0.1.0\n");
+        text.push_str(legacy);
+        let parsed = PluginState::from_bytes(text.as_bytes()).expect("parse legacy state");
+
+        assert_eq!(parsed.model_path, "/tmp/gone.nam");
+        assert_eq!(parsed.ir_path, "/tmp/gone.wav");
+        assert_eq!(parsed.model_tone3000_reference, None);
+        assert_eq!(parsed.ir_tone3000_reference, None);
+        assert_eq!(parsed.model_tone3000_name, None);
+        assert_eq!(parsed.ir_tone3000_name, None);
+    }
+
+    #[test]
+    fn state_0_2_0_without_tone3000_names_still_loads() {
+        // 0.2.0 states have the re-download references but not the display names.
+        let mut text = format!("{STATE_HEADER_PREFIX}0.2.0\n");
+        text.push_str(
+            r#"{
+            "version": "0.2.0",
+            "params": {},
+            "NAMPath": "/tmp/gone.nam",
+            "IRPath": "",
+            "NAMDisplayName": "Old",
+            "NAMPicturePath": "",
+            "IRDisplayName": "",
+            "IRPicturePath": "",
+            "NAMTone3000Ref": "12345",
+            "IRTone3000Ref": null
+        }"#,
+        );
+        let parsed = PluginState::from_bytes(text.as_bytes()).expect("parse 0.2.0 state");
+
+        assert_eq!(parsed.model_tone3000_reference, Some("12345".to_string()));
+        assert_eq!(parsed.model_tone3000_name, None);
+        assert_eq!(parsed.ir_tone3000_name, None);
+    }
+
+    #[test]
+    fn state_without_references_serializes_them_as_null() {
+        let state = PluginState::default();
+        let bytes = state.to_bytes().expect("serialize state");
+        let text = String::from_utf8(bytes).expect("state is utf-8");
+        assert!(text.contains("\"NAMTone3000Ref\":null"));
+        assert!(text.contains("\"IRTone3000Ref\":null"));
+        assert!(text.contains("\"NAMTone3000Name\":null"));
+        assert!(text.contains("\"IRTone3000Name\":null"));
+    }
 }

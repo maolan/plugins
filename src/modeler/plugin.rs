@@ -3,6 +3,7 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     ptr::null_mut,
+    sync::Arc,
     sync::atomic::Ordering,
 };
 
@@ -34,7 +35,9 @@ use crate::modeler::{
     },
     gui::GuiBridge,
     params::{PARAMS, ParamId, sanitize_param_value},
+    state::AssetPaths,
     state::PluginState,
+    tone3000::{self, AssetKind},
 };
 
 use crate::common::clap_harness::{
@@ -91,6 +94,10 @@ pub struct SharedState {
     pub model_picture_path: parking_lot::RwLock<String>,
     pub ir_display_name: parking_lot::RwLock<String>,
     pub ir_picture_path: parking_lot::RwLock<String>,
+    pub model_tone3000_reference: parking_lot::RwLock<Option<String>>,
+    pub ir_tone3000_reference: parking_lot::RwLock<Option<String>>,
+    pub model_tone3000_name: parking_lot::RwLock<Option<String>>,
+    pub ir_tone3000_name: parking_lot::RwLock<Option<String>>,
     pub resource_dir: parking_lot::RwLock<Option<String>>,
     pub model_metadata: parking_lot::RwLock<Option<ModelMetadata>>,
     pub last_error: parking_lot::RwLock<Option<String>>,
@@ -110,6 +117,10 @@ impl Default for SharedState {
             model_picture_path: parking_lot::RwLock::new(String::new()),
             ir_display_name: parking_lot::RwLock::new(String::new()),
             ir_picture_path: parking_lot::RwLock::new(String::new()),
+            model_tone3000_reference: parking_lot::RwLock::new(None),
+            ir_tone3000_reference: parking_lot::RwLock::new(None),
+            model_tone3000_name: parking_lot::RwLock::new(None),
+            ir_tone3000_name: parking_lot::RwLock::new(None),
             resource_dir: parking_lot::RwLock::new(None),
             model_metadata: parking_lot::RwLock::new(None),
             last_error: parking_lot::RwLock::new(None),
@@ -247,7 +258,7 @@ impl SharedState {
     }
 
     pub fn load_model(&self, path: String, notify_dirty: bool) {
-        self.load_model_with_preview(path, notify_dirty, None, None);
+        self.load_model_with_preview(path, notify_dirty, None, None, None, None);
     }
 
     pub fn load_model_with_preview(
@@ -256,7 +267,9 @@ impl SharedState {
         notify_dirty: bool,
         display_name: Option<String>,
         picture_path: Option<String>,
-    ) {
+        tone3000_reference: Option<String>,
+        tone3000_name: Option<String>,
+    ) -> bool {
         tracing::info!(%path, notify_dirty, "MaolanModeler load_model");
         match NamModel::load(&path) {
             Ok(model) => {
@@ -267,6 +280,8 @@ impl SharedState {
                 self.replace_pending_model(Some(wrapper));
                 self.clear_model_pending.store(false, Ordering::Release);
                 *self.model_path.write() = path.clone();
+                *self.model_tone3000_reference.write() = tone3000_reference;
+                *self.model_tone3000_name.write() = tone3000_name;
                 self.set_model_preview(display_name, picture_path);
                 *self.model_metadata.write() = Some(metadata);
                 *self.last_error.write() = None;
@@ -275,29 +290,57 @@ impl SharedState {
                     self.mark_dirty();
                 }
                 self.core.request_latency_changed();
+                true
             }
             Err(err) => {
                 *self.last_error.write() = Some(format!("Failed to load model '{}': {err}", path));
+                false
             }
         }
     }
 
-    pub fn restore_model_path_and_load(&self, path: String) {
-        self.restore_model_path_and_load_with_preview(path, None, None);
+    pub fn restore_model_path_and_load(self: &Arc<Self>, path: String) {
+        self.restore_model_path_and_load_with_preview(path, None, None, None, None);
     }
 
     pub fn restore_model_path_and_load_with_preview(
-        &self,
+        self: &Arc<Self>,
         path: String,
         display_name: Option<String>,
         picture_path: Option<String>,
+        tone3000_reference: Option<String>,
+        tone3000_name: Option<String>,
     ) {
+        *self.model_tone3000_reference.write() = tone3000_reference.clone();
+        *self.model_tone3000_name.write() = tone3000_name.clone();
         *self.model_path.write() = path.clone();
-        self.load_model_with_preview(path, false, display_name, picture_path);
+        if self.load_model_with_preview(
+            path.clone(),
+            false,
+            display_name.clone(),
+            picture_path.clone(),
+            tone3000_reference.clone(),
+            tone3000_name.clone(),
+        ) {
+            return;
+        }
+        if let Some(reference) = tone3000_reference {
+            *self.last_error.write() = Some(format!(
+                "NAM model file '{path}' is missing; re-downloading it from Tone3000."
+            ));
+            spawn_tone3000_redownload(
+                self.clone(),
+                AssetKind::Nam,
+                reference,
+                display_name,
+                picture_path,
+                tone3000_name,
+            );
+        }
     }
 
     pub fn load_ir(&self, path: String, notify_dirty: bool) {
-        self.load_ir_with_preview(path, notify_dirty, None, None);
+        self.load_ir_with_preview(path, notify_dirty, None, None, None, None);
     }
 
     pub fn load_ir_with_preview(
@@ -306,38 +349,70 @@ impl SharedState {
         notify_dirty: bool,
         display_name: Option<String>,
         picture_path: Option<String>,
-    ) {
+        tone3000_reference: Option<String>,
+        tone3000_name: Option<String>,
+    ) -> bool {
         tracing::info!(%path, notify_dirty, "MaolanModeler load_ir");
         match ImpulseResponse::from_wav(&path, self.sample_rate()) {
             Ok(ir) => {
                 self.replace_pending_ir(Some(ir));
                 self.clear_ir_pending.store(false, Ordering::Release);
                 *self.ir_path.write() = path.clone();
+                *self.ir_tone3000_reference.write() = tone3000_reference;
+                *self.ir_tone3000_name.write() = tone3000_name;
                 self.set_ir_preview(display_name, picture_path);
                 *self.last_error.write() = None;
                 tracing::info!(%path, "MaolanModeler load_ir success");
                 if notify_dirty {
                     self.mark_dirty();
                 }
+                true
             }
             Err(err) => {
                 *self.last_error.write() = Some(format!("Failed to load IR '{}': {err}", path));
+                false
             }
         }
     }
 
-    pub fn restore_ir_path_and_load(&self, path: String) {
-        self.restore_ir_path_and_load_with_preview(path, None, None);
+    pub fn restore_ir_path_and_load(self: &Arc<Self>, path: String) {
+        self.restore_ir_path_and_load_with_preview(path, None, None, None, None);
     }
 
     pub fn restore_ir_path_and_load_with_preview(
-        &self,
+        self: &Arc<Self>,
         path: String,
         display_name: Option<String>,
         picture_path: Option<String>,
+        tone3000_reference: Option<String>,
+        tone3000_name: Option<String>,
     ) {
+        *self.ir_tone3000_reference.write() = tone3000_reference.clone();
+        *self.ir_tone3000_name.write() = tone3000_name.clone();
         *self.ir_path.write() = path.clone();
-        self.load_ir_with_preview(path, false, display_name, picture_path);
+        if self.load_ir_with_preview(
+            path.clone(),
+            false,
+            display_name.clone(),
+            picture_path.clone(),
+            tone3000_reference.clone(),
+            tone3000_name.clone(),
+        ) {
+            return;
+        }
+        if let Some(reference) = tone3000_reference {
+            *self.last_error.write() = Some(format!(
+                "IR file '{path}' is missing; re-downloading it from Tone3000."
+            ));
+            spawn_tone3000_redownload(
+                self.clone(),
+                AssetKind::Ir,
+                reference,
+                display_name,
+                picture_path,
+                tone3000_name,
+            );
+        }
     }
 
     fn clear_model_with_dirty(&self, notify_dirty: bool) {
@@ -346,6 +421,8 @@ impl SharedState {
         *self.model_path.write() = String::new();
         *self.model_display_name.write() = String::new();
         *self.model_picture_path.write() = String::new();
+        *self.model_tone3000_reference.write() = None;
+        *self.model_tone3000_name.write() = None;
         *self.model_metadata.write() = None;
         *self.last_error.write() = None;
         if notify_dirty {
@@ -368,6 +445,8 @@ impl SharedState {
         *self.ir_path.write() = String::new();
         *self.ir_display_name.write() = String::new();
         *self.ir_picture_path.write() = String::new();
+        *self.ir_tone3000_reference.write() = None;
+        *self.ir_tone3000_name.write() = None;
         *self.last_error.write() = None;
         if notify_dirty {
             self.mark_dirty();
@@ -381,6 +460,74 @@ impl SharedState {
     pub fn restore_clear_ir(&self) {
         self.clear_ir_with_dirty(false);
     }
+}
+
+/// In-flight Tone3000 re-downloads, keyed by asset kind and download reference,
+/// so a session restore cannot stack duplicate downloads for the same asset.
+static TONE3000_REDOWNLOADS_IN_FLIGHT: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<(AssetKind, String)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+/// Re-download a Tone3000 asset that a state restore found missing, then load it.
+/// Runs on a detached thread: `ext_state_load` executes under the host's
+/// 5-second state-restore timeout and must not perform blocking network I/O.
+fn spawn_tone3000_redownload(
+    shared: Arc<SharedState>,
+    kind: AssetKind,
+    reference: String,
+    display_name: Option<String>,
+    picture_path: Option<String>,
+    tone3000_name: Option<String>,
+) {
+    let key = (kind, reference.clone());
+    {
+        let mut in_flight = TONE3000_REDOWNLOADS_IN_FLIGHT
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !in_flight.insert(key.clone()) {
+            tracing::info!(?kind, %reference, "Tone3000 re-download already in flight");
+            return;
+        }
+    }
+    std::thread::spawn(move || {
+        let result = tone3000::download_to_cache(kind, &reference);
+        match result {
+            Ok(path) => {
+                let path_str = path.display().to_string();
+                tracing::info!(?kind, %path_str, "Tone3000 re-download finished, loading");
+                let loaded = match kind {
+                    AssetKind::Nam => shared.load_model_with_preview(
+                        path_str,
+                        false,
+                        display_name,
+                        picture_path,
+                        Some(reference),
+                        tone3000_name,
+                    ),
+                    AssetKind::Ir => shared.load_ir_with_preview(
+                        path_str,
+                        false,
+                        display_name,
+                        picture_path,
+                        Some(reference),
+                        tone3000_name,
+                    ),
+                };
+                if !loaded {
+                    tracing::warn!(?kind, "Tone3000 re-downloaded file failed to load");
+                }
+            }
+            Err(err) => {
+                tracing::warn!(?kind, %err, "Tone3000 re-download failed");
+                *shared.last_error.write() =
+                    Some(format!("Failed to re-download Tone3000 asset: {err}"));
+            }
+        }
+        TONE3000_REDOWNLOADS_IN_FLIGHT
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&key);
+    });
 }
 struct AudioProcessor {
     sample_rate: f32,
@@ -710,15 +857,25 @@ unsafe extern "C-unwind" fn ext_state_save(
     let model_picture_path = instance.shared.model_picture_path.read().clone();
     let ir_display_name = instance.shared.ir_display_name.read().clone();
     let ir_picture_path = instance.shared.ir_picture_path.read().clone();
+    let model_tone3000_reference = instance.shared.model_tone3000_reference.read().clone();
+    let ir_tone3000_reference = instance.shared.ir_tone3000_reference.read().clone();
+    let model_tone3000_name = instance.shared.model_tone3000_name.read().clone();
+    let ir_tone3000_name = instance.shared.ir_tone3000_name.read().clone();
     tracing::info!(%model_path, %ir_path, "MaolanModeler ext_state_save");
     let state = PluginState::from_runtime(
         &instance.shared.params,
-        model_path,
-        ir_path,
-        model_display_name,
-        model_picture_path,
-        ir_display_name,
-        ir_picture_path,
+        AssetPaths {
+            model_path,
+            ir_path,
+            model_display_name,
+            model_picture_path,
+            ir_display_name,
+            ir_picture_path,
+            model_tone3000_reference,
+            ir_tone3000_reference,
+            model_tone3000_name,
+            ir_tone3000_name,
+        },
     );
     let Ok(bytes) = state.to_bytes() else {
         return false;
@@ -732,7 +889,7 @@ unsafe extern "C-unwind" fn ext_state_load(
     stream: *const clap_istream,
 ) -> bool {
     if plugin.is_null() || stream.is_null() {
-        eprintln!("MaolanModeler ext_state_load: null plugin or stream");
+        tracing::warn!("MaolanModeler ext_state_load: null plugin or stream");
         return false;
     }
     let instance = unsafe {
@@ -741,58 +898,40 @@ unsafe extern "C-unwind" fn ext_state_load(
     let mut stream = unsafe { IStream::new_unchecked(stream) };
     let mut bytes = Vec::new();
     if let Err(e) = stream.read_to_end(&mut bytes) {
-        eprintln!("MaolanModeler ext_state_load: read_to_end failed: {e}");
+        tracing::warn!(%e, "MaolanModeler ext_state_load: read failed");
         return false;
     }
-    eprintln!("MaolanModeler ext_state_load: read {} bytes", bytes.len());
-    eprintln!(
-        "MaolanModeler ext_state_load: first bytes hex: {}",
-        bytes
-            .iter()
-            .take(64)
-            .map(|b| format!("{:02x}", b))
-            .collect::<Vec<_>>()
-            .join(" ")
-    );
-    eprintln!(
-        "MaolanModeler ext_state_load: first bytes text: {:?}",
-        String::from_utf8_lossy(&bytes[..bytes.len().min(128)])
-    );
     let state = match PluginState::from_bytes(&bytes) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("MaolanModeler ext_state_load: parse failed: {e}");
+            tracing::warn!(%e, "MaolanModeler ext_state_load: parse failed");
             return false;
         }
     };
-    let (
-        model_path,
-        ir_path,
-        model_display_name,
-        model_picture_path,
-        ir_display_name,
-        ir_picture_path,
-    ) = state.apply(&instance.shared.params);
-    eprintln!("MaolanModeler ext_state_load: model_path={model_path} ir_path={ir_path}");
-    if model_path.is_empty() {
+    let paths = state.apply(&instance.shared.params);
+    tracing::info!(model_path = %paths.model_path, ir_path = %paths.ir_path, "MaolanModeler ext_state_load");
+    if paths.model_path.is_empty() {
         instance.shared.restore_clear_model();
     } else {
         instance.shared.restore_model_path_and_load_with_preview(
-            model_path,
-            Some(model_display_name),
-            Some(model_picture_path),
+            paths.model_path,
+            Some(paths.model_display_name),
+            Some(paths.model_picture_path),
+            paths.model_tone3000_reference,
+            paths.model_tone3000_name,
         );
     }
-    if ir_path.is_empty() {
+    if paths.ir_path.is_empty() {
         instance.shared.restore_clear_ir();
     } else {
         instance.shared.restore_ir_path_and_load_with_preview(
-            ir_path,
-            Some(ir_display_name),
-            Some(ir_picture_path),
+            paths.ir_path,
+            Some(paths.ir_display_name),
+            Some(paths.ir_picture_path),
+            paths.ir_tone3000_reference,
+            paths.ir_tone3000_name,
         );
     }
-    eprintln!("MaolanModeler ext_state_load: done");
     true
 }
 
@@ -870,19 +1009,27 @@ unsafe extern "C-unwind" fn ext_resource_directory_collect(plugin: *const clap_p
             0 => {
                 let display_name = instance.shared.model_display_name.read().clone();
                 let picture_path = instance.shared.model_picture_path.read().clone();
+                let reference = instance.shared.model_tone3000_reference.read().clone();
+                let tone3000_name = instance.shared.model_tone3000_name.read().clone();
                 instance.shared.restore_model_path_and_load_with_preview(
                     new_path,
                     Some(display_name),
                     Some(picture_path),
+                    reference,
+                    tone3000_name,
                 );
             }
             1 => {
                 let display_name = instance.shared.ir_display_name.read().clone();
                 let picture_path = instance.shared.ir_picture_path.read().clone();
+                let reference = instance.shared.ir_tone3000_reference.read().clone();
+                let tone3000_name = instance.shared.ir_tone3000_name.read().clone();
                 instance.shared.restore_ir_path_and_load_with_preview(
                     new_path,
                     Some(display_name),
                     Some(picture_path),
+                    reference,
+                    tone3000_name,
                 );
             }
             2 => instance.shared.set_model_picture_path(new_path),
@@ -1075,6 +1222,7 @@ mod tests {
     use std::{
         ffi::{CStr, c_char, c_void},
         ptr::null,
+        sync::Arc,
         sync::atomic::Ordering,
         sync::atomic::{AtomicBool, AtomicU32},
         sync::{LazyLock, Mutex},
@@ -1216,7 +1364,7 @@ mod tests {
 
     #[test]
     fn restore_model_path_and_load_keeps_requested_path_when_load_fails() {
-        let shared = SharedState::default();
+        let shared = Arc::new(SharedState::default());
         *shared.model_path.write() = "/tmp/previous_model.nam".to_string();
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1234,8 +1382,47 @@ mod tests {
     }
 
     #[test]
-    fn restore_ir_path_and_load_keeps_requested_path_when_load_fails() {
+    fn restore_keeps_tone3000_slug_when_load_fails_without_reference() {
+        // A restore with a display slug but no re-download reference (e.g. a
+        // local file) must keep the slug and surface the load error, without
+        // spawning a re-download.
+        let shared = Arc::new(SharedState::default());
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time must be monotonic")
+            .as_nanos();
+        let missing_path = format!("/tmp/maolan-modeler-missing-slug-{unique}.nam");
+
+        shared.restore_model_path_and_load_with_preview(
+            missing_path,
+            Some("Lead".to_string()),
+            None,
+            None,
+            Some("jane/ENGL E650/SM57".to_string()),
+        );
+
+        assert_eq!(
+            shared.model_tone3000_name.read().clone(),
+            Some("jane/ENGL E650/SM57".to_string())
+        );
+        assert!(shared.last_error.read().is_some());
+    }
+
+    #[test]
+    fn clear_model_resets_tone3000_slug_and_reference() {
         let shared = SharedState::default();
+        *shared.model_tone3000_reference.write() = Some("12345".to_string());
+        *shared.model_tone3000_name.write() = Some("jane/ENGL E650/SM57".to_string());
+
+        shared.clear_model();
+
+        assert!(shared.model_tone3000_reference.read().is_none());
+        assert!(shared.model_tone3000_name.read().is_none());
+    }
+
+    #[test]
+    fn restore_ir_path_and_load_keeps_requested_path_when_load_fails() {
+        let shared = Arc::new(SharedState::default());
         *shared.ir_path.write() = "/tmp/previous_ir.wav".to_string();
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
