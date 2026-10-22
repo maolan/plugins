@@ -26,7 +26,7 @@ const OAUTH_FILE: &str = "tone3000_oauth.json";
 const LEGACY_API_KEY_FILE: &str = "tone3000_access_token";
 const TOKEN_EXPIRY_SKEW_SECS: u64 = 30;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AssetKind {
     Nam,
     Ir,
@@ -36,6 +36,8 @@ pub enum AssetKind {
 pub struct SearchItem {
     pub id: String,
     pub name: String,
+    /// Uploader/creator username, when the search payload provides one.
+    pub creator: Option<String>,
     pub variations: Vec<SearchVariation>,
     pub picture_url: Option<String>,
     pub picture: Option<Vec<u8>>,
@@ -1044,7 +1046,26 @@ fn append_query_param(url: &mut String, key: &str, value: &str) {
     url.push_str(&urlencoding::encode(value));
 }
 
-pub fn download_to_temp(kind: AssetKind, reference: &str) -> Result<PathBuf, String> {
+/// Persistent per-user cache directory for Tone3000 downloads
+/// (`~/.cache/maolan/tone3000` on Linux/FreeBSD, `~/Library/Caches/maolan/tone3000`
+/// on macOS, `%LOCALAPPDATA%\maolan\tone3000` on Windows). Downloads must not go to
+/// the system temp dir: session state stores the downloaded absolute path, and temp
+/// files can disappear before the state is restored.
+pub fn download_cache_dir() -> Result<PathBuf, String> {
+    let base = dirs::cache_dir().ok_or_else(|| {
+        "Failed to resolve the per-user cache directory for Tone3000 downloads".to_string()
+    })?;
+    let dir = base.join("maolan").join("tone3000");
+    fs::create_dir_all(&dir).map_err(|e| {
+        format!(
+            "Failed to create Tone3000 cache directory '{}': {e}",
+            dir.display()
+        )
+    })?;
+    Ok(dir)
+}
+
+pub fn download_to_cache(kind: AssetKind, reference: &str) -> Result<PathBuf, String> {
     let config = Config::from_env();
     let (url, ext) = if reference.starts_with("http://") || reference.starts_with("https://") {
         (
@@ -1086,13 +1107,7 @@ pub fn download_to_temp(kind: AssetKind, reference: &str) -> Result<PathBuf, Str
         unix_ms_now(),
         ext
     );
-    let dir = std::env::temp_dir().join("maolan-modeler-tone3000");
-    fs::create_dir_all(&dir).map_err(|e| {
-        format!(
-            "Failed to create temporary Tone3000 download directory '{}': {e}",
-            dir.display()
-        )
-    })?;
+    let dir = download_cache_dir()?;
     let path = dir.join(file_name);
     fs::write(&path, body)
         .map_err(|e| format!("Failed to write downloaded file '{}': {e}", path.display()))?;
@@ -1301,6 +1316,58 @@ fn find_download_url_in_array(kind: AssetKind, arr: &[Value]) -> Option<String> 
     None
 }
 
+fn extract_creator(entry: &Value) -> Option<String> {
+    if let Some(username) = entry
+        .get("user")
+        .and_then(|u| u.get("username"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        return Some(username.to_string());
+    }
+
+    let keys = ["creator", "creator_name", "author", "username", "user_name"];
+    for key in keys {
+        if let Some(name) = entry
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+/// Human-readable `user/profile/variant` slug for a Tone3000 asset. Empty
+/// segments are dropped; returns `None` when nothing usable remains (callers
+/// then fall back to the plain display name).
+pub fn format_asset_slug(
+    creator: Option<&str>,
+    profile: &str,
+    variant: Option<&str>,
+) -> Option<String> {
+    let mut segments: Vec<&str> = Vec::with_capacity(3);
+    if let Some(creator) = creator.map(str::trim).filter(|s| !s.is_empty()) {
+        segments.push(creator);
+    }
+    // tolerate a stray leading/trailing slash without producing a double separator
+    let profile = profile.trim().trim_matches('/');
+    if !profile.is_empty() {
+        segments.push(profile);
+    }
+    if let Some(variant) = variant.map(str::trim).filter(|s| !s.is_empty()) {
+        segments.push(variant);
+    }
+    if segments.is_empty() {
+        None
+    } else {
+        Some(segments.join("/"))
+    }
+}
+
 fn extract_picture_url(entry: &Value) -> Option<String> {
     if let Some(images) = entry.get("images").and_then(Value::as_array)
         && let Some(url) = images.first().and_then(Value::as_str)
@@ -1384,10 +1451,12 @@ fn extract_search_results(value: &Value) -> Vec<SearchItem> {
                 .unwrap_or(&id)
                 .trim()
                 .to_string();
+            let creator = extract_creator(entry);
             let picture_url = extract_picture_url(entry);
             out.push(SearchItem {
                 id,
                 name,
+                creator,
                 variations: Vec::new(),
                 picture: None,
                 picture_url,
@@ -1813,5 +1882,71 @@ mod tests {
         let challenge = pkce_challenge_s256("verifier");
         assert!(!challenge.contains('='));
         assert!(challenge.len() >= 43);
+    }
+
+    #[test]
+    fn download_cache_dir_uses_maolan_tone3000_subdir() {
+        let dir = download_cache_dir().expect("cache dir must resolve");
+        let mut components = dir.components();
+        let last: Vec<_> = components.by_ref().rev().take(2).collect();
+        assert!(
+            matches!(last[0], std::path::Component::Normal(name) if name == "tone3000"),
+            "cache dir must end in .../maolan/tone3000, got {}",
+            dir.display()
+        );
+        assert!(
+            matches!(last[1], std::path::Component::Normal(name) if name == "maolan"),
+            "cache dir must end in .../maolan/tone3000, got {}",
+            dir.display()
+        );
+        assert!(dir.is_dir(), "cache dir must be created: {}", dir.display());
+    }
+
+    #[test]
+    fn format_asset_slug_joins_user_profile_variant() {
+        let slug = format_asset_slug(Some("jane "), "ENGL E650", Some(" SM57"));
+        assert_eq!(slug.as_deref(), Some("jane/ENGL E650/SM57"));
+    }
+
+    #[test]
+    fn format_asset_slug_skips_missing_segments() {
+        assert_eq!(
+            format_asset_slug(None, "ENGL E650", Some("SM57")),
+            Some("ENGL E650/SM57".to_string())
+        );
+        assert_eq!(
+            format_asset_slug(Some("jane"), "ENGL E650", None),
+            Some("jane/ENGL E650".to_string())
+        );
+        assert_eq!(format_asset_slug(None, "", None), None);
+    }
+
+    #[test]
+    fn extract_creator_prefers_nested_user_username() {
+        let value = json!({
+            "items": [
+                {
+                    "id": 1,
+                    "name": "Lead",
+                    "user": {"username": "tone3000"},
+                    "creator": "legacy-name"
+                }
+            ]
+        });
+        let out = extract_search_results(&value);
+        assert_eq!(out[0].creator, Some("tone3000".to_string()));
+    }
+
+    #[test]
+    fn extract_creator_falls_back_to_flat_fields_and_absent() {
+        let value = json!({
+            "items": [
+                {"id": "a", "name": "One", "author": "amp-guy"},
+                {"id": "b", "name": "Two"}
+            ]
+        });
+        let out = extract_search_results(&value);
+        assert_eq!(out[0].creator, Some("amp-guy".to_string()));
+        assert_eq!(out[1].creator, None);
     }
 }
