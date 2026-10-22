@@ -2390,18 +2390,8 @@ pub unsafe fn create_plugin(
 }
 
 const PORTS: crate::common::clap_harness::PortConfig = crate::common::clap_harness::PortConfig {
-    inputs: crate::common::clap_harness::PortDesc {
-        count: 1,
-        channel_count: 1,
-        port_type: crate::common::clap_harness::CLAP_PORT_MONO_REF,
-        names: &["in"],
-    },
-    outputs: crate::common::clap_harness::PortDesc {
-        count: 1,
-        channel_count: 1,
-        port_type: crate::common::clap_harness::CLAP_PORT_MONO_REF,
-        names: &["out"],
-    },
+    inputs: crate::mono_single!("in"),
+    outputs: crate::mono_single!("out"),
 };
 
 /// # Safety

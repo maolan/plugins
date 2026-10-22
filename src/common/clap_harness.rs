@@ -532,6 +532,19 @@ macro_rules! mono_pair {
     };
 }
 
+/// Builds a single-mono-port [`PortDesc`]; usable in const/static contexts.
+#[macro_export]
+macro_rules! mono_single {
+    ($name:expr) => {
+        $crate::common::clap_harness::PortDesc {
+            count: 1,
+            channel_count: 1,
+            port_type: $crate::common::clap_harness::CLAP_PORT_MONO_REF,
+            names: &[$name],
+        }
+    };
+}
+
 pub struct PluginInstance<S: SharedBase, P: Processor<S>, G: GuiHooks<S>, X: 'static = ()> {
     pub shared: Arc<S>,
     pub active: AtomicBool,
