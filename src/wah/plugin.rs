@@ -23,7 +23,7 @@ use crate::common::clap_harness::{
 };
 use crate::{
     clap_audio_ports_ext, clap_create_fn, clap_descriptor, clap_gui_ext, clap_params_ext,
-    clap_state_ext, clap_tail_ext, mono_pair,
+    clap_state_ext, clap_tail_ext, mono_single,
 };
 
 const PLUGIN_ID: &[u8] = b"rs.maolan.wah\0";
@@ -293,8 +293,8 @@ unsafe extern "C-unwind" fn plugin_get_extension(
 }
 
 const PORTS: PortConfig = PortConfig {
-    inputs: mono_pair!("Left", "Right"),
-    outputs: mono_pair!("Left", "Right"),
+    inputs: mono_single!("Left"),
+    outputs: mono_single!("Left"),
 };
 
 clap_create_fn!(SharedState, AudioProcessor, GuiBridge, PORTS,);
