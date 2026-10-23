@@ -123,6 +123,8 @@ impl ParamHost for SharedState {
 
 crate::delegate_param_shared_ext!(SharedState, ParamId);
 
+crate::impl_param_presets!(SharedState, ParamId, "flanger", "maolan-flanger-preset");
+
 impl ParamSpec for ParamId {
     fn param_defs() -> &'static [crate::common::clap_harness::ParamDef<Self>] {
         &PARAMS
@@ -138,6 +140,11 @@ impl ParamSpec for ParamId {
 }
 
 impl SharedState {
+    /// No-op: the flanger rebuilds its DSP params from the store every block,
+    /// so there is no version counter to bump; kept so the shared
+    /// `impl_param_presets!` load path applies uniformly.
+    pub fn bump_params_version(&self) {}
+
     pub fn input_levels_db(&self) -> [f32; 2] {
         [
             self.input_level_left_db.load(Ordering::Relaxed),

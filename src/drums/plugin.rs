@@ -375,6 +375,70 @@ impl SharedState {
             }
         }
     }
+
+    /// Captures the current runtime state (kit/midimap paths, variation, and
+    /// all parameter values) as a serializable [`PluginState`].
+    fn snapshot_state(&self) -> PluginState {
+        PluginState::from_runtime(
+            &self.params,
+            self.kit_path.read().clone(),
+            self.midimap_path.read().clone(),
+            self.variation.read().clone(),
+            self.state_id.read().clone(),
+            self.active_channels.load(Ordering::Acquire),
+        )
+    }
+
+    /// Applies a previously saved [`PluginState`] like CLAP session restore:
+    /// parameter values, variation, channel count, and kit/midimap paths.
+    /// When `reload` is set (and a kit path actually changed) the kit is
+    /// reloaded from disk through the same async path as session restore;
+    /// session restore passes `false` when no audio processor exists yet,
+    /// since activation reloads the kit then.
+    fn restore_saved_state(&self, state: &PluginState, reload: bool) {
+        let saved_state_id = state.state_id.clone();
+
+        let (kit_path, midimap_path, variation, active_channels) = state.apply(&self.params);
+        self.bump_params_version();
+        *self.variation.write() = variation;
+        self.active_channels
+            .store(active_channels, Ordering::Release);
+
+        let current_kit_path = self.kit_path.read().clone();
+        let current_midimap_path = self.midimap_path.read().clone();
+        let kit_changed = kit_path != current_kit_path;
+        let midimap_changed = midimap_path != current_midimap_path;
+
+        *self.kit_path.write() = kit_path.clone();
+        *self.midimap_path.write() = midimap_path.clone();
+
+        if reload && !kit_path.is_empty() && kit_changed {
+            self.restore_kit(kit_path.clone());
+            if !midimap_path.is_empty() {
+                self.restore_midimap(midimap_path.clone());
+            }
+        } else if reload && !midimap_path.is_empty() && midimap_changed {
+            self.restore_midimap(midimap_path);
+        }
+
+        *self.state_id.write() = saved_state_id;
+    }
+}
+
+impl crate::common::preset::PresetProvider for SharedState {
+    const DIR_NAME: &'static str = "drums";
+    const FORMAT: &'static str = "maolan-drums-preset";
+
+    fn save_preset(&self, path: &std::path::Path) -> Result<(), std::string::String> {
+        crate::common::preset::write_envelope(path, Self::FORMAT, None, &self.snapshot_state())
+    }
+
+    fn load_preset(&self, path: &std::path::Path) -> Result<(), std::string::String> {
+        let envelope = crate::common::preset::read_envelope::<PluginState>(path, Self::FORMAT)?;
+        self.restore_saved_state(&envelope.state, true);
+        self.mark_dirty();
+        Ok(())
+    }
 }
 
 unsafe fn instance<'a>(plugin: *const clap_plugin) -> &'a mut Instance {
@@ -790,15 +854,7 @@ unsafe extern "C-unwind" fn ext_state_save(
     }
     let inst = unsafe { instance(plugin) };
 
-    let state_id = inst.shared.state_id.read().clone();
-    let state = PluginState::from_runtime(
-        &inst.shared.params,
-        inst.shared.kit_path.read().clone(),
-        inst.shared.midimap_path.read().clone(),
-        inst.shared.variation.read().clone(),
-        state_id,
-        inst.shared.active_channels.load(Ordering::Acquire),
-    );
+    let state = inst.shared.snapshot_state();
     let Ok(bytes) = state.to_bytes() else {
         return false;
     };
@@ -823,35 +879,8 @@ unsafe extern "C-unwind" fn ext_state_load(
         return false;
     };
 
-    let saved_state_id = state.state_id.clone();
-
-    let (kit_path, midimap_path, variation, active_channels) = state.apply(&inst.shared.params);
-    inst.shared.bump_params_version();
-    *inst.shared.variation.write() = variation;
-    inst.shared
-        .active_channels
-        .store(active_channels, Ordering::Release);
-
-    let current_kit_path = inst.shared.kit_path.read().clone();
-    let current_midimap_path = inst.shared.midimap_path.read().clone();
-    let kit_changed = kit_path != current_kit_path;
-    let midimap_changed = midimap_path != current_midimap_path;
-
-    *inst.shared.kit_path.write() = kit_path.clone();
-    *inst.shared.midimap_path.write() = midimap_path.clone();
-
     let is_audio_instance = !inst.processor().is_null();
-
-    if !kit_path.is_empty() && kit_changed && is_audio_instance {
-        inst.shared.restore_kit(kit_path.clone());
-        if !midimap_path.is_empty() {
-            inst.shared.restore_midimap(midimap_path.clone());
-        }
-    } else if !midimap_path.is_empty() && midimap_changed && is_audio_instance {
-        inst.shared.restore_midimap(midimap_path);
-    }
-
-    *inst.shared.state_id.write() = saved_state_id;
+    inst.shared.restore_saved_state(&state, is_audio_instance);
     true
 }
 

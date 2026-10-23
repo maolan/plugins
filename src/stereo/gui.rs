@@ -23,7 +23,10 @@ use raw_window_handle::RawWindowHandle;
 use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
 use crate::{
-    common::ui::{SmallKnob, small_knob},
+    common::{
+        preset::{self, PresetProvider, PresetUi},
+        ui::{SmallKnob, small_knob},
+    },
     stereo::{
         params::{PARAMS, ParamId},
         plugin::{SharedState, VectorscopeData},
@@ -99,6 +102,13 @@ pub enum Message {
     ToggleCharacter(bool),
     SetScopeMode(usize),
     Poll,
+    Preset(preset::Msg),
+}
+
+impl From<preset::Msg> for Message {
+    fn from(msg: preset::Msg) -> Self {
+        Message::Preset(msg)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,6 +140,7 @@ struct State {
     shared: Arc<SharedState>,
     active_gestures: Vec<bool>,
     scope_mode: ScopeMode,
+    preset_ui: PresetUi,
 }
 
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
@@ -138,6 +149,7 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             shared,
             active_gestures: vec![false; ParamId::COUNT],
             scope_mode: ScopeMode::PolarSample,
+            preset_ui: PresetUi::new(SharedState::DIR_NAME),
         },
         Task::none(),
     )
@@ -183,6 +195,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.scope_mode = ScopeMode::from_index(index);
         }
         Message::Poll => {}
+        Message::Preset(msg) => {
+            preset::update(&mut state.preset_ui, msg, state.shared.as_ref());
+        }
     }
     Task::none()
 }
@@ -340,7 +355,7 @@ fn view(state: &State) -> Element<'_, Message> {
 
     let content = row![controls, scope].spacing(24).align_y(Alignment::Start);
 
-    container(scrollable(content))
+    container(column![preset::bar(&state.preset_ui), scrollable(content)].spacing(8))
         .padding(24)
         .width(Length::Fill)
         .height(Length::Fill)

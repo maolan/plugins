@@ -10,7 +10,7 @@ use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{container, row},
+    widget::{column, container, row},
 };
 #[cfg(any(
     target_os = "windows",
@@ -26,11 +26,14 @@ use crate::{
         params::{PARAMS, ParamId},
         plugin::SharedState,
     },
-    common::ui::{SmallKnob, small_knob},
+    common::{
+        preset::{self, PresetProvider, PresetUi},
+        ui::{SmallKnob, small_knob},
+    },
 };
 
-pub const EDITOR_WIDTH: u32 = 320;
-pub const EDITOR_HEIGHT: u32 = 240;
+pub const EDITOR_WIDTH: u32 = 420;
+pub const EDITOR_HEIGHT: u32 = 300;
 
 pub fn preferred_api() -> &'static CStr {
     #[cfg(target_os = "windows")]
@@ -86,16 +89,24 @@ impl HasWindowHandle for ParentWindowHandle {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum Message {
     ParamChanged(ParamId, f32),
     ParamReleased(ParamId),
     Poll,
+    Preset(preset::Msg),
+}
+
+impl From<preset::Msg> for Message {
+    fn from(msg: preset::Msg) -> Self {
+        Message::Preset(msg)
+    }
 }
 
 struct State {
     shared: Arc<SharedState>,
     active_gestures: Vec<bool>,
+    preset_ui: PresetUi,
 }
 
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
@@ -103,6 +114,7 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
         State {
             shared,
             active_gestures: vec![false; ParamId::COUNT],
+            preset_ui: PresetUi::new(SharedState::DIR_NAME),
         },
         Task::none(),
     )
@@ -126,20 +138,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::Poll => {}
+        Message::Preset(msg) => {
+            preset::update(&mut state.preset_ui, msg, state.shared.as_ref());
+        }
     }
     Task::none()
 }
 
 fn view(state: &State) -> Element<'_, Message> {
     container(
-        row![
-            knob(ParamId::Depth, "Depth", state),
-            knob(ParamId::Rate, "Rate", state),
-            knob(ParamId::DryWet, "Dry/Wet", state),
-            knob(ParamId::Voices, "Voices", state),
+        column![
+            preset::bar(&state.preset_ui),
+            row![
+                knob(ParamId::Depth, "Depth", state),
+                knob(ParamId::Rate, "Rate", state),
+                knob(ParamId::DryWet, "Dry/Wet", state),
+                knob(ParamId::Voices, "Voices", state),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
         ]
-        .spacing(8)
-        .align_y(Alignment::Center),
+        .spacing(16),
     )
     .padding(20)
     .width(Length::Fill)

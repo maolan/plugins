@@ -1,5 +1,6 @@
 use crate::common::{
     bus,
+    preset::{self, PresetProvider, PresetUi},
     spectrum::{db_to_y, display_range_bounds, freq_to_x, x_to_freq, y_to_db},
     ui::{SmallKnob, VerticalSlider, small_knob, vertical_slider, vertical_ticks, vu_meter},
 };
@@ -32,7 +33,7 @@ use std::{
 };
 
 pub const EDITOR_WIDTH: u32 = 1100;
-pub const EDITOR_HEIGHT: u32 = 700;
+pub const EDITOR_HEIGHT: u32 = 740;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BandType {
@@ -289,6 +290,13 @@ pub enum Message {
     SelectGhostPeer(u32),
     NoOp,
     UiTick,
+    Preset(preset::Msg),
+}
+
+impl From<preset::Msg> for Message {
+    fn from(msg: preset::Msg) -> Self {
+        Message::Preset(msg)
+    }
 }
 
 struct State {
@@ -319,6 +327,7 @@ struct State {
     ghost_peer: Option<u32>,
     ghost_bands: Vec<bus::EqBand>,
     peer_band_counts: Vec<(u32, usize)>,
+    preset_ui: PresetUi,
 }
 
 impl Drop for State {
@@ -354,6 +363,7 @@ fn init(shared: Arc<SharedState<ParamId>>) -> (State, Task<Message>) {
             ghost_peer: None,
             ghost_bands: Vec::new(),
             peer_band_counts: Vec::new(),
+            preset_ui: PresetUi::new(<SharedState<ParamId> as PresetProvider>::DIR_NAME),
         },
         next_ui_tick_task(),
     )
@@ -801,6 +811,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.last_registry_version = 0;
         }
         Message::NoOp => {}
+        Message::Preset(msg) => {
+            preset::update(&mut state.preset_ui, msg, state.shared.as_ref());
+        }
         Message::UiTick => {
             if !state.spectrum_frozen {
                 state.pre_spectrum_db = state.shared.input_spectrum_db();
@@ -1256,6 +1269,7 @@ fn view(state: &State) -> Element<'_, Message> {
     .align_y(Alignment::Center);
 
     let content = column![
+        preset::bar(&state.preset_ui),
         display_row,
         analyzer_controls,
         instance_row,

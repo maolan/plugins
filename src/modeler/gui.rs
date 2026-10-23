@@ -27,7 +27,10 @@ use raw_window_handle::RawWindowHandle;
 use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
 use crate::{
-    common::ui::{SmallKnob, small_knob},
+    common::{
+        preset::{self, PresetProvider, PresetUi},
+        ui::{SmallKnob, small_knob},
+    },
     modeler::{
         params::{PARAMS, ParamId},
         plugin::SharedState,
@@ -39,7 +42,7 @@ use crate::{
 };
 
 pub const EDITOR_WIDTH: u32 = 720;
-pub const EDITOR_HEIGHT: u32 = 560;
+pub const EDITOR_HEIGHT: u32 = 600;
 const TONE_KEY_SETTINGS_URL: &str = "https://www.tone3000.com/settings";
 
 pub fn preferred_api() -> &'static CStr {
@@ -155,11 +158,19 @@ pub enum Message {
     ToggleBassModeMenu,
     ToggleTrebleModeMenu,
     WindowClosed,
+    Preset(preset::Msg),
+}
+
+impl From<preset::Msg> for Message {
+    fn from(msg: preset::Msg) -> Self {
+        Message::Preset(msg)
+    }
 }
 
 struct State {
     shared: Arc<SharedState>,
     active_gestures: Vec<bool>,
+    preset_ui: PresetUi,
     error: Option<String>,
     loading: Option<String>,
     tone_oauth_client_id: String,
@@ -305,6 +316,7 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
         State {
             shared,
             active_gestures: vec![false; ParamId::COUNT],
+            preset_ui: PresetUi::new(<Arc<SharedState> as PresetProvider>::DIR_NAME),
             error,
             loading: None,
             tone_oauth_client_id,
@@ -1069,6 +1081,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.shared.request_gui_closed();
             Task::none()
         }
+        Message::Preset(msg) => {
+            preset::update(&mut state.preset_ui, msg, &state.shared);
+            Task::none()
+        }
     }
 }
 
@@ -1104,6 +1120,8 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(12)
         .align_x(Alignment::Start)
         .width(Length::Fill);
+
+    content = content.push(preset::bar(&state.preset_ui));
 
     if state.tone_settings_open {
         let mut settings = column![

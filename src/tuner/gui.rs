@@ -25,10 +25,11 @@ use maolan_widgets::horizontal_slider::horizontal_slider;
 use raw_window_handle::RawWindowHandle;
 use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
+use crate::common::preset::{self, PresetProvider, PresetUi};
 use crate::tuner::{dsp::format_note, plugin::SharedState};
 
-pub const EDITOR_WIDTH: u32 = 280;
-pub const EDITOR_HEIGHT: u32 = 200;
+pub const EDITOR_WIDTH: u32 = 420;
+pub const EDITOR_HEIGHT: u32 = 280;
 
 pub fn preferred_api() -> &'static CStr {
     #[cfg(target_os = "windows")]
@@ -84,19 +85,44 @@ impl HasWindowHandle for ParentWindowHandle {
     }
 }
 
+#[derive(Debug, Clone)]
+enum Message {
+    Poll,
+    Preset(preset::Msg),
+}
+
+impl From<preset::Msg> for Message {
+    fn from(msg: preset::Msg) -> Self {
+        Message::Preset(msg)
+    }
+}
+
 struct State {
     shared: Arc<SharedState>,
+    preset_ui: PresetUi,
 }
 
-fn init(shared: Arc<SharedState>) -> (State, Task<()>) {
-    (State { shared }, Task::none())
+fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
+    (
+        State {
+            shared,
+            preset_ui: PresetUi::new(SharedState::DIR_NAME),
+        },
+        Task::none(),
+    )
 }
 
-fn update(_state: &mut State, _message: ()) -> Task<()> {
+fn update(state: &mut State, message: Message) -> Task<Message> {
+    match message {
+        Message::Poll => {}
+        Message::Preset(msg) => {
+            preset::update(&mut state.preset_ui, msg, state.shared.as_ref());
+        }
+    }
     Task::none()
 }
 
-fn view(state: &State) -> Element<'_, ()> {
+fn view(state: &State) -> Element<'_, Message> {
     let detected = state.shared.detected.load(Ordering::Relaxed);
     let frequency = state.shared.frequency_hz.load(Ordering::Relaxed) as f32;
     let note = state.shared.note.load(Ordering::Relaxed) as f32;
@@ -124,15 +150,20 @@ fn view(state: &State) -> Element<'_, ()> {
     } else {
         0.0
     };
-    let cents_slider = horizontal_slider(-50.0..=50.0, cents_value, |_| ())
+    let cents_slider = horizontal_slider(-50.0..=50.0, cents_value, |_| Message::Poll)
         .width(Length::Fixed(200.0))
         .height(Length::Fixed(16.0));
 
     let content = column![
-        text(note_text).size(64),
-        row![text(freq_text).size(13), text(cents_text).size(13),].spacing(16),
-        text(clarity_text).size(11),
-        cents_slider,
+        preset::bar(&state.preset_ui),
+        column![
+            text(note_text).size(64),
+            row![text(freq_text).size(13), text(cents_text).size(13),].spacing(16),
+            text(clarity_text).size(11),
+            cents_slider,
+        ]
+        .spacing(8)
+        .align_x(Alignment::Center),
     ]
     .spacing(8)
     .align_x(Alignment::Center);
@@ -152,7 +183,7 @@ fn theme(_state: &State) -> Theme {
 
 fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {
     maolan_baseview::iced::application(move || init(shared.clone()), update, view)
-        .subscription(|_state| maolan_baseview::iced::poll_events())
+        .subscription(|_state| maolan_baseview::iced::poll_events().map(|_| Message::Poll))
         .theme(theme)
         .run()
 }

@@ -534,6 +534,57 @@ impl SharedState {
         self.load_file_with_preset(path, preset_index);
     }
 
+    /// Captures the current runtime state (all parameter values plus the
+    /// instrument path, selected SF2 preset, and zone edits) as a
+    /// serializable [`PluginState`]. Only the instrument path and selected
+    /// SF2 preset are persisted; the zone and group data is rebuilt by
+    /// reloading the instrument on restore. Including every zone in the saved
+    /// state makes the state blob too large for the plugin-host scratch
+    /// buffer (64 KiB), which causes the DAW to store a null state and the
+    /// drumkit to disappear after reopening the session.
+    fn snapshot_state(&self) -> PluginState {
+        let mut state = PluginState::from_runtime(&self.params);
+        state.sampler_instrument_path = self
+            .instrument_path
+            .lock()
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned());
+        state.sampler_sf2_preset = *self.selected_sf2_preset.lock();
+        state.sampler_zone_edits = self
+            .edited_zone_edits
+            .lock()
+            .iter()
+            .map(|(zone_index, edits)| SamplerZoneEditState {
+                zone_index: *zone_index,
+                actions: edits.actions.clone(),
+            })
+            .collect();
+        state
+    }
+
+    /// Applies a previously saved [`PluginState`] like CLAP session restore:
+    /// parameter values and zone edits first, then the instrument reload
+    /// (which rebuilds zones/groups from the file) when a path was saved.
+    fn restore_saved_state(self: &Arc<Self>, state: PluginState) {
+        state.apply(&self.params);
+        {
+            let mut edits = self.edited_zone_edits.lock();
+            edits.clear();
+            for zone_edit in &state.sampler_zone_edits {
+                edits.insert(
+                    zone_edit.zone_index,
+                    SampleEditState {
+                        actions: zone_edit.actions.clone(),
+                    },
+                );
+            }
+        }
+        if let Some(path) = state.sampler_instrument_path {
+            let path = expand_tilde(std::path::PathBuf::from(path));
+            Arc::clone(self).restore_file_with_preset(path, state.sampler_sf2_preset);
+        }
+    }
+
     /// Import an SFZ or SF2 file and merge its groups/zones into the currently
     /// loaded instrument without replacing it.
     pub fn import_file(self: Arc<Self>, path: std::path::PathBuf) {
@@ -2331,30 +2382,7 @@ unsafe extern "C-unwind" fn ext_state_save(
             return false;
         }
         let inst = instance(plugin);
-        let mut state = PluginState::from_runtime(&inst.shared.params);
-        // Only persist the instrument path and selected SF2 preset.  The zone
-        // and group data is rebuilt by reloading the instrument on restore.
-        // Including every zone in the saved state makes the state blob too
-        // large for the plugin-host scratch buffer (64 KiB), which causes the
-        // DAW to store a null state and the drumkit to disappear after reopening
-        // the session.
-        state.sampler_instrument_path = inst
-            .shared
-            .instrument_path
-            .lock()
-            .as_ref()
-            .map(|path| path.to_string_lossy().into_owned());
-        state.sampler_sf2_preset = *inst.shared.selected_sf2_preset.lock();
-        state.sampler_zone_edits = inst
-            .shared
-            .edited_zone_edits
-            .lock()
-            .iter()
-            .map(|(zone_index, edits)| SamplerZoneEditState {
-                zone_index: *zone_index,
-                actions: edits.actions.clone(),
-            })
-            .collect();
+        let state = inst.shared.snapshot_state();
         let bytes = match state.to_bytes() {
             Ok(bytes) => bytes,
             Err(_e) => {
@@ -2386,24 +2414,25 @@ unsafe extern "C-unwind" fn ext_state_load(
                 return false;
             }
         };
-        state.apply(&inst.shared.params);
-        {
-            let mut edits = inst.shared.edited_zone_edits.lock();
-            edits.clear();
-            for zone_edit in &state.sampler_zone_edits {
-                edits.insert(
-                    zone_edit.zone_index,
-                    SampleEditState {
-                        actions: zone_edit.actions.clone(),
-                    },
-                );
-            }
-        }
-        if let Some(path) = state.sampler_instrument_path {
-            let path = expand_tilde(std::path::PathBuf::from(path));
-            Arc::clone(&inst.shared).restore_file_with_preset(path, state.sampler_sf2_preset);
-        }
+        inst.shared.restore_saved_state(state);
         true
+    }
+}
+
+impl crate::common::preset::PresetProvider for Arc<SharedState> {
+    const DIR_NAME: &'static str = "sampler";
+    const FORMAT: &'static str = "maolan-sampler-preset";
+
+    fn save_preset(&self, path: &std::path::Path) -> Result<(), std::string::String> {
+        crate::common::preset::write_envelope(path, Self::FORMAT, None, &self.snapshot_state())
+    }
+
+    fn load_preset(&self, path: &std::path::Path) -> Result<(), std::string::String> {
+        let envelope = crate::common::preset::read_envelope::<PluginState>(path, Self::FORMAT)?;
+        self.restore_saved_state(envelope.state);
+        self.bump_params_version();
+        self.mark_dirty();
+        Ok(())
     }
 }
 

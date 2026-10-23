@@ -53,6 +53,7 @@ use crate::{
         filter::{FilterParams, FilterSubtype, FilterType},
         lfo::LfoShape,
         lfo_assignment::{LfoAssignmentConfig, LfoAssignmentState, ModRouteParamIds},
+        preset::{self, PresetProvider, PresetUi},
     },
     sampler::{
         dsp::{
@@ -71,7 +72,7 @@ use crate::{
 };
 
 pub const EDITOR_WIDTH: u32 = 1100;
-pub const EDITOR_HEIGHT: u32 = 750;
+pub const EDITOR_HEIGHT: u32 = 790;
 const SAMPLE_MAP_NOTES: usize = 128;
 
 pub fn preferred_api() -> &'static CStr {
@@ -204,6 +205,13 @@ pub enum Message {
     PianoKeyReleased(u8),
     SamplerAuditionFinished(u64, u8),
     PointerReleased,
+    Preset(preset::Msg),
+}
+
+impl From<preset::Msg> for Message {
+    fn from(msg: preset::Msg) -> Self {
+        Message::Preset(msg)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -697,6 +705,7 @@ impl std::fmt::Display for EgSelectorOption {
 struct State {
     shared: Arc<SharedState>,
     active_gestures: Vec<bool>,
+    preset_ui: PresetUi,
     lfo_assignment: LfoAssignmentState,
     selected_lfo: usize,
     selected_filter: usize,
@@ -1159,6 +1168,7 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
         State {
             shared,
             active_gestures: vec![false; ParamId::COUNT],
+            preset_ui: PresetUi::new(<Arc<SharedState> as PresetProvider>::DIR_NAME),
             lfo_assignment: LfoAssignmentState::default(),
             selected_lfo: 0,
             selected_filter: 0,
@@ -2464,6 +2474,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.shared.send_note_off(note);
                     }
                 }
+            }
+            Message::Preset(msg) => {
+                preset::update(&mut state.preset_ui, msg, &state.shared);
             }
             Message::PointerReleased => {
                 state.resizing_side = None;
@@ -5492,7 +5505,12 @@ fn view(state: &State) -> Element<'_, Message> {
             .push(browser_panel(state));
     }
 
-    let content = mouse_area(container(content_row).padding(16).height(Length::Fill))
+    let bar = preset::bar(&state.preset_ui);
+    let content = column![bar, content_row]
+        .spacing(4)
+        .height(Length::Fill)
+        .align_x(Alignment::Start);
+    let content = mouse_area(container(content).padding(16).height(Length::Fill))
         .on_move(|Point { x, .. }| Message::ResizeSidePanel(x))
         .on_release(Message::PointerReleased);
 

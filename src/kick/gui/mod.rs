@@ -21,6 +21,7 @@ use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_widgets::arch_slider::arch_slider;
 use maolan_widgets::meters::meters;
 
+use crate::common::preset::{self, PresetProvider, PresetUi};
 use crate::common::ui::{
     FADER_MAX_DB, FADER_MIN_DB, SmallKnob, VerticalSlider, small_knob, vertical_slider,
 };
@@ -43,7 +44,7 @@ use crate::kick::params::{ParamId, ParamType, param_type_def};
 use crate::kick::plugin::SharedState;
 
 pub const EDITOR_WIDTH: u32 = 1024;
-pub const EDITOR_HEIGHT: u32 = 720;
+pub const EDITOR_HEIGHT: u32 = 760;
 
 pub fn preferred_api() -> &'static CStr {
     #[cfg(target_os = "windows")]
@@ -116,7 +117,7 @@ pub enum Message {
     AddInstrument,
     RemoveInstrument,
     EnvelopeEdit(EnvelopeEditorMsg),
-    SavePreset,
+    Preset(preset::Msg),
     EnvelopeKindChanged(u8),
     EnvelopeLayerChanged(u8),
     EnvelopeOscChanged(u8),
@@ -132,6 +133,12 @@ pub enum Message {
     LayerTabChanged(u8),
     OscTabChanged(u8),
     InstrumentNameChanged(String),
+}
+
+impl From<preset::Msg> for Message {
+    fn from(msg: preset::Msg) -> Self {
+        Message::Preset(msg)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -306,6 +313,7 @@ fn gui_layer_params(layer_idx: u8) -> GuiLayerParams {
 struct State {
     shared: Arc<SharedState>,
     active_gestures: Vec<bool>,
+    preset_ui: PresetUi,
     show_envelope_editor: bool,
     envelope_kind: u8,
     envelope_layer: u8,
@@ -315,10 +323,6 @@ struct State {
     active_layer_tab: u8,
     active_osc_tab: u8,
     instrument_name_input: String,
-}
-
-fn presets_dir() -> Option<std::path::PathBuf> {
-    dirs::config_dir().map(|d| d.join("maolan").join("kick").join("presets"))
 }
 
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
@@ -336,6 +340,7 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
         State {
             shared,
             active_gestures: vec![false; ParamId::COUNT],
+            preset_ui: PresetUi::new(SharedState::DIR_NAME),
             show_envelope_editor: true,
             envelope_kind: EnvelopeKind::OscAmp as u8,
             envelope_layer: 0,
@@ -703,31 +708,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             state.shared.mark_kit_changed();
         }
-        Message::SavePreset => {
-            if let Some(dir) = presets_dir() {
-                let _ = std::fs::create_dir_all(&dir);
-                let active_inst = state
-                    .shared
-                    .params
-                    .get(ParamId::new(0, ParamType::ActiveInstrument))
-                    as usize;
-                let kit = state.shared.kit.lock();
-                let name = if active_inst < kit.instruments.len() {
-                    kit.instruments[active_inst].name.trim().to_string()
-                } else {
-                    String::new()
-                };
-                let kit_cfg = crate::kick::plugin::kit_to_config(&kit);
-                drop(kit);
-                if !name.is_empty() {
-                    let path = dir.join(format!("{name}.json"));
-                    let state_obj =
-                        crate::kick::state::KitState::from_runtime(&state.shared.params, &kit_cfg);
-                    if let Ok(bytes) = state_obj.to_bytes() {
-                        let _ = std::fs::write(&path, bytes);
-                    }
-                }
-            }
+        Message::Preset(msg) => {
+            preset::update(&mut state.preset_ui, msg, state.shared.as_ref());
         }
         Message::EnvelopeKindChanged(kind) => {
             let source = envelope_source_idx(EnvelopeKind::from_u8(kind), state.envelope_osc);
@@ -1113,9 +1095,6 @@ fn view(state: &State) -> Element<'_, Message> {
         maolan_baseview::iced::widget::button("Clear")
             .padding(3)
             .on_press(Message::ClearInstrument),
-        maolan_baseview::iced::widget::button("Save")
-            .padding(3)
-            .on_press(Message::SavePreset),
         midi_ch_knob,
         key_min_knob,
         key_max_knob,
@@ -1324,9 +1303,15 @@ fn view(state: &State) -> Element<'_, Message> {
     .align_x(Alignment::Start)
     .into();
 
-    let content = column![edit_buttons, top_row, length_slider, controls]
-        .spacing(8)
-        .align_x(Alignment::Start);
+    let content = column![
+        preset::bar(&state.preset_ui),
+        edit_buttons,
+        top_row,
+        length_slider,
+        controls
+    ]
+    .spacing(8)
+    .align_x(Alignment::Start);
 
     container(content)
         .padding(10)

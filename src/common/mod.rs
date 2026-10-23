@@ -28,6 +28,7 @@ pub mod param_events;
 pub mod param_store;
 pub mod phasor;
 pub mod pitch;
+pub mod preset;
 pub mod random_eval;
 pub mod resampler;
 pub mod resource_directory;

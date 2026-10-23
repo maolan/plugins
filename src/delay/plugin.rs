@@ -132,6 +132,11 @@ impl ParamSpec for ParamId {
 }
 
 impl SharedState {
+    /// No-op: delay rebuilds its DSP params from the store every block, so
+    /// there is no version counter to bump; kept so the shared
+    /// `impl_param_presets!` load path applies uniformly.
+    pub fn bump_params_version(&self) {}
+
     pub fn sync_channels_from_params(&self) -> bool {
         let channels = self.params.get(ParamId::Channels).round() as u32;
         let new_channels = channels.clamp(1, 2);
@@ -140,6 +145,9 @@ impl SharedState {
         new_channels != old_channels
     }
 }
+
+crate::impl_param_presets!(SharedState, ParamId, "delay", "maolan-delay-preset");
+
 struct AudioProcessor {
     dsp: Delay,
     temp_left: Vec<f32>,

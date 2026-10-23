@@ -208,11 +208,11 @@ impl SharedState {
         self.core.sample_rate() as f32
     }
 
-    fn params_version(&self) -> u64 {
+    pub fn params_version(&self) -> u64 {
         self.params_version.load(Ordering::Acquire)
     }
 
-    fn bump_params_version(&self) {
+    pub fn bump_params_version(&self) {
         self.params_version.fetch_add(1, Ordering::Release);
     }
 
@@ -269,6 +269,13 @@ impl SharedState {
         self.spectrum_db.get()
     }
 }
+
+crate::impl_param_presets!(
+    SharedState,
+    ParamId,
+    "compressor",
+    "maolan-compressor-preset"
+);
 struct AudioProcessor {
     compressor: Compressor,
     temp_left: Vec<f32>,

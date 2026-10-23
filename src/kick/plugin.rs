@@ -1767,24 +1767,51 @@ unsafe extern "C-unwind" fn ext_state_load(
     }
     match KitState::from_bytes(&bytes) {
         Ok(state) => {
-            let kit_cfg = state.kit.clone();
-            sync_params_from_kit_config(&inst.shared.params, &kit_cfg);
-            state.apply_param_overrides(&inst.shared.params);
-            inst.shared.bump_params_version();
-            let sample_rate = inst.shared.sample_rate();
-            let mut kit = inst.shared.kit.lock();
-            let mut synth = KickSynthesizer::new(sample_rate);
-            synth.kit = config_to_kit(&kit_cfg, sample_rate);
-            apply_params_to_synth(&mut synth, &inst.shared.params);
-            *kit = synth.kit;
-            inst.shared.kit_version.fetch_add(1, Ordering::AcqRel);
-            drop(kit);
-            inst.shared.sync_output_port_count();
-            inst.shared.request_audio_ports_rescan();
-            inst.shared.note_names_changed();
+            apply_kit_state(&inst.shared, &state);
             true
         }
         Err(_) => false,
+    }
+}
+
+/// Applies a saved [`KitState`] to a running instance exactly like CLAP
+/// session restore: sync the params from the kit config, re-apply param
+/// overrides, then rebuild the kit (reloading any referenced samples) and
+/// republish it to the audio thread.
+fn apply_kit_state(shared: &SharedState, state: &KitState) {
+    let kit_cfg = state.kit.clone();
+    sync_params_from_kit_config(&shared.params, &kit_cfg);
+    state.apply_param_overrides(&shared.params);
+    shared.bump_params_version();
+    let sample_rate = shared.sample_rate();
+    let mut kit = shared.kit.lock();
+    let mut synth = KickSynthesizer::new(sample_rate);
+    synth.kit = config_to_kit(&kit_cfg, sample_rate);
+    apply_params_to_synth(&mut synth, &shared.params);
+    *kit = synth.kit;
+    shared.kit_version.fetch_add(1, Ordering::AcqRel);
+    drop(kit);
+    shared.sync_output_port_count();
+    shared.request_audio_ports_rescan();
+    shared.note_names_changed();
+}
+
+impl crate::common::preset::PresetProvider for SharedState {
+    const DIR_NAME: &'static str = "kick";
+    const FORMAT: &'static str = "maolan-kick-preset";
+
+    fn save_preset(&self, path: &std::path::Path) -> Result<(), std::string::String> {
+        let kit = self.kit.lock();
+        let state = KitState::from_runtime(&self.params, &kit_to_config(&kit));
+        drop(kit);
+        crate::common::preset::write_envelope(path, Self::FORMAT, None, &state)
+    }
+
+    fn load_preset(&self, path: &std::path::Path) -> Result<(), std::string::String> {
+        let envelope = crate::common::preset::read_envelope::<KitState>(path, Self::FORMAT)?;
+        apply_kit_state(self, &envelope.state);
+        self.mark_dirty();
+        Ok(())
     }
 }
 
@@ -2975,5 +3002,44 @@ mod tests {
             peak > 0.5,
             "state-load kit must honour param overrides and produce audio, got peak {peak}"
         );
+    }
+
+    /// Full-state presets must survive a save/load round trip through the
+    /// shared preset envelope: parameter values and the kit config (including
+    /// instrument names) are restored via the same path as session state-load.
+    #[test]
+    fn preset_provider_round_trip_preserves_params_and_kit() {
+        use crate::common::preset::PresetProvider;
+        use crate::kick::params::sanitize_param_value;
+
+        let dir = std::env::temp_dir().join(format!(
+            "maolan-kick-preset-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("round-trip.mpreset");
+
+        let gain_id = ParamId::new(0, ParamType::MasterOutputGain);
+        let gain_value = 3.0;
+
+        let shared = SharedState::new(std::ptr::null());
+        shared.params.set(gain_id, gain_value);
+        shared.kit.lock().instruments[0].name = "Preset Kick".to_string();
+        shared.save_preset(&path).expect("save preset");
+
+        let fresh = SharedState::new(std::ptr::null());
+        fresh.load_preset(&path).expect("load preset");
+
+        assert_eq!(
+            fresh.params.get(gain_id),
+            sanitize_param_value(gain_id, gain_value)
+        );
+        assert_eq!(fresh.kit.lock().instruments[0].name, "Preset Kick");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

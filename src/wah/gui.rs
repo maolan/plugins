@@ -21,14 +21,17 @@ use maolan_baseview::iced::{
 use raw_window_handle::RawWindowHandle;
 use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
-use crate::common::ui::{SmallKnob, small_knob};
+use crate::common::{
+    preset::{self, PresetProvider, PresetUi},
+    ui::{SmallKnob, small_knob},
+};
 use crate::wah::{
     params::{MODE_LABELS, PARAMS, ParamId, SHAPE_LABELS},
     plugin::SharedState,
 };
 
-pub const EDITOR_WIDTH: u32 = 360;
-pub const EDITOR_HEIGHT: u32 = 360;
+pub const EDITOR_WIDTH: u32 = 420;
+pub const EDITOR_HEIGHT: u32 = 420;
 
 pub fn preferred_api() -> &'static CStr {
     #[cfg(target_os = "windows")]
@@ -89,11 +92,19 @@ impl HasWindowHandle for ParentWindowHandle {
 pub enum Message {
     SetParam(ParamId, f32),
     ReleaseParam(ParamId),
+    Preset(preset::Msg),
+}
+
+impl From<preset::Msg> for Message {
+    fn from(msg: preset::Msg) -> Self {
+        Message::Preset(msg)
+    }
 }
 
 struct State {
     shared: Arc<SharedState>,
     active_gestures: Vec<bool>,
+    preset_ui: PresetUi,
 }
 
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
@@ -101,6 +112,7 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
         State {
             shared,
             active_gestures: vec![false; ParamId::COUNT],
+            preset_ui: PresetUi::new(SharedState::DIR_NAME),
         },
         Task::none(),
     )
@@ -131,6 +143,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.active_gestures[idx] = false;
                 state.shared.mark_gesture_end_pending(id);
             }
+        }
+        Message::Preset(msg) => {
+            preset::update(&mut state.preset_ui, msg, state.shared.as_ref());
         }
     }
     Task::none()
@@ -178,6 +193,7 @@ fn knob<'a>(id: ParamId, label: &'static str, state: &'a State) -> Element<'a, M
 
 fn view(state: &State) -> Element<'_, Message> {
     let content = column![
+        preset::bar(&state.preset_ui),
         row![
             knob(ParamId::Mode, "Mode", state),
             knob(ParamId::Position, "Position", state),
