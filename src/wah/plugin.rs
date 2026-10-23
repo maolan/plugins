@@ -57,6 +57,15 @@ clap_descriptor!(META);
 
 pub type SharedState = ParamSharedState<ParamId>;
 
+impl ParamSharedState<ParamId> {
+    /// No-op: wah rebuilds its DSP params from the store every block, so
+    /// there is no version counter to bump; kept so the shared
+    /// `impl_param_presets!` load path applies uniformly.
+    pub fn bump_params_version(&self) {}
+}
+
+crate::impl_param_presets!(SharedState, ParamId, "wah", "maolan-wah-preset");
+
 impl ParamSpec for ParamId {
     fn param_defs() -> &'static [crate::common::clap_harness::ParamDef<Self>] {
         &PARAMS
@@ -298,3 +307,62 @@ const PORTS: PortConfig = PortConfig {
 };
 
 clap_create_fn!(SharedState, AudioProcessor, GuiBridge, PORTS,);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::preset::{PresetProvider, apply_params, collect_params};
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "maolan-wah-preset-test-{}-{}-{}",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn param_preset_round_trip_through_provider() {
+        // Exercises the macro-generated `impl_param_presets!` path end to end:
+        // save into one instance, load into a fresh one.
+        let dir = temp_dir("round-trip");
+        let path = dir.join("rock.mpreset");
+
+        let source = SharedState::default();
+        source.params.set(ParamId::Resonance, 8.0);
+        source.params.set(ParamId::Position, 0.33);
+        PresetProvider::save_preset(&source, &path).unwrap();
+
+        let target = SharedState::default();
+        PresetProvider::load_preset(&target, &path).unwrap();
+
+        assert_eq!(target.params.get(ParamId::Resonance), 8.0);
+        assert_eq!(target.params.get(ParamId::Position), 0.33);
+        // Untouched parameters keep their defaults.
+        assert_eq!(
+            target.params.get(ParamId::MinCutoff),
+            source.params.get(ParamId::MinCutoff)
+        );
+    }
+
+    #[test]
+    fn collect_and_apply_params_use_defaults_for_missing_entries() {
+        let store = crate::common::param_store::ParamStore::with_defaults(&ParamId::defaults());
+        store.set(ParamId::Resonance, 4.0);
+        let mut state = collect_params::<ParamId>(&store);
+        state.remove("Resonance");
+
+        let target = crate::common::param_store::ParamStore::with_defaults(&ParamId::defaults());
+        target.set(ParamId::Resonance, 9.0);
+        apply_params::<ParamId>(&state, &target);
+
+        let default = ParamId::param_defs()[ParamId::Resonance.as_index()].default;
+        assert_eq!(target.get(ParamId::Resonance), default);
+    }
+}

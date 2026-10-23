@@ -7,6 +7,7 @@ use std::{
 
 use crate::common::{
     bus,
+    preset::{self, PresetProvider, PresetUi},
     spectrum::{
         DEFAULT_SPECTRUM_BINS, SPECTRUM_FLOOR_DB, SpectralAnalyzerWidget, SpectrumMarker,
         SpectrumThresholdCurve, display_range_bounds,
@@ -159,6 +160,13 @@ pub enum Message {
     CreateBand(f32),
     ReleaseParam(ParamId),
     UiTick,
+    Preset(preset::Msg),
+}
+
+impl From<preset::Msg> for Message {
+    fn from(msg: preset::Msg) -> Self {
+        Message::Preset(msg)
+    }
 }
 
 struct State {
@@ -175,6 +183,7 @@ struct State {
     display_range_db: f32,
 
     last_registry_version: u64,
+    preset_ui: PresetUi,
 }
 
 impl Drop for State {
@@ -198,6 +207,7 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             selected_band: Some(0),
             display_range_db: 12.0,
             last_registry_version: 0,
+            preset_ui: PresetUi::new(SharedState::DIR_NAME),
         },
         next_ui_tick_task(),
     )
@@ -465,6 +475,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
 
             return next_ui_tick_task();
         }
+        Message::Preset(msg) => {
+            preset::update(&mut state.preset_ui, msg, state.shared.as_ref());
+        }
     }
     Task::none()
 }
@@ -646,6 +659,7 @@ fn view(state: &State) -> Element<'_, Message> {
     .align_y(Alignment::Center);
 
     let content = column![
+        preset::bar(&state.preset_ui),
         display_row,
         band_strip(state),
         sidechain_controls,

@@ -115,6 +115,8 @@ impl ParamHost for SharedState {
 
 crate::delegate_param_shared_ext!(SharedState, ParamId);
 
+crate::impl_param_presets!(SharedState, ParamId, "tuner", "maolan-tuner-preset");
+
 impl ParamSpec for ParamId {
     fn param_defs() -> &'static [crate::common::clap_harness::ParamDef<Self>] {
         &PARAMS
@@ -130,6 +132,11 @@ impl ParamSpec for ParamId {
 }
 
 impl SharedState {
+    /// No-op: the tuner re-reads its parameters from the store every block,
+    /// so there is no version counter to bump; kept so the shared
+    /// `impl_param_presets!` load path applies uniformly.
+    pub fn bump_params_version(&self) {}
+
     pub fn report_detection(&self, result: crate::tuner::dsp::TuningResult) {
         use std::sync::atomic::Ordering;
         self.detected.store(result.detected, Ordering::Relaxed);

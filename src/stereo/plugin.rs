@@ -198,6 +198,24 @@ impl SharedState {
     }
 }
 
+impl crate::common::preset::PresetProvider for SharedState {
+    const DIR_NAME: &'static str = "stereo";
+    const FORMAT: &'static str = "maolan-stereo-preset";
+
+    fn save_preset(&self, path: &std::path::Path) -> Result<(), std::string::String> {
+        let state = PluginState::from_runtime(&self.params, self.section_switches());
+        crate::common::preset::write_envelope(path, Self::FORMAT, None, &state)
+    }
+
+    fn load_preset(&self, path: &std::path::Path) -> Result<(), std::string::String> {
+        let envelope = crate::common::preset::read_envelope::<PluginState>(path, Self::FORMAT)?;
+        let sections = envelope.state.apply(&self.params);
+        self.apply_section_switches(sections);
+        self.mark_dirty();
+        Ok(())
+    }
+}
+
 struct AudioProcessor {
     dsp: Stereo,
     temp_left: Vec<f32>,

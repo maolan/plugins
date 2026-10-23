@@ -20,13 +20,16 @@ use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use raw_window_handle::RawWindowHandle;
 use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
-use crate::random::{
-    params::{LENGTHS, Note, ParamId},
-    plugin::SharedState,
+use crate::{
+    common::preset::{self, PresetProvider, PresetUi},
+    random::{
+        params::{LENGTHS, Note, ParamId},
+        plugin::SharedState,
+    },
 };
 
-pub const EDITOR_WIDTH: u32 = 440;
-pub const EDITOR_HEIGHT: u32 = 240;
+pub const EDITOR_WIDTH: u32 = 460;
+pub const EDITOR_HEIGHT: u32 = 280;
 
 pub fn preferred_api() -> &'static CStr {
     #[cfg(target_os = "windows")]
@@ -86,12 +89,27 @@ impl HasWindowHandle for ParentWindowHandle {
 pub enum Message {
     Length(ParamId, &'static str),
     Pitch(ParamId, Note),
+    Preset(preset::Msg),
 }
+
+impl From<preset::Msg> for Message {
+    fn from(msg: preset::Msg) -> Self {
+        Message::Preset(msg)
+    }
+}
+
 struct State {
     shared: Arc<SharedState>,
+    preset_ui: PresetUi,
 }
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
-    (State { shared }, Task::none())
+    (
+        State {
+            shared,
+            preset_ui: PresetUi::new(SharedState::DIR_NAME),
+        },
+        Task::none(),
+    )
 }
 fn update(state: &mut State, message: Message) -> Task<Message> {
     let (id, value) = match message {
@@ -102,6 +120,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             (id, index as f64)
         }
         Message::Pitch(id, note) => (id, f64::from(note.0)),
+        Message::Preset(msg) => {
+            preset::update(&mut state.preset_ui, msg, state.shared.as_ref());
+            return Task::none();
+        }
     };
     state.shared.mark_gesture_begin_pending(id);
     state.shared.set_param_outbound_only(id, value);
@@ -133,30 +155,34 @@ fn view(state: &State) -> Element<'_, Message> {
     };
     container(
         column![
-            row![
-                control(ParamId::NoteLength, "Note length"),
-                control(ParamId::PauseLength, "Pause length")
+            preset::bar(&state.preset_ui),
+            column![
+                row![
+                    control(ParamId::NoteLength, "Note length"),
+                    control(ParamId::PauseLength, "Pause length")
+                ]
+                .spacing(24)
+                .align_y(Alignment::Center),
+                row![
+                    pitch_control(
+                        ParamId::LowestNote,
+                        "Lowest note",
+                        lowest,
+                        (0..=highest).map(Note).collect()
+                    ),
+                    pitch_control(
+                        ParamId::HighestNote,
+                        "Highest note",
+                        highest,
+                        (lowest..=127).map(Note).collect()
+                    ),
+                ]
+                .spacing(24)
+                .align_y(Alignment::Center),
             ]
-            .spacing(24)
-            .align_y(Alignment::Center),
-            row![
-                pitch_control(
-                    ParamId::LowestNote,
-                    "Lowest note",
-                    lowest,
-                    (0..=highest).map(Note).collect()
-                ),
-                pitch_control(
-                    ParamId::HighestNote,
-                    "Highest note",
-                    highest,
-                    (lowest..=127).map(Note).collect()
-                ),
-            ]
-            .spacing(24)
-            .align_y(Alignment::Center),
+            .spacing(24),
         ]
-        .spacing(24),
+        .spacing(16),
     )
     .padding(24)
     .width(Length::Fill)

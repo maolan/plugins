@@ -28,11 +28,12 @@ use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use raw_window_handle::RawWindowHandle;
 use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
+use crate::common::preset::{self, PresetProvider, PresetUi};
 use crate::drums::{download, engine::DrumGizmoEngine, params::ParamId, shared::SharedState};
 use maolan_widgets::horizontal_slider::horizontal_slider;
 
-pub const EDITOR_WIDTH: u32 = 400;
-pub const EDITOR_HEIGHT: u32 = 720;
+pub const EDITOR_WIDTH: u32 = 480;
+pub const EDITOR_HEIGHT: u32 = 760;
 
 const KIT_NAMES: &[&str] = &["Crocell", "DRS", "Muldjord", "Aasimonster", "Shitty"];
 
@@ -108,6 +109,13 @@ pub enum Message {
     LoadFinished(Result<String, String>),
     BalanceChanged(usize, f32),
     ParamChanged(ParamId, f64),
+    Preset(preset::Msg),
+}
+
+impl From<preset::Msg> for Message {
+    fn from(msg: preset::Msg) -> Self {
+        Message::Preset(msg)
+    }
 }
 
 type LoadResult = Option<Result<String, String>>;
@@ -115,6 +123,7 @@ type LoadResult = Option<Result<String, String>>;
 struct State {
     shared: Arc<SharedState>,
     engine: Arc<DrumGizmoEngine>,
+    preset_ui: PresetUi,
     selected_kit: Option<String>,
     selected_variation: Option<String>,
     loaded_kit: Option<String>,
@@ -175,6 +184,7 @@ fn init(shared: Arc<SharedState>, engine: Arc<DrumGizmoEngine>) -> (State, Task<
         State {
             shared,
             engine,
+            preset_ui: PresetUi::new(SharedState::DIR_NAME),
             selected_kit: selected_kit.clone(),
             selected_variation: selected_variation.clone(),
             loaded_kit,
@@ -405,6 +415,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ParamChanged(id, value) => {
             state.shared.set_param(id, value);
+            Task::none()
+        }
+        Message::Preset(msg) => {
+            preset::update(&mut state.preset_ui, msg, state.shared.as_ref());
             Task::none()
         }
     }
@@ -732,6 +746,7 @@ fn view(state: &State) -> Element<'_, Message> {
     };
 
     let content = column![
+        preset::bar(&state.preset_ui),
         loaded_label,
         kit_dropdown,
         variation_dropdown,

@@ -25,7 +25,10 @@ use raw_window_handle::RawWindowHandle;
 use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
 use crate::{
-    common::ui::{SmallKnob, VerticalSlider, small_knob, vertical_slider, vu_meter},
+    common::{
+        preset::{self, PresetProvider, PresetUi},
+        ui::{SmallKnob, VerticalSlider, small_knob, vertical_slider, vu_meter},
+    },
     flanger::{
         params::{FRACTION_NAMES, LFO_TYPE_NAMES, LFO2_TYPE_NAMES, PARAMS, PERIOD_NAMES, ParamId},
         plugin::SharedState,
@@ -35,7 +38,7 @@ use crate::{
 use maolan_widgets::multi_toggler::horizontal_multi_toggler;
 
 pub const EDITOR_WIDTH: u32 = 1000;
-pub const EDITOR_HEIGHT: u32 = 360;
+pub const EDITOR_HEIGHT: u32 = 420;
 
 pub fn preferred_api() -> &'static CStr {
     #[cfg(target_os = "windows")]
@@ -98,11 +101,19 @@ enum Message {
     SetBoolParam(ParamId, bool),
     SetCombo(ParamId, f64),
     Poll,
+    Preset(preset::Msg),
+}
+
+impl From<preset::Msg> for Message {
+    fn from(msg: preset::Msg) -> Self {
+        Message::Preset(msg)
+    }
 }
 
 struct State {
     shared: Arc<SharedState>,
     active_gestures: Vec<bool>,
+    preset_ui: PresetUi,
 }
 
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
@@ -110,6 +121,7 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
         State {
             shared,
             active_gestures: vec![false; ParamId::COUNT],
+            preset_ui: PresetUi::new(SharedState::DIR_NAME),
         },
         Task::none(),
     )
@@ -145,6 +157,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.shared.mark_dirty();
         }
         Message::Poll => {}
+        Message::Preset(msg) => {
+            preset::update(&mut state.preset_ui, msg, state.shared.as_ref());
+        }
     }
     Task::none()
 }
@@ -309,16 +324,20 @@ fn view(state: &State) -> Element<'_, Message> {
     };
 
     container(
-        row![
-            gain_slider(ParamId::InputGain, "Input", state),
-            vu_meter(meter_channels, state.shared.input_levels_db()),
-            content,
-            vu_meter(meter_channels, state.shared.output_levels_db()),
-            gain_slider(ParamId::OutputGain, "Output", state),
+        column![
+            preset::bar(&state.preset_ui),
+            row![
+                gain_slider(ParamId::InputGain, "Input", state),
+                vu_meter(meter_channels, state.shared.input_levels_db()),
+                content,
+                vu_meter(meter_channels, state.shared.output_levels_db()),
+                gain_slider(ParamId::OutputGain, "Output", state),
+            ]
+            .spacing(12)
+            .height(Length::Fill)
+            .align_y(Alignment::Center),
         ]
-        .spacing(12)
-        .height(Length::Fill)
-        .align_y(Alignment::Center),
+        .spacing(14),
     )
     .padding(16)
     .width(Length::Fill)

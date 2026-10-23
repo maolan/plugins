@@ -46,6 +46,15 @@ clap_descriptor!(META);
 
 pub type SharedState = ParamSharedState<ParamId>;
 
+impl ParamSharedState<ParamId> {
+    /// No-op: deesser rebuilds its DSP params from the store every block, so
+    /// there is no version counter to bump; kept so the shared
+    /// `impl_param_presets!` load path applies uniformly.
+    pub fn bump_params_version(&self) {}
+}
+
+crate::impl_param_presets!(SharedState, ParamId, "deesser", "maolan-deesser-preset");
+
 impl ParamSpec for ParamId {
     fn param_defs() -> &'static [crate::common::clap_harness::ParamDef<Self>] {
         &PARAMS

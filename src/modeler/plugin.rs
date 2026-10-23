@@ -88,6 +88,7 @@ clap_descriptor!(META);
 #[derive(Debug)]
 pub struct SharedState {
     core: ParamSharedState<ParamId>,
+    params_version: std::sync::atomic::AtomicU64,
     pub model_path: parking_lot::RwLock<String>,
     pub ir_path: parking_lot::RwLock<String>,
     pub model_display_name: parking_lot::RwLock<String>,
@@ -111,6 +112,7 @@ impl Default for SharedState {
     fn default() -> Self {
         Self {
             core: ParamSharedState::default(),
+            params_version: std::sync::atomic::AtomicU64::new(1),
             model_path: parking_lot::RwLock::new(String::new()),
             ir_path: parking_lot::RwLock::new(String::new()),
             model_display_name: parking_lot::RwLock::new(String::new()),
@@ -185,6 +187,10 @@ impl ParamSpec for ParamId {
 }
 
 impl SharedState {
+    pub fn bump_params_version(&self) {
+        self.params_version.fetch_add(1, Ordering::Release);
+    }
+
     fn display_name_for_path(path: &str) -> String {
         Path::new(path)
             .file_stem()
@@ -459,6 +465,56 @@ impl SharedState {
 
     pub fn restore_clear_ir(&self) {
         self.clear_ir_with_dirty(false);
+    }
+
+    /// Captures the current runtime state (all parameter values plus the NAM
+    /// model / IR paths, preview labels, and Tone3000 download references) as
+    /// a serializable [`PluginState`].
+    fn snapshot_state(&self) -> PluginState {
+        PluginState::from_runtime(
+            &self.params,
+            AssetPaths {
+                model_path: self.model_path.read().clone(),
+                ir_path: self.ir_path.read().clone(),
+                model_display_name: self.model_display_name.read().clone(),
+                model_picture_path: self.model_picture_path.read().clone(),
+                ir_display_name: self.ir_display_name.read().clone(),
+                ir_picture_path: self.ir_picture_path.read().clone(),
+                model_tone3000_reference: self.model_tone3000_reference.read().clone(),
+                ir_tone3000_reference: self.ir_tone3000_reference.read().clone(),
+                model_tone3000_name: self.model_tone3000_name.read().clone(),
+                ir_tone3000_name: self.ir_tone3000_name.read().clone(),
+            },
+        )
+    }
+
+    /// Applies a previously saved [`PluginState`] like CLAP session restore:
+    /// parameter values first, then the NAM model and IR (re-loading the
+    /// files, re-downloading from Tone3000 when a referenced file is missing).
+    fn restore_saved_state(self: &Arc<Self>, state: PluginState) {
+        let paths = state.apply(&self.params);
+        if paths.model_path.is_empty() {
+            self.restore_clear_model();
+        } else {
+            self.restore_model_path_and_load_with_preview(
+                paths.model_path,
+                Some(paths.model_display_name),
+                Some(paths.model_picture_path),
+                paths.model_tone3000_reference,
+                paths.model_tone3000_name,
+            );
+        }
+        if paths.ir_path.is_empty() {
+            self.restore_clear_ir();
+        } else {
+            self.restore_ir_path_and_load_with_preview(
+                paths.ir_path,
+                Some(paths.ir_display_name),
+                Some(paths.ir_picture_path),
+                paths.ir_tone3000_reference,
+                paths.ir_tone3000_name,
+            );
+        }
     }
 }
 
@@ -851,31 +907,11 @@ unsafe extern "C-unwind" fn ext_state_save(
     let instance = unsafe {
         crate::common::clap_harness::instance::<SharedState, AudioProcessor, GuiBridge, ()>(plugin)
     };
-    let model_path = instance.shared.model_path.read().clone();
-    let ir_path = instance.shared.ir_path.read().clone();
-    let model_display_name = instance.shared.model_display_name.read().clone();
-    let model_picture_path = instance.shared.model_picture_path.read().clone();
-    let ir_display_name = instance.shared.ir_display_name.read().clone();
-    let ir_picture_path = instance.shared.ir_picture_path.read().clone();
-    let model_tone3000_reference = instance.shared.model_tone3000_reference.read().clone();
-    let ir_tone3000_reference = instance.shared.ir_tone3000_reference.read().clone();
-    let model_tone3000_name = instance.shared.model_tone3000_name.read().clone();
-    let ir_tone3000_name = instance.shared.ir_tone3000_name.read().clone();
-    tracing::info!(%model_path, %ir_path, "MaolanModeler ext_state_save");
-    let state = PluginState::from_runtime(
-        &instance.shared.params,
-        AssetPaths {
-            model_path,
-            ir_path,
-            model_display_name,
-            model_picture_path,
-            ir_display_name,
-            ir_picture_path,
-            model_tone3000_reference,
-            ir_tone3000_reference,
-            model_tone3000_name,
-            ir_tone3000_name,
-        },
+    let state = instance.shared.snapshot_state();
+    tracing::info!(
+        model_path = %state.model_path,
+        ir_path = %state.ir_path,
+        "MaolanModeler ext_state_save"
     );
     let Ok(bytes) = state.to_bytes() else {
         return false;
@@ -908,31 +944,30 @@ unsafe extern "C-unwind" fn ext_state_load(
             return false;
         }
     };
-    let paths = state.apply(&instance.shared.params);
-    tracing::info!(model_path = %paths.model_path, ir_path = %paths.ir_path, "MaolanModeler ext_state_load");
-    if paths.model_path.is_empty() {
-        instance.shared.restore_clear_model();
-    } else {
-        instance.shared.restore_model_path_and_load_with_preview(
-            paths.model_path,
-            Some(paths.model_display_name),
-            Some(paths.model_picture_path),
-            paths.model_tone3000_reference,
-            paths.model_tone3000_name,
-        );
-    }
-    if paths.ir_path.is_empty() {
-        instance.shared.restore_clear_ir();
-    } else {
-        instance.shared.restore_ir_path_and_load_with_preview(
-            paths.ir_path,
-            Some(paths.ir_display_name),
-            Some(paths.ir_picture_path),
-            paths.ir_tone3000_reference,
-            paths.ir_tone3000_name,
-        );
-    }
+    tracing::info!(
+        model_path = %state.model_path,
+        ir_path = %state.ir_path,
+        "MaolanModeler ext_state_load"
+    );
+    instance.shared.restore_saved_state(state);
     true
+}
+
+impl crate::common::preset::PresetProvider for Arc<SharedState> {
+    const DIR_NAME: &'static str = "modeler";
+    const FORMAT: &'static str = "maolan-modeler-preset";
+
+    fn save_preset(&self, path: &Path) -> Result<(), String> {
+        crate::common::preset::write_envelope(path, Self::FORMAT, None, &self.snapshot_state())
+    }
+
+    fn load_preset(&self, path: &Path) -> Result<(), String> {
+        let envelope = crate::common::preset::read_envelope::<PluginState>(path, Self::FORMAT)?;
+        self.restore_saved_state(envelope.state);
+        self.bump_params_version();
+        self.mark_dirty();
+        Ok(())
+    }
 }
 
 unsafe extern "C-unwind" fn ext_resource_directory_set_directory(

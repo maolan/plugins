@@ -181,7 +181,7 @@ impl SharedState {
         self.params_version.load(Ordering::Acquire)
     }
 
-    fn bump_params_version(&self) {
+    pub fn bump_params_version(&self) {
         self.params_version.fetch_add(1, Ordering::Release);
     }
 
@@ -190,6 +190,8 @@ impl SharedState {
         self.channels.store(channels, Ordering::Release);
     }
 }
+
+crate::impl_param_presets!(SharedState, ParamId, "reverb", "maolan-reverb-preset");
 struct AudioProcessor {
     dsp: Reverb,
     temp_left: Vec<f32>,

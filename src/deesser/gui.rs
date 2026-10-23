@@ -21,7 +21,10 @@ use raw_window_handle::RawWindowHandle;
 use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
 use crate::{
-    common::ui::{SmallKnob, small_knob},
+    common::{
+        preset::{self, PresetProvider, PresetUi},
+        ui::{SmallKnob, small_knob},
+    },
     deesser::{
         params::{PARAMS, ParamId},
         plugin::SharedState,
@@ -90,11 +93,19 @@ impl HasWindowHandle for ParentWindowHandle {
 pub enum Message {
     SetParam(ParamId, f32),
     ReleaseParam(ParamId),
+    Preset(preset::Msg),
+}
+
+impl From<preset::Msg> for Message {
+    fn from(msg: preset::Msg) -> Self {
+        Message::Preset(msg)
+    }
 }
 
 struct State {
     shared: Arc<SharedState>,
     active_gestures: Vec<bool>,
+    preset_ui: PresetUi,
 }
 
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
@@ -102,6 +113,7 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
         State {
             shared,
             active_gestures: vec![false; ParamId::COUNT],
+            preset_ui: PresetUi::new(SharedState::DIR_NAME),
         },
         Task::none(),
     )
@@ -124,6 +136,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.shared.mark_gesture_end_pending(id);
             }
         }
+        Message::Preset(msg) => {
+            preset::update(&mut state.preset_ui, msg, state.shared.as_ref());
+        }
     }
     Task::none()
 }
@@ -132,6 +147,7 @@ fn view(state: &State) -> Element<'_, Message> {
     let p = |id: ParamId| state.shared.params.get(id) as f32;
 
     let content = column![
+        preset::bar(&state.preset_ui),
         row![
             knob(
                 "Intensity",

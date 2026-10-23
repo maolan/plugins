@@ -21,7 +21,10 @@ use raw_window_handle::RawWindowHandle;
 use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
 use crate::{
-    common::ui::{SmallKnob, small_knob},
+    common::{
+        preset::{self, PresetProvider, PresetUi},
+        ui::{SmallKnob, small_knob},
+    },
     delay::{
         params::{NOTE_DIVISIONS, PARAMS, ParamId},
         plugin::SharedState,
@@ -128,11 +131,19 @@ pub enum Message {
     ReleaseParam(ParamId),
     SetBoolParam(ParamId, bool),
     SetChannels(ChannelMode),
+    Preset(preset::Msg),
+}
+
+impl From<preset::Msg> for Message {
+    fn from(msg: preset::Msg) -> Self {
+        Message::Preset(msg)
+    }
 }
 
 struct State {
     shared: Arc<SharedState>,
     active_gestures: Vec<bool>,
+    preset_ui: PresetUi,
 }
 
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
@@ -140,6 +151,7 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
         State {
             shared,
             active_gestures: vec![false; ParamId::COUNT],
+            preset_ui: PresetUi::new(SharedState::DIR_NAME),
         },
         Task::none(),
     )
@@ -178,6 +190,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.shared.request_audio_ports_rescan();
             }
             state.shared.mark_dirty();
+        }
+        Message::Preset(msg) => {
+            preset::update(&mut state.preset_ui, msg, state.shared.as_ref());
         }
     }
     Task::none()
@@ -258,6 +273,7 @@ fn view(state: &State) -> Element<'_, Message> {
     .align_y(Alignment::Center);
 
     let content = column![
+        preset::bar(&state.preset_ui),
         row![
             channels_toggle,
             time_mode_switch,

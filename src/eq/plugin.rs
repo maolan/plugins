@@ -2230,6 +2230,32 @@ impl SharedState<ParamId> {
     }
 }
 
+impl crate::common::preset::PresetProvider for SharedState<ParamId> {
+    const DIR_NAME: &'static str = "eq";
+    const FORMAT: &'static str = "maolan-eq-preset";
+
+    fn save_preset(&self, path: &std::path::Path) -> Result<(), std::string::String> {
+        let state = PluginState::from_runtime(&self.params, &PARAMS);
+        crate::common::preset::write_envelope(path, Self::FORMAT, None, &state.params)
+    }
+
+    fn load_preset(&self, path: &std::path::Path) -> Result<(), std::string::String> {
+        let envelope =
+            crate::common::preset::read_envelope::<BTreeMap<String, f64>>(path, Self::FORMAT)?;
+        for def in PARAMS.iter() {
+            let value = envelope.state.get(def.name).copied().unwrap_or(def.default);
+            self.params
+                .set(def.id, sanitize_param_value(def.id, value, &PARAMS));
+        }
+        self.bump_params_version();
+        self.sync_channels_from_params();
+        self.request_audio_ports_rescan();
+        self.request_latency_changed();
+        self.mark_dirty();
+        Ok(())
+    }
+}
+
 use serde::{Deserialize, Serialize};
 const CURRENT_STATE_VERSION: &str = "0.2.0";
 const STATE_HEADER_PREFIX: &str = "maolan-equalizer-state-v";

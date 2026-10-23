@@ -33,8 +33,9 @@ use raw_window_handle::RawWindowHandle;
 use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
 use crate::{
-    common::ui::{
-        SmallKnob, VerticalSlider, small_knob, vertical_slider, vertical_ticks, vu_meter,
+    common::{
+        preset::{self, PresetProvider, PresetUi},
+        ui::{SmallKnob, VerticalSlider, small_knob, vertical_slider, vertical_ticks, vu_meter},
     },
     limiter::{
         params::{PARAMS, ParamId},
@@ -145,6 +146,13 @@ pub enum Message {
     SetShowProcessed(bool),
     ReleaseParam(ParamId),
     UiTick,
+    Preset(preset::Msg),
+}
+
+impl From<preset::Msg> for Message {
+    fn from(msg: preset::Msg) -> Self {
+        Message::Preset(msg)
+    }
 }
 
 struct State {
@@ -155,6 +163,7 @@ struct State {
     last_ui_tick: Instant,
     show_original_signal: bool,
     show_processed_signal: bool,
+    preset_ui: PresetUi,
 }
 
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
@@ -167,6 +176,7 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             last_ui_tick: Instant::now(),
             show_original_signal: true,
             show_processed_signal: false,
+            preset_ui: PresetUi::new(SharedState::DIR_NAME),
         },
         next_ui_tick_task(),
     )
@@ -231,6 +241,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.display_initialized = true;
             }
             return next_ui_tick_task();
+        }
+        Message::Preset(msg) => {
+            preset::update(&mut state.preset_ui, msg, state.shared.as_ref());
         }
     }
     Task::none()
@@ -328,7 +341,7 @@ fn view(state: &State) -> Element<'_, Message> {
     .height(Length::Fill)
     .align_y(Alignment::Center);
 
-    container(column![display_row, controls].spacing(14))
+    container(column![preset::bar(&state.preset_ui), display_row, controls].spacing(14))
         .padding(16)
         .width(Length::Fill)
         .height(Length::Fill)

@@ -162,6 +162,11 @@ impl ParamSpec for ParamId {
 }
 
 impl SharedState {
+    /// No-op: the limiter processor rebuilds its DSP params from the store
+    /// every block, so there is no version counter to bump; kept so the
+    /// shared `impl_param_presets!` load path applies uniformly.
+    pub fn bump_params_version(&self) {}
+
     fn core_sample_rate(&self) -> f64 {
         self.core.sample_rate()
     }
@@ -249,6 +254,9 @@ impl SharedState {
             .store(right.clamp(-90.0, 20.0), Ordering::Relaxed);
     }
 }
+
+crate::impl_param_presets!(SharedState, ParamId, "limiter", "maolan-limiter-preset");
+
 struct AudioProcessor {
     dsp: Limiter,
     temp_left: Vec<f32>,
