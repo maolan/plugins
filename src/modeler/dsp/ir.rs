@@ -145,6 +145,9 @@ impl ImpulseResponse {
             &resampled[..ir_length],
             gain,
         );
+        // Buffer::history_slice returns samples oldest to newest, while
+        // convolution needs the newest sample paired with the first IR tap.
+        self.weights[..ir_length].reverse();
     }
 
     pub fn reset(&mut self) {
@@ -214,4 +217,29 @@ fn cubic_interpolate(p0: f32, p1: f32, p2: f32, p3: f32, x: f32) -> f32 {
     p1 + 0.5
         * x
         * (p2 - p0 + x * (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3 + x * (3.0 * (p1 - p2) + p3 - p0)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ImpulseResponse;
+
+    #[test]
+    fn impulse_response_keeps_ir_peaks_at_their_original_sample_positions() {
+        let mut ir = ImpulseResponse {
+            raw_samples: vec![0.75, 1.0, 0.25, 0.0],
+            raw_sample_rate: 48_000.0,
+            target_sample_rate: 48_000.0,
+            ..Default::default()
+        };
+        ir.rebuild_weights();
+        ir.reset();
+
+        let gain = 10.0_f32.powf(-18.0 * 0.05);
+        let mut output = [1.0, 0.0, 0.0, 0.0];
+        ir.process_block(&mut output);
+
+        for (actual, expected) in output.iter().zip([0.75, 1.0, 0.25, 0.0]) {
+            assert!((actual - expected * gain).abs() < 1.0e-6);
+        }
+    }
 }
