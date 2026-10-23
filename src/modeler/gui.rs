@@ -120,6 +120,7 @@ pub enum Message {
     ToneTaxonomiesLoad,
     ToneTaxonomiesLoaded(Result<Taxonomies, String>),
     ToneBrowserModeSelected(ToneBrowserMode),
+    ToneSourceSelected(ToneSource),
     ToggleToneTagsMenu,
     ToneTagToggled(String, bool),
     ToneTagsClear,
@@ -163,6 +164,7 @@ struct State {
     loading: Option<String>,
     tone_oauth_client_id: String,
     tone_browser_mode: ToneBrowserMode,
+    tone_source: ToneSource,
     tone_model_query: String,
     tone_model_results: Vec<SearchItem>,
     tone_model_pictures: Vec<Option<maolan_baseview::iced::widget::image::Handle>>,
@@ -217,6 +219,12 @@ impl std::fmt::Display for VariationOption {
 pub enum ToneBrowserMode {
     Nam,
     Ir,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToneSource {
+    Browse,
+    Mine,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -301,6 +309,7 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             loading: None,
             tone_oauth_client_id,
             tone_browser_mode: ToneBrowserMode::Nam,
+            tone_source: ToneSource::Browse,
             tone_model_query: String::new(),
             tone_model_results: Vec::new(),
             tone_model_pictures: Vec::new(),
@@ -454,14 +463,21 @@ fn start_search_irs(state: &mut State, reset_page: bool) -> Task<Message> {
     state.tone_model_selected_variation = None;
     state.tone_model_page = 1;
     state.tone_model_total_pages = 0;
-    state.loading = Some("Searching IR...".to_string());
+    state.loading = match state.tone_source {
+        ToneSource::Browse => Some("Searching IR...".to_string()),
+        ToneSource::Mine => Some("Loading your IRs...".to_string()),
+    };
     state.error = None;
     let page = state.tone_ir_page;
     let filters = search_filters(state);
+    let source = state.tone_source;
     Task::perform(
         async move {
-            std::thread::spawn(move || {
-                tone3000::search(AssetKind::Ir, &query, page, PAGE_SIZE, None, &filters)
+            std::thread::spawn(move || match source {
+                ToneSource::Browse => {
+                    tone3000::search(AssetKind::Ir, &query, page, PAGE_SIZE, None, &filters)
+                }
+                ToneSource::Mine => tone3000::list_created(AssetKind::Ir, &query, page, PAGE_SIZE),
             })
             .join()
             .unwrap()
@@ -533,22 +549,27 @@ fn start_search_models(state: &mut State, reset_page: bool) -> Task<Message> {
     state.tone_ir_selected_variation = None;
     state.tone_ir_page = 1;
     state.tone_ir_total_pages = 0;
-    state.loading = Some("Searching NAM...".to_string());
+    state.loading = match state.tone_source {
+        ToneSource::Browse => Some("Searching NAM...".to_string()),
+        ToneSource::Mine => Some("Loading your NAMs...".to_string()),
+    };
     state.error = None;
     let page = state.tone_model_page;
     let gears = build_nam_gears_filter(state);
     let filters = search_filters(state);
+    let source = state.tone_source;
     Task::perform(
         async move {
-            std::thread::spawn(move || {
-                tone3000::search(
+            std::thread::spawn(move || match source {
+                ToneSource::Browse => tone3000::search(
                     AssetKind::Nam,
                     &query,
                     page,
                     PAGE_SIZE,
                     gears.as_deref(),
                     &filters,
-                )
+                ),
+                ToneSource::Mine => tone3000::list_created(AssetKind::Nam, &query, page, PAGE_SIZE),
             })
             .join()
             .unwrap()
@@ -758,6 +779,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ToneBrowserModeSelected(mode) => {
             state.tone_browser_mode = mode;
             Task::none()
+        }
+        Message::ToneSourceSelected(source) => {
+            if state.tone_source == source {
+                return Task::none();
+            }
+            state.tone_source = source;
+            match state.tone_browser_mode {
+                ToneBrowserMode::Nam => start_search_models(state, true),
+                ToneBrowserMode::Ir => start_search_irs(state, true),
+            }
         }
         Message::ToggleToneTagsMenu => {
             state.tone_tags_menu_open = !state.tone_tags_menu_open;
@@ -1252,6 +1283,18 @@ fn view(state: &State) -> Element<'_, Message> {
             row![
                 text("Tone3000").size(16),
                 radio(
+                    "Browse",
+                    ToneSource::Browse,
+                    Some(state.tone_source),
+                    Message::ToneSourceSelected,
+                ),
+                radio(
+                    "My Tones",
+                    ToneSource::Mine,
+                    Some(state.tone_source),
+                    Message::ToneSourceSelected,
+                ),
+                radio(
                     "NAM",
                     ToneBrowserMode::Nam,
                     Some(state.tone_browser_mode),
@@ -1268,67 +1311,22 @@ fn view(state: &State) -> Element<'_, Message> {
             .align_y(Alignment::Center),
         );
 
-        let filters = row![
-            taxonomy_checkbox_dropdown(TaxonomyDropdownConfig {
-                all_label: "All tags",
-                items: &state.tone_tags,
-                selected_values: &state.tone_selected_tags,
-                menu_open: state.tone_tags_menu_open,
-                messages: TaxonomyDropdownMessages {
-                    toggle: Message::ToggleToneTagsMenu,
-                    clear: Message::ToneTagsClear,
-                    toggle_item: Message::ToneTagToggled,
-                },
-                search: None,
-            }),
-            taxonomy_checkbox_dropdown(TaxonomyDropdownConfig {
-                all_label: "All models",
-                items: &state.tone_makes,
-                selected_values: &state.tone_selected_makes,
-                menu_open: state.tone_models_menu_open,
-                messages: TaxonomyDropdownMessages {
-                    toggle: Message::ToggleToneModelsMenu,
-                    clear: Message::ToneModelsClear,
-                    toggle_item: Message::ToneModelFilterToggled,
-                },
-                search: None,
-            }),
-            taxonomy_checkbox_dropdown(TaxonomyDropdownConfig {
-                all_label: "All creators",
-                items: &state.tone_creators,
-                selected_values: &state.tone_selected_creators,
-                menu_open: state.tone_creators_menu_open,
-                messages: TaxonomyDropdownMessages {
-                    toggle: Message::ToggleToneCreatorsMenu,
-                    clear: Message::ToneCreatorsClear,
-                    toggle_item: Message::ToneCreatorToggled,
-                },
-                search: Some(TaxonomyDropdownSearch {
-                    value: &state.tone_creator_query,
-                    on_input: Message::ToneCreatorQueryChanged,
-                    on_submit: Message::ToneCreatorsSearch,
-                }),
-            }),
-        ]
-        .spacing(10)
-        .width(Length::Fill);
-
         let mut browser = column![].spacing(12).width(Length::Fill);
         match state.tone_browser_mode {
             ToneBrowserMode::Nam => {
-                browser = browser
-                    .push(
-                        row![
-                            text_input("NAM id/url or search query", &state.tone_model_query)
-                                .on_input(Message::ToneModelQueryChanged)
-                                .on_submit(Message::ToneSearchModels)
-                                .width(Length::Fill),
-                            button(text("Search")).on_press(Message::ToneSearchModels),
-                        ]
-                        .spacing(8)
-                        .align_y(Alignment::Center),
-                    )
-                    .push(
+                browser = browser.push(
+                    row![
+                        text_input("NAM id/url or search query", &state.tone_model_query)
+                            .on_input(Message::ToneModelQueryChanged)
+                            .on_submit(Message::ToneSearchModels)
+                            .width(Length::Fill),
+                        button(text("Search")).on_press(Message::ToneSearchModels),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                );
+                if state.tone_source == ToneSource::Browse {
+                    browser = browser.push(
                         row![
                             checkbox(state.tone_model_gear_amp)
                                 .label("Amp Head")
@@ -1346,6 +1344,7 @@ fn view(state: &State) -> Element<'_, Message> {
                         .spacing(12)
                         .align_y(Alignment::Center),
                     );
+                }
             }
             ToneBrowserMode::Ir => {
                 browser = browser.push(
@@ -1362,7 +1361,54 @@ fn view(state: &State) -> Element<'_, Message> {
             }
         }
 
-        browser = browser.push(filters);
+        if state.tone_source == ToneSource::Browse {
+            browser = browser.push(
+                row![
+                    taxonomy_checkbox_dropdown(TaxonomyDropdownConfig {
+                        all_label: "All tags",
+                        items: &state.tone_tags,
+                        selected_values: &state.tone_selected_tags,
+                        menu_open: state.tone_tags_menu_open,
+                        messages: TaxonomyDropdownMessages {
+                            toggle: Message::ToggleToneTagsMenu,
+                            clear: Message::ToneTagsClear,
+                            toggle_item: Message::ToneTagToggled,
+                        },
+                        search: None,
+                    }),
+                    taxonomy_checkbox_dropdown(TaxonomyDropdownConfig {
+                        all_label: "All models",
+                        items: &state.tone_makes,
+                        selected_values: &state.tone_selected_makes,
+                        menu_open: state.tone_models_menu_open,
+                        messages: TaxonomyDropdownMessages {
+                            toggle: Message::ToggleToneModelsMenu,
+                            clear: Message::ToneModelsClear,
+                            toggle_item: Message::ToneModelFilterToggled,
+                        },
+                        search: None,
+                    }),
+                    taxonomy_checkbox_dropdown(TaxonomyDropdownConfig {
+                        all_label: "All creators",
+                        items: &state.tone_creators,
+                        selected_values: &state.tone_selected_creators,
+                        menu_open: state.tone_creators_menu_open,
+                        messages: TaxonomyDropdownMessages {
+                            toggle: Message::ToggleToneCreatorsMenu,
+                            clear: Message::ToneCreatorsClear,
+                            toggle_item: Message::ToneCreatorToggled,
+                        },
+                        search: Some(TaxonomyDropdownSearch {
+                            value: &state.tone_creator_query,
+                            on_input: Message::ToneCreatorQueryChanged,
+                            on_submit: Message::ToneCreatorsSearch,
+                        }),
+                    }),
+                ]
+                .spacing(10)
+                .width(Length::Fill),
+            );
+        }
 
         if state.tone_taxonomy_loading {
             browser = browser.push(text("Loading filters...").size(12));
