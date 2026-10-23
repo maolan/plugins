@@ -21,6 +21,8 @@ const DEFAULT_IR_SEARCH_TEMPLATE: &str =
     "{base}/api/v1/tones/search?query={query}&format=ir&page={page}&page_size={page_size}";
 const DEFAULT_NAM_DOWNLOAD_TEMPLATE: &str = "{base}/api/v1/models?tone_id={id}&page=1&page_size=25";
 const DEFAULT_IR_DOWNLOAD_TEMPLATE: &str = "{base}/api/v1/models?tone_id={id}&page=1&page_size=25";
+const DEFAULT_CREATED_TEMPLATE: &str =
+    "{base}/api/v1/tones/created?page={page}&page_size={page_size}&query={query}";
 const CONFIG_SUBDIR: &str = "maolan-modeler";
 const OAUTH_FILE: &str = "tone3000_oauth.json";
 const LEGACY_API_KEY_FILE: &str = "tone3000_access_token";
@@ -93,6 +95,7 @@ struct Config {
     ir_search_template: String,
     nam_download_template: String,
     ir_download_template: String,
+    created_template: String,
 }
 
 impl Config {
@@ -115,6 +118,8 @@ impl Config {
                 .unwrap_or_else(|_| DEFAULT_NAM_DOWNLOAD_TEMPLATE.to_string()),
             ir_download_template: std::env::var("TONE3000_IR_DOWNLOAD_ENDPOINT_TEMPLATE")
                 .unwrap_or_else(|_| DEFAULT_IR_DOWNLOAD_TEMPLATE.to_string()),
+            created_template: std::env::var("TONE3000_CREATED_ENDPOINT_TEMPLATE")
+                .unwrap_or_else(|_| DEFAULT_CREATED_TEMPLATE.to_string()),
         }
     }
 }
@@ -959,6 +964,119 @@ pub fn search(
         total_pages,
         total,
     })
+}
+
+/// Lists tones created by the currently authenticated user
+/// (`GET /api/v1/tones/created`). Requires a saved OAuth token; the endpoint
+/// returns 401 without one. The documented parameters are `page`, `page_size`,
+/// `gear` and a title-substring `query`; `format` is not documented here, so it
+/// is sent anyway (matching the search endpoint convention) and the tones are
+/// additionally filtered client-side by their `format` field.
+pub fn list_created(
+    kind: AssetKind,
+    query: &str,
+    page: u32,
+    page_size: u32,
+) -> Result<PaginatedSearchResults, String> {
+    let config = Config::from_env();
+    let Some(token) = config.auth_token.as_deref() else {
+        return Err("Log in with Tone3000 OAuth to list your tones".to_string());
+    };
+    let encoded = urlencoding::encode(query).into_owned();
+    let mut url = render_template(
+        &config.created_template,
+        &config.base,
+        &encoded,
+        page,
+        page_size,
+    );
+    match kind {
+        AssetKind::Nam => append_query_param(&mut url, "format", "nam"),
+        AssetKind::Ir => append_query_param(&mut url, "format", "ir"),
+    }
+    let mut fallback_urls = Vec::new();
+    if let Some(url) = host_fallback_url(&url) {
+        fallback_urls.push(url);
+    }
+    let body = match get_bytes(&url, Some(token), 2) {
+        Ok(body) => body,
+        Err(primary_err) => {
+            let mut last_error = primary_err;
+            let mut fallback_body = None;
+            for alt_url in fallback_urls {
+                match get_bytes(&alt_url, Some(token), 2) {
+                    Ok(body) => {
+                        fallback_body = Some(body);
+                        break;
+                    }
+                    Err(alt_err) => {
+                        last_error =
+                            format!("{last_error}; fallback '{alt_url}' also failed: {alt_err}");
+                    }
+                }
+            }
+            fallback_body.ok_or(last_error)?
+        }
+    };
+    let value: Value = serde_json::from_slice(&body)
+        .map_err(|e| format!("Tone3000 created-tones response is not valid JSON: {e}"))?;
+    let (page, total_pages, total) = extract_pagination(&value);
+    let results = extract_search_results_filtered(kind, &value);
+    Ok(PaginatedSearchResults {
+        items: results,
+        page,
+        total_pages,
+        total,
+    })
+}
+
+fn format_matches_kind(kind: AssetKind, entry: &Value) -> bool {
+    let Some(format) = entry.get("format").and_then(Value::as_str) else {
+        // Tones without a format field cannot be classified; keep them.
+        return true;
+    };
+    match kind {
+        AssetKind::Nam => format.eq_ignore_ascii_case("nam"),
+        AssetKind::Ir => format.eq_ignore_ascii_case("ir"),
+    }
+}
+
+fn extract_search_results_filtered(kind: AssetKind, value: &Value) -> Vec<SearchItem> {
+    let arrays = [
+        value.as_array(),
+        value.get("items").and_then(Value::as_array),
+        value.get("results").and_then(Value::as_array),
+        value.get("data").and_then(Value::as_array),
+        value
+            .get("data")
+            .and_then(|d| d.get("items"))
+            .and_then(Value::as_array),
+        value
+            .get("data")
+            .and_then(|d| d.get("results"))
+            .and_then(Value::as_array),
+    ];
+
+    for arr_opt in arrays {
+        let Some(arr) = arr_opt else {
+            continue;
+        };
+        let filtered: Vec<Value> = arr
+            .iter()
+            .filter(|entry| format_matches_kind(kind, entry))
+            .cloned()
+            .collect();
+        if !filtered.is_empty() {
+            // Wrap the filtered entries so `extract_search_results` picks them up
+            // without re-probing the unfiltered arrays of the original payload.
+            let wrapped = serde_json::json!({ "items": filtered });
+            let out = extract_search_results(&wrapped);
+            if !out.is_empty() {
+                return out;
+            }
+        }
+    }
+    Vec::new()
 }
 
 pub fn fetch_picture(url: &str) -> Result<Vec<u8>, String> {
@@ -1948,5 +2066,73 @@ mod tests {
         let out = extract_search_results(&value);
         assert_eq!(out[0].creator, Some("amp-guy".to_string()));
         assert_eq!(out[1].creator, None);
+    }
+
+    #[test]
+    fn created_tones_payload_parses_pagination_and_items() {
+        let value = json!({
+            "data": [
+                {
+                    "id": 41446,
+                    "title": "ENGL E650",
+                    "format": "nam",
+                    "user": {"username": "jane"},
+                    "images": ["https://cdn.example.com/engl.jpg"]
+                },
+                {
+                    "id": 41447,
+                    "title": "4x12 V30",
+                    "format": "ir",
+                    "user": {"username": "jane"},
+                    "images": null
+                }
+            ],
+            "page": 1,
+            "page_size": 20,
+            "total": 2,
+            "total_pages": 1
+        });
+        let (page, total_pages, total) = extract_pagination(&value);
+        assert_eq!((page, total_pages, total), (1, 1, 2));
+
+        let nams = extract_search_results_filtered(AssetKind::Nam, &value);
+        assert_eq!(nams.len(), 1);
+        assert_eq!(nams[0].id, "41446");
+        assert_eq!(nams[0].name, "ENGL E650");
+        assert_eq!(nams[0].creator, Some("jane".to_string()));
+        assert_eq!(
+            nams[0].picture_url,
+            Some("https://cdn.example.com/engl.jpg".to_string())
+        );
+
+        let irs = extract_search_results_filtered(AssetKind::Ir, &value);
+        assert_eq!(irs.len(), 1);
+        assert_eq!(irs[0].id, "41447");
+        assert_eq!(irs[0].name, "4x12 V30");
+    }
+
+    #[test]
+    fn created_tones_filter_keeps_entries_without_format() {
+        let value = json!({
+            "data": [
+                {"id": 1, "title": "Mystery", "format": "aida-x"},
+                {"id": 2, "title": "No format field"}
+            ]
+        });
+        let out = extract_search_results_filtered(AssetKind::Nam, &value);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "No format field");
+    }
+
+    #[test]
+    fn created_tones_filter_returns_empty_when_no_format_matches() {
+        let value = json!({
+            "data": [
+                {"id": 1, "title": "IR One", "format": "ir"},
+                {"id": 2, "title": "IR Two", "format": "ir"}
+            ]
+        });
+        let out = extract_search_results_filtered(AssetKind::Nam, &value);
+        assert!(out.is_empty());
     }
 }
