@@ -349,7 +349,7 @@ pub struct Zone {
 
     pub extra_sfz_opcodes: Vec<(String, String)>,
 
-    pub output: u8,
+    pub output: u16,
 }
 
 impl Clone for Zone {

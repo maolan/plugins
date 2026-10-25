@@ -1293,7 +1293,7 @@ pub(crate) fn build_groups_from_patch(patch: &Patch) -> Vec<SampleGroup> {
     groups
 }
 
-pub(crate) const MAX_SAMPLER_BUSES: usize = 32;
+pub(crate) const MAX_SAMPLER_BUSES: usize = 1024;
 
 /// Copies the GUI-editable metadata of a `SampleZone` onto a DSP `Zone`.
 fn apply_editable_zone_metadata(zone: &mut Zone, editable: &SampleZone) {

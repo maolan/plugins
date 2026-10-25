@@ -140,7 +140,7 @@ struct AriaxSlot {
     name: String,
     path: PathBuf,
     /// Output bus for this slot derived from its `<Main id="N" value="1"/>` children.
-    output: u8,
+    output: u16,
 }
 
 /// Parse an Aria `.ariax` preset and return the list of SFZ instrument slots it
@@ -161,7 +161,7 @@ fn parse_ariax_slots(path: &Path) -> Result<Vec<AriaxSlot>, String> {
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
     let mut slots = Vec::new();
-    let mut current_slot: Option<(String, u8)> = None;
+    let mut current_slot: Option<(String, u16)> = None;
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -222,7 +222,7 @@ fn slot_name_from_attrs(e: &quick_xml::events::BytesStart<'_>) -> Option<String>
     None
 }
 
-fn parse_main_output_bus(e: &quick_xml::events::BytesStart<'_>) -> Option<u8> {
+fn parse_main_output_bus(e: &quick_xml::events::BytesStart<'_>) -> Option<u16> {
     let name = e.name();
     let tag = name.as_ref();
     if tag != "Main" && tag != "main" {
@@ -239,13 +239,13 @@ fn parse_main_output_bus(e: &quick_xml::events::BytesStart<'_>) -> Option<u8> {
         }
     }
     if value == Some(1) {
-        id.map(|i| i.clamp(0, 31) as u8)
+        id.map(|i| i.clamp(0, (crate::sampler::plugin::MAX_SAMPLER_BUSES - 1) as i32) as u16)
     } else {
         None
     }
 }
 
-fn set_patch_output_bus(patch: &mut Patch, output: u8) {
+fn set_patch_output_bus(patch: &mut Patch, output: u16) {
     for part in &mut patch.parts {
         for group in &mut part.groups {
             group.output = output;

@@ -58,7 +58,7 @@ pub struct Group {
 
     pub extra_sfz_opcodes: Vec<(String, String)>,
 
-    pub output: u8,
+    pub output: u16,
 
     pub trigger_type: TriggerType,
 

@@ -2024,7 +2024,7 @@ fn build_group(
         group.pan = p.clamp(-100.0, 100.0) / 100.0;
     }
     if let Some(o) = get_int(opcodes, "output") {
-        group.output = o.clamp(0, 15) as u8;
+        group.output = o.clamp(0, (crate::sampler::plugin::MAX_SAMPLER_BUSES - 1) as i32) as u16;
     }
 
     // SFZ amp/filter/pitch EGs and LFOs are mapped to the group's processors.
@@ -2434,7 +2434,7 @@ fn build_zone(
         zone.root_key = key;
     }
     if let Some(o) = get_int(opcodes, "output") {
-        zone.output = o.clamp(0, 15) as u8;
+        zone.output = o.clamp(0, (crate::sampler::plugin::MAX_SAMPLER_BUSES - 1) as i32) as u16;
     }
 
     // Velocity mapping.
