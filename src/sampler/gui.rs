@@ -26,6 +26,7 @@ use maolan_clap::ffi::CLAP_WINDOW_API_COCOA;
 use maolan_clap::ffi::CLAP_WINDOW_API_WIN32;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use maolan_clap::ffi::CLAP_WINDOW_API_X11;
+use maolan_widgets::adsr::{AdsrMessage, adsr_envelope};
 use maolan_widgets::arch_slider::arch_slider;
 use maolan_widgets::meters;
 use maolan_widgets::piano::{
@@ -134,6 +135,7 @@ impl HasWindowHandle for ParentWindowHandle {
 pub enum Message {
     SetParam(ParamId, f32),
     ReleaseParam(ParamId),
+    ResetParam(ParamId),
     AssignLfoToParam(ParamId),
     ToggleLfoAssignment(usize),
     ToggleParam(ParamId, bool),
@@ -1320,6 +1322,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.active_gestures[idx] = false;
                     state.shared.mark_gesture_end_pending(id);
                 }
+            }
+            Message::ResetParam(id) => {
+                set_param_once(state, id, PARAMS[id.as_index()].default as f32);
             }
             Message::AssignLfoToParam(id) => {
                 if let Some(lfo_index) = state.lfo_assignment.armed_lfo() {
@@ -2703,32 +2708,34 @@ fn param_control<'a>(id: ParamId, label: &'a str, state: &'a State) -> Element<'
     }
 }
 
-fn hslider<'a>(id: ParamId, label: &'a str, state: &'a State) -> Element<'a, Message> {
-    let value = state.shared.params.get(id) as f32;
-    let def = &PARAMS[id.as_index()];
-    let slider = Slider::new(def.min as f32..=def.max as f32, value, move |v| {
-        Message::SetParam(id, v)
-    })
-    .step(def.step as f32)
-    .double_click_reset(def.default as f32)
-    .on_release(Message::ReleaseParam(id))
-    .horizontal()
-    .width(Length::Fixed(50.0))
-    .height(Length::Fixed(14.0));
-
-    container(
-        column![
-            text(label).size(11),
-            row![slider, text(format!("{value:.2}")).size(10)]
-                .spacing(4)
-                .align_y(Alignment::Center),
-        ]
-        .spacing(2)
-        .align_x(Alignment::Center),
+fn adsr_panel<'a>(state: &'a State, ids: [ParamId; 4]) -> Element<'a, Message> {
+    let values = ids.map(|id| state.shared.params.get(id) as f32);
+    let ranges = ids.map(|id| {
+        let def = &PARAMS[id.as_index()];
+        (def.min as f32, def.max as f32)
+    });
+    let steps = ids.map(|id| PARAMS[id.as_index()].step as f32);
+    adsr_envelope(
+        values,
+        ranges,
+        steps,
+        ids.map(|id| param_has_lfo_assignment(state, id)),
     )
-    .width(Length::Fixed(70.0))
-    .padding(2)
-    .into()
+    .map(move |message| {
+        let index = match message {
+            AdsrMessage::Change(i, _)
+            | AdsrMessage::Release(i)
+            | AdsrMessage::Reset(i)
+            | AdsrMessage::Assign(i) => i,
+        };
+        let id = ids[index];
+        match message {
+            AdsrMessage::Change(_, value) => Message::SetParam(id, value),
+            AdsrMessage::Release(_) => Message::ReleaseParam(id),
+            AdsrMessage::Reset(_) => Message::ResetParam(id),
+            AdsrMessage::Assign(_) => Message::AssignLfoToParam(id),
+        }
+    })
 }
 
 fn filter_type_dropdown<'a>(id: ParamId, state: &'a State) -> Element<'a, Message> {
@@ -5319,26 +5326,35 @@ fn view(state: &State) -> Element<'_, Message> {
         _ => filter2,
     };
 
-    let amp_eg = panel_no_title(knob_row(vec![
-        hslider(ParamId::AmpAttack, "A", state),
-        hslider(ParamId::AmpDecay, "D", state),
-        hslider(ParamId::AmpSustain, "S", state),
-        hslider(ParamId::AmpRelease, "R", state),
-    ]));
+    let amp_eg = adsr_panel(
+        state,
+        [
+            ParamId::AmpAttack,
+            ParamId::AmpDecay,
+            ParamId::AmpSustain,
+            ParamId::AmpRelease,
+        ],
+    );
 
-    let filter_eg = panel_no_title(knob_row(vec![
-        hslider(ParamId::FilterAttack, "A", state),
-        hslider(ParamId::FilterDecay, "D", state),
-        hslider(ParamId::FilterSustain, "S", state),
-        hslider(ParamId::FilterRelease, "R", state),
-    ]));
+    let filter_eg = adsr_panel(
+        state,
+        [
+            ParamId::FilterAttack,
+            ParamId::FilterDecay,
+            ParamId::FilterSustain,
+            ParamId::FilterRelease,
+        ],
+    );
 
-    let pitch_eg = panel_no_title(knob_row(vec![
-        hslider(ParamId::Eg2Attack, "A", state),
-        hslider(ParamId::Eg2Decay, "D", state),
-        hslider(ParamId::Eg2Sustain, "S", state),
-        hslider(ParamId::Eg2Release, "R", state),
-    ]));
+    let pitch_eg = adsr_panel(
+        state,
+        [
+            ParamId::Eg2Attack,
+            ParamId::Eg2Decay,
+            ParamId::Eg2Sustain,
+            ParamId::Eg2Release,
+        ],
+    );
 
     let selected_eg =
         EgSelectorOption::from_index(state.selected_eg).unwrap_or(EgSelectorOption::Amp);
@@ -5349,26 +5365,35 @@ fn view(state: &State) -> Element<'_, Message> {
     )
     .width(Length::Fixed(100.0));
 
-    let eg3 = panel_no_title(knob_row(vec![
-        hslider(ParamId::Eg3Attack, "A", state),
-        hslider(ParamId::Eg3Decay, "D", state),
-        hslider(ParamId::Eg3Sustain, "S", state),
-        hslider(ParamId::Eg3Release, "R", state),
-    ]));
+    let eg3 = adsr_panel(
+        state,
+        [
+            ParamId::Eg3Attack,
+            ParamId::Eg3Decay,
+            ParamId::Eg3Sustain,
+            ParamId::Eg3Release,
+        ],
+    );
 
-    let eg4 = panel_no_title(knob_row(vec![
-        hslider(ParamId::Eg4Attack, "A", state),
-        hslider(ParamId::Eg4Decay, "D", state),
-        hslider(ParamId::Eg4Sustain, "S", state),
-        hslider(ParamId::Eg4Release, "R", state),
-    ]));
+    let eg4 = adsr_panel(
+        state,
+        [
+            ParamId::Eg4Attack,
+            ParamId::Eg4Decay,
+            ParamId::Eg4Sustain,
+            ParamId::Eg4Release,
+        ],
+    );
 
-    let eg5 = panel_no_title(knob_row(vec![
-        hslider(ParamId::Eg5Attack, "A", state),
-        hslider(ParamId::Eg5Decay, "D", state),
-        hslider(ParamId::Eg5Sustain, "S", state),
-        hslider(ParamId::Eg5Release, "R", state),
-    ]));
+    let eg5 = adsr_panel(
+        state,
+        [
+            ParamId::Eg5Attack,
+            ParamId::Eg5Decay,
+            ParamId::Eg5Sustain,
+            ParamId::Eg5Release,
+        ],
+    );
 
     let selected_eg_panel = match state.selected_eg {
         0 => amp_eg,

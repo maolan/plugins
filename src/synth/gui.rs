@@ -21,7 +21,7 @@ use maolan_clap::ffi::CLAP_WINDOW_API_WIN32;
 use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_widgets::arch_slider::arch_slider;
 use maolan_widgets::horizontal_slider::HorizontalSlider;
-use maolan_widgets::slider::Slider;
+mod envelope;
 #[cfg(any(
     target_os = "windows",
     target_os = "macos",
@@ -108,6 +108,7 @@ pub enum Message {
     Poll,
     SetParam(ParamId, f32),
     ReleaseParam(ParamId),
+    ResetParam(ParamId),
     ToggleParam(ParamId, bool),
     AssignLfoToParam(ParamId),
     ToggleLfoAssignment(usize),
@@ -171,6 +172,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.active_gestures[idx] = false;
                 state.shared.mark_gesture_end_pending(id);
             }
+        }
+        Message::ResetParam(id) => {
+            let def = param_def(id).expect("valid param id");
+            state.shared.mark_gesture_begin_pending(id);
+            state.shared.set_param_outbound_only(id, def.default);
+            state.shared.mark_gesture_end_pending(id);
         }
         Message::ToggleParam(id, checked) => {
             let idx = id.as_index();
@@ -771,52 +778,6 @@ fn param_value_text(id: ParamId, value: f32, step: f64) -> String {
     }
 }
 
-fn vslider<'a>(id: ParamId, label: &'a str, state: &'a State) -> Element<'a, Message> {
-    let value = state.shared.params.get(id) as f32;
-    let def = param_def(id).expect("valid param id");
-    let assigned = param_has_lfo_assignment(state, id);
-    let display_value = visual_param_value(state, id, value);
-    let slider = Slider::new(def.min as f32..=def.max as f32, display_value, move |v| {
-        Message::SetParam(id, v)
-    })
-    .step(def.step as f32)
-    .double_click_reset(def.default as f32)
-    .on_release(Message::ReleaseParam(id))
-    .width(Length::Fixed(20.0))
-    .height(Length::Fixed(80.0));
-
-    let value_text = param_value_text(id, display_value, def.step);
-
-    let content = container(
-        column![text(label).size(11), slider, text(value_text).size(10)]
-            .spacing(2)
-            .align_x(Alignment::Center),
-    )
-    .width(Length::Fixed(32.0))
-    .padding(2)
-    .style(move |_theme: &Theme| container::Style {
-        background: assigned.then(|| Background::Color(Color::from_rgba(1.0, 0.83, 0.10, 0.10))),
-        border: Border {
-            color: if assigned {
-                assignment_color()
-            } else {
-                Color::TRANSPARENT
-            },
-            width: if assigned { 1.0 } else { 0.0 },
-            radius: 3.0.into(),
-        },
-        ..container::Style::default()
-    });
-
-    if mod_target_for_param(id).is_some() {
-        mouse_area(content)
-            .on_press(Message::AssignLfoToParam(id))
-            .into()
-    } else {
-        content.into()
-    }
-}
-
 #[allow(dead_code)]
 fn hslider<'a>(id: ParamId, label: &'a str, state: &'a State) -> Element<'a, Message> {
     let value = state.shared.params.get(id) as f32;
@@ -1202,29 +1163,38 @@ fn view(state: &State) -> Element<'_, Message> {
         .into(),
     );
 
-    let amp_eg = panel_no_title(knob_row(vec![
-        vslider(ParamId::AmpAttack, "A", state),
-        vslider(ParamId::AmpDecay, "D", state),
-        vslider(ParamId::AmpSustain, "S", state),
-        vslider(ParamId::AmpRelease, "R", state),
-        param_control(ParamId::AmpEgMode, "Mode", state),
-    ]));
+    let amp_eg = envelope::panel(
+        state,
+        [
+            ParamId::AmpAttack,
+            ParamId::AmpDecay,
+            ParamId::AmpSustain,
+            ParamId::AmpRelease,
+        ],
+        ParamId::AmpEgMode,
+    );
 
-    let filter_eg = panel_no_title(knob_row(vec![
-        vslider(ParamId::FilterAttack, "A", state),
-        vslider(ParamId::FilterDecay, "D", state),
-        vslider(ParamId::FilterSustain, "S", state),
-        vslider(ParamId::FilterRelease, "R", state),
-        param_control(ParamId::FilterEgMode, "Mode", state),
-    ]));
+    let filter_eg = envelope::panel(
+        state,
+        [
+            ParamId::FilterAttack,
+            ParamId::FilterDecay,
+            ParamId::FilterSustain,
+            ParamId::FilterRelease,
+        ],
+        ParamId::FilterEgMode,
+    );
 
-    let pitch_eg = panel_no_title(knob_row(vec![
-        vslider(ParamId::PitchAttack, "A", state),
-        vslider(ParamId::PitchDecay, "D", state),
-        vslider(ParamId::PitchSustain, "S", state),
-        vslider(ParamId::PitchRelease, "R", state),
-        param_control(ParamId::PitchEgMode, "Mode", state),
-    ]));
+    let pitch_eg = envelope::panel(
+        state,
+        [
+            ParamId::PitchAttack,
+            ParamId::PitchDecay,
+            ParamId::PitchSustain,
+            ParamId::PitchRelease,
+        ],
+        ParamId::PitchEgMode,
+    );
 
     let filter_selector = row![
         tab_button(
