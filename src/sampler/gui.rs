@@ -2026,7 +2026,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                                 zone.off_by = clamp_u7(value);
                             }
                             ZoneEditField::Output => {
-                                zone.output = value.round().clamp(0.0, 31.0) as u8;
+                                zone.output = value.round().clamp(
+                                    0.0,
+                                    (crate::sampler::plugin::MAX_SAMPLER_BUSES - 1) as f32,
+                                ) as u16;
                                 state.shared.request_audio_ports_rescan();
                             }
                             ZoneEditField::AmpVeltrack => {
@@ -2315,7 +2318,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                                 group.pan = (value / 100.0).clamp(-1.0, 1.0);
                             }
                             GroupEditField::Output => {
-                                group.output = value.round().clamp(0.0, 31.0) as u8;
+                                group.output = value.round().clamp(
+                                    0.0,
+                                    (crate::sampler::plugin::MAX_SAMPLER_BUSES - 1) as f32,
+                                ) as u16;
                                 state.shared.request_audio_ports_rescan();
                             }
                             GroupEditField::SwLast => {
@@ -2966,7 +2972,7 @@ struct ZoneEditor {
 impl ZoneEditor {
     fn edge_hit_test(&self, position: Point, bounds: Rectangle) -> Option<(usize, ZoneEdge)> {
         let grid_height = bounds.height - PIANO_ROLL_HEIGHT;
-        if position.y < 0.0 || position.y > grid_height {
+        if position.y < 0.0 || position.y >= grid_height {
             return None;
         }
         for (index, zone) in self.data.zones.iter().enumerate() {
@@ -2998,7 +3004,7 @@ impl ZoneEditor {
 
     fn body_hit_test(&self, position: Point, bounds: Rectangle) -> Option<usize> {
         let grid_height = bounds.height - PIANO_ROLL_HEIGHT;
-        if position.y < 0.0 || position.y > grid_height {
+        if position.y < 0.0 || position.y >= grid_height {
             return None;
         }
         for (index, zone) in self.data.zones.iter().enumerate() {
@@ -3142,11 +3148,9 @@ impl canvas::Program<Message> for ZoneEditor {
                             )
                         } else if let Some(press) = state.body_press.take()
                             && !press.moved
+                            && self.data.dragged_audio_file.is_none()
                         {
-                            Some(
-                                canvas::Action::publish(Message::OpenSamplerEditor(press.index))
-                                    .and_capture(),
-                            )
+                            Some(canvas::Action::capture())
                         } else {
                             let note = note_at_x(position.x, bounds.width);
                             let velocity = velocity_at_y(
@@ -3722,7 +3726,7 @@ fn selected_group_controls<'a>(
             group_slider(
                 "Output",
                 group.output as f32,
-                0.0..=31.0,
+                0.0..=(crate::sampler::plugin::MAX_SAMPLER_BUSES - 1) as f32,
                 1.0,
                 GroupEditField::Output,
                 group.output.to_string(),
@@ -5138,7 +5142,7 @@ fn editing_zone_controls<'a>(
         zone_slider(
             "Output",
             zone.output as f32,
-            0.0..=31.0,
+            0.0..=(crate::sampler::plugin::MAX_SAMPLER_BUSES - 1) as f32,
             1.0,
             ZoneEditField::Output,
             zone.output.to_string(),

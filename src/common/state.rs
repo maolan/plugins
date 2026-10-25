@@ -31,7 +31,7 @@ pub struct SamplerZoneState {
     #[serde(default)]
     pub group: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output: Option<u8>,
+    pub output: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_key: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -144,7 +144,7 @@ pub struct SamplerGroupState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pan: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output: Option<u8>,
+    pub output: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sw_last: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

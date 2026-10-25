@@ -20,7 +20,7 @@ pub struct SampleGroup {
     pub exclusive_group: u8,
     pub gain_db: f32,
     pub pan: f32,
-    pub output: u8,
+    pub output: u16,
     pub extra_sfz_opcodes: Vec<(String, String)>,
     pub sw_last: Option<u8>,
     pub sw_down: Option<u8>,
@@ -221,7 +221,7 @@ pub struct SampleZone {
     pub count: u32,
     pub mod_matrix: ModMatrix,
     pub extra_sfz_opcodes: Vec<(String, String)>,
-    pub output: u8,
+    pub output: u16,
 }
 
 impl SampleZone {
