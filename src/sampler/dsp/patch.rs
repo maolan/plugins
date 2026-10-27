@@ -9,6 +9,10 @@ pub struct Patch {
     pub main_bus: Bus,
 
     pub aux_busses: [Bus; 4],
+
+    /// Main-panel plugin parameters persisted as `maolan_param_<index>`
+    /// opcodes in the `<control>` header on SFZ export.
+    pub main_params: Vec<(u32, f64)>,
 }
 
 impl Default for Patch {
@@ -18,6 +22,7 @@ impl Default for Patch {
             parts: vec![Part::default()],
             main_bus: Bus::default(),
             aux_busses: std::array::from_fn(|_| Bus::default()),
+            main_params: Vec::new(),
         }
     }
 }

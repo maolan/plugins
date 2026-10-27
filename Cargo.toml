@@ -19,34 +19,34 @@ maolan-clap = "0.5.1"
 libc = "0.2"
 base64 = "0.23.1"
 dirs = "7.0.0"
-oxideav-core = "0.1.39"
+oxideav-core = "0.1.42"
 oxideav-basic = "0.0.11"
-oxideav-flac = "0.0.11"
+oxideav-flac = "0.0.12"
 oxideav-mp3 = "0.1.3"
 oxideav-ogg = "0.1.9"
 pitch-detection = "0.3.0"
 symphonia = { version = "0.6.1", features = ["aac", "alac", "flac", "isomp4", "mp3", "ogg", "vorbis", "wav"] }
 maolan-baseview = { version = "0.1.1", features = ["canvas"] }
-maolan-editor = { version = "0.1.0", default-features = false }
-maolan-widgets = "0.0.43"
-parking_lot = "0.12.5"
+maolan-editor = { version = "0.1.2", default-features = false }
+maolan-widgets = "0.0.44"
+parking_lot = "0.13.0"
 portable-atomic = { version = "1.15.0", features = ["float"] }
 quick-xml = { version = "0.42.0", features = ["serialize"] }
 rand = "0.10.3"
 raw-window-handle = "0.6"
 rayon = "1.12.0"
 rustfft = "6.4.1"
-fearless_simd = "1.1"
+fearless_simd = "1.2"
 fearless_simd_macros = "0.1"
 rfd = "0.17.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
-sha2 = "0.11.0"
+sha2 = "0.11.1"
 thiserror = "2.0.21"
-ureq = { version = "3.4.2", features = ["json"] }
+ureq = { version = "3.5.0", features = ["json"] }
 urlencoding = "2.1.3"
 tracing = "0.1.44"
-zip = { version = "9.0.2", default-features = false, features = ["deflate"] }
+zip = { version = "9.1.2", default-features = false, features = ["deflate"] }
 libloading = "0.9.0"
 
 [lib]
