@@ -27,12 +27,14 @@ use maolan_clap::ffi::CLAP_WINDOW_API_WIN32;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_widgets::adsr::{AdsrMessage, adsr_envelope};
-use maolan_widgets::arch_slider::arch_slider;
+use maolan_widgets::arch_range_slider::ArchRangeSlider;
+use maolan_widgets::arch_slider::{ArchSlider, arch_slider};
+use maolan_widgets::iced_aw::Wrap;
 use maolan_widgets::meters;
+use maolan_widgets::multi_toggler::{LabelPosition, horizontal_multi_toggler};
 use maolan_widgets::piano::{
     Orientation, draw_octave_into, draw_partial_octave_into, note_at_in_range, octave_note_count,
 };
-use maolan_widgets::slider::Slider;
 #[cfg(any(
     target_os = "windows",
     target_os = "macos",
@@ -54,7 +56,6 @@ use crate::{
         filter::{FilterParams, FilterSubtype, FilterType},
         lfo::LfoShape,
         lfo_assignment::{LfoAssignmentConfig, LfoAssignmentState, ModRouteParamIds},
-        preset::{self, PresetProvider, PresetUi},
     },
     sampler::{
         dsp::{
@@ -67,7 +68,7 @@ use crate::{
         load_status::SamplerLoadStatus,
         loader::{PresetInfo, detect_format},
         params::{PARAMS, ParamId},
-        plugin::{SharedState, build_export_patch},
+        plugin::{MAX_SAMPLER_BUSES, SharedState, build_export_patch, output_bus_label},
         state::{SampleGroup, SampleZone},
     },
 };
@@ -133,7 +134,9 @@ impl HasWindowHandle for ParentWindowHandle {
 #[derive(Debug, Clone)]
 #[allow(clippy::enum_variant_names)]
 pub enum Message {
+    None,
     SetParam(ParamId, f32),
+    SetPitchBendRange(f32, f32),
     ReleaseParam(ParamId),
     ResetParam(ParamId),
     AssignLfoToParam(ParamId),
@@ -176,11 +179,19 @@ pub enum Message {
     Undo,
     OpenSamplerEditor(usize),
     CloseSamplerEditor,
+    OpenGroupEditor(String),
+    CloseGroupEditor,
+    StartRenameGroup,
+    UpdateRenameGroupText(String),
+    FinishRenameGroup,
+    SelectGroupEg(usize),
+    SelectGroupLfo(usize),
+    SetSelectedGroupSwLastRange(f32, f32),
     AudioEditor(Box<maolan_editor::app::Message>),
     SetEditingZoneValue(ZoneEditField, f32),
+    SetEditingZoneRange(ZoneRangeField, f32, f32),
     ToggleEditingZoneReverse(bool),
     SetEditingZonePlayMode(ZonePlayModeOption),
-    SetEditingZoneLoopMode(ZoneLoopModeOption),
     SetEditingZoneVelocityCurve(ZoneCurveOption),
     SetEditingZoneOffMode(ZoneOffModeOption),
     AddEditingZoneCcRoute,
@@ -193,8 +204,7 @@ pub enum Message {
     AddEditingZoneCcCondition,
     RemoveEditingZoneCcCondition(usize),
     SetEditingZoneCcConditionCc(usize, f32),
-    SetEditingZoneCcConditionLow(usize, f32),
-    SetEditingZoneCcConditionHigh(usize, f32),
+    SetEditingZoneCcConditionRange(usize, f32, f32),
     SetSelectedGroupValue(GroupEditField, f32),
     SetSelectedGroupParam(GroupParamField, f32),
     SetSelectedGroupLfoShape(usize, LfoShape),
@@ -206,31 +216,15 @@ pub enum Message {
     PianoKeyPressed(u8, u8),
     PianoKeyReleased(u8),
     SamplerAuditionFinished(u64, u8),
+    AddOutput,
+    RemoveOutput(usize),
+    RenameOutput(usize, String),
     PointerReleased,
-    Preset(preset::Msg),
-}
-
-impl From<preset::Msg> for Message {
-    fn from(msg: preset::Msg) -> Self {
-        Message::Preset(msg)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZoneEditField {
-    StartNote,
-    EndNote,
-    VelLow,
-    VelHigh,
     RootKey,
-    KeyFadeInLow,
-    KeyFadeInHigh,
-    KeyFadeOutLow,
-    KeyFadeOutHigh,
-    VelFadeInLow,
-    VelFadeInHigh,
-    VelFadeOutLow,
-    VelFadeOutHigh,
     GainDb,
     Pan,
     Width,
@@ -241,24 +235,25 @@ pub enum ZoneEditField {
     StartOffset,
     OffsetRandom,
     EndOffset,
-    LoopStart,
-    LoopEnd,
-    LoopCrossfade,
-    LoopCount,
-    PitchBendUp,
-    PitchBendDown,
-    ChannelLow,
-    ChannelHigh,
-    PitchBendLow,
-    PitchBendHigh,
-    RandomLow,
-    RandomHigh,
     SeqLength,
     SeqPosition,
     OffBy,
     Output,
     AmpVeltrack,
     Count,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZoneRangeField {
+    Velocity,
+    KeyFadeIn,
+    KeyFadeOut,
+    VelFadeIn,
+    VelFadeOut,
+    PitchBend,
+    Channel,
+    PitchBendRange,
+    Random,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -272,8 +267,6 @@ pub enum GroupEditField {
     SwDown,
     SwUp,
     SwPrevious,
-    SwLoLast,
-    SwHiLast,
     SwDefault,
 }
 
@@ -485,45 +478,6 @@ impl std::fmt::Display for ZonePlayModeOption {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ZoneLoopModeOption {
-    Off,
-    Continuous,
-    Sustain,
-}
-
-impl ZoneLoopModeOption {
-    fn all() -> [Self; 3] {
-        [Self::Off, Self::Continuous, Self::Sustain]
-    }
-
-    fn from_mode(mode: LoopMode) -> Self {
-        match mode {
-            LoopMode::DuringVoice | LoopMode::Count => Self::Continuous,
-            LoopMode::WhileGated => Self::Sustain,
-            LoopMode::Off => Self::Off,
-        }
-    }
-
-    fn mode(self) -> LoopMode {
-        match self {
-            Self::Off => LoopMode::Off,
-            Self::Continuous => LoopMode::DuringVoice,
-            Self::Sustain => LoopMode::WhileGated,
-        }
-    }
-}
-
-impl std::fmt::Display for ZoneLoopModeOption {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Off => write!(f, "Off"),
-            Self::Continuous => write!(f, "Continuous"),
-            Self::Sustain => write!(f, "Sustain"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZoneCurveOption {
     Linear,
     Exponential,
@@ -707,7 +661,6 @@ impl std::fmt::Display for EgSelectorOption {
 struct State {
     shared: Arc<SharedState>,
     active_gestures: Vec<bool>,
-    preset_ui: PresetUi,
     lfo_assignment: LfoAssignmentState,
     selected_lfo: usize,
     selected_filter: usize,
@@ -717,7 +670,8 @@ struct State {
     zones_width: f32,
     browser_width: f32,
     resizing_side: Option<SidePanel>,
-    resize_last_x: Option<f32>,
+    /// (mouse x, panel width) captured when a side-panel resize drag starts.
+    resize_start: Option<(f32, f32)>,
     browser_path: PathBuf,
     browser_entries: Vec<BrowserEntry>,
     dragged_audio_file: Option<PathBuf>,
@@ -733,6 +687,10 @@ struct State {
     selected: Option<ZoneListSelection>,
     undo_stack: Vec<Vec<SampleZone>>,
     editing_zone_index: Option<usize>,
+    editing_group_name: Option<String>,
+    renaming_group: Option<String>,
+    selected_group_eg: usize,
+    selected_group_lfo: usize,
     audio_editor: Option<maolan_editor::app::EditApp>,
     audio_editor_path: Option<PathBuf>,
     extra_sfz_opcode_text: String,
@@ -974,6 +932,50 @@ fn dispatch_editor_action_to_zone(
     true
 }
 
+fn sync_editing_zone_loop_from_editor(state: &mut State) {
+    let (Some(editor), Some(index)) = (state.audio_editor.as_ref(), state.editing_zone_index)
+    else {
+        return;
+    };
+    let enabled = maolan_editor::app::loop_enabled(editor);
+    let xfade = maolan_editor::app::xfade_samples(editor);
+    let frames = patch_zone_sample(state, index)
+        .map(|sample| sample.frames)
+        .unwrap_or(0);
+    let region = if enabled {
+        maolan_editor::app::loop_region(editor)
+            .map(|(start, end)| (start, end.min(frames)))
+            .filter(|(start, end)| end > start)
+    } else {
+        None
+    };
+    let mut zones = state.shared.zones.load();
+    let Some(zone) = Arc::make_mut(&mut zones).get_mut(index) else {
+        return;
+    };
+    let loop_mode = if enabled {
+        LoopMode::DuringVoice
+    } else {
+        LoopMode::Off
+    };
+    let changed = zone.loop_mode != loop_mode
+        || zone.loop_crossfade != xfade
+        || (enabled
+            && region.is_some_and(|(start, end)| zone.loop_start != start || zone.loop_end != end));
+    if !changed {
+        return;
+    }
+    zone.loop_mode = loop_mode;
+    zone.loop_crossfade = xfade;
+    if let Some((start, end)) = region {
+        zone.loop_start = start;
+        zone.loop_end = end;
+    }
+    state.shared.zones.store(zones);
+    state.shared.bump_zones_version();
+    state.shared.mark_dirty();
+}
+
 fn find_vertical_slot(
     zones: &[SampleZone],
     start_note: usize,
@@ -1153,14 +1155,11 @@ fn apply_group_param_field(group: &mut SampleGroup, field: GroupParamField, valu
     }
 }
 
-fn set_pair_low(pair: &mut Option<(u8, u8)>, low: u8, default: (u8, u8)) {
-    let (_, high) = pair.unwrap_or(default);
-    *pair = Some((low.min(high), high.max(low)));
-}
-
-fn set_pair_high(pair: &mut Option<(u8, u8)>, high: u8, default: (u8, u8)) {
-    let (low, _) = pair.unwrap_or(default);
-    *pair = Some((low.min(high), high.max(low)));
+fn set_zone_fade_pair(pair: &mut Option<(u8, u8)>, width: &mut u8, low: f32, high: f32) {
+    let low = clamp_u7(low);
+    let high = clamp_u7(high.max(f32::from(low)));
+    *pair = (high > low).then_some((low, high));
+    *width = pair.map(|(low, high)| high - low).unwrap_or(0);
 }
 
 fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
@@ -1170,17 +1169,16 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
         State {
             shared,
             active_gestures: vec![false; ParamId::COUNT],
-            preset_ui: PresetUi::new(<Arc<SharedState> as PresetProvider>::DIR_NAME),
             lfo_assignment: LfoAssignmentState::default(),
             selected_lfo: 0,
             selected_filter: 0,
             selected_eg: 0,
             zones_visible: true,
             browser_visible: true,
-            zones_width: 138.0,
+            zones_width: 220.0,
             browser_width: 138.0,
             resizing_side: None,
-            resize_last_x: None,
+            resize_start: None,
             browser_path,
             browser_entries,
             dragged_audio_file: None,
@@ -1196,6 +1194,10 @@ fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
             selected: None,
             undo_stack: Vec::new(),
             editing_zone_index: None,
+            editing_group_name: None,
+            renaming_group: None,
+            selected_group_eg: 0,
+            selected_group_lfo: 0,
             audio_editor: None,
             audio_editor_path: None,
             extra_sfz_opcode_text: String::new(),
@@ -1308,6 +1310,7 @@ fn is_mono_or_stereo(path: &PathBuf) -> bool {
 fn update(state: &mut State, message: Message) -> Task<Message> {
     'task: {
         match message {
+            Message::None => {}
             Message::SetParam(id, value) => {
                 let idx = id.as_index();
                 if !state.active_gestures[idx] {
@@ -1315,6 +1318,25 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.shared.mark_gesture_begin_pending(id);
                 }
                 state.shared.set_param_outbound_only(id, value as f64);
+            }
+            Message::SetPitchBendRange(low, high) => {
+                let low = low.clamp(0.0, 12000.0);
+                let high = high.clamp(0.0, 12000.0);
+                for (id, value) in [(ParamId::PitchBendDown, low), (ParamId::PitchBendUp, high)] {
+                    let idx = id.as_index();
+                    if !state.active_gestures[idx] {
+                        state.active_gestures[idx] = true;
+                        state.shared.mark_gesture_begin_pending(id);
+                    }
+                    state.shared.set_param_outbound_only(id, value as f64);
+                }
+                for id in [ParamId::PitchBendDown, ParamId::PitchBendUp] {
+                    let idx = id.as_index();
+                    if state.active_gestures[idx] {
+                        state.active_gestures[idx] = false;
+                        state.shared.mark_gesture_end_pending(id);
+                    }
+                }
             }
             Message::ReleaseParam(id) => {
                 let idx = id.as_index();
@@ -1359,40 +1381,47 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.zones_visible = !state.zones_visible;
                 if !state.zones_visible && state.resizing_side == Some(SidePanel::Zones) {
                     state.resizing_side = None;
-                    state.resize_last_x = None;
+                    state.resize_start = None;
                 }
             }
             Message::ToggleBrowserPanel => {
                 state.browser_visible = !state.browser_visible;
                 if !state.browser_visible && state.resizing_side == Some(SidePanel::Browser) {
                     state.resizing_side = None;
-                    state.resize_last_x = None;
+                    state.resize_start = None;
                 }
             }
             Message::StartSideResize(side) => {
                 state.resizing_side = Some(side);
-                state.resize_last_x = None;
+                state.resize_start = None;
             }
             Message::ResizeSidePanel(x) => {
                 if let Some(side) = state.resizing_side {
-                    if let Some(last_x) = state.resize_last_x {
-                        let delta = x - last_x;
-                        match side {
-                            SidePanel::Zones => {
-                                state.zones_width = (state.zones_width + delta).clamp(92.0, 260.0);
-                            }
-                            SidePanel::Browser => {
-                                state.browser_width =
-                                    (state.browser_width - delta).clamp(92.0, 260.0);
-                            }
+                    let (start_x, start_width) = match state.resize_start {
+                        Some(start) => start,
+                        None => {
+                            let width = match side {
+                                SidePanel::Zones => state.zones_width,
+                                SidePanel::Browser => state.browser_width,
+                            };
+                            state.resize_start = Some((x, width));
+                            (x, width)
+                        }
+                    };
+                    let offset = x - start_x;
+                    match side {
+                        SidePanel::Zones => {
+                            state.zones_width = (start_width + offset).max(220.0);
+                        }
+                        SidePanel::Browser => {
+                            state.browser_width = (start_width - offset).max(92.0);
                         }
                     }
-                    state.resize_last_x = Some(x);
                 }
             }
             Message::StopSideResize => {
                 state.resizing_side = None;
-                state.resize_last_x = None;
+                state.resize_start = None;
             }
             Message::OpenBrowserEntry(path) => {
                 if path.is_dir() {
@@ -1725,6 +1754,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 } else {
                     Task::none()
                 };
+                let zone_loop = zones.get(index).and_then(|zone| {
+                    (zone.loop_mode != LoopMode::Off && zone.loop_end > zone.loop_start)
+                        .then_some((zone.loop_start, zone.loop_end))
+                });
+                maolan_editor::app::set_embedded_loop(&mut editor, zone_loop.is_some(), zone_loop);
+                maolan_editor::app::set_embedded_xfade(
+                    &mut editor,
+                    zones
+                        .get(index)
+                        .map(|zone| zone.loop_crossfade)
+                        .unwrap_or(0),
+                );
                 state.audio_editor = Some(editor);
                 state.audio_editor_path = zones
                     .get(index)
@@ -1742,6 +1783,99 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.audio_editor = None;
                 state.audio_editor_path = None;
                 state.extra_sfz_opcode_text.clear();
+            }
+            Message::OpenGroupEditor(name) => {
+                state.dragging_zone_list_item = None;
+                state.hovered_zone_drop_group = None;
+                let groups = state.shared.groups.load();
+                state.extra_sfz_opcode_text = groups
+                    .iter()
+                    .find(|group| group.name == name)
+                    .map(|group| format_sfz_opcode_text(&group.extra_sfz_opcodes))
+                    .unwrap_or_default();
+                state.selected = Some(ZoneListSelection::Group(name.clone()));
+                state.editing_group_name = Some(name);
+            }
+            Message::CloseGroupEditor => {
+                state.editing_group_name = None;
+                state.renaming_group = None;
+                state.extra_sfz_opcode_text.clear();
+            }
+            Message::SelectGroupEg(index) => {
+                state.selected_group_eg = index;
+            }
+            Message::SelectGroupLfo(index) => {
+                state.selected_group_lfo = index;
+            }
+            Message::SetSelectedGroupSwLastRange(low, high) => {
+                if let Some(ZoneListSelection::Group(group_name)) = state.selected.as_ref() {
+                    let mut groups = state.shared.groups.load();
+                    if let Some(group) = Arc::make_mut(&mut groups)
+                        .iter_mut()
+                        .find(|group| group.name == *group_name)
+                    {
+                        let low = low.round().clamp(0.0, 127.0) as u8;
+                        let high = high.round().clamp(0.0, 127.0) as u8;
+                        if low == high {
+                            group.sw_lolast = None;
+                            group.sw_hilast = None;
+                        } else {
+                            group.sw_lolast = Some(low.min(high));
+                            group.sw_hilast = Some(low.max(high));
+                        }
+                        state.shared.groups.store(groups);
+                        state.shared.bump_zones_version();
+                        state.shared.mark_dirty();
+                    }
+                }
+            }
+            Message::StartRenameGroup => {
+                if let Some(name) = state.editing_group_name.clone() {
+                    state.renaming_group = Some(name);
+                }
+            }
+            Message::UpdateRenameGroupText(text) => {
+                if let Some(current) = state.renaming_group.as_mut() {
+                    *current = text;
+                }
+            }
+            Message::FinishRenameGroup => {
+                let Some(new_name) = state
+                    .renaming_group
+                    .take()
+                    .map(|text| text.trim().to_string())
+                else {
+                    return Task::none();
+                };
+                let Some(old_name) = state.editing_group_name.clone() else {
+                    return Task::none();
+                };
+                if new_name.is_empty() || new_name == old_name {
+                    return Task::none();
+                }
+                let mut groups = state.shared.groups.load();
+                if groups.iter().any(|group| group.name == new_name) {
+                    return Task::none();
+                }
+                if let Some(group) = Arc::make_mut(&mut groups)
+                    .iter_mut()
+                    .find(|group| group.name == old_name)
+                {
+                    group.name = new_name.clone();
+                }
+                state.shared.groups.store(groups);
+                let mut zones = state.shared.zones.load();
+                for zone in Arc::make_mut(&mut zones).iter_mut() {
+                    if zone.group == old_name {
+                        zone.group = new_name.clone();
+                    }
+                }
+                state.shared.zones.store(zones);
+                state.shared.bump_zones_version();
+                state.shared.note_names_changed();
+                state.shared.request_audio_ports_rescan();
+                state.shared.mark_dirty();
+                state.editing_group_name = Some(new_name);
             }
             Message::AudioEditor(msg) => {
                 let msg = *msg;
@@ -1765,6 +1899,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 match msg {
                     maolan_editor::app::Message::Play => {
+                        let loop_enabled = state
+                            .audio_editor
+                            .as_ref()
+                            .is_some_and(maolan_editor::app::loop_enabled);
                         let editor_task = state
                             .audio_editor
                             .as_mut()
@@ -1789,7 +1927,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                                 }
                                 state.sampler_audition = Some((audition_id, note));
                                 state.shared.send_note_on(note, velocity);
-                                if let Some(duration) = duration {
+                                if let Some(duration) = duration.filter(|_| !loop_enabled) {
                                     break 'task Task::perform(
                                         finish_sampler_audition_after(duration, audition_id, note),
                                         |(id, note)| Message::SamplerAuditionFinished(id, note),
@@ -1822,6 +1960,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                     _ => {}
                 }
+                let sync_loop_after = matches!(
+                    msg,
+                    maolan_editor::app::Message::ToggleLoop
+                        | maolan_editor::app::Message::SelectionFinish(_)
+                        | maolan_editor::app::Message::SelectionResize(_)
+                        | maolan_editor::app::Message::SelectionXfade(..)
+                        | maolan_editor::app::Message::SelectMarkerRegion(_)
+                );
                 let Some(editor) = state.audio_editor.as_mut() else {
                     break 'task Task::none();
                 };
@@ -1839,6 +1985,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     _ => maolan_editor::app::update(editor, msg)
                         .map(|editor_msg| Message::AudioEditor(Box::new(editor_msg))),
                 };
+                if sync_loop_after {
+                    sync_editing_zone_loop_from_editor(state);
+                }
                 break 'task task;
             }
             Message::SetEditingZoneValue(field, value) => {
@@ -1846,107 +1995,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     let mut zones = state.shared.zones.load();
                     if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index) {
                         match field {
-                            ZoneEditField::StartNote => {
-                                zone.start_note = (value.round() as usize).clamp(0, zone.end_note);
-                            }
-                            ZoneEditField::EndNote => {
-                                zone.end_note =
-                                    (value.round() as usize).clamp(zone.start_note, 127);
-                            }
-                            ZoneEditField::VelLow => {
-                                zone.vel_low = (value.round() as u8).min(zone.vel_high);
-                            }
-                            ZoneEditField::VelHigh => {
-                                zone.vel_high = (value.round() as u8).max(zone.vel_low).min(127);
-                            }
                             ZoneEditField::RootKey => {
                                 zone.root_key = (value.round() as u8).min(127);
-                            }
-                            ZoneEditField::KeyFadeInLow => {
-                                set_pair_low(
-                                    &mut zone.key_fade_in,
-                                    clamp_u7(value),
-                                    (
-                                        zone.start_note.min(127) as u8,
-                                        zone.start_note.min(127) as u8,
-                                    ),
-                                );
-                                if let Some((low, high)) = zone.key_fade_in {
-                                    zone.key_fade_low = high.saturating_sub(low);
-                                }
-                            }
-                            ZoneEditField::KeyFadeInHigh => {
-                                set_pair_high(
-                                    &mut zone.key_fade_in,
-                                    clamp_u7(value),
-                                    (
-                                        zone.start_note.min(127) as u8,
-                                        zone.start_note.min(127) as u8,
-                                    ),
-                                );
-                                if let Some((low, high)) = zone.key_fade_in {
-                                    zone.key_fade_low = high.saturating_sub(low);
-                                }
-                            }
-                            ZoneEditField::KeyFadeOutLow => {
-                                set_pair_low(
-                                    &mut zone.key_fade_out,
-                                    clamp_u7(value),
-                                    (zone.end_note.min(127) as u8, zone.end_note.min(127) as u8),
-                                );
-                                if let Some((low, high)) = zone.key_fade_out {
-                                    zone.key_fade_high = high.saturating_sub(low);
-                                }
-                            }
-                            ZoneEditField::KeyFadeOutHigh => {
-                                set_pair_high(
-                                    &mut zone.key_fade_out,
-                                    clamp_u7(value),
-                                    (zone.end_note.min(127) as u8, zone.end_note.min(127) as u8),
-                                );
-                                if let Some((low, high)) = zone.key_fade_out {
-                                    zone.key_fade_high = high.saturating_sub(low);
-                                }
-                            }
-                            ZoneEditField::VelFadeInLow => {
-                                set_pair_low(
-                                    &mut zone.vel_fade_in,
-                                    clamp_u7(value),
-                                    (zone.vel_low, zone.vel_low),
-                                );
-                                if let Some((low, high)) = zone.vel_fade_in {
-                                    zone.vel_fade_low = high.saturating_sub(low);
-                                }
-                            }
-                            ZoneEditField::VelFadeInHigh => {
-                                set_pair_high(
-                                    &mut zone.vel_fade_in,
-                                    clamp_u7(value),
-                                    (zone.vel_low, zone.vel_low),
-                                );
-                                if let Some((low, high)) = zone.vel_fade_in {
-                                    zone.vel_fade_low = high.saturating_sub(low);
-                                }
-                            }
-                            ZoneEditField::VelFadeOutLow => {
-                                set_pair_low(
-                                    &mut zone.vel_fade_out,
-                                    clamp_u7(value),
-                                    (zone.vel_high, zone.vel_high),
-                                );
-                                if let Some((low, high)) = zone.vel_fade_out {
-                                    zone.vel_fade_high = high.saturating_sub(low);
-                                }
-                            }
-                            ZoneEditField::VelFadeOutHigh => {
-                                set_pair_high(
-                                    &mut zone.vel_fade_out,
-                                    clamp_u7(value),
-                                    (zone.vel_high, zone.vel_high),
-                                );
-                                if let Some((low, high)) = zone.vel_fade_out {
-                                    zone.vel_fade_high = high.saturating_sub(low);
-                                }
                             }
                             ZoneEditField::GainDb => {
                                 zone.gain_db = value.clamp(-96.0, 24.0);
@@ -1978,49 +2028,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             ZoneEditField::EndOffset => {
                                 zone.end_offset = value.max(0.0).round() as usize;
                             }
-                            ZoneEditField::LoopStart => {
-                                zone.loop_start = value.max(0.0).round() as usize;
-                            }
-                            ZoneEditField::LoopEnd => {
-                                zone.loop_end = value.max(0.0).round() as usize;
-                            }
-                            ZoneEditField::LoopCrossfade => {
-                                zone.loop_crossfade = value.max(0.0).round() as usize;
-                            }
-                            ZoneEditField::LoopCount => {
-                                zone.loop_count = value.max(0.0).round() as u32;
-                            }
-                            ZoneEditField::PitchBendUp => {
-                                zone.pitch_bend_up = value.clamp(0.0, 12000.0);
-                            }
-                            ZoneEditField::PitchBendDown => {
-                                zone.pitch_bend_down = value.clamp(0.0, 12000.0);
-                            }
-                            ZoneEditField::ChannelLow => {
-                                zone.channel_low =
-                                    value.round().clamp(1.0, f32::from(zone.channel_high)) as u8;
-                            }
-                            ZoneEditField::ChannelHigh => {
-                                zone.channel_high =
-                                    value.round().clamp(f32::from(zone.channel_low), 16.0) as u8;
-                            }
-                            ZoneEditField::PitchBendLow => {
-                                zone.pitch_bend_low = value
-                                    .round()
-                                    .clamp(-8192.0, f32::from(zone.pitch_bend_high))
-                                    as i16;
-                            }
-                            ZoneEditField::PitchBendHigh => {
-                                zone.pitch_bend_high =
-                                    value.round().clamp(f32::from(zone.pitch_bend_low), 8192.0)
-                                        as i16;
-                            }
-                            ZoneEditField::RandomLow => {
-                                zone.random_low = value.clamp(0.0, zone.random_high);
-                            }
-                            ZoneEditField::RandomHigh => {
-                                zone.random_high = value.clamp(zone.random_low, 1.0);
-                            }
                             ZoneEditField::SeqLength => {
                                 zone.seq_length = value.max(0.0).round() as u32;
                             }
@@ -2046,15 +2053,75 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         }
                         state.shared.zones.store(zones);
                         state.shared.bump_zones_version();
-                        if matches!(
-                            field,
-                            ZoneEditField::StartNote
-                                | ZoneEditField::EndNote
-                                | ZoneEditField::VelLow
-                                | ZoneEditField::VelHigh
-                        ) {
-                            state.shared.note_names_changed();
+                        state.shared.mark_dirty();
+                    }
+                }
+            }
+            Message::SetEditingZoneRange(field, low, high) => {
+                if let Some(index) = state.editing_zone_index {
+                    let mut zones = state.shared.zones.load();
+                    if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index) {
+                        match field {
+                            ZoneRangeField::Velocity => {
+                                zone.vel_low = low.round().clamp(0.0, 127.0) as u8;
+                                zone.vel_high =
+                                    high.round().clamp(f32::from(zone.vel_low), 127.0) as u8;
+                            }
+                            ZoneRangeField::KeyFadeIn => {
+                                set_zone_fade_pair(
+                                    &mut zone.key_fade_in,
+                                    &mut zone.key_fade_low,
+                                    low,
+                                    high,
+                                );
+                            }
+                            ZoneRangeField::KeyFadeOut => {
+                                set_zone_fade_pair(
+                                    &mut zone.key_fade_out,
+                                    &mut zone.key_fade_high,
+                                    low,
+                                    high,
+                                );
+                            }
+                            ZoneRangeField::VelFadeIn => {
+                                set_zone_fade_pair(
+                                    &mut zone.vel_fade_in,
+                                    &mut zone.vel_fade_low,
+                                    low,
+                                    high,
+                                );
+                            }
+                            ZoneRangeField::VelFadeOut => {
+                                set_zone_fade_pair(
+                                    &mut zone.vel_fade_out,
+                                    &mut zone.vel_fade_high,
+                                    low,
+                                    high,
+                                );
+                            }
+                            ZoneRangeField::PitchBend => {
+                                zone.pitch_bend_down = low.clamp(0.0, 12000.0);
+                                zone.pitch_bend_up = high.clamp(0.0, 12000.0);
+                            }
+                            ZoneRangeField::Channel => {
+                                zone.channel_low = low.round().clamp(1.0, 16.0) as u8;
+                                zone.channel_high =
+                                    high.round().clamp(f32::from(zone.channel_low), 16.0) as u8;
+                            }
+                            ZoneRangeField::PitchBendRange => {
+                                zone.pitch_bend_low = low.round().clamp(-8192.0, 8192.0) as i16;
+                                zone.pitch_bend_high =
+                                    high.round().clamp(f32::from(zone.pitch_bend_low), 8192.0)
+                                        as i16;
+                            }
+                            ZoneRangeField::Random => {
+                                zone.random_low = low.clamp(0.0, 1.0);
+                                zone.random_high = high.clamp(zone.random_low, 1.0);
+                            }
                         }
+                        state.shared.zones.store(zones);
+                        state.shared.bump_zones_version();
+                        state.shared.note_names_changed();
                         state.shared.mark_dirty();
                     }
                 }
@@ -2075,17 +2142,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     let mut zones = state.shared.zones.load();
                     if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index) {
                         zone.play_mode = mode.mode();
-                        state.shared.zones.store(zones);
-                        state.shared.bump_zones_version();
-                        state.shared.mark_dirty();
-                    }
-                }
-            }
-            Message::SetEditingZoneLoopMode(mode) => {
-                if let Some(index) = state.editing_zone_index {
-                    let mut zones = state.shared.zones.load();
-                    if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index) {
-                        zone.loop_mode = mode.mode();
                         state.shared.zones.store(zones);
                         state.shared.bump_zones_version();
                         state.shared.mark_dirty();
@@ -2276,26 +2332,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                 }
             }
-            Message::SetEditingZoneCcConditionLow(condition_index, value) => {
+            Message::SetEditingZoneCcConditionRange(condition_index, low, high) => {
                 if let Some(index) = state.editing_zone_index {
                     let mut zones = state.shared.zones.load();
                     if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index)
                         && let Some(condition) = zone.cc_conditions.get_mut(condition_index)
                     {
-                        condition.low = clamp_u7(value).min(condition.high);
-                        state.shared.zones.store(zones);
-                        state.shared.bump_zones_version();
-                        state.shared.mark_dirty();
-                    }
-                }
-            }
-            Message::SetEditingZoneCcConditionHigh(condition_index, value) => {
-                if let Some(index) = state.editing_zone_index {
-                    let mut zones = state.shared.zones.load();
-                    if let Some(zone) = Arc::make_mut(&mut zones).get_mut(index)
-                        && let Some(condition) = zone.cc_conditions.get_mut(condition_index)
-                    {
-                        condition.high = clamp_u7(value).max(condition.low);
+                        condition.low = clamp_u7(low);
+                        condition.high = clamp_u7(high.max(f32::from(condition.low)));
                         state.shared.zones.store(zones);
                         state.shared.bump_zones_version();
                         state.shared.mark_dirty();
@@ -2340,12 +2384,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             }
                             GroupEditField::SwPrevious => {
                                 group.sw_previous = note_option_from_slider(value);
-                            }
-                            GroupEditField::SwLoLast => {
-                                group.sw_lolast = note_option_from_slider(value);
-                            }
-                            GroupEditField::SwHiLast => {
-                                group.sw_hilast = note_option_from_slider(value);
                             }
                             GroupEditField::SwDefault => {
                                 group.sw_default = note_option_from_slider(value);
@@ -2486,13 +2524,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                 }
             }
-            Message::Preset(msg) => {
-                preset::update(&mut state.preset_ui, msg, &state.shared);
-            }
             Message::PointerReleased => {
                 state.resizing_side = None;
-                state.resize_last_x = None;
+                state.resize_start = None;
                 return update(state, Message::FinishZoneListDrag);
+            }
+            Message::AddOutput => {
+                state.shared.add_output();
+            }
+            Message::RemoveOutput(index) => {
+                state.shared.remove_output(index);
+            }
+            Message::RenameOutput(index, name) => {
+                state.shared.rename_output(index, name);
             }
             Message::StartRenameZone(index) => {
                 let zones = state.shared.zones.load();
@@ -2695,7 +2739,7 @@ fn small_checkbox<'a>(id: ParamId, label: &'a str, state: &'a State) -> Element<
             .spacing(2)
             .align_x(Alignment::Center),
     )
-    .width(Length::Fixed(50.0))
+    .width(Length::Shrink)
     .into()
 }
 
@@ -2738,50 +2782,125 @@ fn adsr_panel<'a>(state: &'a State, ids: [ParamId; 4]) -> Element<'a, Message> {
     })
 }
 
+/// A horizontal multi-toggler over a fixed option list. `selected` is the
+/// index of the current option; picking a segment publishes `on_pick(option)`.
+fn option_toggler<'a, T: Copy + 'a>(
+    options: Vec<T>,
+    selected: usize,
+    labels: Vec<String>,
+    on_pick: impl Fn(T) -> Message + 'a,
+) -> Element<'a, Message> {
+    horizontal_multi_toggler(labels, selected, move |index| on_pick(options[index])).into()
+}
+
+/// A multi-toggler with a caption above it and the selected-option text
+/// below the track, matching the knob field layout.
+fn labeled_toggler<'a, T: Copy + PartialEq + std::fmt::Display + 'a>(
+    label: &'static str,
+    options: Vec<T>,
+    selected: T,
+    on_pick: impl Fn(T) -> Message + 'a,
+) -> Element<'a, Message> {
+    let index = options
+        .iter()
+        .position(|option| *option == selected)
+        .unwrap_or(0);
+    let labels: Vec<String> = options.iter().map(|option| format!("{option}")).collect();
+    let toggler = horizontal_multi_toggler(labels, index, move |index| on_pick(options[index]))
+        .label_position(LabelPosition::Below);
+    column![text(label).size(11), toggler].spacing(2).into()
+}
+
+fn filter_selector_dropdown<'a>(state: &'a State) -> Element<'a, Message> {
+    container(
+        pick_list(
+            ["Filter 1", "Filter 2"].map(String::from).to_vec(),
+            Some(
+                if state.selected_filter == 0 {
+                    "Filter 1"
+                } else {
+                    "Filter 2"
+                }
+                .to_string(),
+            ),
+            |name| Message::SelectFilter(if name == "Filter 2" { 1 } else { 0 }),
+        )
+        .width(Length::Shrink),
+    )
+    .align_y(Alignment::Center)
+    .into()
+}
+
 fn filter_type_dropdown<'a>(id: ParamId, state: &'a State) -> Element<'a, Message> {
     let filter_type = FilterType::from_u8(state.shared.params.get(id) as u8);
-    let options: Vec<FilterType> = (1..=48).map(FilterType::from_u8).collect();
-    let dropdown = maolan_baseview::iced::widget::pick_list(options, Some(filter_type), move |t| {
-        Message::SetParam(id, t as u8 as f32)
+    // The sampler's voice filter implements this SFZ-compatible set; offering
+    // the full shared 48-type enum would list types that pass through unfiltered.
+    let options: Vec<FilterType> = [
+        FilterType::Lowpass,
+        FilterType::Highpass,
+        FilterType::Bandpass,
+        FilterType::Notch,
+        FilterType::Peak,
+        FilterType::Allpass,
+        FilterType::LowShelf,
+        FilterType::HighShelf,
+        FilterType::Bell,
+    ]
+    .to_vec();
+    let selected = options
+        .iter()
+        .position(|option| *option == filter_type)
+        .unwrap_or(0);
+    let labels: Vec<String> = options
+        .iter()
+        .map(|option| option.name().to_string())
+        .collect();
+    let toggler = horizontal_multi_toggler(labels, selected, move |index| {
+        Message::SetParam(id, options[index] as u8 as f32)
     })
-    .placeholder("Type")
-    .width(Length::Fixed(84.0));
+    .size(10.0)
+    .spacing(2.0)
+    .text_size(10.0)
+    .label_extent(90.0);
 
-    container(
-        column![text("Type").size(11), dropdown]
-            .spacing(2)
-            .align_x(Alignment::Center),
-    )
-    .width(Length::Fixed(90.0))
-    .into()
+    container(toggler).into()
 }
 
 fn lfo_shape_dropdown<'a>(id: ParamId, state: &'a State) -> Element<'a, Message> {
     let shape = LfoShape::from_u8(state.shared.params.get(id) as u8);
-    let options = vec![
-        LfoShape::Sine,
-        LfoShape::Triangle,
-        LfoShape::Saw,
-        LfoShape::Ramp,
-        LfoShape::Square,
-        LfoShape::SampleHold,
-        LfoShape::Noise,
-        LfoShape::Envelope,
-        LfoShape::StepSeq,
-        LfoShape::Mseg,
-    ];
-    let dropdown = maolan_baseview::iced::widget::pick_list(options, Some(shape), move |shape| {
-        Message::SetParam(id, shape as u8 as f32)
-    })
-    .placeholder("Shape")
-    .width(Length::Fixed(84.0));
-
+    let shapes = LfoShape::all().to_vec();
+    let names: Vec<String> = shapes
+        .iter()
+        .map(|option| option.name().to_string())
+        .collect();
     container(
-        column![text("Shape").size(11), dropdown]
-            .spacing(2)
-            .align_x(Alignment::Center),
+        pick_list(names, Some(shape.name().to_string()), move |name| {
+            let index = shapes
+                .iter()
+                .position(|option| option.name() == name)
+                .unwrap_or(0);
+            Message::SetParam(id, shapes[index] as u8 as f32)
+        })
+        .width(Length::Shrink),
     )
-    .width(Length::Fixed(90.0))
+    .align_y(Alignment::Center)
+    .into()
+}
+
+fn lfo_selector_dropdown<'a>(state: &'a State) -> Element<'a, Message> {
+    const NAMES: [&str; 6] = ["LFO 1", "LFO 2", "LFO 3", "LFO 4", "LFO 5", "LFO 6"];
+    container(
+        pick_list(
+            NAMES.map(String::from).to_vec(),
+            Some(NAMES[state.selected_lfo.min(NAMES.len() - 1)].to_string()),
+            |name| {
+                let index = NAMES.iter().position(|option| *option == name).unwrap_or(0);
+                Message::SelectLfo(index)
+            },
+        )
+        .width(Length::Shrink),
+    )
+    .align_y(Alignment::Center)
     .into()
 }
 
@@ -2822,6 +2941,7 @@ fn panel<'a>(title: &'static str, content: Element<'a, Message>) -> Element<'a, 
 fn panel_no_title<'a>(content: Element<'a, Message>) -> Element<'a, Message> {
     container(content)
         .padding(8)
+        .height(Length::Shrink)
         .style(|_theme: &Theme| container::Style {
             background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.10))),
             border: Border {
@@ -2834,9 +2954,31 @@ fn panel_no_title<'a>(content: Element<'a, Message>) -> Element<'a, Message> {
         .into()
 }
 
+/// A titled panel that stretches to the full height of its parent row. Only
+/// works as the single fill-height child alongside natural-height siblings:
+/// with no non-fluid sibling the row has no height to distribute.
+fn panel_fill<'a>(title: &'static str, content: Element<'a, Message>) -> Element<'a, Message> {
+    container(
+        column![section_title(title), content]
+            .spacing(6)
+            .align_x(Alignment::Start),
+    )
+    .padding(8)
+    .height(Length::Fill)
+    .style(|_theme: &Theme| container::Style {
+        background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.10))),
+        border: Border {
+            color: Color::from_rgb(0.20, 0.20, 0.24),
+            width: 1.0,
+            radius: 4.0.into(),
+        },
+        ..container::Style::default()
+    })
+    .into()
+}
+
 fn fill_panel_no_title<'a>(content: Element<'a, Message>) -> Element<'a, Message> {
     container(content)
-        .width(Length::Fill)
         .height(Length::Fill)
         .padding(8)
         .style(|_theme: &Theme| container::Style {
@@ -3497,20 +3639,26 @@ fn zone_row<'a>(state: &'a State, index: usize, zone: SampleZone) -> Element<'a,
             .size(11)
             .into()
     } else {
-        text(zone.name).size(11).into()
+        text(zone.name)
+            .size(11)
+            .wrapping(text::Wrapping::None)
+            .into()
     };
 
     let content = column![
         name_element,
         text(file_name)
             .size(9)
+            .wrapping(text::Wrapping::None)
             .color(Color::from_rgb(0.48, 0.50, 0.58)),
         text(range_text)
             .size(9)
+            .wrapping(text::Wrapping::None)
             .color(Color::from_rgb(0.48, 0.50, 0.58)),
     ]
     .spacing(1)
     .width(Length::Fill);
+    let content = container(content).width(Length::Fill).clip(true);
 
     let selected = state
         .selected
@@ -3537,8 +3685,9 @@ fn zone_row<'a>(state: &'a State, index: usize, zone: SampleZone) -> Element<'a,
         );
         container(inner)
     }
-    .width(Length::Fill)
     .padding([4, 6])
+    .width(Length::Fill)
+    .clip(true)
     .style(move |_theme: &Theme| container::Style {
         background: dragging.then(|| Background::Color(Color::from_rgb(0.12, 0.15, 0.20))),
         border: Border {
@@ -3556,7 +3705,42 @@ fn zone_row<'a>(state: &'a State, index: usize, zone: SampleZone) -> Element<'a,
     wrapped.into()
 }
 
-fn group_slider<'a>(
+fn knob_field<'a>(
+    label: &'static str,
+    knob: impl Into<Element<'a, Message>>,
+    value_text: String,
+) -> Element<'a, Message> {
+    container(
+        column![text(label).size(11), knob.into(), text(value_text).size(10)]
+            .spacing(2)
+            .align_x(Alignment::Center),
+    )
+    .width(Length::Fixed(50.0))
+    .padding(2)
+    .into()
+}
+
+/// Labeled dropdown for assigning a zone/group to one of the defined output
+/// buses.
+fn output_bus_picker<'a>(
+    label: &'static str,
+    options: Vec<OutputBusOption>,
+    selected: Option<OutputBusOption>,
+    on_select: impl Fn(OutputBusOption) -> Message + 'a,
+) -> Element<'a, Message> {
+    container(
+        column![
+            text(label).size(11),
+            pick_list(options, selected, on_select).width(Length::Fixed(120.0)),
+        ]
+        .spacing(2)
+        .align_x(Alignment::Center),
+    )
+    .padding(2)
+    .into()
+}
+
+fn group_knob<'a>(
     label: &'static str,
     value: f32,
     range: std::ops::RangeInclusive<f32>,
@@ -3564,22 +3748,18 @@ fn group_slider<'a>(
     field: GroupEditField,
     value_text: String,
 ) -> Element<'a, Message> {
-    let slider = Slider::new(range, value, move |v| {
+    let knob = ArchSlider::new(range, value, move |v| {
         Message::SetSelectedGroupValue(field, v)
     })
     .step(step)
-    .width(Length::Fixed(120.0))
-    .height(Length::Fixed(20.0))
-    .horizontal();
+    .width(Length::Fixed(41.0))
+    .height(Length::Fixed(41.0))
+    .fill_from_start();
 
-    row![text(label).size(10), slider, text(value_text).size(9)]
-        .spacing(5)
-        .align_y(Alignment::Center)
-        .width(Length::Fill)
-        .into()
+    knob_field(label, knob, value_text)
 }
 
-fn group_param_slider<'a>(
+fn group_param_knob<'a>(
     label: &'static str,
     value: f32,
     range: std::ops::RangeInclusive<f32>,
@@ -3587,44 +3767,106 @@ fn group_param_slider<'a>(
     field: GroupParamField,
     value_text: String,
 ) -> Element<'a, Message> {
-    let slider = Slider::new(range, value, move |v| {
+    let knob = ArchSlider::new(range, value, move |v| {
         Message::SetSelectedGroupParam(field, v)
     })
     .step(step)
-    .width(Length::Fixed(120.0))
-    .height(Length::Fixed(20.0))
-    .horizontal();
+    .width(Length::Fixed(41.0))
+    .height(Length::Fixed(41.0))
+    .fill_from_start();
 
-    row![text(label).size(10), slider, text(value_text).size(9)]
-        .spacing(5)
-        .align_y(Alignment::Center)
-        .width(Length::Fill)
-        .into()
+    knob_field(label, knob, value_text)
 }
 
-fn keyswitch_slider<'a>(
+fn keyswitch_knob<'a>(
     label: &'static str,
     value: Option<u8>,
     field: GroupEditField,
 ) -> Element<'a, Message> {
-    let slider = Slider::new(
+    let knob = ArchSlider::new(
         -1.0..=127.0,
         slider_value_from_note_option(value),
         move |v| Message::SetSelectedGroupValue(field, v),
     )
     .step(1.0)
-    .width(Length::Fixed(120.0))
-    .height(Length::Fixed(20.0))
-    .horizontal();
+    .width(Length::Fixed(41.0))
+    .height(Length::Fixed(41.0))
+    .fill_from_start();
 
-    row![
-        text(label).size(10),
-        slider,
-        text(note_option_text(value)).size(9)
-    ]
-    .spacing(5)
+    knob_field(label, knob, note_option_text(value))
+}
+
+fn group_lfo_selector_dropdown<'a>(state: &'a State) -> Element<'a, Message> {
+    const NAMES: [&str; 4] = ["LFO 1", "LFO 2", "LFO 3", "LFO 4"];
+    container(
+        pick_list(
+            NAMES.map(String::from).to_vec(),
+            Some(NAMES[state.selected_group_lfo.min(3)].to_string()),
+            |name| {
+                let index = NAMES.iter().position(|option| *option == name).unwrap_or(0);
+                Message::SelectGroupLfo(index)
+            },
+        )
+        .width(Length::Shrink),
+    )
     .align_y(Alignment::Center)
-    .width(Length::Fill)
+    .into()
+}
+
+fn group_lfo_shape_dropdown<'a>(lfo_index: usize, shape: LfoShape) -> Element<'a, Message> {
+    let shapes = LfoShape::all().to_vec();
+    let names: Vec<String> = shapes
+        .iter()
+        .map(|option| option.name().to_string())
+        .collect();
+    container(
+        pick_list(names, Some(shape.name().to_string()), move |name| {
+            let index = shapes
+                .iter()
+                .position(|option| option.name() == name)
+                .unwrap_or(0);
+            Message::SetSelectedGroupLfoShape(lfo_index, shapes[index])
+        })
+        .width(Length::Shrink),
+    )
+    .align_y(Alignment::Center)
+    .into()
+}
+
+fn group_filter_type_dropdown<'a>(filter_type: FilterType) -> Element<'a, Message> {
+    let options = filter_type_options().to_vec();
+    let names: Vec<String> = options
+        .iter()
+        .map(|option| option.name().to_string())
+        .collect();
+    container(
+        pick_list(names, Some(filter_type.name().to_string()), move |name| {
+            let index = options
+                .iter()
+                .position(|option| option.name() == name)
+                .unwrap_or(0);
+            Message::SetSelectedGroupFilterType(options[index])
+        })
+        .width(Length::Shrink),
+    )
+    .align_y(Alignment::Center)
+    .into()
+}
+
+fn group_filter_subtype_dropdown<'a>(subtype: FilterSubtype) -> Element<'a, Message> {
+    let options = filter_subtype_options().to_vec();
+    let labels: Vec<String> = options.iter().map(|option| format!("{option}")).collect();
+    container(
+        pick_list(labels, Some(format!("{subtype}")), move |name| {
+            let index = options
+                .iter()
+                .position(|option| format!("{option}") == name)
+                .unwrap_or(0);
+            Message::SetSelectedGroupFilterSubtype(options[index])
+        })
+        .width(Length::Shrink),
+    )
+    .align_y(Alignment::Center)
     .into()
 }
 
@@ -3683,371 +3925,301 @@ fn parse_sfz_opcode_text(text: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-fn selected_group_controls<'a>(
-    state: &'a State,
-    groups: &[SampleGroup],
-) -> Option<Element<'a, Message>> {
-    let group_name = match state.selected.as_ref()? {
-        ZoneListSelection::Group(name) => name,
-        ZoneListSelection::Zone(_) => return None,
-    };
-    let group = groups.iter().find(|group| group.name == *group_name)?;
+fn group_eg_widget<'a>(params: Option<AdsrParams>, eg: usize) -> Element<'a, Message> {
+    let params = params.unwrap_or(AdsrParams {
+        attack: 0.01,
+        decay: 0.0,
+        sustain: 1.0,
+        release: 0.05,
+        ..AdsrParams::default()
+    });
+    adsr_envelope(
+        [params.attack, params.decay, params.sustain, params.release],
+        [(0.0, 10.0), (0.0, 10.0), (0.0, 1.0), (0.0, 10.0)],
+        [0.001, 0.001, 0.01, 0.001],
+        [false; 4],
+    )
+    .map(move |message| match message {
+        AdsrMessage::Change(index, value) => {
+            let field = match (eg, index) {
+                (0, 0) => GroupParamField::Eg1Attack,
+                (0, 1) => GroupParamField::Eg1Decay,
+                (0, 2) => GroupParamField::Eg1Sustain,
+                (0, _) => GroupParamField::Eg1Release,
+                (_, 0) => GroupParamField::Eg2Attack,
+                (_, 1) => GroupParamField::Eg2Decay,
+                (_, 2) => GroupParamField::Eg2Sustain,
+                _ => GroupParamField::Eg2Release,
+            };
+            Message::SetSelectedGroupParam(field, value)
+        }
+        AdsrMessage::Release(_) | AdsrMessage::Reset(_) | AdsrMessage::Assign(_) => Message::None,
+    })
+}
 
-    Some(panel_no_title(
-        column![
-            text(group.name.clone())
-                .size(11)
-                .color(Color::from_rgb(0.90, 0.91, 0.94)),
-            group_slider(
-                "Poly",
-                group.poly_limit as f32,
-                0.0..=128.0,
-                1.0,
-                GroupEditField::PolyLimit,
-                group.poly_limit.to_string(),
+fn group_controls_panel<'a>(state: &'a State, group: &SampleGroup) -> Element<'a, Message> {
+    let selected_eg_widget = if state.selected_group_eg == 0 {
+        group_eg_widget(group.eg1_params, 0)
+    } else {
+        group_eg_widget(group.eg2_params, 1)
+    };
+    let lfo_index = state.selected_group_lfo.min(3);
+    let (lfo_rate, lfo_amount, lfo_shape) = match lfo_index {
+        0 => (
+            group.lfo1_params.map_or(0.0, |p| p.rate),
+            group.lfo1_params.map_or(0.0, |p| p.amount),
+            group.lfo1_params.map_or(LfoShape::Sine, |p| p.shape),
+        ),
+        1 => (
+            group.lfo2_params.map_or(0.0, |p| p.rate),
+            group.lfo2_params.map_or(0.0, |p| p.amount),
+            group.lfo2_params.map_or(LfoShape::Sine, |p| p.shape),
+        ),
+        2 => (
+            group.lfo3_params.map_or(0.0, |p| p.rate),
+            group.lfo3_params.map_or(0.0, |p| p.amount),
+            group.lfo3_params.map_or(LfoShape::Sine, |p| p.shape),
+        ),
+        _ => (
+            group.lfo4_params.map_or(0.0, |p| p.rate),
+            group.lfo4_params.map_or(0.0, |p| p.amount),
+            group.lfo4_params.map_or(LfoShape::Sine, |p| p.shape),
+        ),
+    };
+    let lfo_rate_field = [
+        GroupParamField::Lfo1Rate,
+        GroupParamField::Lfo2Rate,
+        GroupParamField::Lfo3Rate,
+        GroupParamField::Lfo4Rate,
+    ][lfo_index];
+    let lfo_amount_field = [
+        GroupParamField::Lfo1Amount,
+        GroupParamField::Lfo2Amount,
+        GroupParamField::Lfo3Amount,
+        GroupParamField::Lfo4Amount,
+    ][lfo_index];
+    column![
+        row![
+            panel_no_title(
+                column![
+                    knob_row(vec![
+                        group_knob(
+                            "Poly",
+                            group.poly_limit as f32,
+                            0.0..=128.0,
+                            1.0,
+                            GroupEditField::PolyLimit,
+                            group.poly_limit.to_string(),
+                        ),
+                        group_knob(
+                            "Excl",
+                            group.exclusive_group as f32,
+                            0.0..=255.0,
+                            1.0,
+                            GroupEditField::ExclusiveGroup,
+                            group.exclusive_group.to_string(),
+                        ),
+                        group_knob(
+                            "Gain",
+                            group.gain_db,
+                            -96.0..=24.0,
+                            0.1,
+                            GroupEditField::GainDb,
+                            format!("{:.1} dB", group.gain_db),
+                        ),
+                        group_knob(
+                            "Pan",
+                            group.pan * 100.0,
+                            -100.0..=100.0,
+                            1.0,
+                            GroupEditField::Pan,
+                            format!("{:.0}", group.pan * 100.0),
+                        ),
+                    ]),
+                    text("Keyswitches")
+                        .size(10)
+                        .color(Color::from_rgb(0.68, 0.70, 0.76)),
+                    knob_row(vec![
+                        keyswitch_knob("Last", group.sw_last, GroupEditField::SwLast),
+                        keyswitch_knob("Down", group.sw_down, GroupEditField::SwDown),
+                        keyswitch_knob("Up", group.sw_up, GroupEditField::SwUp),
+                    ]),
+                    knob_row(vec![
+                        keyswitch_knob("Previous", group.sw_previous, GroupEditField::SwPrevious),
+                        knob_field(
+                            "Lo - Hi",
+                            ArchRangeSlider::new(
+                                0.0..=127.0,
+                                f32::from(group.sw_lolast.or(group.sw_hilast).unwrap_or(0)),
+                                f32::from(group.sw_hilast.or(group.sw_lolast).unwrap_or(0)),
+                                Message::SetSelectedGroupSwLastRange,
+                            )
+                            .step(1.0)
+                            .width(Length::Fixed(41.0))
+                            .height(Length::Fixed(41.0)),
+                            if group.sw_lolast.is_none() && group.sw_hilast.is_none() {
+                                String::from("off")
+                            } else {
+                                format!(
+                                    "{} - {}",
+                                    group.sw_lolast.unwrap_or(0),
+                                    group.sw_hilast.unwrap_or(0)
+                                )
+                            },
+                        ),
+                        keyswitch_knob("Default", group.sw_default, GroupEditField::SwDefault),
+                    ]),
+                    row![{
+                        let names = state.shared.output_names.load();
+                        let options = output_bus_options(&names, group.output);
+                        let selected = options
+                            .iter()
+                            .find(|option| option.index == group.output as usize)
+                            .cloned();
+                        output_bus_picker("Output", options, selected, |option| {
+                            Message::SetSelectedGroupValue(
+                                GroupEditField::Output,
+                                option.index as f32,
+                            )
+                        })
+                    }]
+                    .spacing(8)
+                    .align_y(Alignment::Start),
+                ]
+                .spacing(4)
+                .into(),
             ),
-            group_slider(
-                "Excl",
-                group.exclusive_group as f32,
-                0.0..=255.0,
-                1.0,
-                GroupEditField::ExclusiveGroup,
-                group.exclusive_group.to_string(),
-            ),
-            group_slider(
-                "Gain",
-                group.gain_db,
-                -96.0..=24.0,
-                0.1,
-                GroupEditField::GainDb,
-                format!("{:.1} dB", group.gain_db),
-            ),
-            group_slider(
-                "Pan",
-                group.pan * 100.0,
-                -100.0..=100.0,
-                1.0,
-                GroupEditField::Pan,
-                format!("{:.0}", group.pan * 100.0),
-            ),
-            group_slider(
-                "Output",
-                group.output as f32,
-                0.0..=(crate::sampler::plugin::MAX_SAMPLER_BUSES - 1) as f32,
-                1.0,
-                GroupEditField::Output,
-                group.output.to_string(),
-            ),
-            text("Keyswitches")
-                .size(10)
-                .color(Color::from_rgb(0.68, 0.70, 0.76)),
-            keyswitch_slider("Last", group.sw_last, GroupEditField::SwLast),
-            keyswitch_slider("Down", group.sw_down, GroupEditField::SwDown),
-            keyswitch_slider("Up", group.sw_up, GroupEditField::SwUp),
-            keyswitch_slider("Previous", group.sw_previous, GroupEditField::SwPrevious),
-            keyswitch_slider("Lo Last", group.sw_lolast, GroupEditField::SwLoLast),
-            keyswitch_slider("Hi Last", group.sw_hilast, GroupEditField::SwHiLast),
-            keyswitch_slider("Default", group.sw_default, GroupEditField::SwDefault),
-            text_input("sw_label ...", group.sw_label.as_deref().unwrap_or(""))
-                .on_input(Message::SetSelectedGroupSwLabel)
-                .size(10)
-                .width(Length::Fill),
-            text("Amp EG")
-                .size(10)
-                .color(Color::from_rgb(0.68, 0.70, 0.76)),
-            group_param_slider(
-                "A",
-                group.eg1_params.map_or(0.01, |p| p.attack),
-                0.0..=10.0,
-                0.001,
-                GroupParamField::Eg1Attack,
-                format!("{:.3}", group.eg1_params.map_or(0.01, |p| p.attack)),
-            ),
-            group_param_slider(
-                "D",
-                group.eg1_params.map_or(0.0, |p| p.decay),
-                0.0..=10.0,
-                0.001,
-                GroupParamField::Eg1Decay,
-                format!("{:.3}", group.eg1_params.map_or(0.0, |p| p.decay)),
-            ),
-            group_param_slider(
-                "S",
-                group.eg1_params.map_or(1.0, |p| p.sustain) * 100.0,
-                0.0..=100.0,
-                1.0,
-                GroupParamField::Eg1Sustain,
-                format!("{:.0}", group.eg1_params.map_or(1.0, |p| p.sustain) * 100.0),
-            ),
-            group_param_slider(
-                "R",
-                group.eg1_params.map_or(0.05, |p| p.release),
-                0.0..=10.0,
-                0.001,
-                GroupParamField::Eg1Release,
-                format!("{:.3}", group.eg1_params.map_or(0.05, |p| p.release)),
-            ),
-            text("Filter EG")
-                .size(10)
-                .color(Color::from_rgb(0.68, 0.70, 0.76)),
-            group_param_slider(
-                "A",
-                group.eg2_params.map_or(0.01, |p| p.attack),
-                0.0..=10.0,
-                0.001,
-                GroupParamField::Eg2Attack,
-                format!("{:.3}", group.eg2_params.map_or(0.01, |p| p.attack)),
-            ),
-            group_param_slider(
-                "D",
-                group.eg2_params.map_or(0.0, |p| p.decay),
-                0.0..=10.0,
-                0.001,
-                GroupParamField::Eg2Decay,
-                format!("{:.3}", group.eg2_params.map_or(0.0, |p| p.decay)),
-            ),
-            group_param_slider(
-                "S",
-                group.eg2_params.map_or(1.0, |p| p.sustain) * 100.0,
-                0.0..=100.0,
-                1.0,
-                GroupParamField::Eg2Sustain,
-                format!("{:.0}", group.eg2_params.map_or(1.0, |p| p.sustain) * 100.0),
-            ),
-            group_param_slider(
-                "R",
-                group.eg2_params.map_or(0.05, |p| p.release),
-                0.0..=10.0,
-                0.001,
-                GroupParamField::Eg2Release,
-                format!("{:.3}", group.eg2_params.map_or(0.05, |p| p.release)),
-            ),
-            text("LFOs")
-                .size(10)
-                .color(Color::from_rgb(0.68, 0.70, 0.76)),
-            group_param_slider(
-                "Lfo1 Rate",
-                group.lfo1_params.map_or(0.0, |p| p.rate),
-                0.0..=20.0,
-                0.1,
-                GroupParamField::Lfo1Rate,
-                format!("{:.1}", group.lfo1_params.map_or(0.0, |p| p.rate)),
-            ),
-            group_param_slider(
-                "Lfo1 Amt",
-                group.lfo1_params.map_or(0.0, |p| p.amount),
-                0.0..=100.0,
-                1.0,
-                GroupParamField::Lfo1Amount,
-                format!("{:.1}", group.lfo1_params.map_or(0.0, |p| p.amount)),
-            ),
-            row![
-                text("Lfo1 Wave").size(11),
-                pick_list(
-                    LfoShape::all(),
-                    Some(group.lfo1_params.map_or(LfoShape::Sine, |p| p.shape)),
-                    |shape| Message::SetSelectedGroupLfoShape(1, shape),
-                )
-                .width(Length::Fixed(120.0)),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center),
-            group_param_slider(
-                "Lfo2 Rate",
-                group.lfo2_params.map_or(0.0, |p| p.rate),
-                0.0..=20.0,
-                0.1,
-                GroupParamField::Lfo2Rate,
-                format!("{:.1}", group.lfo2_params.map_or(0.0, |p| p.rate)),
-            ),
-            group_param_slider(
-                "Lfo2 Amt",
-                group.lfo2_params.map_or(0.0, |p| p.amount),
-                0.0..=100.0,
-                1.0,
-                GroupParamField::Lfo2Amount,
-                format!("{:.1}", group.lfo2_params.map_or(0.0, |p| p.amount)),
-            ),
-            row![
-                text("Lfo2 Wave").size(11),
-                pick_list(
-                    LfoShape::all(),
-                    Some(group.lfo2_params.map_or(LfoShape::Sine, |p| p.shape)),
-                    |shape| Message::SetSelectedGroupLfoShape(2, shape),
-                )
-                .width(Length::Fixed(120.0)),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center),
-            group_param_slider(
-                "Lfo3 Rate",
-                group.lfo3_params.map_or(0.0, |p| p.rate),
-                0.0..=20.0,
-                0.1,
-                GroupParamField::Lfo3Rate,
-                format!("{:.1}", group.lfo3_params.map_or(0.0, |p| p.rate)),
-            ),
-            group_param_slider(
-                "Lfo3 Amt",
-                group.lfo3_params.map_or(0.0, |p| p.amount),
-                0.0..=100.0,
-                1.0,
-                GroupParamField::Lfo3Amount,
-                format!("{:.1}", group.lfo3_params.map_or(0.0, |p| p.amount)),
-            ),
-            row![
-                text("Lfo3 Wave").size(11),
-                pick_list(
-                    LfoShape::all(),
-                    Some(group.lfo3_params.map_or(LfoShape::Sine, |p| p.shape)),
-                    |shape| Message::SetSelectedGroupLfoShape(3, shape),
-                )
-                .width(Length::Fixed(120.0)),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center),
-            group_param_slider(
-                "Lfo4 Rate",
-                group.lfo4_params.map_or(0.0, |p| p.rate),
-                0.0..=20.0,
-                0.1,
-                GroupParamField::Lfo4Rate,
-                format!("{:.1}", group.lfo4_params.map_or(0.0, |p| p.rate)),
-            ),
-            group_param_slider(
-                "Lfo4 Amt",
-                group.lfo4_params.map_or(0.0, |p| p.amount),
-                0.0..=100.0,
-                1.0,
-                GroupParamField::Lfo4Amount,
-                format!("{:.1}", group.lfo4_params.map_or(0.0, |p| p.amount)),
-            ),
-            row![
-                text("Lfo4 Wave").size(11),
-                pick_list(
-                    LfoShape::all(),
-                    Some(group.lfo4_params.map_or(LfoShape::Sine, |p| p.shape)),
-                    |shape| Message::SetSelectedGroupLfoShape(4, shape),
-                )
-                .width(Length::Fixed(120.0)),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center),
-            text("Filter")
-                .size(10)
-                .color(Color::from_rgb(0.68, 0.70, 0.76)),
-            row![
-                text("Type").size(11),
-                pick_list(
-                    filter_type_options(),
-                    Some(
-                        group
-                            .filter_params
-                            .map_or(FilterType::Lowpass, |p| p.filter_type)
+            panel_no_title(
+                column![
+                    horizontal_multi_toggler(
+                        ["Amp", "Filter"],
+                        state.selected_group_eg.min(1),
+                        Message::SelectGroupEg,
                     ),
-                    Message::SetSelectedGroupFilterType,
-                )
-                .width(Length::Fixed(120.0)),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center),
-            row![
-                text("Sub").size(11),
-                pick_list(
-                    filter_subtype_options(),
-                    Some(
-                        group
-                            .filter_params
-                            .map_or(FilterSubtype::Clean, |p| p.subtype)
-                    ),
-                    Message::SetSelectedGroupFilterSubtype,
-                )
-                .width(Length::Fixed(120.0)),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center),
-            group_param_slider(
-                "Cut",
-                group
-                    .filter_params
-                    .map_or(FilterParams::default().cutoff, |p| p.cutoff),
-                20.0..=20000.0,
-                1.0,
-                GroupParamField::FilterCutoff,
-                format!(
-                    "{:.0}",
-                    group
-                        .filter_params
-                        .map_or(FilterParams::default().cutoff, |p| p.cutoff)
-                ),
+                    selected_eg_widget,
+                    text("LFO")
+                        .size(10)
+                        .color(Color::from_rgb(0.68, 0.70, 0.76)),
+                    knob_row(vec![
+                        group_lfo_selector_dropdown(state),
+                        group_lfo_shape_dropdown(lfo_index + 1, lfo_shape),
+                        group_param_knob(
+                            "Rate",
+                            lfo_rate,
+                            0.0..=20.0,
+                            0.1,
+                            lfo_rate_field,
+                            format!("{lfo_rate:.1}"),
+                        ),
+                        group_param_knob(
+                            "Amt",
+                            lfo_amount,
+                            0.0..=100.0,
+                            1.0,
+                            lfo_amount_field,
+                            format!("{lfo_amount:.1}"),
+                        ),
+                    ]),
+                    knob_row(vec![
+                        group_filter_type_dropdown(
+                            group
+                                .filter_params
+                                .map_or(FilterType::Lowpass, |p| p.filter_type),
+                        ),
+                        group_filter_subtype_dropdown(
+                            group
+                                .filter_params
+                                .map_or(FilterSubtype::Clean, |p| p.subtype),
+                        ),
+                        group_param_knob(
+                            "Cut",
+                            group
+                                .filter_params
+                                .map_or(FilterParams::default().cutoff, |p| p.cutoff),
+                            20.0..=20000.0,
+                            1.0,
+                            GroupParamField::FilterCutoff,
+                            format!(
+                                "{:.0}",
+                                group
+                                    .filter_params
+                                    .map_or(FilterParams::default().cutoff, |p| p.cutoff)
+                            ),
+                        ),
+                        group_param_knob(
+                            "Res",
+                            group
+                                .filter_params
+                                .map_or(FilterParams::default().resonance, |p| p.resonance),
+                            0.0..=1.0,
+                            0.01,
+                            GroupParamField::FilterResonance,
+                            format!(
+                                "{:.2}",
+                                group
+                                    .filter_params
+                                    .map_or(FilterParams::default().resonance, |p| p.resonance)
+                            ),
+                        ),
+                        group_param_knob(
+                            "Key",
+                            group
+                                .filter_params
+                                .map_or(FilterParams::default().key_tracking * 100.0, |p| p
+                                    .key_tracking
+                                    * 100.0),
+                            0.0..=100.0,
+                            1.0,
+                            GroupParamField::FilterKeyTrack,
+                            format!(
+                                "{:.0}",
+                                group
+                                    .filter_params
+                                    .map_or(FilterParams::default().key_tracking * 100.0, |p| p
+                                        .key_tracking
+                                        * 100.0)
+                            ),
+                        ),
+                        group_param_knob(
+                            "Vel",
+                            group
+                                .filter_params
+                                .map_or(FilterParams::default().vel_tracking, |p| p.vel_tracking),
+                            -9600.0..=9600.0,
+                            1.0,
+                            GroupParamField::FilterVelTrack,
+                            format!(
+                                "{:.0}",
+                                group
+                                    .filter_params
+                                    .map_or(FilterParams::default().vel_tracking, |p| p
+                                        .vel_tracking)
+                            ),
+                        ),
+                    ]),
+                ]
+                .spacing(4)
+                .into(),
             ),
-            group_param_slider(
-                "Res",
-                group
-                    .filter_params
-                    .map_or(FilterParams::default().resonance, |p| p.resonance),
-                0.0..=1.0,
-                0.01,
-                GroupParamField::FilterResonance,
-                format!(
-                    "{:.2}",
-                    group
-                        .filter_params
-                        .map_or(FilterParams::default().resonance, |p| p.resonance)
-                ),
-            ),
-            group_param_slider(
-                "Key",
-                group
-                    .filter_params
-                    .map_or(FilterParams::default().key_tracking * 100.0, |p| p
-                        .key_tracking
-                        * 100.0),
-                0.0..=100.0,
-                1.0,
-                GroupParamField::FilterKeyTrack,
-                format!(
-                    "{:.0}",
-                    group
-                        .filter_params
-                        .map_or(FilterParams::default().key_tracking * 100.0, |p| p
-                            .key_tracking
-                            * 100.0)
-                ),
-            ),
-            group_param_slider(
-                "Vel",
-                group
-                    .filter_params
-                    .map_or(FilterParams::default().vel_tracking, |p| p.vel_tracking),
-                -9600.0..=9600.0,
-                1.0,
-                GroupParamField::FilterVelTrack,
-                format!(
-                    "{:.0}",
-                    group
-                        .filter_params
-                        .map_or(FilterParams::default().vel_tracking, |p| p.vel_tracking)
-                ),
-            ),
-            text("SFZ")
-                .size(10)
-                .color(Color::from_rgb(0.68, 0.70, 0.76)),
-            text_input("opcode=value ...", &state.extra_sfz_opcode_text)
-                .on_input(Message::SetSelectedGroupExtraSfz)
-                .size(10)
-                .width(Length::Fill),
         ]
-        .spacing(4)
-        .width(Length::Fill)
-        .into(),
-    ))
+        .spacing(6)
+        .align_y(Alignment::Start),
+        text_input("sw_label ...", group.sw_label.as_deref().unwrap_or(""))
+            .on_input(Message::SetSelectedGroupSwLabel)
+            .size(10)
+            .width(Length::Fill),
+        text_input("opcode=value ...", &state.extra_sfz_opcode_text)
+            .on_input(Message::SetSelectedGroupExtraSfz)
+            .size(10)
+            .width(Length::Fill),
+    ]
+    .spacing(6)
+    .into()
 }
 
 fn zones_panel<'a>(state: &'a State) -> Element<'a, Message> {
     let shared_zones = state.shared.zones.load();
     let shared_groups = state.shared.groups.load();
-    let group_controls = selected_group_controls(state, &shared_groups);
 
     let mut groups: Vec<(String, Vec<(usize, SampleZone)>)> = Vec::new();
     for group in shared_groups.iter() {
@@ -4083,40 +4255,14 @@ fn zones_panel<'a>(state: &'a State) -> Element<'a, Message> {
         for (index, zone) in entries {
             zones = zones.push(zone_row(state, index, zone));
         }
-        let group_name_for_press = group_name.clone();
-        let group_name_for_header = group_name.clone();
-        let header = mouse_area(
-            container(
-                text(group_name_for_header)
-                    .size(10)
-                    .color(Color::from_rgb(0.90, 0.91, 0.94)),
-            )
-            .width(Length::Fill)
-            .padding([5, 6])
-            .style(move |_theme: &Theme| container::Style {
-                background: Some(Background::Color(if group_selected {
-                    Color::from_rgb(0.18, 0.28, 0.45)
-                } else {
-                    Color::from_rgb(0.10, 0.12, 0.16)
-                })),
-                border: Border {
-                    color: if group_selected {
-                        Color::from_rgb(0.45, 0.65, 0.95)
-                    } else {
-                        Color::from_rgb(0.18, 0.20, 0.26)
-                    },
-                    width: 1.0,
-                    radius: 3.0.into(),
-                },
-                ..container::Style::default()
-            }),
-        )
-        .on_press(Message::SelectZoneListItem(ZoneListSelection::Group(
-            group_name_for_press,
-        )));
+        let header = text(group_name.clone())
+            .size(10)
+            .wrapping(text::Wrapping::None)
+            .color(Color::from_rgb(0.90, 0.91, 0.94));
         let group_box_content = container(column![header, zones].spacing(4).width(Length::Fill))
-            .width(Length::Fill)
             .padding([6, 6])
+            .width(Length::Fill)
+            .clip(true)
             .style(move |_theme: &Theme| container::Style {
                 background: group_drop_target
                     .then(|| Background::Color(Color::from_rgb(0.11, 0.17, 0.24))),
@@ -4138,34 +4284,31 @@ fn zones_panel<'a>(state: &'a State) -> Element<'a, Message> {
                 ..container::Style::default()
             });
         let group_name_for_enter = group_name.clone();
+        let group_name_for_open = group_name.clone();
         let group_box = mouse_area(group_box_content)
             .on_enter(Message::HoverZoneDropGroup(Some(group_name_for_enter)))
             .on_exit(Message::HoverZoneDropGroup(None))
-            .on_release(Message::FinishZoneListDrag);
+            .on_release(Message::FinishZoneListDrag)
+            .on_double_click(Message::OpenGroupEditor(group_name_for_open));
         panel = panel.push(group_box);
     }
 
     let header = row![
         section_title("Zones"),
-        pick_list(
-            vec![ZoneCreateKind::Group, ZoneCreateKind::Zone],
-            None::<ZoneCreateKind>,
-            Message::CreateZoneListItem,
-        )
-        .placeholder("New")
-        .width(Length::Fixed(78.0)),
+        button(text("+ Group").size(10))
+            .padding([3, 8])
+            .on_press(Message::CreateZoneListItem(ZoneCreateKind::Group)),
+        button(text("+ Zone").size(10))
+            .padding([3, 8])
+            .on_press(Message::CreateZoneListItem(ZoneCreateKind::Zone)),
     ]
     .spacing(6)
-    .width(Length::Fill)
     .align_y(Alignment::Center);
 
     let mut content = column![header]
         .spacing(8)
         .height(Length::Fill)
         .align_x(Alignment::Start);
-    if let Some(group_controls) = group_controls {
-        content = content.push(group_controls);
-    }
     content = content.push(scrollable(panel).height(Length::Fill));
 
     container(content)
@@ -4195,7 +4338,6 @@ fn browser_row<'a>(entry: &'a BrowserEntry) -> Element<'a, Message> {
         entry.name.clone()
     };
     let content = container(text(label).size(11))
-        .width(Length::Fill)
         .padding([3, 6])
         .style(move |_theme: &Theme| container::Style {
             background: (is_dir || is_instrument)
@@ -4225,13 +4367,11 @@ fn browser_row<'a>(entry: &'a BrowserEntry) -> Element<'a, Message> {
         button(content)
             .padding(1)
             .on_press(Message::OpenBrowserEntry(entry.path.clone()))
-            .width(Length::Fill)
             .into()
     } else if is_instrument {
         button(content)
             .padding(1)
             .on_press(Message::LoadInstrument(entry.path.clone()))
-            .width(Length::Fill)
             .into()
     } else {
         mouse_area(content)
@@ -4259,7 +4399,6 @@ fn browser_panel<'a>(state: &'a State) -> Element<'a, Message> {
                 )
                 .size(10),
             )
-            .width(Length::Fill)
             .padding([3, 6]),
             scrollable(entries).height(Length::Fill),
         ]
@@ -4270,6 +4409,129 @@ fn browser_panel<'a>(state: &'a State) -> Element<'a, Message> {
     .width(Length::Fixed(state.browser_width))
     .height(Length::Fill)
     .padding(8)
+    .style(|_theme: &Theme| container::Style {
+        background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.10))),
+        border: Border {
+            color: Color::from_rgb(0.20, 0.20, 0.24),
+            width: 1.0,
+            radius: 4.0.into(),
+        },
+        ..container::Style::default()
+    })
+    .into()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OutputBusOption {
+    index: usize,
+
+    label: String,
+}
+
+impl std::fmt::Display for OutputBusOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.label)
+    }
+}
+
+/// One `pick_list` entry per defined output bus. A zone/group whose assigned
+/// bus is beyond the defined list (e.g. from an SFZ loaded before names were
+/// extended) keeps its entry so the current value stays visible.
+fn output_bus_options(names: &[String], current: u16) -> Vec<OutputBusOption> {
+    let mut options: Vec<OutputBusOption> = (0..names.len())
+        .map(|index| OutputBusOption {
+            index,
+            label: output_bus_label(names, index),
+        })
+        .collect();
+    let current = current as usize;
+    if current >= names.len() && current < MAX_SAMPLER_BUSES {
+        options.push(OutputBusOption {
+            index: current,
+            label: format!("{current}: {}", output_bus_label(names, current)),
+        });
+    }
+    options
+}
+
+fn outputs_panel<'a>(state: &'a State) -> Element<'a, Message> {
+    let names = state.shared.output_names.load();
+    let zones = state.shared.zones.load();
+    let groups = state.shared.groups.load();
+
+    let cards: Vec<Element<'_, Message>> = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            let name_field: Element<'_, Message> = if index == 0 {
+                text(name.clone()).size(11).into()
+            } else {
+                text_input("Bus name", name)
+                    .on_input(move |text| Message::RenameOutput(index, text))
+                    .size(11)
+                    .width(Length::Fixed(100.0))
+                    .into()
+            };
+            let mut row_content = row![
+                text(format!("{index}"))
+                    .size(10)
+                    .color(Color::from_rgb(0.68, 0.70, 0.76)),
+                name_field,
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center);
+            if index > 0 {
+                let zone_count = zones
+                    .iter()
+                    .filter(|zone| zone.output as usize == index)
+                    .count();
+                let group_count = groups
+                    .iter()
+                    .filter(|group| group.output as usize == index)
+                    .count();
+                let usage = match (zone_count, group_count) {
+                    (0, 0) => String::from("unused"),
+                    (zone_count, 0) => format!("{zone_count} zones"),
+                    (0, group_count) => format!("{group_count} groups"),
+                    (zone_count, group_count) => {
+                        format!("{zone_count} zones, {group_count} groups")
+                    }
+                };
+                row_content = row_content
+                    .push(
+                        text(usage)
+                            .size(10)
+                            .color(Color::from_rgb(0.68, 0.70, 0.76)),
+                    )
+                    .push(
+                        button(text("Remove").size(10))
+                            .padding([2, 6])
+                            .on_press(Message::RemoveOutput(index)),
+                    );
+            }
+            panel_no_title(row_content.into())
+        })
+        .collect();
+
+    let mut add_button = button(text("+ Output").size(10)).padding([3, 8]);
+    if names.len() < MAX_SAMPLER_BUSES {
+        add_button = add_button.on_press(Message::AddOutput);
+    }
+
+    let header = row![section_title("Outputs"), add_button]
+        .spacing(6)
+        .align_y(Alignment::Center);
+
+    container(
+        column![
+            header,
+            scrollable(Wrap::with_elements(cards).spacing(6).line_spacing(6)).height(Length::Fill)
+        ]
+        .spacing(6)
+        .width(Length::Fill),
+    )
+    .padding(8)
+    .height(Length::Fill)
     .style(|_theme: &Theme| container::Style {
         background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.10))),
         border: Border {
@@ -4417,7 +4679,10 @@ fn path_display(path: Option<&PathBuf>) -> String {
 }
 
 fn knob_row<'a>(items: Vec<Element<'a, Message>>) -> Element<'a, Message> {
-    let mut r = row![].spacing(6).align_y(Alignment::Center);
+    let mut r = row![]
+        .spacing(6)
+        .align_y(Alignment::Center)
+        .width(Length::Shrink);
     for item in items {
         r = r.push(item);
     }
@@ -4425,63 +4690,14 @@ fn knob_row<'a>(items: Vec<Element<'a, Message>>) -> Element<'a, Message> {
 }
 
 fn knob_column<'a>(items: Vec<Element<'a, Message>>) -> Element<'a, Message> {
-    let mut c = column![].spacing(4).align_x(Alignment::Center);
+    let mut c = column![].spacing(4).align_x(Alignment::Start);
     for item in items {
         c = c.push(item);
     }
     c.into()
 }
 
-fn tab_button(label: &'static str, active: bool, msg: Message) -> Element<'static, Message> {
-    button(
-        container(text(label).size(11))
-            .width(Length::Fixed(48.0))
-            .align_x(Horizontal::Center),
-    )
-    .on_press(msg)
-    .style(move |theme: &Theme, status| {
-        let mut base = if active {
-            button::primary(theme, status)
-        } else {
-            button::secondary(theme, status)
-        };
-        base.border.radius = 4.0.into();
-        base
-    })
-    .into()
-}
-
-fn lfo_tab_button(label: &'static str, index: usize, state: &State) -> Element<'static, Message> {
-    let active = state.selected_lfo == index;
-    let armed = state.lfo_assignment.armed_lfo() == Some(index);
-    let button = button(
-        container(text(label).size(11))
-            .width(Length::Fixed(40.0))
-            .align_x(Horizontal::Center),
-    )
-    .on_press(Message::SelectLfo(index))
-    .style(move |theme: &Theme, status| {
-        let mut base = if armed || active {
-            button::primary(theme, status)
-        } else {
-            button::secondary(theme, status)
-        };
-        if armed {
-            base.background = Some(Background::Color(Color::from_rgb(0.72, 0.49, 0.06)));
-            base.text_color = Color::from_rgb(1.0, 0.96, 0.78);
-            base.border.color = assignment_color();
-            base.border.width = 1.0;
-        }
-        base.border.radius = 4.0.into();
-        base
-    });
-
-    mouse_area(button)
-        .on_right_press(Message::ToggleLfoAssignment(index))
-        .into()
-}
-
-fn zone_slider<'a>(
+fn zone_knob<'a>(
     label: &'static str,
     value: f32,
     range: std::ops::RangeInclusive<f32>,
@@ -4489,25 +4705,43 @@ fn zone_slider<'a>(
     field: ZoneEditField,
     value_text: String,
 ) -> Element<'a, Message> {
-    let slider = Slider::new(range, value, move |v| {
+    let knob = ArchSlider::new(range, value, move |v| {
         Message::SetEditingZoneValue(field, v)
     })
     .step(step)
-    .width(Length::Fixed(150.0))
-    .height(Length::Fixed(11.0))
-    .horizontal();
+    .width(Length::Fixed(41.0))
+    .height(Length::Fixed(41.0))
+    .fill_from_start();
 
-    row![text(label).size(11), slider, text(value_text).size(10)]
-        .spacing(6)
-        .align_y(Alignment::Center)
-        .width(Length::Fill)
-        .into()
+    knob_field(label, knob, value_text)
 }
 
-fn zone_toggle<'a>(label: &'static str, value: bool) -> Element<'a, Message> {
-    checkbox(value)
-        .label(label)
-        .on_toggle(Message::ToggleEditingZoneReverse)
+fn zone_range_knob<'a>(
+    label: &'static str,
+    low: f32,
+    high: f32,
+    range: std::ops::RangeInclusive<f32>,
+    step: f32,
+    field: ZoneRangeField,
+    value_text: String,
+) -> Element<'a, Message> {
+    let knob = ArchRangeSlider::new(range, low, high, move |low, high| {
+        Message::SetEditingZoneRange(field, low, high)
+    })
+    .step(step)
+    .width(Length::Fixed(41.0))
+    .height(Length::Fixed(41.0));
+
+    knob_field(label, knob, value_text)
+}
+
+fn reverse_toggler(reverse: bool) -> Element<'static, Message> {
+    let toggler = horizontal_multi_toggler(["Normal", "Reverse"], usize::from(reverse), |index| {
+        Message::ToggleEditingZoneReverse(index == 1)
+    })
+    .label_position(LabelPosition::Below);
+    column![text("Direction").size(11), toggler]
+        .spacing(2)
         .into()
 }
 
@@ -4553,6 +4787,13 @@ fn fade_pair_value(pair: Option<(u8, u8)>, fallback: (u8, u8)) -> (u8, u8) {
     pair.unwrap_or(fallback)
 }
 
+fn fade_pair_text(pair: Option<(u8, u8)>) -> String {
+    match pair {
+        Some((low, high)) => format!("{low} - {high}"),
+        None => String::from("off"),
+    }
+}
+
 fn cc_mod_route_row<'a>(index: usize, route: &ModRoute) -> Element<'a, Message> {
     let target = CcModTargetOption::from_target(route.target);
     let curve = CcCurveOption::from_curve(&route.source_curve);
@@ -4560,34 +4801,34 @@ fn cc_mod_route_row<'a>(index: usize, route: &ModRoute) -> Element<'a, Message> 
     let amount_range = cc_mod_amount_range(route.target);
     let amount_text = cc_mod_amount_text(route.target, amount);
     let show_cc = route.source == ModSource::MidiCc;
-    let cc_slider: Element<'a, Message> = if show_cc {
-        Slider::new(0.0..=127.0, route.source_cc as f32, move |value| {
-            Message::SetEditingZoneCcRouteCc(index, value)
-        })
-        .step(1.0)
-        .width(Length::Fixed(92.0))
-        .height(Length::Fixed(20.0))
-        .horizontal()
-        .into()
+    let cc_knob: Element<'a, Message> = if show_cc {
+        knob_field(
+            "CC",
+            ArchSlider::new(0.0..=127.0, route.source_cc as f32, move |value| {
+                Message::SetEditingZoneCcRouteCc(index, value)
+            })
+            .step(1.0)
+            .width(Length::Fixed(41.0))
+            .height(Length::Fixed(41.0))
+            .fill_from_start(),
+            route.source_cc.to_string(),
+        )
     } else {
         container(text("").size(10))
-            .width(Length::Fixed(92.0))
+            .width(Length::Fixed(50.0))
             .into()
     };
-    let cc_text: Element<'a, Message> = if show_cc {
-        text(route.source_cc.to_string()).size(9).into()
-    } else {
-        container(text("").size(9))
-            .width(Length::Fixed(20.0))
-            .into()
-    };
-    let amount_slider = Slider::new(amount_range, amount, move |value| {
-        Message::SetEditingZoneCcRouteDepth(index, value)
-    })
-    .step(1.0)
-    .width(Length::Fixed(120.0))
-    .height(Length::Fixed(20.0))
-    .horizontal();
+    let amount_knob = knob_field(
+        "Depth",
+        ArchSlider::new(amount_range, amount, move |value| {
+            Message::SetEditingZoneCcRouteDepth(index, value)
+        })
+        .step(1.0)
+        .width(Length::Fixed(41.0))
+        .height(Length::Fixed(41.0))
+        .fill_from_start(),
+        amount_text,
+    );
 
     row![
         pick_list(
@@ -4596,44 +4837,47 @@ fn cc_mod_route_row<'a>(index: usize, route: &ModRoute) -> Element<'a, Message> 
             move |source| { Message::SetEditingZoneCcRouteSource(index, source) },
         )
         .width(Length::Fixed(110.0)),
-        cc_slider,
-        cc_text,
-        pick_list(CcModTargetOption::all(), target, move |target| {
-            Message::SetEditingZoneCcRouteTarget(index, target)
-        },)
-        .width(Length::Fixed(112.0)),
-        pick_list(CcCurveOption::all(), Some(curve), move |curve| {
-            Message::SetEditingZoneCcRouteCurve(index, curve)
-        },)
-        .width(Length::Fixed(92.0)),
-        amount_slider,
-        text(amount_text).size(9),
+        cc_knob,
+        labeled_toggler(
+            "Target",
+            CcModTargetOption::all().to_vec(),
+            target.unwrap_or(CcModTargetOption::Volume),
+            move |target| Message::SetEditingZoneCcRouteTarget(index, target),
+        ),
+        labeled_toggler(
+            "Curve",
+            CcCurveOption::all().to_vec(),
+            curve,
+            move |curve| Message::SetEditingZoneCcRouteCurve(index, curve),
+        ),
+        amount_knob,
         button(text("Del").size(10))
             .padding([3, 6])
             .on_press(Message::RemoveEditingZoneCcRoute(index)),
     ]
     .spacing(6)
     .align_y(Alignment::Center)
-    .width(Length::Fill)
     .into()
 }
 
 fn cc_mod_routes_controls<'a>(zone: &SampleZone) -> Element<'a, Message> {
-    let mut routes = column![].spacing(4).width(Length::Fill);
-    let mut count = 0usize;
+    let mut route_elements: Vec<Element<'a, Message>> = Vec::new();
     for (index, route) in zone.mod_matrix.routes.iter().enumerate() {
         if route.active && CcModTargetOption::from_target(route.target).is_some() {
-            routes = routes.push(cc_mod_route_row(index, route));
-            count += 1;
+            route_elements.push(panel_no_title(cc_mod_route_row(index, route)));
         }
     }
-    if count == 0 {
-        routes = routes.push(
-            text("No mod routes")
-                .size(10)
-                .color(Color::from_rgb(0.58, 0.60, 0.66)),
-        );
-    }
+    let routes: Element<'a, Message> = if route_elements.is_empty() {
+        text("No mod routes")
+            .size(10)
+            .color(Color::from_rgb(0.58, 0.60, 0.66))
+            .into()
+    } else {
+        Wrap::with_elements(route_elements)
+            .spacing(6)
+            .line_spacing(6)
+            .into()
+    };
 
     column![
         row![
@@ -4649,66 +4893,65 @@ fn cc_mod_routes_controls<'a>(zone: &SampleZone) -> Element<'a, Message> {
         routes,
     ]
     .spacing(4)
-    .width(Length::Fill)
     .into()
 }
 
 fn cc_condition_row<'a>(index: usize, condition: &CcCondition) -> Element<'a, Message> {
-    let cc_slider = Slider::new(0.0..=127.0, condition.cc as f32, move |value| {
-        Message::SetEditingZoneCcConditionCc(index, value)
-    })
-    .step(1.0)
-    .width(Length::Fixed(92.0))
-    .height(Length::Fixed(20.0))
-    .horizontal();
-    let low_slider = Slider::new(0.0..=127.0, condition.low as f32, move |value| {
-        Message::SetEditingZoneCcConditionLow(index, value)
-    })
-    .step(1.0)
-    .width(Length::Fixed(92.0))
-    .height(Length::Fixed(20.0))
-    .horizontal();
-    let high_slider = Slider::new(0.0..=127.0, condition.high as f32, move |value| {
-        Message::SetEditingZoneCcConditionHigh(index, value)
-    })
-    .step(1.0)
-    .width(Length::Fixed(92.0))
-    .height(Length::Fixed(20.0))
-    .horizontal();
+    let cc_knob = knob_field(
+        "CC",
+        ArchSlider::new(0.0..=127.0, condition.cc as f32, move |value| {
+            Message::SetEditingZoneCcConditionCc(index, value)
+        })
+        .step(1.0)
+        .width(Length::Fixed(41.0))
+        .height(Length::Fixed(41.0))
+        .fill_from_start(),
+        condition.cc.to_string(),
+    );
+    let range_knob = knob_field(
+        "Lo - Hi",
+        ArchRangeSlider::new(
+            0.0..=127.0,
+            condition.low as f32,
+            condition.high as f32,
+            move |low, high| Message::SetEditingZoneCcConditionRange(index, low, high),
+        )
+        .step(1.0)
+        .width(Length::Fixed(41.0))
+        .height(Length::Fixed(41.0)),
+        format!("{} - {}", condition.low, condition.high),
+    );
 
     row![
-        text("CC").size(10),
-        cc_slider,
-        text(condition.cc.to_string()).size(9),
-        text("Lo").size(10),
-        low_slider,
-        text(condition.low.to_string()).size(9),
-        text("Hi").size(10),
-        high_slider,
-        text(condition.high.to_string()).size(9),
+        cc_knob,
+        range_knob,
         button(text("Del").size(10))
             .padding([3, 6])
             .on_press(Message::RemoveEditingZoneCcCondition(index)),
     ]
     .spacing(6)
     .align_y(Alignment::Center)
-    .width(Length::Fill)
     .into()
 }
 
 fn cc_conditions_controls<'a>(zone: &SampleZone) -> Element<'a, Message> {
-    let mut conditions = column![].spacing(4).width(Length::Fill);
-    if zone.cc_conditions.is_empty() {
-        conditions = conditions.push(
-            text("No CC conditions")
-                .size(10)
-                .color(Color::from_rgb(0.58, 0.60, 0.66)),
-        );
+    let conditions: Element<'a, Message> = if zone.cc_conditions.is_empty() {
+        text("No CC conditions")
+            .size(10)
+            .color(Color::from_rgb(0.58, 0.60, 0.66))
+            .into()
     } else {
-        for (index, condition) in zone.cc_conditions.iter().enumerate() {
-            conditions = conditions.push(cc_condition_row(index, condition));
-        }
-    }
+        Wrap::with_elements(
+            zone.cc_conditions
+                .iter()
+                .enumerate()
+                .map(|(index, condition)| panel_no_title(cc_condition_row(index, condition)))
+                .collect(),
+        )
+        .spacing(6)
+        .line_spacing(6)
+        .into()
+    };
 
     column![
         row![
@@ -4724,7 +4967,6 @@ fn cc_conditions_controls<'a>(zone: &SampleZone) -> Element<'a, Message> {
         conditions,
     ]
     .spacing(4)
-    .width(Length::Fill)
     .into()
 }
 
@@ -4741,7 +4983,6 @@ fn editing_zone_controls<'a>(
         .max(zone.loop_crossfade)
         .max(1) as f32;
     let play_mode = ZonePlayModeOption::from_mode(zone.play_mode);
-    let loop_mode = ZoneLoopModeOption::from_mode(zone.loop_mode);
     let key_fade_in = fade_pair_value(
         zone.key_fade_in,
         (
@@ -4756,426 +4997,339 @@ fn editing_zone_controls<'a>(
     let vel_fade_in = fade_pair_value(zone.vel_fade_in, (zone.vel_low, zone.vel_low));
     let vel_fade_out = fade_pair_value(zone.vel_fade_out, (zone.vel_high, zone.vel_high));
 
-    let mapping = column![
-        zone_slider(
-            "Low Key",
-            zone.start_note as f32,
-            0.0..=127.0,
-            1.0,
-            ZoneEditField::StartNote,
-            zone.start_note.to_string(),
-        ),
-        zone_slider(
-            "High Key",
-            zone.end_note as f32,
-            0.0..=127.0,
-            1.0,
-            ZoneEditField::EndNote,
-            zone.end_note.to_string(),
-        ),
-        zone_slider(
-            "Low Vel",
-            zone.vel_low as f32,
-            0.0..=127.0,
-            1.0,
-            ZoneEditField::VelLow,
-            zone.vel_low.to_string(),
-        ),
-        zone_slider(
-            "High Vel",
-            zone.vel_high as f32,
-            0.0..=127.0,
-            1.0,
-            ZoneEditField::VelHigh,
-            zone.vel_high.to_string(),
-        ),
-        zone_slider(
-            "Root",
-            zone.root_key as f32,
-            0.0..=127.0,
-            1.0,
-            ZoneEditField::RootKey,
-            zone.root_key.to_string(),
-        ),
-        zone_slider(
-            "Key Trk",
-            zone.key_tracking * 100.0,
-            0.0..=200.0,
-            1.0,
-            ZoneEditField::KeyTracking,
-            format!("{:.0}%", zone.key_tracking * 100.0),
-        ),
-        row![
-            text("Vel Curve").size(11),
-            pick_list(
-                ZoneCurveOption::all(),
-                Some(ZoneCurveOption::from_curve(zone.velocity_curve)),
-                Message::SetEditingZoneVelocityCurve,
-            )
-            .width(Length::Fixed(120.0)),
-        ]
-        .spacing(6)
-        .align_y(Alignment::Center),
-    ]
-    .spacing(4)
-    .width(Length::Fixed(235.0));
+    let velocity = zone_range_knob(
+        "Velocity",
+        f32::from(zone.vel_low),
+        f32::from(zone.vel_high),
+        0.0..=127.0,
+        1.0,
+        ZoneRangeField::Velocity,
+        format!("{} - {}", zone.vel_low, zone.vel_high),
+    );
+    let root = zone_knob(
+        "Root",
+        zone.root_key as f32,
+        0.0..=127.0,
+        1.0,
+        ZoneEditField::RootKey,
+        zone.root_key.to_string(),
+    );
+    let key_tracking = zone_knob(
+        "Key Trk",
+        zone.key_tracking * 100.0,
+        0.0..=200.0,
+        1.0,
+        ZoneEditField::KeyTracking,
+        format!("{:.0}%", zone.key_tracking * 100.0),
+    );
+    let bend = zone_range_knob(
+        "Bend",
+        zone.pitch_bend_down.min(zone.pitch_bend_up),
+        zone.pitch_bend_down.max(zone.pitch_bend_up),
+        0.0..=12000.0,
+        1.0,
+        ZoneRangeField::PitchBend,
+        format!("{:.0} - {:.0} c", zone.pitch_bend_down, zone.pitch_bend_up),
+    );
 
-    let playback = column![
-        zone_slider(
-            "Gain",
-            zone.gain_db,
-            -96.0..=24.0,
-            0.1,
-            ZoneEditField::GainDb,
-            format!("{:.1} dB", zone.gain_db),
+    let gain = zone_knob(
+        "Gain",
+        zone.gain_db,
+        -96.0..=24.0,
+        0.1,
+        ZoneEditField::GainDb,
+        format!("{:.1} dB", zone.gain_db),
+    );
+    let pan = zone_knob(
+        "Pan",
+        zone.pan * 100.0,
+        -100.0..=100.0,
+        1.0,
+        ZoneEditField::Pan,
+        format!("{:.0}", zone.pan * 100.0),
+    );
+    let width = zone_knob(
+        "Width",
+        zone.width * 100.0,
+        0.0..=200.0,
+        1.0,
+        ZoneEditField::Width,
+        format!("{:.0}", zone.width * 100.0),
+    );
+    let position = zone_knob(
+        "Position",
+        zone.position * 100.0,
+        -100.0..=100.0,
+        1.0,
+        ZoneEditField::Position,
+        format!("{:.0}", zone.position * 100.0),
+    );
+    let amp_key = zone_knob(
+        "Amp Key",
+        zone.amp_keytrack_db,
+        -12.0..=12.0,
+        0.1,
+        ZoneEditField::AmpKeytrack,
+        format!("{:.1}", zone.amp_keytrack_db),
+    );
+    let vel_track = zone_knob(
+        "Vel Track",
+        zone.amp_veltrack,
+        -100.0..=100.0,
+        1.0,
+        ZoneEditField::AmpVeltrack,
+        format!("{:.0}", zone.amp_veltrack),
+    );
+    let tune = zone_knob(
+        "Tune",
+        zone.pitch_offset,
+        -1200.0..=1200.0,
+        1.0,
+        ZoneEditField::PitchOffset,
+        format!("{:.0} c", zone.pitch_offset),
+    );
+    let offset = zone_knob(
+        "Offset",
+        zone.start_offset as f32,
+        0.0..=frame_max,
+        1.0,
+        ZoneEditField::StartOffset,
+        zone.start_offset.to_string(),
+    );
+    let offset_r = zone_knob(
+        "Offset R",
+        zone.offset_random as f32,
+        0.0..=frame_max,
+        1.0,
+        ZoneEditField::OffsetRandom,
+        zone.offset_random.to_string(),
+    );
+    let end = zone_knob(
+        "End",
+        zone.end_offset as f32,
+        0.0..=frame_max,
+        1.0,
+        ZoneEditField::EndOffset,
+        if zone.end_offset == 0 {
+            String::from("full")
+        } else {
+            zone.end_offset.to_string()
+        },
+    );
+    let trigger = row![
+        labeled_toggler(
+            "Trigger",
+            ZonePlayModeOption::all().to_vec(),
+            play_mode,
+            Message::SetEditingZonePlayMode,
         ),
-        zone_slider(
-            "Pan",
-            zone.pan * 100.0,
-            -100.0..=100.0,
-            1.0,
-            ZoneEditField::Pan,
-            format!("{:.0}", zone.pan * 100.0),
-        ),
-        zone_slider(
-            "Width",
-            zone.width * 100.0,
-            0.0..=200.0,
-            1.0,
-            ZoneEditField::Width,
-            format!("{:.0}", zone.width * 100.0),
-        ),
-        zone_slider(
-            "Position",
-            zone.position * 100.0,
-            -100.0..=100.0,
-            1.0,
-            ZoneEditField::Position,
-            format!("{:.0}", zone.position * 100.0),
-        ),
-        zone_slider(
-            "Amp Key",
-            zone.amp_keytrack_db,
-            -12.0..=12.0,
-            0.1,
-            ZoneEditField::AmpKeytrack,
-            format!("{:.1}", zone.amp_keytrack_db),
-        ),
-        zone_slider(
-            "Vel Track",
-            zone.amp_veltrack,
-            -100.0..=100.0,
-            1.0,
-            ZoneEditField::AmpVeltrack,
-            format!("{:.0}", zone.amp_veltrack),
-        ),
-        zone_slider(
-            "Tune",
-            zone.pitch_offset,
-            -1200.0..=1200.0,
-            1.0,
-            ZoneEditField::PitchOffset,
-            format!("{:.0} c", zone.pitch_offset),
-        ),
-        zone_slider(
-            "Offset",
-            zone.start_offset as f32,
-            0.0..=frame_max,
-            1.0,
-            ZoneEditField::StartOffset,
-            zone.start_offset.to_string(),
-        ),
-        zone_slider(
-            "Offset R",
-            zone.offset_random as f32,
-            0.0..=frame_max,
-            1.0,
-            ZoneEditField::OffsetRandom,
-            zone.offset_random.to_string(),
-        ),
-        zone_slider(
-            "End",
-            zone.end_offset as f32,
-            0.0..=frame_max,
-            1.0,
-            ZoneEditField::EndOffset,
-            if zone.end_offset == 0 {
-                String::from("full")
-            } else {
-                zone.end_offset.to_string()
-            },
-        ),
-        row![
-            text("Trigger").size(11),
-            pick_list(
-                ZonePlayModeOption::all(),
-                Some(play_mode),
-                Message::SetEditingZonePlayMode,
-            )
-            .width(Length::Fixed(120.0)),
-            zone_toggle("Reverse", zone.reverse),
-        ]
-        .spacing(6)
-        .align_y(Alignment::Center),
+        reverse_toggler(zone.reverse),
     ]
-    .spacing(4)
-    .width(Length::Fixed(300.0));
+    .spacing(8)
+    .align_y(Alignment::Center);
 
-    let fades = column![
-        zone_slider(
-            "Key In L",
+    let fades = row![
+        zone_range_knob(
+            "Key In",
             key_fade_in.0 as f32,
-            0.0..=127.0,
-            1.0,
-            ZoneEditField::KeyFadeInLow,
-            key_fade_in.0.to_string(),
-        ),
-        zone_slider(
-            "Key In H",
             key_fade_in.1 as f32,
             0.0..=127.0,
             1.0,
-            ZoneEditField::KeyFadeInHigh,
-            key_fade_in.1.to_string(),
+            ZoneRangeField::KeyFadeIn,
+            fade_pair_text(zone.key_fade_in),
         ),
-        zone_slider(
-            "Key Out L",
+        zone_range_knob(
+            "Key Out",
             key_fade_out.0 as f32,
-            0.0..=127.0,
-            1.0,
-            ZoneEditField::KeyFadeOutLow,
-            key_fade_out.0.to_string(),
-        ),
-        zone_slider(
-            "Key Out H",
             key_fade_out.1 as f32,
             0.0..=127.0,
             1.0,
-            ZoneEditField::KeyFadeOutHigh,
-            key_fade_out.1.to_string(),
+            ZoneRangeField::KeyFadeOut,
+            fade_pair_text(zone.key_fade_out),
         ),
-        zone_slider(
-            "Vel In L",
+        zone_range_knob(
+            "Vel In",
             vel_fade_in.0 as f32,
-            0.0..=127.0,
-            1.0,
-            ZoneEditField::VelFadeInLow,
-            vel_fade_in.0.to_string(),
-        ),
-        zone_slider(
-            "Vel In H",
             vel_fade_in.1 as f32,
             0.0..=127.0,
             1.0,
-            ZoneEditField::VelFadeInHigh,
-            vel_fade_in.1.to_string(),
+            ZoneRangeField::VelFadeIn,
+            fade_pair_text(zone.vel_fade_in),
         ),
-        zone_slider(
-            "Vel Out L",
+        zone_range_knob(
+            "Vel Out",
             vel_fade_out.0 as f32,
-            0.0..=127.0,
-            1.0,
-            ZoneEditField::VelFadeOutLow,
-            vel_fade_out.0.to_string(),
-        ),
-        zone_slider(
-            "Vel Out H",
             vel_fade_out.1 as f32,
             0.0..=127.0,
             1.0,
-            ZoneEditField::VelFadeOutHigh,
-            vel_fade_out.1.to_string(),
+            ZoneRangeField::VelFadeOut,
+            fade_pair_text(zone.vel_fade_out),
         ),
     ]
-    .spacing(4)
-    .width(Length::Fixed(235.0));
+    .spacing(8)
+    .align_y(Alignment::Start);
 
-    let loop_controls = column![
-        row![
-            text("Loop").size(11),
-            pick_list(
-                ZoneLoopModeOption::all(),
-                Some(loop_mode),
-                Message::SetEditingZoneLoopMode,
-            )
-            .width(Length::Fixed(120.0)),
+    let conditions_section = panel_fill(
+        "Conditions",
+        column![
+            row![
+                zone_range_knob(
+                    "Channel",
+                    f32::from(zone.channel_low),
+                    f32::from(zone.channel_high),
+                    1.0..=16.0,
+                    1.0,
+                    ZoneRangeField::Channel,
+                    format!("{} - {}", zone.channel_low, zone.channel_high),
+                ),
+                zone_range_knob(
+                    "Bend In",
+                    f32::from(zone.pitch_bend_low),
+                    f32::from(zone.pitch_bend_high),
+                    -8192.0..=8192.0,
+                    1.0,
+                    ZoneRangeField::PitchBendRange,
+                    format!("{} - {}", zone.pitch_bend_low, zone.pitch_bend_high),
+                ),
+                zone_range_knob(
+                    "Random",
+                    zone.random_low,
+                    zone.random_high,
+                    0.0..=1.0,
+                    0.01,
+                    ZoneRangeField::Random,
+                    format!("{:.2} - {:.2}", zone.random_low, zone.random_high),
+                ),
+                zone_knob(
+                    "Seq Len",
+                    zone.seq_length as f32,
+                    0.0..=128.0,
+                    1.0,
+                    ZoneEditField::SeqLength,
+                    zone.seq_length.to_string(),
+                ),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Start),
+            row![
+                zone_knob(
+                    "Seq Pos",
+                    zone.seq_position as f32,
+                    0.0..=128.0,
+                    1.0,
+                    ZoneEditField::SeqPosition,
+                    zone.seq_position.to_string(),
+                ),
+                zone_knob(
+                    "Off By",
+                    zone.off_by as f32,
+                    0.0..=127.0,
+                    1.0,
+                    ZoneEditField::OffBy,
+                    zone.off_by.to_string(),
+                ),
+                zone_knob(
+                    "Count",
+                    zone.count as f32,
+                    0.0..=128.0,
+                    1.0,
+                    ZoneEditField::Count,
+                    zone.count.to_string(),
+                ),
+                labeled_toggler(
+                    "Off Mode",
+                    ZoneOffModeOption::all().to_vec(),
+                    ZoneOffModeOption::from_mode(zone.off_mode),
+                    Message::SetEditingZoneOffMode,
+                ),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Start),
+            row![{
+                let names = state.shared.output_names.load();
+                let options = output_bus_options(&names, zone.output);
+                let selected = options
+                    .iter()
+                    .find(|option| option.index == zone.output as usize)
+                    .cloned();
+                output_bus_picker("Output", options, selected, |option| {
+                    Message::SetEditingZoneValue(ZoneEditField::Output, option.index as f32)
+                })
+            }]
+            .spacing(8)
+            .align_y(Alignment::Start),
         ]
-        .spacing(6)
-        .align_y(Alignment::Center),
-        zone_slider(
-            "Start",
-            zone.loop_start as f32,
-            0.0..=frame_max,
-            1.0,
-            ZoneEditField::LoopStart,
-            zone.loop_start.to_string(),
-        ),
-        zone_slider(
-            "End",
-            zone.loop_end as f32,
-            0.0..=frame_max,
-            1.0,
-            ZoneEditField::LoopEnd,
-            zone.loop_end.to_string(),
-        ),
-        zone_slider(
-            "Xfade",
-            zone.loop_crossfade as f32,
-            0.0..=frame_max,
-            1.0,
-            ZoneEditField::LoopCrossfade,
-            zone.loop_crossfade.to_string(),
-        ),
-        zone_slider(
-            "Count",
-            zone.loop_count as f32,
-            0.0..=128.0,
-            1.0,
-            ZoneEditField::LoopCount,
-            zone.loop_count.to_string(),
-        ),
-        zone_slider(
-            "Bend Up",
-            zone.pitch_bend_up,
-            0.0..=12000.0,
-            1.0,
-            ZoneEditField::PitchBendUp,
-            format!("{:.0} c", zone.pitch_bend_up),
-        ),
-        zone_slider(
-            "Bend Down",
-            zone.pitch_bend_down,
-            0.0..=12000.0,
-            1.0,
-            ZoneEditField::PitchBendDown,
-            format!("{:.0} c", zone.pitch_bend_down),
-        ),
-    ]
-    .spacing(4)
-    .width(Length::Fixed(235.0));
+        .spacing(8)
+        .into(),
+    );
 
-    let conditions = column![
-        zone_slider(
-            "Chan Lo",
-            zone.channel_low as f32,
-            1.0..=16.0,
-            1.0,
-            ZoneEditField::ChannelLow,
-            zone.channel_low.to_string(),
-        ),
-        zone_slider(
-            "Chan Hi",
-            zone.channel_high as f32,
-            1.0..=16.0,
-            1.0,
-            ZoneEditField::ChannelHigh,
-            zone.channel_high.to_string(),
-        ),
-        zone_slider(
-            "Bend Lo",
-            zone.pitch_bend_low as f32,
-            -8192.0..=8192.0,
-            1.0,
-            ZoneEditField::PitchBendLow,
-            zone.pitch_bend_low.to_string(),
-        ),
-        zone_slider(
-            "Bend Hi",
-            zone.pitch_bend_high as f32,
-            -8192.0..=8192.0,
-            1.0,
-            ZoneEditField::PitchBendHigh,
-            zone.pitch_bend_high.to_string(),
-        ),
-        zone_slider(
-            "Rand Lo",
-            zone.random_low,
-            0.0..=1.0,
-            0.01,
-            ZoneEditField::RandomLow,
-            format!("{:.2}", zone.random_low),
-        ),
-        zone_slider(
-            "Rand Hi",
-            zone.random_high,
-            0.0..=1.0,
-            0.01,
-            ZoneEditField::RandomHigh,
-            format!("{:.2}", zone.random_high),
-        ),
-        zone_slider(
-            "Seq Len",
-            zone.seq_length as f32,
-            0.0..=128.0,
-            1.0,
-            ZoneEditField::SeqLength,
-            zone.seq_length.to_string(),
-        ),
-        zone_slider(
-            "Seq Pos",
-            zone.seq_position as f32,
-            0.0..=128.0,
-            1.0,
-            ZoneEditField::SeqPosition,
-            zone.seq_position.to_string(),
-        ),
-        zone_slider(
-            "Off By",
-            zone.off_by as f32,
-            0.0..=127.0,
-            1.0,
-            ZoneEditField::OffBy,
-            zone.off_by.to_string(),
-        ),
-        row![
-            text("Off Mode").size(11),
-            pick_list(
-                ZoneOffModeOption::all(),
-                Some(ZoneOffModeOption::from_mode(zone.off_mode)),
-                Message::SetEditingZoneOffMode,
-            )
-            .width(Length::Fixed(120.0)),
+    let advanced_section = panel_fill(
+        "Advanced",
+        scrollable(
+            column![
+                cc_conditions_controls(zone),
+                cc_mod_routes_controls(zone),
+                text("SFZ")
+                    .size(10)
+                    .color(Color::from_rgb(0.68, 0.70, 0.76)),
+                text_input("opcode=value ...", &state.extra_sfz_opcode_text)
+                    .on_input(Message::SetEditingZoneExtraSfz)
+                    .size(10)
+                    .width(Length::Fill),
+            ]
+            .spacing(6)
+            .width(Length::Fill),
+        )
+        .width(Length::Fill)
+        .into(),
+    );
+
+    let range_section = panel_fill(
+        "Range",
+        column![
+            row![velocity, root, key_tracking, bend]
+                .spacing(8)
+                .align_y(Alignment::Start),
+            fades,
+            labeled_toggler(
+                "Vel Curve",
+                ZoneCurveOption::all().to_vec(),
+                ZoneCurveOption::from_curve(zone.velocity_curve),
+                Message::SetEditingZoneVelocityCurve,
+            ),
         ]
-        .spacing(6)
-        .align_y(Alignment::Center),
-        zone_slider(
-            "Count",
-            zone.count as f32,
-            0.0..=128.0,
-            1.0,
-            ZoneEditField::Count,
-            zone.count.to_string(),
-        ),
-        zone_slider(
-            "Output",
-            zone.output as f32,
-            0.0..=(crate::sampler::plugin::MAX_SAMPLER_BUSES - 1) as f32,
-            1.0,
-            ZoneEditField::Output,
-            zone.output.to_string(),
-        ),
-    ]
-    .spacing(4)
-    .width(Length::Fixed(235.0));
+        .spacing(8)
+        .into(),
+    );
+    let playback_section = panel(
+        "Playback",
+        column![
+            row![gain, pan, width, position]
+                .spacing(8)
+                .align_y(Alignment::Start),
+            row![amp_key, vel_track, tune, offset]
+                .spacing(8)
+                .align_y(Alignment::Start),
+            row![offset_r, end, trigger]
+                .spacing(8)
+                .align_y(Alignment::Start),
+        ]
+        .spacing(8)
+        .into(),
+    );
 
     panel_no_title(
         column![
-            row![mapping, playback, fades, loop_controls]
-                .spacing(12)
-                .align_y(Alignment::Start),
-            row![conditions].spacing(12).align_y(Alignment::Start),
-            cc_conditions_controls(zone),
-            cc_mod_routes_controls(zone),
-            text("SFZ")
-                .size(10)
-                .color(Color::from_rgb(0.68, 0.70, 0.76)),
-            text_input("opcode=value ...", &state.extra_sfz_opcode_text)
-                .on_input(Message::SetEditingZoneExtraSfz)
-                .size(10)
-                .width(Length::Fill),
+            row![
+                range_section,
+                playback_section,
+                conditions_section,
+                advanced_section
+            ]
+            .spacing(12)
+            .align_y(Alignment::Start),
         ]
         .spacing(6)
-        .width(Length::Fill)
         .into(),
     )
 }
@@ -5214,6 +5368,75 @@ fn sampler_editor_view<'a>(state: &'a State, index: usize) -> Element<'a, Messag
 
     let main_content = column![header, controls, editor_element]
         .spacing(10)
+        .height(Length::Fill)
+        .align_x(Alignment::Start);
+
+    let mut content_row = row![]
+        .spacing(8)
+        .height(Length::Fill)
+        .align_y(Alignment::Start);
+    if state.zones_visible {
+        content_row = content_row
+            .push(zones_panel(state))
+            .push(resize_handle(SidePanel::Zones));
+    }
+    content_row = content_row.push(main_content).push(sampler_vu_meter(state));
+    if state.browser_visible {
+        content_row = content_row
+            .push(resize_handle(SidePanel::Browser))
+            .push(browser_panel(state));
+    }
+
+    let content = mouse_area(container(content_row).padding(16).height(Length::Fill))
+        .on_move(|Point { x, .. }| Message::ResizeSidePanel(x))
+        .on_release(Message::PointerReleased);
+
+    container(content)
+        .height(Length::Fill)
+        .align_x(Horizontal::Left)
+        .align_y(Vertical::Top)
+        .into()
+}
+
+fn group_editor_view<'a>(state: &'a State, group_name: &str) -> Element<'a, Message> {
+    let groups = state.shared.groups.load();
+
+    let title: Element<'a, Message> = if let Some(rename_text) = state.renaming_group.clone() {
+        text_input("Group name", &rename_text)
+            .on_input(Message::UpdateRenameGroupText)
+            .on_submit(Message::FinishRenameGroup)
+            .size(13)
+            .width(Length::Fixed(180.0))
+            .into()
+    } else {
+        row![
+            text(group_name.to_string()).size(14),
+            button(text("✎").size(9))
+                .on_press(Message::StartRenameGroup)
+                .padding([2, 4]),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center)
+        .into()
+    };
+
+    let header = row![
+        button(text("← Back").size(11))
+            .on_press(Message::CloseGroupEditor)
+            .padding([4, 8]),
+        title,
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+
+    let controls: Element<'a, Message> = groups
+        .iter()
+        .find(|group| group.name == group_name)
+        .map(|group| group_controls_panel(state, group))
+        .unwrap_or_else(|| text("Group not found").size(12).into());
+
+    let main_content = column![header, controls]
+        .spacing(10)
         .width(Length::Fill)
         .height(Length::Fill)
         .align_x(Alignment::Start);
@@ -5239,7 +5462,6 @@ fn sampler_editor_view<'a>(state: &'a State, index: usize) -> Element<'a, Messag
         .on_release(Message::PointerReleased);
 
     container(content)
-        .width(Length::Fill)
         .height(Length::Fill)
         .align_x(Horizontal::Left)
         .align_y(Vertical::Top)
@@ -5247,81 +5469,64 @@ fn sampler_editor_view<'a>(state: &'a State, index: usize) -> Element<'a, Messag
 }
 
 fn view(state: &State) -> Element<'_, Message> {
+    if let Some(group_name) = state.editing_group_name.clone() {
+        return group_editor_view(state, &group_name);
+    }
     if let Some(index) = state.editing_zone_index {
         return sampler_editor_view(state, index);
     }
 
     let sample_map = fill_panel_no_title(sample_map(state));
 
-    let top_bar = row![
-        panel(
-            "Master",
-            knob_row(vec![
-                param_control(ParamId::MasterGain, "Gain", state),
-                param_control(ParamId::MasterPan, "Pan", state),
-            ])
-        ),
-        panel(
-            "Pitch",
-            knob_row(vec![
-                param_control(ParamId::PitchBendUp, "Bend Up", state),
-                param_control(ParamId::PitchBendDown, "Bend Down", state),
-            ])
-        ),
-    ]
-    .spacing(10)
-    .align_y(Alignment::Start);
-
-    let filter1 = panel_no_title(
-        column![
-            knob_row(vec![
-                filter_type_dropdown(ParamId::FilterType, state),
-                param_control(ParamId::FilterSubtype, "Sub", state),
-                param_control(ParamId::FilterCutoff, "Cut", state),
-                param_control(ParamId::FilterResonance, "Res", state),
-                param_control(ParamId::FilterEgAmount, "EG", state),
-                param_control(ParamId::FilterKeyTrack, "Key", state),
-                param_control(ParamId::FilterDrive, "Drive", state),
-            ]),
-            knob_row(vec![param_control(ParamId::FilterEnabled, "On", state),]),
-        ]
-        .spacing(6)
-        .into(),
+    let bend_down = state.shared.params.get(ParamId::PitchBendDown) as f32;
+    let bend_up = state.shared.params.get(ParamId::PitchBendUp) as f32;
+    let bend_range = knob_field(
+        "Bend",
+        ArchRangeSlider::new(
+            0.0..=12000.0,
+            bend_down.min(bend_up),
+            bend_down.max(bend_up),
+            Message::SetPitchBendRange,
+        )
+        .step(1.0)
+        .width(Length::Fixed(41.0))
+        .height(Length::Fixed(41.0)),
+        format!("{bend_down:.0} - {bend_up:.0} c"),
     );
 
-    let filter2 = panel_no_title(
-        column![
-            knob_row(vec![
-                filter_type_dropdown(ParamId::Filter2Type, state),
-                param_control(ParamId::Filter2Subtype, "Sub", state),
-                param_control(ParamId::Filter2Cutoff, "Cut", state),
-                param_control(ParamId::Filter2Resonance, "Res", state),
-                param_control(ParamId::Filter2EgAmount, "EG", state),
-                param_control(ParamId::Filter2KeyTrack, "Key", state),
-                param_control(ParamId::Filter2Drive, "Drive", state),
-            ]),
-            knob_row(vec![param_control(ParamId::Filter2Enabled, "On", state),]),
-        ]
-        .spacing(6)
-        .into(),
-    );
-
-    let filter_selector = row![
-        tab_button(
-            "Filter 1",
-            state.selected_filter == 0,
-            Message::SelectFilter(0)
-        ),
-        tab_button(
-            "Filter 2",
-            state.selected_filter == 1,
-            Message::SelectFilter(1)
-        ),
+    let filter1: Element<'_, Message> = column![
+        filter_type_dropdown(ParamId::FilterType, state),
+        knob_row(vec![
+            filter_selector_dropdown(state),
+            param_control(ParamId::FilterSubtype, "Sub", state),
+            param_control(ParamId::FilterCutoff, "Cut", state),
+            param_control(ParamId::FilterResonance, "Res", state),
+            param_control(ParamId::FilterEgAmount, "EG", state),
+            param_control(ParamId::FilterKeyTrack, "Key", state),
+            param_control(ParamId::FilterDrive, "Drive", state),
+            param_control(ParamId::FilterEnabled, "On", state),
+        ]),
     ]
-    .spacing(4)
-    .align_y(Alignment::Center);
+    .spacing(6)
+    .into();
 
-    let selected_filter_panel = match state.selected_filter {
+    let filter2: Element<'_, Message> = column![
+        filter_type_dropdown(ParamId::Filter2Type, state),
+        knob_row(vec![
+            filter_selector_dropdown(state),
+            param_control(ParamId::Filter2Subtype, "Sub", state),
+            param_control(ParamId::Filter2Cutoff, "Cut", state),
+            param_control(ParamId::Filter2Resonance, "Res", state),
+            param_control(ParamId::Filter2EgAmount, "EG", state),
+            param_control(ParamId::Filter2KeyTrack, "Key", state),
+            param_control(ParamId::Filter2Drive, "Drive", state),
+            param_control(ParamId::Filter2Enabled, "On", state),
+        ]),
+    ]
+    .spacing(6)
+    .into();
+
+    let selected_filter_content = match state.selected_filter {
         0 => filter1,
         _ => filter2,
     };
@@ -5358,12 +5563,14 @@ fn view(state: &State) -> Element<'_, Message> {
 
     let selected_eg =
         EgSelectorOption::from_index(state.selected_eg).unwrap_or(EgSelectorOption::Amp);
-    let eg_selector = pick_list(
-        EgSelectorOption::all().to_vec(),
-        Some(selected_eg),
-        |option| Message::SelectEg(option.index()),
-    )
-    .width(Length::Fixed(100.0));
+    let eg_options = EgSelectorOption::all().to_vec();
+    let eg_labels = eg_options
+        .iter()
+        .map(|option| option.label().to_string())
+        .collect();
+    let eg_selector = option_toggler(eg_options, selected_eg.index(), eg_labels, |option| {
+        Message::SelectEg(option.index())
+    });
 
     let eg3 = adsr_panel(
         state,
@@ -5467,18 +5674,8 @@ fn view(state: &State) -> Element<'_, Message> {
         ),
     };
 
-    let lfo_selector = row![
-        lfo_tab_button("LFO 1", 0, state),
-        lfo_tab_button("LFO 2", 1, state),
-        lfo_tab_button("LFO 3", 2, state),
-        lfo_tab_button("LFO 4", 3, state),
-        lfo_tab_button("LFO 5", 4, state),
-        lfo_tab_button("LFO 6", 5, state),
-    ]
-    .spacing(4)
-    .align_y(Alignment::Center);
-
-    let lfo_panel = panel_no_title(knob_row(vec![
+    let lfo_panel = knob_row(vec![
+        lfo_selector_dropdown(state),
         lfo_shape_dropdown(lfo_ids.0, state),
         param_control(lfo_ids.1, "Rate", state),
         param_control(lfo_ids.2, "Amt", state),
@@ -5489,32 +5686,40 @@ fn view(state: &State) -> Element<'_, Message> {
             param_control(lfo_ids.6, "Uni", state),
             param_control(lfo_ids.7, "Sync", state),
         ]),
-    ]));
+    ]);
 
-    let top_row = row![
-        top_bar,
-        column![filter_selector, selected_filter_panel].spacing(10),
-    ]
-    .spacing(10)
-    .align_y(Alignment::Start);
+    let master_panel = panel_no_title(
+        column![
+            knob_row(vec![
+                param_control(ParamId::MasterGain, "Gain", state),
+                param_control(ParamId::MasterPan, "Pan", state),
+                bend_range,
+            ]),
+            eg_selector,
+            selected_eg_panel,
+        ]
+        .spacing(10)
+        .into(),
+    );
 
-    let bottom_row = row![
-        column![lfo_selector, lfo_panel].spacing(10),
-        column![eg_selector, selected_eg_panel].spacing(10),
-    ]
-    .spacing(10)
-    .align_y(Alignment::Start);
+    let filter_section = panel_no_title(
+        column![selected_filter_content, lfo_panel]
+            .spacing(10)
+            .width(Length::Shrink)
+            .into(),
+    );
+
+    let top_row = row![master_panel, filter_section, outputs_panel(state)]
+        .spacing(10)
+        .align_y(Alignment::Start);
 
     let main_content = column![instrument_panel(state), sample_map,]
         .spacing(12)
-        .width(Length::Fill)
         .height(Length::Fill)
         .align_x(Alignment::Start);
     let main_content = main_content
         .push(top_row)
-        .push(bottom_row)
         .spacing(12)
-        .width(Length::Fill)
         .height(Length::Fill)
         .align_x(Alignment::Start);
 
@@ -5534,8 +5739,7 @@ fn view(state: &State) -> Element<'_, Message> {
             .push(browser_panel(state));
     }
 
-    let bar = preset::bar(&state.preset_ui);
-    let content = column![bar, content_row]
+    let content = column![content_row]
         .spacing(4)
         .height(Length::Fill)
         .align_x(Alignment::Start);
@@ -5544,7 +5748,6 @@ fn view(state: &State) -> Element<'_, Message> {
         .on_release(Message::PointerReleased);
 
     container(content)
-        .width(Length::Fill)
         .height(Length::Fill)
         .align_x(Horizontal::Left)
         .align_y(Vertical::Top)

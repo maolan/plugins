@@ -202,6 +202,9 @@ pub struct PluginState {
     pub sampler_sf2_preset: Option<usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sampler_zone_edits: Vec<SamplerZoneEditState>,
+    /// Sampler output bus names; index 0 is the always-present "Main" bus.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sampler_output_names: Vec<String>,
     /// Per-oscillator (0..2) custom wavetable file paths for the synth.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub wavetable_paths: Vec<(u8, String)>,
@@ -223,6 +226,7 @@ impl PluginState {
             sampler_instrument_path: None,
             sampler_sf2_preset: None,
             sampler_zone_edits: Vec::new(),
+            sampler_output_names: Vec::new(),
             wavetable_paths: Vec::new(),
         }
     }

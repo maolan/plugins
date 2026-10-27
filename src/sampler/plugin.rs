@@ -115,6 +115,8 @@ pub struct SharedState {
     gesture_active: [AtomicBool; ParamId::COUNT],
     pub zones: AtomicArc<Vec<SampleZone>>,
     pub groups: AtomicArc<Vec<SampleGroup>>,
+    /// Output bus names; index 0 is the always-present "Main" bus.
+    pub output_names: AtomicArc<Vec<String>>,
     pub patch: AtomicArc<Patch>,
     pub edited_zone_edits: Mutex<HashMap<usize, SampleEditState>>,
     pub load_status: Mutex<SamplerLoadStatus>,
@@ -164,6 +166,7 @@ impl Default for SharedState {
             gesture_active: std::array::from_fn(|_| AtomicBool::new(false)),
             zones: AtomicArc::default(),
             groups: AtomicArc::default(),
+            output_names: AtomicArc::new(Arc::new(vec![String::from("Main")])),
             patch: AtomicArc::default(),
             edited_zone_edits: Mutex::new(HashMap::new()),
             load_status: Mutex::new(SamplerLoadStatus::Empty),
@@ -263,6 +266,75 @@ impl SharedState {
                 rescan(host, maolan_clap::ffi::CLAP_AUDIO_PORTS_RESCAN_LIST);
             }
         }
+    }
+
+    pub fn output_names(&self) -> Arc<Vec<String>> {
+        self.output_names.load()
+    }
+
+    /// Appends a new output bus with a unique "Bus N" name.
+    pub fn add_output(&self) {
+        let mut names = (*self.output_names.load()).clone();
+        if names.len() >= MAX_SAMPLER_BUSES {
+            return;
+        }
+        names.push(unique_bus_name(names.len(), &names));
+        self.output_names.store(Arc::new(names));
+        self.request_audio_ports_rescan();
+        self.mark_dirty();
+    }
+
+    /// Renames an output bus. The "Main" bus (index 0) is not renamable; an
+    /// empty name falls back to "Bus {index}".
+    pub fn rename_output(&self, index: usize, name: String) {
+        let mut names = (*self.output_names.load()).clone();
+        if index == 0 || index >= names.len() {
+            return;
+        }
+        let trimmed = name.trim();
+        names[index] = if trimmed.is_empty() {
+            unique_bus_name(index, &names)
+        } else {
+            trimmed.to_string()
+        };
+        self.output_names.store(Arc::new(names));
+        self.request_audio_ports_rescan();
+        self.mark_dirty();
+    }
+
+    /// Removes an output bus and renumbers zone/group assignments: users of
+    /// the removed bus fall back to Main (0), higher buses shift down by one.
+    pub fn remove_output(&self, index: usize) {
+        let mut names = (*self.output_names.load()).clone();
+        if index == 0 || index >= names.len() {
+            return;
+        }
+        names.remove(index);
+        self.output_names.store(Arc::new(names));
+
+        let renumber = |output: &mut u16| {
+            *output = if *output as usize == index {
+                0
+            } else if *output as usize > index {
+                (*output as usize - 1).min(MAX_SAMPLER_BUSES - 1) as u16
+            } else {
+                *output
+            };
+        };
+        let mut zones = (*self.zones.load()).clone();
+        for zone in &mut zones {
+            renumber(&mut zone.output);
+        }
+        self.zones.store(Arc::new(zones));
+        let mut groups = (*self.groups.load()).clone();
+        for group in &mut groups {
+            renumber(&mut group.output);
+        }
+        self.groups.store(Arc::new(groups));
+
+        self.bump_zones_version();
+        self.request_audio_ports_rescan();
+        self.mark_dirty();
     }
 
     fn request_flush(&self) {
@@ -489,12 +561,30 @@ impl SharedState {
                     *shared.sf2_presets.lock() = instrument.presets;
                     *shared.selected_sf2_preset.lock() = instrument.selected_preset;
                     let patch = instrument.patch;
+                    for (index, value) in &patch.main_params {
+                        if let Some(def) = PARAMS.get(*index as usize) {
+                            shared.params.set(def.id, value.clamp(def.min, def.max));
+                        }
+                    }
+                    if !patch.main_params.is_empty() {
+                        shared.bump_params_version();
+                    }
                     shared
                         .zones
                         .store(Arc::new(build_zones_from_patch(patch.as_ref())));
                     shared
                         .groups
                         .store(Arc::new(build_groups_from_patch(patch.as_ref())));
+                    {
+                        let mut names = (*shared.output_names.load()).clone();
+                        let needed = required_output_bus_count(
+                            &names,
+                            &shared.groups.load(),
+                            &shared.zones.load(),
+                        );
+                        extend_output_names(&mut names, needed);
+                        shared.output_names.store(Arc::new(names));
+                    }
                     shared.request_audio_ports_rescan();
                     shared.bump_zones_version();
                     shared.patch.store(patch);
@@ -559,6 +649,10 @@ impl SharedState {
                 actions: edits.actions.clone(),
             })
             .collect();
+        let output_names = self.output_names.load();
+        if output_names.len() > 1 {
+            state.sampler_output_names = (*output_names).clone();
+        }
         state
     }
 
@@ -567,6 +661,16 @@ impl SharedState {
     /// (which rebuilds zones/groups from the file) when a path was saved.
     fn restore_saved_state(self: &Arc<Self>, state: PluginState) {
         state.apply(&self.params);
+        {
+            let mut names = state.sampler_output_names.clone();
+            names.truncate(MAX_SAMPLER_BUSES);
+            if names.is_empty() {
+                names.push(String::from("Main"));
+            }
+            // Bus 0 is the always-present main output.
+            names[0] = String::from("Main");
+            self.output_names.store(Arc::new(names));
+        }
         {
             let mut edits = self.edited_zone_edits.lock();
             edits.clear();
@@ -623,6 +727,16 @@ impl SharedState {
                     shared
                         .groups
                         .store(Arc::new(build_groups_from_patch(&merged_patch)));
+                    {
+                        let mut names = (*shared.output_names.load()).clone();
+                        let needed = required_output_bus_count(
+                            &names,
+                            &shared.groups.load(),
+                            &shared.zones.load(),
+                        );
+                        extend_output_names(&mut names, needed);
+                        shared.output_names.store(Arc::new(names));
+                    }
                     shared.request_audio_ports_rescan();
                     shared.bump_zones_version();
                     shared.patch.store(Arc::new(merged_patch));
@@ -1293,8 +1407,6 @@ pub(crate) fn build_groups_from_patch(patch: &Patch) -> Vec<SampleGroup> {
     groups
 }
 
-pub(crate) const MAX_SAMPLER_BUSES: usize = 1024;
-
 /// Copies the GUI-editable metadata of a `SampleZone` onto a DSP `Zone`.
 fn apply_editable_zone_metadata(zone: &mut Zone, editable: &SampleZone) {
     zone.name = editable.name.clone();
@@ -1363,7 +1475,9 @@ pub(crate) fn build_export_patch(shared: &SharedState) -> Patch {
     let base_patch = shared.patch.load();
     let editable_zones = shared.zones.load();
     if editable_zones.is_empty() {
-        return (*base_patch).clone();
+        let mut patch = (*base_patch).clone();
+        patch.main_params = main_param_snapshot(shared);
+        return patch;
     }
 
     let mut source_zones: Vec<Zone> = base_patch
@@ -1442,6 +1556,7 @@ pub(crate) fn build_export_patch(shared: &SharedState) -> Patch {
     }
 
     Patch {
+        main_params: main_param_snapshot(shared),
         parts: vec![Part {
             groups,
             ..base_patch.parts.first().cloned().unwrap_or_default()
@@ -1450,10 +1565,65 @@ pub(crate) fn build_export_patch(shared: &SharedState) -> Patch {
     }
 }
 
-pub(crate) fn required_output_bus_count(groups: &[SampleGroup], zones: &[SampleZone]) -> usize {
+pub(crate) const MAX_SAMPLER_BUSES: usize = 1024;
+
+/// Builds a bus name like "Bus 3" that does not collide with existing names.
+fn unique_bus_name(index: usize, names: &[String]) -> String {
+    let base = format!("Bus {index}");
+    if !names.iter().any(|name| name == &base) {
+        return base;
+    }
+    let mut suffix = 2;
+    loop {
+        let candidate = format!("{base} ({suffix})");
+        if !names.iter().any(|name| name == &candidate) {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
+
+/// Grows the bus name list with unique placeholders until it covers `min_len`
+/// buses, so instrument files referencing `output=` indices beyond the user's
+/// buses still get dedicated ports.
+fn extend_output_names(names: &mut Vec<String>, min_len: usize) {
+    let target = min_len.clamp(1, MAX_SAMPLER_BUSES);
+    while names.len() < target {
+        names.push(unique_bus_name(names.len(), names));
+    }
+}
+
+/// Label for an output bus shown in port names and the GUI.
+pub(crate) fn output_bus_label(names: &[String], index: usize) -> String {
+    if index == 0 {
+        return String::from("Main");
+    }
+    match names.get(index) {
+        Some(name) if !name.trim().is_empty() => name.clone(),
+        _ => format!("Bus {index}"),
+    }
+}
+
+/// Main-panel plugin parameters captured for SFZ export as
+/// `maolan_param_<index>` opcodes, restored on import.
+fn main_param_snapshot(shared: &SharedState) -> Vec<(u32, f64)> {
+    PARAMS
+        .iter()
+        .map(|def| (def.id.as_index() as u32, shared.params.get(def.id)))
+        .collect()
+}
+
+pub(crate) fn required_output_bus_count(
+    names: &[String],
+    groups: &[SampleGroup],
+    zones: &[SampleZone],
+) -> usize {
     let max_group = groups.iter().map(|g| g.output as usize).max().unwrap_or(0);
     let max_zone = zones.iter().map(|z| z.output as usize).max().unwrap_or(0);
-    (max_group.max(max_zone) + 1).clamp(1, MAX_SAMPLER_BUSES)
+    names
+        .len()
+        .max(max_group.max(max_zone) + 1)
+        .clamp(1, MAX_SAMPLER_BUSES)
 }
 
 fn build_patch_from_zones(groups: &[SampleGroup], zones: &[SampleZone], sample_rate: f32) -> Patch {
@@ -1499,6 +1669,7 @@ fn build_patch_from_zones(groups: &[SampleGroup], zones: &[SampleZone], sample_r
     }
 
     Patch {
+        main_params: Vec::new(),
         parts: vec![Part {
             groups: dsp_groups,
             ..Default::default()
@@ -2099,9 +2270,10 @@ unsafe extern "C-unwind" fn ext_audio_ports_count(
         return 0;
     }
     let inst = unsafe { instance(plugin) };
+    let names = inst.shared.output_names.load();
     let groups = inst.shared.groups.load();
     let zones = inst.shared.zones.load();
-    (required_output_bus_count(&groups, &zones) * 2) as u32
+    (required_output_bus_count(&names, &groups, &zones) * 2) as u32
 }
 
 unsafe extern "C-unwind" fn ext_audio_ports_get(
@@ -2115,18 +2287,15 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
             return false;
         }
         let inst = instance(plugin);
+        let names = inst.shared.output_names.load();
         let groups = inst.shared.groups.load();
         let zones = inst.shared.zones.load();
         let bus_index = (index / 2) as usize;
-        let bus_count = required_output_bus_count(&groups, &zones);
+        let bus_count = required_output_bus_count(&names, &groups, &zones);
         if bus_index >= bus_count {
             return false;
         }
-        let output_name = if bus_index == 0 {
-            "Main"
-        } else {
-            &format!("Bus {}", bus_index)
-        };
+        let output_name = output_bus_label(&names, bus_index);
         let info = &mut *info;
         info.id = index;
         info.channel_count = 1;
@@ -2416,23 +2585,6 @@ unsafe extern "C-unwind" fn ext_state_load(
         };
         inst.shared.restore_saved_state(state);
         true
-    }
-}
-
-impl crate::common::preset::PresetProvider for Arc<SharedState> {
-    const DIR_NAME: &'static str = "sampler";
-    const FORMAT: &'static str = "maolan-sampler-preset";
-
-    fn save_preset(&self, path: &std::path::Path) -> Result<(), std::string::String> {
-        crate::common::preset::write_envelope(path, Self::FORMAT, None, &self.snapshot_state())
-    }
-
-    fn load_preset(&self, path: &std::path::Path) -> Result<(), std::string::String> {
-        let envelope = crate::common::preset::read_envelope::<PluginState>(path, Self::FORMAT)?;
-        self.restore_saved_state(envelope.state);
-        self.bump_params_version();
-        self.mark_dirty();
-        Ok(())
     }
 }
 
@@ -3321,5 +3473,113 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn required_output_bus_count_prefers_longer_of_names_and_assignments() {
+        let no_groups = Vec::new();
+        let no_zones = Vec::new();
+        assert_eq!(required_output_bus_count(&[], &no_groups, &no_zones), 1);
+        let names = vec![String::from("Main"), String::from("Bus 1")];
+        assert_eq!(required_output_bus_count(&names, &no_groups, &no_zones), 2);
+
+        let mut zone = SampleZone::new_basic(
+            String::from("z"),
+            Vec::new(),
+            60,
+            60,
+            0,
+            127,
+            String::from("g"),
+        );
+        zone.output = 4;
+        let zones = vec![zone];
+        assert_eq!(required_output_bus_count(&[], &no_groups, &zones), 5);
+        assert_eq!(required_output_bus_count(&names, &no_groups, &zones), 5);
+    }
+
+    #[test]
+    fn add_rename_remove_output_manages_bus_names() {
+        let shared = SharedState::default();
+        assert_eq!(*shared.output_names.load(), vec![String::from("Main")]);
+
+        shared.add_output();
+        assert_eq!(
+            *shared.output_names.load(),
+            vec![String::from("Main"), String::from("Bus 1")]
+        );
+
+        shared.rename_output(1, String::from("  Reverb  "));
+        assert_eq!(shared.output_names.load()[1], "Reverb");
+
+        shared.rename_output(1, String::from("   "));
+        assert_eq!(shared.output_names.load()[1], "Bus 1");
+
+        // Main is not renamable or removable.
+        shared.rename_output(0, String::from("Other"));
+        shared.remove_output(0);
+        assert_eq!(
+            *shared.output_names.load(),
+            vec![String::from("Main"), String::from("Bus 1")]
+        );
+
+        shared.remove_output(1);
+        assert_eq!(*shared.output_names.load(), vec![String::from("Main")]);
+    }
+
+    #[test]
+    fn remove_output_renumbers_zone_and_group_assignments() {
+        let shared = SharedState::default();
+        let mut zones = Vec::new();
+        for output in [0u16, 1, 3] {
+            let mut zone = SampleZone::new_basic(
+                String::from("z"),
+                Vec::new(),
+                60,
+                60,
+                0,
+                127,
+                String::from("g"),
+            );
+            zone.output = output;
+            zones.push(zone);
+        }
+        shared.zones.store(Arc::new(zones));
+        let mut groups = Vec::new();
+        for output in [2u16, 3] {
+            let mut group = SampleGroup::new(String::from("g"));
+            group.output = output;
+            groups.push(group);
+        }
+        shared.groups.store(Arc::new(groups));
+        shared.output_names.store(Arc::new(vec![
+            String::from("Main"),
+            String::from("Bus 1"),
+            String::from("Bus 2"),
+            String::from("Bus 3"),
+        ]));
+
+        shared.remove_output(1);
+
+        assert_eq!(shared.output_names.load().len(), 3);
+        let zone_outputs: Vec<u16> = shared.zones.load().iter().map(|zone| zone.output).collect();
+        assert_eq!(zone_outputs, vec![0, 0, 2]);
+        let group_outputs: Vec<u16> = shared
+            .groups
+            .load()
+            .iter()
+            .map(|group| group.output)
+            .collect();
+        assert_eq!(group_outputs, vec![1, 2]);
+    }
+
+    #[test]
+    fn output_bus_label_falls_back_for_missing_names() {
+        let names = vec![String::from("Main"), String::from("Reverb")];
+        assert_eq!(output_bus_label(&names, 0), "Main");
+        assert_eq!(output_bus_label(&names, 1), "Reverb");
+        assert_eq!(output_bus_label(&names, 2), "Bus 2");
+        let names = vec![String::from("Main"), String::from("  ")];
+        assert_eq!(output_bus_label(&names, 1), "Bus 1");
     }
 }

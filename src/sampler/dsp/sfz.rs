@@ -618,7 +618,14 @@ pub fn export_patch_to_sfz(path: &Path, patch: &Patch) -> Result<(), String> {
     let mut output = String::new();
     output.push_str("// Exported by Maolan Sampler\n");
     output.push_str("<control>\n");
-    output.push_str(&format!("default_path={sample_dir_name}/\n\n"));
+    output.push_str(&format!("default_path={sample_dir_name}/\n"));
+    for (index, value) in &patch.main_params {
+        output.push_str(&format!(
+            "maolan_param_{index}={}\n",
+            format_export_float(*value as f32)
+        ));
+    }
+    output.push('\n');
     let export_curves = collect_export_mod_curves(patch);
     for (index, curve) in export_curves.iter().enumerate() {
         output.push_str(&format!("<curve> curve_index={}", index + 1));
@@ -1533,6 +1540,23 @@ fn parse_sfz_text(text: &str, base_dir: &Path) -> Result<Patch, SfzError> {
                     "control" => {
                         // Control opcodes affect the whole file (e.g. `default_path`)
                         // and persist across `<global>` resets.
+                        let mut header_opcodes = header_opcodes;
+                        let param_keys: Vec<String> = header_opcodes
+                            .map
+                            .keys()
+                            .filter(|key| key.starts_with("maolan_param_"))
+                            .cloned()
+                            .collect();
+                        for key in param_keys {
+                            if let Some(value) = header_opcodes.remove(&key) {
+                                let index = key
+                                    .strip_prefix("maolan_param_")
+                                    .and_then(|suffix| suffix.parse::<u32>().ok());
+                                if let (Some(index), Ok(parsed)) = (index, value.parse::<f64>()) {
+                                    patch.main_params.push((index, parsed));
+                                }
+                            }
+                        }
                         control_opcodes.extend(&header_opcodes);
                     }
                     "curve" => {
@@ -3462,6 +3486,42 @@ mod tests {
             f32::from_le_bytes([wav[44], wav[45], wav[46], wav[47]]),
             0.25
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_main_params_round_trip_through_control_header() {
+        let dir = std::env::temp_dir().join(format!(
+            "maolan_sfz_main_params_test_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("kit.sfz");
+
+        let mut zone = Zone::default();
+        zone.name = String::from("snare");
+        zone.key_low = 38;
+        zone.key_high = 38;
+        zone.root_key = 38;
+        let mut group = Group::default();
+        group.zones.push(zone);
+        let mut patch = Patch::default();
+        patch.parts[0].groups.push(group);
+        patch.main_params = vec![(3, 0.5), (12, 8000.0)];
+
+        export_patch_to_sfz(&path, &patch).unwrap();
+        let parsed = parse_sfz(path.to_str().unwrap()).unwrap();
+        let mut parsed_params = parsed.main_params.clone();
+        parsed_params.sort_by_key(|(index, _)| *index);
+        assert_eq!(parsed_params, vec![(3, 0.5), (12, 8000.0)]);
+        // The param opcodes must not leak into per-group extra opcodes.
+        assert!(
+            parsed.parts[0].groups[0]
+                .extra_sfz_opcodes
+                .iter()
+                .all(|(key, _)| !key.starts_with("maolan_param_"))
+        );
+
         let _ = std::fs::remove_dir_all(dir);
     }
 
