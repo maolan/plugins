@@ -337,6 +337,32 @@ impl SharedState {
         self.mark_dirty();
     }
 
+    /// Removes output buses that are not assigned to any zone or group.
+    /// Main (bus 0) is always preserved.
+    pub fn clean_up_outputs(&self) {
+        let names = self.output_names.load();
+        let mut used = vec![false; names.len()];
+        if let Some(main) = used.first_mut() {
+            *main = true;
+        }
+        for zone in self.zones.load().iter() {
+            if let Some(bus) = used.get_mut(zone.output as usize) {
+                *bus = true;
+            }
+        }
+        for group in self.groups.load().iter() {
+            if let Some(bus) = used.get_mut(group.output as usize) {
+                *bus = true;
+            }
+        }
+
+        for index in (1..names.len()).rev() {
+            if !used[index] {
+                self.remove_output(index);
+            }
+        }
+    }
+
     fn request_flush(&self) {
         let host = self.host.load(Ordering::Acquire);
         if host.is_null() {
