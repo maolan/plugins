@@ -217,6 +217,7 @@ pub enum Message {
     PianoKeyReleased(u8),
     SamplerAuditionFinished(u64, u8),
     AddOutput,
+    CleanUpOutputs,
     RemoveOutput(usize),
     RenameOutput(usize, String),
     PointerReleased,
@@ -2532,6 +2533,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             Message::AddOutput => {
                 state.shared.add_output();
             }
+            Message::CleanUpOutputs => {
+                state.shared.clean_up_outputs();
+            }
             Message::RemoveOutput(index) => {
                 state.shared.remove_output(index);
             }
@@ -4456,12 +4460,11 @@ fn output_bus_options(names: &[String], current: u16) -> Vec<OutputBusOption> {
 
 fn outputs_panel<'a>(state: &'a State) -> Element<'a, Message> {
     let names = state.shared.output_names.load();
-    let zones = state.shared.zones.load();
-    let groups = state.shared.groups.load();
 
     let cards: Vec<Element<'_, Message>> = names
         .iter()
         .enumerate()
+        .filter(|(index, _)| *index != 0)
         .map(|(index, name)| {
             let name_field: Element<'_, Message> = if index == 0 {
                 text(name.clone()).size(11).into()
@@ -4473,7 +4476,7 @@ fn outputs_panel<'a>(state: &'a State) -> Element<'a, Message> {
                     .into()
             };
             let mut row_content = row![
-                text(format!("{index}"))
+                text(format!("{index:02}"))
                     .size(10)
                     .color(Color::from_rgb(0.68, 0.70, 0.76)),
                 name_field,
@@ -4481,51 +4484,37 @@ fn outputs_panel<'a>(state: &'a State) -> Element<'a, Message> {
             .spacing(6)
             .align_y(Alignment::Center);
             if index > 0 {
-                let zone_count = zones
-                    .iter()
-                    .filter(|zone| zone.output as usize == index)
-                    .count();
-                let group_count = groups
-                    .iter()
-                    .filter(|group| group.output as usize == index)
-                    .count();
-                let usage = match (zone_count, group_count) {
-                    (0, 0) => String::from("unused"),
-                    (zone_count, 0) => format!("{zone_count} zones"),
-                    (0, group_count) => format!("{group_count} groups"),
-                    (zone_count, group_count) => {
-                        format!("{zone_count} zones, {group_count} groups")
-                    }
-                };
-                row_content = row_content
-                    .push(
-                        text(usage)
-                            .size(10)
-                            .color(Color::from_rgb(0.68, 0.70, 0.76)),
-                    )
-                    .push(
-                        button(text("Remove").size(10))
-                            .padding([2, 6])
-                            .on_press(Message::RemoveOutput(index)),
-                    );
+                row_content = row_content.push(
+                    button(text("x").size(10))
+                        .padding([2, 6])
+                        .on_press(Message::RemoveOutput(index)),
+                );
             }
             panel_no_title(row_content.into())
         })
         .collect();
 
+    let cleanup_button = button(text("Clean Up").size(10))
+        .padding([3, 8])
+        .on_press(Message::CleanUpOutputs);
     let mut add_button = button(text("+ Output").size(10)).padding([3, 8]);
     if names.len() < MAX_SAMPLER_BUSES {
         add_button = add_button.on_press(Message::AddOutput);
     }
 
-    let header = row![section_title("Outputs"), add_button]
+    let header = row![section_title("Outputs"), cleanup_button, add_button]
         .spacing(6)
         .align_y(Alignment::Center);
 
     container(
         column![
             header,
-            scrollable(Wrap::with_elements(cards).spacing(6).line_spacing(6)).height(Length::Fill)
+            scrollable(
+                container(Wrap::with_elements(cards).spacing(6).line_spacing(6))
+                    .width(Length::Fill)
+                    .padding([4, 8]),
+            )
+            .height(Length::Fill)
         ]
         .spacing(6)
         .width(Length::Fill),
