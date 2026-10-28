@@ -206,9 +206,6 @@ fn view(state: &State) -> Element<'_, Message> {
     let p = |id: ParamId| state.shared.params.get(id) as f32;
     let b = |id: ParamId| state.shared.params.get(id) >= 0.5;
 
-    let mut scope_data = VectorscopeData::default();
-    let _ = state.shared.vectorscope.read(&mut scope_data);
-
     let mut controls = column![].spacing(16).align_x(Alignment::Start);
 
     controls = controls.push(
@@ -335,7 +332,7 @@ fn view(state: &State) -> Element<'_, Message> {
     let scope = column![
         container(
             canvas(Vectorscope {
-                data: scope_data,
+                shared: state.shared.clone(),
                 mode: state.scope_mode,
             })
             .width(Length::Fill)
@@ -365,11 +362,16 @@ fn view(state: &State) -> Element<'_, Message> {
 }
 
 struct Vectorscope {
+    shared: Arc<SharedState>,
+    mode: ScopeMode,
+}
+
+struct VectorscopeFrame {
     data: VectorscopeData,
     mode: ScopeMode,
 }
 
-impl Vectorscope {
+impl VectorscopeFrame {
     fn lissajous_point(&self, index: usize, center: Point, scale: f32) -> Point {
         let left = self.data.left[index];
         let right = self.data.right[index];
@@ -386,27 +388,43 @@ impl Vectorscope {
         radius_y: f32,
         peak: f32,
     ) -> Point {
-        let left = self.data.left[index];
-        let right = self.data.right[index];
-        let side = ((left - right) * 0.5 / peak).clamp(-1.0, 1.0);
-        let level = ((left * left + right * right) * 0.5).sqrt() / peak;
-        Self::polar_point_from_side_level(side, level, origin, radius_x, radius_y)
+        let (angle, level) = Self::polar_coordinates(self.data.left[index], self.data.right[index]);
+        Self::polar_point(angle, level / peak, origin, radius_x, radius_y)
     }
 
-    fn polar_point_from_side_level(
-        side: f32,
-        level: f32,
-        origin: Point,
-        radius_x: f32,
-        radius_y: f32,
-    ) -> Point {
-        let angle =
-            std::f32::consts::FRAC_PI_2 - side.clamp(-1.0, 1.0) * std::f32::consts::FRAC_PI_2;
+    fn polar_coordinates(left: f32, right: f32) -> (f32, f32) {
+        let mid = (left + right) * 0.5;
+        let side = (right - left) * 0.5;
+        // Fold the lower half-plane upward, preserving stereo direction when
+        // both channels reverse polarity. Angle is independent of amplitude.
+        let side = if mid < 0.0 { -side } else { side };
+        (side.atan2(mid.abs()), mid.hypot(side))
+    }
+
+    fn polar_point(angle: f32, level: f32, origin: Point, radius_x: f32, radius_y: f32) -> Point {
         let level = level.clamp(0.0, 1.0);
         Point::new(
-            origin.x + angle.cos() * level * radius_x,
-            origin.y - angle.sin() * level * radius_y,
+            origin.x + angle.sin() * level * radius_x,
+            origin.y - angle.cos() * level * radius_y,
         )
+    }
+
+    fn polar_levels<const BINS: usize>(&self, peak: f32) -> [f32; BINS] {
+        let mut energy = [0.0; BINS];
+        let mut counts = [0_usize; BINS];
+        for i in 0..self.data.len {
+            let (angle, level) = Self::polar_coordinates(self.data.left[i], self.data.right[i]);
+            let bin = ((angle / std::f32::consts::PI + 0.5) * (BINS - 1) as f32).round() as usize;
+            energy[bin] += level * level;
+            counts[bin] += 1;
+        }
+        std::array::from_fn(|i| {
+            if counts[i] == 0 {
+                0.0
+            } else {
+                (energy[i] / counts[i] as f32).sqrt() / peak
+            }
+        })
     }
 
     fn draw_arc(
@@ -458,7 +476,8 @@ impl Vectorscope {
     ) -> (Point, f32, f32) {
         let pad = 20.0;
         let radius_x = ((width - pad * 2.0) * 0.5).max(16.0);
-        let radius_y = (height - pad * 2.0).max(16.0);
+        let radius_y = (height - pad * 2.0).max(16.0).min(radius_x);
+        let radius_x = radius_y;
         let center = Point::new(width * 0.5, height - pad);
 
         for factor in [0.25, 0.5, 0.75, 1.0] {
@@ -472,7 +491,7 @@ impl Vectorscope {
             );
         }
 
-        for degrees in [30.0_f32, 60.0, 90.0, 120.0, 150.0] {
+        for degrees in [45.0_f32, 90.0, 135.0] {
             let phase = degrees.to_radians();
             let end = Point::new(
                 center.x + phase.cos() * radius_x,
@@ -481,8 +500,8 @@ impl Vectorscope {
             frame.stroke(
                 &canvas::Path::line(center, end),
                 canvas::Stroke::default()
-                    .with_color(Color::from_rgba(0.68, 0.72, 0.80, 0.10))
-                    .with_width(if degrees == 90.0 { 1.0 } else { 0.6 }),
+                    .with_color(Color::from_rgba(0.68, 0.72, 0.80, 0.30))
+                    .with_width(1.0),
             );
         }
 
@@ -563,7 +582,7 @@ impl Vectorscope {
         let step = (self.data.len / 320).max(1);
         for i in (0..self.data.len).step_by(step) {
             let point = self.polar_sample_point(i, origin, radius_x, radius_y, peak);
-            let side = (self.data.left[i] - self.data.right[i]) * 0.5;
+            let (side, _) = Self::polar_coordinates(self.data.left[i], self.data.right[i]);
             let color = if side < 0.0 {
                 Color::from_rgba(1.00, 0.42, 0.22, 0.50)
             } else {
@@ -582,38 +601,20 @@ impl Vectorscope {
         peak: f32,
     ) {
         const BINS: usize = 129;
-        let mut levels = [0.0_f32; BINS];
-        for i in 0..self.data.len {
-            let left = self.data.left[i];
-            let right = self.data.right[i];
-            let side = ((left - right) * 0.5 / peak).clamp(-1.0, 1.0);
-            let level = ((left * left + right * right) * 0.5).sqrt() / peak;
-            let bin = (((side + 1.0) * 0.5) * (BINS - 1) as f32).round() as usize;
-            levels[bin] = levels[bin].max(level);
-        }
-
-        let fill = canvas::Path::new(|builder| {
-            builder.move_to(origin);
-            for (bin, level) in levels.iter().enumerate() {
-                let side = bin as f32 / (BINS - 1) as f32 * 2.0 - 1.0;
-                builder.line_to(Self::polar_point_from_side_level(
-                    side,
-                    level.sqrt(),
-                    origin,
-                    radius_x,
-                    radius_y,
-                ));
+        let levels = self.polar_levels::<BINS>(peak);
+        for (bin, level) in levels.iter().enumerate() {
+            if *level <= 0.0 {
+                continue;
             }
-            builder.line_to(origin);
-            builder.close();
-        });
-        frame.fill(&fill, Color::from_rgba(0.05, 0.78, 0.95, 0.24));
-        frame.stroke(
-            &fill,
-            canvas::Stroke::default()
-                .with_color(Color::from_rgba(0.05, 0.78, 0.95, 0.62))
-                .with_width(1.6),
-        );
+            let angle = (bin as f32 / (BINS - 1) as f32 - 0.5) * std::f32::consts::PI;
+            let end = Self::polar_point(angle, *level, origin, radius_x, radius_y);
+            frame.stroke(
+                &canvas::Path::line(origin, end),
+                canvas::Stroke::default()
+                    .with_color(Color::from_rgba(0.05, 0.78, 0.95, 0.62))
+                    .with_width(1.6),
+            );
+        }
     }
 
     fn draw_lissajous(&self, frame: &mut canvas::Frame, center: Point, radius: f32, peak: f32) {
@@ -662,36 +663,44 @@ impl canvas::Program<Message> for Vectorscope {
         bounds: Rectangle,
         _cursor: Cursor,
     ) -> Vec<canvas::Geometry> {
+        // The canvas can redraw without rebuilding the application view.
+        // Read the audio snapshot here so every redraw uses current samples.
+        let mut data = VectorscopeData::default();
+        let _ = self.shared.vectorscope.read(&mut data);
+        let scope = VectorscopeFrame {
+            data,
+            mode: self.mode,
+        };
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         let width = bounds.width;
         let height = bounds.height;
-        self.draw_scope_background(&mut frame, width, height);
+        scope.draw_scope_background(&mut frame, width, height);
 
-        let peak = self.data.peak.max(0.08);
-        if self.data.len >= 2 && self.data.peak > 0.000_01 {
-            match self.mode {
+        let peak = scope.data.peak.max(0.08);
+        if scope.data.len >= 2 && scope.data.peak > 0.000_01 {
+            match scope.mode {
                 ScopeMode::PolarSample => {
                     let (center, radius_x, radius_y) =
-                        self.draw_polar_grid(&mut frame, width, height);
-                    self.draw_polar_sample(&mut frame, center, radius_x, radius_y, peak);
+                        scope.draw_polar_grid(&mut frame, width, height);
+                    scope.draw_polar_sample(&mut frame, center, radius_x, radius_y, peak);
                 }
                 ScopeMode::PolarLevel => {
                     let (center, radius_x, radius_y) =
-                        self.draw_polar_grid(&mut frame, width, height);
-                    self.draw_polar_level(&mut frame, center, radius_x, radius_y, peak);
+                        scope.draw_polar_grid(&mut frame, width, height);
+                    scope.draw_polar_level(&mut frame, center, radius_x, radius_y, peak);
                 }
                 ScopeMode::Lissajous => {
-                    let (center, radius) = self.draw_lissajous_grid(&mut frame, width, height);
-                    self.draw_lissajous(&mut frame, center, radius, peak);
+                    let (center, radius) = scope.draw_lissajous_grid(&mut frame, width, height);
+                    scope.draw_lissajous(&mut frame, center, radius, peak);
                 }
             }
         } else {
-            match self.mode {
+            match scope.mode {
                 ScopeMode::PolarSample | ScopeMode::PolarLevel => {
-                    let _ = self.draw_polar_grid(&mut frame, width, height);
+                    let _ = scope.draw_polar_grid(&mut frame, width, height);
                 }
                 ScopeMode::Lissajous => {
-                    let _ = self.draw_lissajous_grid(&mut frame, width, height);
+                    let _ = scope.draw_lissajous_grid(&mut frame, width, height);
                 }
             }
         }
@@ -860,5 +869,52 @@ pub fn parent_from_window(
         }
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
+
+    #[test]
+    fn polar_direction_tracks_balance_and_phase_not_gain_or_polarity() {
+        for (left, right, expected) in [
+            (1.0, 1.0, 0.0),
+            (1.0, 0.0, -FRAC_PI_4),
+            (0.0, 1.0, FRAC_PI_4),
+            (1.0, -1.0, -FRAC_PI_2),
+        ] {
+            for gain in [1.0, 0.1, 0.001] {
+                let (angle, _) = VectorscopeFrame::polar_coordinates(left * gain, right * gain);
+                assert!((angle - expected).abs() < 1e-6);
+                if left + right != 0.0 {
+                    let (inverted, _) =
+                        VectorscopeFrame::polar_coordinates(-left * gain, -right * gain);
+                    assert!((inverted - expected).abs() < 1e-6);
+                }
+            }
+        }
+        let (angle, level) = VectorscopeFrame::polar_coordinates(0.0, 0.0);
+        assert!(angle.is_finite());
+        assert_eq!(level, 0.0);
+        let (angle, _) = VectorscopeFrame::polar_coordinates(1.0, -0.5);
+        assert!(angle.abs() > FRAC_PI_4);
+    }
+
+    #[test]
+    fn polar_level_uses_rms_in_each_direction() {
+        let mut data = VectorscopeData {
+            len: 2,
+            ..Default::default()
+        };
+        data.left[..2].copy_from_slice(&[1.0, -0.5]);
+        let scope = VectorscopeFrame {
+            data,
+            mode: ScopeMode::PolarLevel,
+        };
+        let levels = scope.polar_levels::<129>(1.0);
+        assert!((levels[32] - (0.3125_f32).sqrt()).abs() < 1e-6);
+        assert_eq!(levels.iter().filter(|level| **level > 0.0).count(), 1);
     }
 }
