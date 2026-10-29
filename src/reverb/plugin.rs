@@ -21,7 +21,7 @@ use crate::common::{bus, fft};
 use crate::reverb::{
     dsp::Reverb,
     gui::GuiBridge,
-    params::{PARAMS, ParamId, sanitize_param_value},
+    params::{COLORS, MODES, PARAMS, ParamId, sanitize_param_value, value_text},
     state::PluginState,
 };
 
@@ -30,15 +30,14 @@ use crate::common::clap_harness::{
     StateHooks,
 };
 use crate::{
-    clap_create_fn, clap_descriptor, clap_gui_ext, clap_params_ext, clap_state_ext, clap_tail_ext,
-    mono_pair,
+    clap_create_fn, clap_descriptor, clap_gui_ext, clap_params_ext, clap_state_ext, mono_pair,
 };
 const PLUGIN_ID: &[u8] = b"rs.maolan.reverb\0";
 const PLUGIN_NAME: &[u8] = b"Maolan Reverb\0";
 const PLUGIN_VENDOR: &[u8] = b"Maolan\0";
 const PLUGIN_URL: &[u8] = b"\0";
 const PLUGIN_VERSION: &[u8] = b"0.1.0\0";
-const PLUGIN_DESCRIPTION: &[u8] = b"Rust CLAP reverb based on Airwindows Reverb\0";
+const PLUGIN_DESCRIPTION: &[u8] = b"Modulated feedback-delay reverb with 22 modes\0";
 const FEATURE_AUDIO_EFFECT: *const c_char = CLAP_PLUGIN_FEATURE_AUDIO_EFFECT.as_ptr();
 const FEATURE_MONO: *const c_char = CLAP_PLUGIN_FEATURE_MONO.as_ptr();
 const FEATURE_STEREO: *const c_char = CLAP_PLUGIN_FEATURE_STEREO.as_ptr();
@@ -191,7 +190,56 @@ impl SharedState {
     }
 }
 
-crate::impl_param_presets!(SharedState, ParamId, "reverb", "maolan-reverb-preset");
+impl crate::common::preset::PresetProvider for SharedState {
+    const DIR_NAME: &'static str = "reverb";
+    const FORMAT: &'static str = "maolan-reverb-preset";
+
+    fn save_preset(&self, path: &std::path::Path) -> Result<(), String> {
+        let state = crate::common::preset::collect_params(&self.params);
+        crate::common::preset::write_envelope(path, Self::FORMAT, None, &state)
+    }
+
+    fn load_preset(&self, path: &std::path::Path) -> Result<(), String> {
+        let mut envelope = crate::common::preset::read_envelope::<
+            std::collections::BTreeMap<String, f64>,
+        >(path, Self::FORMAT)?;
+        migrate_old_state(&mut envelope.state);
+        let locked = self.params.get(ParamId::MixLock);
+        let mix = self.params.get(ParamId::DryWet);
+        envelope.state.insert("Mix Lock".into(), locked);
+        if locked >= 0.5 {
+            envelope.state.insert("Dry/Wet".into(), mix);
+        }
+        for def in PARAMS {
+            let value = envelope.state.get(def.name).copied().unwrap_or(def.default);
+            self.set_param_outbound_only(def.id, finite_param(def.id, value));
+        }
+        self.sync_channels_from_params();
+        self.request_audio_ports_rescan();
+        self.mark_dirty();
+        Ok(())
+    }
+}
+
+fn migrate_old_state(params: &mut std::collections::BTreeMap<String, f64>) {
+    if params
+        .get("Mode")
+        .is_none_or(|mode| *mode >= MODES.len() as f64)
+    {
+        params.insert("Mode".into(), 0.0);
+    }
+}
+
+fn finite_param(id: ParamId, value: f64) -> f64 {
+    sanitize_param_value(
+        id,
+        if value.is_finite() {
+            value
+        } else {
+            PARAMS[id.as_index()].default
+        },
+    )
+}
 struct AudioProcessor {
     dsp: Reverb,
     temp_left: Vec<f32>,
@@ -200,11 +248,7 @@ struct AudioProcessor {
     fft_scratch: Vec<f32>,
     fft_mag: Vec<f32>,
     fft_analyzer: fft::SpectrumAnalyzer,
-    replace: f64,
-    brightness: f64,
-    detune: f64,
-    bigness: f64,
-    dry_wet: f64,
+    values: [f64; ParamId::COUNT],
     last_params_version: u64,
 }
 
@@ -215,8 +259,7 @@ impl AudioProcessor {
         bus_data: Option<bus::PluginSharedData>,
         shared: &SharedState,
     ) -> Self {
-        let mut dsp = Reverb::default();
-        dsp.set_sample_rate(sample_rate);
+        let dsp = Reverb::new(sample_rate);
         let mut processor = Self {
             dsp,
             temp_left: vec![0.0; max_frames as usize],
@@ -225,11 +268,7 @@ impl AudioProcessor {
             fft_scratch: vec![0.0; max_frames as usize],
             fft_mag: vec![0.0; 1024],
             fft_analyzer: fft::SpectrumAnalyzer::new(max_frames as usize),
-            replace: 0.0,
-            brightness: 0.0,
-            detune: 0.0,
-            bigness: 0.0,
-            dry_wet: 0.0,
+            values: PARAMS.map(|def| def.default),
             last_params_version: 0,
         };
         processor.apply_params(shared);
@@ -241,20 +280,18 @@ impl AudioProcessor {
     }
 
     fn apply_params(&mut self, shared: &SharedState) {
-        self.replace = shared.params.get(ParamId::Replace);
-        self.brightness = shared.params.get(ParamId::Brightness);
-        self.detune = shared.params.get(ParamId::Detune);
-        self.bigness = shared.params.get(ParamId::Bigness);
-        self.dry_wet = shared.params.get(ParamId::DryWet);
+        for id in ParamId::all() {
+            self.values[id.as_index()] = finite_param(id, shared.params.get(id));
+        }
         self.last_params_version = shared.params_version();
     }
 
     fn process(&mut self, shared: &SharedState, process: &mut Process) -> clap_process_status {
         let mut changed_params: [Option<(ParamId, f64)>; 32] = [None; 32];
-        let overflow = apply_param_events_reverb(
+        let _overflow = apply_param_events_reverb(
             shared,
             &process.in_events(),
-            sanitize_param_value,
+            finite_param,
             &mut changed_params,
         );
         {
@@ -263,26 +300,8 @@ impl AudioProcessor {
         }
 
         let params_version = shared.params_version();
-        let any_changed = changed_params.iter().any(|x| x.is_some());
         if params_version != self.last_params_version {
-            let mut use_incremental = !overflow && any_changed;
-            let mut dirty = DirtyFlags::default();
-
-            if use_incremental {
-                for item in changed_params.iter().flatten() {
-                    let (id, value) = *item;
-                    if !apply_param_id(self, id, value, &mut dirty) {
-                        use_incremental = false;
-                        break;
-                    }
-                }
-            }
-
-            if !use_incremental {
-                self.apply_params(shared);
-            }
-
-            self.last_params_version = params_version;
+            self.apply_params(shared);
         }
 
         let frames = process.frames_count() as usize;
@@ -300,14 +319,10 @@ impl AudioProcessor {
             self.temp_left[..frames].copy_from_slice(input_l.data32(0));
             self.temp_right[..frames].copy_from_slice(input_r.data32(0));
 
-            self.dsp.process_stereo(
+            self.dsp.render(
                 &mut self.temp_left[..frames],
                 &mut self.temp_right[..frames],
-                self.replace,
-                self.brightness,
-                self.detune,
-                self.bigness,
-                self.dry_wet,
+                &self.values,
             );
 
             {
@@ -321,20 +336,18 @@ impl AudioProcessor {
         } else if inputs_count >= 1 && outputs_count >= 1 {
             let input_port = process.audio_inputs(0);
             self.temp_left[..frames].copy_from_slice(input_port.data32(0));
-            self.temp_right[..frames].fill(0.0);
+            self.temp_right[..frames].copy_from_slice(&self.temp_left[..frames]);
 
-            self.dsp.process_stereo(
+            self.dsp.render(
                 &mut self.temp_left[..frames],
                 &mut self.temp_right[..frames],
-                self.replace,
-                self.brightness,
-                self.detune,
-                self.bigness,
-                self.dry_wet,
+                &self.values,
             );
 
             let mut output_port = process.audio_outputs(0);
-            output_port.data32(0)[..frames].copy_from_slice(&self.temp_left[..frames]);
+            for (i, out) in output_port.data32(0)[..frames].iter_mut().enumerate() {
+                *out = (self.temp_left[i] + self.temp_right[i]) * 0.5;
+            }
         }
 
         if let Some(ref bus) = self.bus_data
@@ -359,65 +372,39 @@ impl AudioProcessor {
     }
 }
 
-fn param_text(_id: ParamId, value: f64) -> String {
-    format!("{value:.2}")
+fn param_text(id: ParamId, value: f64) -> String {
+    value_text(id, finite_param(id, value))
 }
 
-fn parse_param_text(_id: ParamId, text: &str) -> Option<f64> {
-    text.parse().ok()
+fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
+    let text = text.trim();
+    let choices: &[&str] = match id {
+        ParamId::Mode => &MODES,
+        ParamId::Color => &COLORS,
+        ParamId::MixLock => &["Unlocked", "Locked"],
+        ParamId::Channels => &["Mono", "Stereo"],
+        _ => &[],
+    };
+    if let Some(index) = choices
+        .iter()
+        .position(|name| name.eq_ignore_ascii_case(text))
+    {
+        return Some(index as f64 + if id == ParamId::Channels { 1.0 } else { 0.0 });
+    }
+    let numeric =
+        text.trim_end_matches(|c: char| c.is_ascii_alphabetic() || c == '%' || c.is_whitespace());
+    let mut value: f64 = numeric.parse().ok()?;
+    if !value.is_finite() {
+        return None;
+    }
+    if id == ParamId::DryWet && text.ends_with('%') {
+        value *= 0.01;
+    }
+    Some(finite_param(id, value))
 }
 
 fn channel_count_from_value(value: f64) -> u32 {
     (value.round() as u32).clamp(1, 2)
-}
-
-#[derive(Default)]
-struct DirtyFlags {
-    replace: bool,
-    brightness: bool,
-    detune: bool,
-    bigness: bool,
-    dry_wet: bool,
-}
-
-fn apply_param_id(
-    state: &mut AudioProcessor,
-    id: ParamId,
-    value: f64,
-    dirty: &mut DirtyFlags,
-) -> bool {
-    match id {
-        ParamId::Replace => {
-            state.replace = value;
-            dirty.replace = true;
-            true
-        }
-        ParamId::Brightness => {
-            state.brightness = value;
-            dirty.brightness = true;
-            true
-        }
-        ParamId::Detune => {
-            state.detune = value;
-            dirty.detune = true;
-            true
-        }
-        ParamId::Bigness => {
-            state.bigness = value;
-            dirty.bigness = true;
-            true
-        }
-        ParamId::DryWet => {
-            state.dry_wet = value;
-            dirty.dry_wet = true;
-            true
-        }
-        ParamId::Channels => {
-            // Channels only affects audio port configuration, which is
-            // handled outside of the process loop. No DSP state to update.
-            true
-        }
-    }
 }
 
 fn apply_param_events_reverb(
@@ -517,11 +504,21 @@ impl StateHooks<SharedState> for PluginState {
     }
 
     fn load(shared: &SharedState, bytes: &[u8]) -> bool {
-        let Ok(state) = PluginState::from_bytes(bytes, crate::reverb::state::STATE_HEADER_PREFIX)
+        let Ok(mut state) =
+            PluginState::from_bytes(bytes, crate::reverb::state::STATE_HEADER_PREFIX)
         else {
             return false;
         };
+        migrate_old_state(&mut state.params);
+        for def in PARAMS {
+            if let Some(value) = state.params.get_mut(def.name) {
+                *value = finite_param(def.id, *value);
+            }
+        }
         state.apply(&shared.params);
+        shared.bump_params_version();
+        shared.sync_channels_from_params();
+        shared.request_audio_ports_rescan();
         true
     }
 }
@@ -586,7 +583,29 @@ static AUDIO_PORTS_EXT: maolan_clap::ffi::clap_plugin_audio_ports =
 
 clap_params_ext!(SharedState, AudioProcessor, GuiBridge);
 clap_state_ext!(SharedState, AudioProcessor, GuiBridge, PluginState);
-clap_tail_ext!(SharedState, AudioProcessor, GuiBridge, 32768);
+unsafe extern "C-unwind" fn tail_get(plugin: *const clap_plugin) -> u32 {
+    if plugin.is_null() {
+        return 0;
+    }
+    let instance = unsafe {
+        crate::common::clap_harness::instance::<SharedState, AudioProcessor, GuiBridge, ()>(plugin)
+    };
+    let shared = &instance.shared;
+    let decay = finite_param(ParamId::Decay, shared.params.get(ParamId::Decay));
+    let bass = finite_param(ParamId::BassMult, shared.params.get(ParamId::BassMult)).max(1.0);
+    let seconds = if shared.params.get(ParamId::Mode) == 14.0 {
+        decay + 2.0
+    } else {
+        decay * bass * 2.0 + 2.0
+    };
+    (seconds * shared.sample_rate())
+        .ceil()
+        .min((i32::MAX - 1) as f64) as u32
+}
+
+static TAIL_EXT: maolan_clap::ffi::clap_plugin_tail = maolan_clap::ffi::clap_plugin_tail {
+    get: Some(tail_get),
+};
 clap_gui_ext!(SharedState, AudioProcessor, GuiBridge);
 
 unsafe extern "C-unwind" fn plugin_get_extension(
@@ -627,17 +646,84 @@ clap_create_fn!(
 
 #[cfg(test)]
 mod tests {
-    use super::{AudioProcessor, DirtyFlags, SharedState, apply_param_id};
-    use crate::reverb::params::ParamId;
+    use super::*;
 
     #[test]
-    fn dispatcher_handles_all_param_ids() {
+    fn parameter_text_roundtrips() {
+        for def in PARAMS {
+            for value in [def.min, def.default, def.max] {
+                let text = param_text(def.id, value);
+                assert!(
+                    (parse_param_text(def.id, &text).unwrap() - value).abs() < 0.011,
+                    "{text}"
+                );
+            }
+        }
+        assert!(parse_param_text(ParamId::Decay, "NaN").is_none());
+    }
+
+    #[test]
+    fn old_state_selects_first_mode_and_keeps_common_values() {
         let shared = SharedState::default();
-        let mut processor = AudioProcessor::new(48_000.0, 512, None, &shared);
-        for id in ParamId::all() {
-            let mut dirty = DirtyFlags::default();
-            let handled = apply_param_id(&mut processor, id, 0.5, &mut dirty);
-            assert!(handled, "ParamId {:?} is not handled by dispatcher", id);
+        let bytes = br#"{"params":[0.2,0.3,0.4,0.5,0.6,2.0]}"#;
+        assert!(PluginState::load(&shared, bytes));
+        assert_eq!(shared.params.get(ParamId::Mode), 0.0);
+        assert_eq!(shared.params.get(ParamId::DryWet), 0.6);
+        assert_eq!(shared.channels.load(Ordering::Acquire), 2);
+        assert!(shared.params_version() > 0);
+    }
+
+    #[test]
+    fn previous_serialized_bookkeeping_is_accepted() {
+        let shared = SharedState::default();
+        assert!(PluginState::load(
+            &shared,
+            br#"{"version":"0.1.0","params":{"Dry/Wet":0.4},"_phantom":null}"#
+        ));
+        assert_eq!(shared.params.get(ParamId::DryWet), 0.4);
+        assert_eq!(shared.params.get(ParamId::Mode), 0.0);
+    }
+
+    #[test]
+    fn preset_mix_lock_and_session_recall_have_distinct_semantics() {
+        use crate::common::preset::PresetProvider;
+        let path = std::env::temp_dir().join(format!(
+            "maolan-reverb-mix-lock-{}.mpreset",
+            std::process::id()
+        ));
+        let source = SharedState::default();
+        source.params.set(ParamId::DryWet, 0.9);
+        source.params.set(ParamId::Decay, 12.0);
+        source.save_preset(&path).unwrap();
+        let target = SharedState::default();
+        target.params.set(ParamId::MixLock, 1.0);
+        target.params.set(ParamId::DryWet, 0.2);
+        target.load_preset(&path).unwrap();
+        assert_eq!(target.params.get(ParamId::DryWet), 0.2);
+        assert_eq!(target.params.get(ParamId::MixLock), 1.0);
+        assert_eq!(target.params.get(ParamId::Decay), 12.0);
+        target.params.set(ParamId::MixLock, 0.0);
+        target.load_preset(&path).unwrap();
+        assert_eq!(target.params.get(ParamId::DryWet), 0.9);
+        target.params.set(ParamId::MixLock, 1.0);
+        let bytes = PluginState::save(&source).unwrap();
+        assert!(PluginState::load(&target, &bytes));
+        assert_eq!(target.params.get(ParamId::MixLock), 0.0);
+        assert_eq!(target.params.get(ParamId::DryWet), 0.9);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn state_roundtrips_all_controls() {
+        let shared = SharedState::default();
+        for def in PARAMS {
+            shared.params.set(def.id, def.max);
+        }
+        let bytes = PluginState::save(&shared).unwrap();
+        let loaded = SharedState::default();
+        assert!(PluginState::load(&loaded, &bytes));
+        for def in PARAMS {
+            assert_eq!(loaded.params.get(def.id), def.max);
         }
     }
 }

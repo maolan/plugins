@@ -3,7 +3,7 @@ use std::{ffi::CStr, sync::Arc};
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{column, container, row},
+    widget::{column, container, pick_list, row},
 };
 #[cfg(target_os = "macos")]
 use maolan_clap::ffi::CLAP_WINDOW_API_COCOA;
@@ -23,18 +23,18 @@ use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 use crate::{
     common::{
         preset::{self, PresetProvider, PresetUi},
-        ui::{SmallKnob, small_knob},
+        ui::{SmallKnob, panel, small_knob},
     },
     reverb::{
-        params::{PARAMS, ParamId},
+        params::{MODES, PARAMS, ParamId, value_text},
         plugin::SharedState,
     },
 };
 
-use maolan_widgets::multi_toggler::horizontal_multi_toggler;
+use maolan_widgets::multi_toggler::{LabelPosition, horizontal_multi_toggler};
 
-pub const EDITOR_WIDTH: u32 = 540;
-pub const EDITOR_HEIGHT: u32 = 340;
+pub const EDITOR_WIDTH: u32 = 900;
+pub const EDITOR_HEIGHT: u32 = 570;
 
 pub fn preferred_api() -> &'static CStr {
     #[cfg(target_os = "windows")]
@@ -125,12 +125,12 @@ impl From<ChannelMode> for u32 {
 }
 
 #[derive(Debug, Clone)]
-#[allow(clippy::enum_variant_names)]
 pub enum Message {
     SetParam(ParamId, f32),
     ReleaseParam(ParamId),
     SetChannels(ChannelMode),
     Preset(preset::Msg),
+    Select(ParamId, usize),
 }
 
 impl From<preset::Msg> for Message {
@@ -180,6 +180,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.shared.sync_channels_from_params();
             state.shared.request_audio_ports_rescan();
         }
+        Message::Select(id, index) => {
+            state.shared.mark_gesture_begin_pending(id);
+            state.shared.set_param_outbound_only(id, index as f64);
+            state.shared.mark_gesture_end_pending(id);
+        }
         Message::Preset(msg) => {
             preset::update(&mut state.preset_ui, msg, state.shared.as_ref());
         }
@@ -191,18 +196,47 @@ fn view(state: &State) -> Element<'_, Message> {
     fn knob<'a>(id: ParamId, label: &'a str, state: &'a State) -> Element<'a, Message> {
         let value = state.shared.params.get(id) as f32;
         let def = &PARAMS[id.as_index()];
-        let value_text = format!("{value:.2}");
+        let value_text = value_text(id, value as f64);
 
+        let logarithmic = matches!(
+            id,
+            ParamId::Decay
+                | ParamId::BassMult
+                | ParamId::BassFreq
+                | ParamId::HighFreq
+                | ParamId::HighCut
+        );
+        let to_normalized = |v: f32| {
+            if logarithmic {
+                (v as f64 / def.min).ln() as f32 / (def.max / def.min).ln() as f32
+            } else {
+                v
+            }
+        };
+        let (min, max) = (def.min, def.max);
         small_knob(
             SmallKnob {
                 label: label.to_string(),
-                value,
-                range: def.min as f32..=def.max as f32,
-                default: def.default as f32,
-                step: 0.01,
+                value: to_normalized(value),
+                range: if logarithmic {
+                    0.0..=1.0
+                } else {
+                    min as f32..=max as f32
+                },
+                default: to_normalized(def.default as f32),
+                step: if logarithmic { 0.001 } else { def.step as f32 },
                 value_text,
             },
-            move |v| Message::SetParam(id, v),
+            move |v| {
+                Message::SetParam(
+                    id,
+                    if logarithmic {
+                        (min * (max / min).powf(v as f64)) as f32
+                    } else {
+                        v
+                    },
+                )
+            },
             Message::ReleaseParam(id),
         )
     }
@@ -216,22 +250,64 @@ fn view(state: &State) -> Element<'_, Message> {
             } else {
                 ChannelMode::Mono
             })
-        });
+        })
+        .label_position(LabelPosition::Below);
 
+    let mode = state.shared.params.get(ParamId::Mode) as usize;
+    let mode_picker = pick_list(
+        MODES.to_vec(),
+        Some(MODES[mode.min(MODES.len() - 1)]),
+        |name| {
+            Message::Select(
+                ParamId::Mode,
+                MODES.iter().position(|&s| s == name).unwrap_or(0),
+            )
+        },
+    );
+    let group = |title: &'static str, ids: &[ParamId]| -> Element<'_, Message> {
+        let knobs = row(ids
+            .iter()
+            .map(|&id| knob(id, PARAMS[id.as_index()].name, state)))
+        .spacing(10)
+        .align_y(Alignment::Center);
+        panel(title, knobs.into())
+    };
+    let controls: Element<'_, Message> = column![
+        row![
+            group("Reverb", &[ParamId::PreDelay, ParamId::Decay]),
+            group("Shape", &[ParamId::Size, ParamId::Attack]),
+            group("Diffusion", &[ParamId::Early, ParamId::Late]),
+        ]
+        .spacing(12),
+        row![
+            group(
+                "Damping",
+                &[
+                    ParamId::BassMult,
+                    ParamId::BassFreq,
+                    ParamId::HighShelf,
+                    ParamId::HighFreq
+                ]
+            ),
+            group("Modulation", &[ParamId::ModRate, ParamId::ModDepth]),
+            group("EQ", &[ParamId::LowCut, ParamId::HighCut]),
+        ]
+        .spacing(12),
+    ]
+    .spacing(14)
+    .into();
     let content = column![
         preset::bar(&state.preset_ui),
         row![
-            channels_toggle,
-            knob(ParamId::Replace, "Replace", state),
-            knob(ParamId::Brightness, "Brightness", state),
-            knob(ParamId::Detune, "Detune", state),
-            knob(ParamId::Bigness, "Bigness", state),
-            knob(ParamId::DryWet, "Dry/Wet", state),
+            mode_picker,
+            knob(ParamId::DryWet, "Mix", state),
+            channels_toggle
         ]
-        .spacing(8)
+        .spacing(12)
         .align_y(Alignment::Center),
+        controls,
     ]
-    .spacing(16)
+    .spacing(14)
     .align_x(Alignment::Start);
 
     container(content)

@@ -24,6 +24,7 @@ fn default_version() -> String {
 pub struct JsonParamState<P: ParamSpec> {
     pub version: String,
     pub params: BTreeMap<String, f64>,
+    #[serde(skip)]
     _phantom: PhantomData<P>,
 }
 
@@ -93,6 +94,8 @@ impl<'de, P: ParamSpec> Deserialize<'de> for JsonParamState<P> {
         enum Field {
             Version,
             Params,
+            #[serde(other)]
+            Ignore,
         }
 
         struct StateVisitor<P: ParamSpec>(PhantomData<P>);
@@ -112,6 +115,9 @@ impl<'de, P: ParamSpec> Deserialize<'de> for JsonParamState<P> {
                 let mut params: Option<BTreeMap<String, f64>> = None;
                 while let Some(key) = map.next_key::<Field>()? {
                     match key {
+                        Field::Ignore => {
+                            map.next_value::<serde::de::IgnoredAny>()?;
+                        }
                         Field::Version => {
                             if version.is_some() {
                                 return Err(serde::de::Error::duplicate_field("version"));

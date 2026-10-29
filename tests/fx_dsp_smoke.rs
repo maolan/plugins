@@ -163,7 +163,7 @@ fn delay_smoke() {
 fn reverb_smoke() {
     let mut dsp = Reverb::default();
     dsp.set_sample_rate(SR);
-    smoke(|l, r| dsp.process_stereo(l, r, 0.5, 0.5, 0.5, 0.5, 0.3));
+    smoke(|l, r| dsp.process_stereo(l, r, 0.3));
 }
 
 #[test]
@@ -222,7 +222,7 @@ fn denormal_input_stays_finite_and_bounded() {
         delay.process_stereo(&mut l, &mut r, &dp);
         assert!(l.iter().all(|s| s.is_finite()));
         assert!(l.iter().all(|s| s.abs() < 1.0));
-        reverb.process_stereo(&mut l, &mut r, 0.5, 0.5, 0.5, 0.5, 0.5);
+        reverb.process_stereo(&mut l, &mut r, 0.5);
         assert!(l.iter().all(|s| s.is_finite()));
         assert!(l.iter().all(|s| s.abs() < 1.0));
     }
