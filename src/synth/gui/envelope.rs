@@ -1,15 +1,10 @@
-use super::{
-    Message, ParamId, State, param_control, param_def, param_has_lfo_assignment, visual_param_value,
-};
+use super::{Message, ParamId, State, param_def, param_has_lfo_assignment, visual_param_value};
 use maolan_widgets::{
     adsr::{AdsrMessage, adsr_envelope},
-    iced::{
-        Alignment, Element, Length,
-        widget::{column, container},
-    },
+    iced::{Element, Length, widget::container},
 };
 
-pub(super) fn panel(state: &State, ids: [ParamId; 4], mode: ParamId) -> Element<'_, Message> {
+pub(super) fn panel(state: &State, ids: [ParamId; 4]) -> Element<'_, Message> {
     let values = ids.map(|id| visual_param_value(state, id, state.shared.params.get(id) as f32));
     let ranges = ids.map(|id| {
         let def = param_def(id).expect("valid parameter");
@@ -32,11 +27,5 @@ pub(super) fn panel(state: &State, ids: [ParamId; 4], mode: ParamId) -> Element<
             AdsrMessage::Assign(_) => Message::AssignLfoToParam(id),
         }
     });
-    container(
-        column![graph, param_control(mode, "Mode", state)]
-            .spacing(3)
-            .align_x(Alignment::Center),
-    )
-    .width(Length::Fixed(220.0))
-    .into()
+    container(graph).width(Length::Fixed(220.0)).into()
 }

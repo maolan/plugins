@@ -1173,7 +1173,7 @@ impl Voice {
             sample_rate,
             oscillators: [
                 Oscillator::new(OscType::Classic, sample_rate),
-                Oscillator::new(OscType::Sine, sample_rate),
+                Oscillator::new(OscType::Classic, sample_rate),
                 Oscillator::new(OscType::Fm2, sample_rate),
             ],
             wavetables: [None, None, None],

@@ -284,7 +284,7 @@ fn cutoff_hz(raw: f32) -> f64 {
 fn map_osc_type(surge_type: i32) -> Option<u8> {
     match surge_type {
         0 => Some(0),   // classic
-        1 => Some(1),   // sine
+        1 => Some(0),   // sine is a Classic waveform
         2 => Some(3),   // wavetable
         3 => Some(6),   // s&h noise
         5 => Some(8),   // fm3
@@ -971,6 +971,16 @@ fn convert_oscillators(
             continue;
         };
         push(osc_param(osc, "type"), our_type as f64);
+        if surge_type == 1 {
+            push(
+                [
+                    ParamId::Osc1Waveform,
+                    ParamId::Osc2Waveform,
+                    ParamId::Osc3Waveform,
+                ][osc],
+                4.0,
+            );
+        }
         // Surge has no per-oscillator on/off: all three always run and the
         // mixer mute is the only switch. Maolan's Enabled defaults are off
         // for osc 2/3, so import every oscillator as enabled and let the
@@ -1173,27 +1183,14 @@ fn convert_osc_params(
             }
             unison(push);
         }
-        // Sine: shaper mode(int), feedback, behavior(int), lowcut, highcut,
-        // detune, voices.
+        // Sine is imported as the Classic sine waveform; only its unison slots
+        // have a Classic equivalent.
         1 => {
-            if let Some(mode) = int(0) {
-                push(osc_param(osc, "shaper"), mode.clamp(0, 31) as f64);
-            }
-            if let Some(feedback) = float(1, true) {
-                // No per-sine feedback: reuse the FM feedback approximation.
-                push(ParamId::Fm2Feedback, clamp01(feedback.max(0.0)));
-            }
-            if int(2).is_some() {
+            if (0..5).any(|index| param(index).is_some()) {
                 report.skip(
-                    format!("{prefix}{name}_param2"),
-                    "sine FM behavior has no Maolan Synth equivalent",
+                    format!("{prefix}{name}_param0..4"),
+                    "sine-specific parameters have no Classic oscillator equivalent",
                 );
-            }
-            if let Some(lowcut) = float(3, true) {
-                push(ParamId::SineLowcut, cutoff_hz(lowcut));
-            }
-            if let Some(highcut) = float(4, true) {
-                push(ParamId::SineHighcut, cutoff_hz(highcut));
             }
             unison(push);
         }
@@ -1642,10 +1639,8 @@ fn convert_envelopes(
                 );
             }
         }
-        if let Some(param) = get(patch, prefix, &format!("env{eg}_mode"))
-            && let Some(mode) = param.as_int()
-        {
-            push(eg_param(eg, "mode"), mode.clamp(0, 1) as f64);
+        if get(patch, prefix, &format!("env{eg}_mode")).is_some() {
+            push(eg_param(eg, "mode"), 0.0);
         }
     }
 }
@@ -2248,7 +2243,7 @@ mod tests {
         assert_eq!(value_of(&result, ParamId::AmpRelease), Some(4.0)); // 2^2
         assert_eq!(value_of(&result, ParamId::AmpEgAttackCurve), Some(2.0));
         assert_eq!(value_of(&result, ParamId::AmpEgDecayCurve), Some(1.0));
-        assert_eq!(value_of(&result, ParamId::AmpEgMode), Some(1.0));
+        assert_eq!(value_of(&result, ParamId::AmpEgMode), Some(0.0));
         // 2^-8 s clamped above zero.
         assert!((value_of(&result, ParamId::FilterAttack).unwrap() - 1.0 / 256.0).abs() < 1e-6);
     }
@@ -2329,7 +2324,8 @@ mod tests {
             </parameters>{FOOTER}"#
         );
         let result = load(&xml);
-        assert_eq!(value_of(&result, ParamId::Osc1Type), Some(1.0));
+        assert_eq!(value_of(&result, ParamId::Osc1Type), Some(0.0));
+        assert_eq!(value_of(&result, ParamId::Osc1Waveform), Some(4.0));
         assert!(
             result
                 .report
