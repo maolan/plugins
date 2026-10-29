@@ -1,5 +1,5 @@
 use maolan_baseview::iced::{
-    Alignment, Element, Length,
+    Alignment, Background, Border, Color, Element, Length, Theme,
     widget::{column, container, text},
 };
 use maolan_widgets::arch_slider::arch_slider;
@@ -123,5 +123,42 @@ pub fn vu_meter<Message: 'static>(
     )
     .width(Length::Fixed(SIDE_COLUMN_WIDTH))
     .height(Length::Fill)
+    .into()
+}
+
+pub fn section_title<Message: Clone + 'static>(title: &'static str) -> Element<'static, Message> {
+    container(text(title).size(13))
+        .padding([3, 6])
+        .style(|_theme: &Theme| container::Style {
+            background: Some(Background::Color(Color::from_rgb(0.15, 0.15, 0.18))),
+            border: Border {
+                color: Color::from_rgb(0.28, 0.28, 0.32),
+                width: 1.0,
+                radius: 3.0.into(),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+pub fn panel<'a, Message: Clone + 'static>(
+    title: &'static str,
+    content: Element<'a, Message>,
+) -> Element<'a, Message> {
+    container(
+        column![section_title(title), content]
+            .spacing(6)
+            .align_x(Alignment::Start),
+    )
+    .padding(8)
+    .style(|_theme: &Theme| container::Style {
+        background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.10))),
+        border: Border {
+            color: Color::from_rgb(0.20, 0.20, 0.24),
+            width: 1.0,
+            radius: 4.0.into(),
+        },
+        ..container::Style::default()
+    })
     .into()
 }
