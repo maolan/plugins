@@ -44,13 +44,13 @@ use crate::common::resource_directory::{
 use crate::common::{bus, fft, wavetable::Wavetable, wavetable_factory::FACTORY_COUNT};
 use crate::synth::{
     dsp::{
-        AttackShape, CombinatorMode, DecayReleaseShape, EnvelopeMode, EnvelopeRetriggerMode,
-        EnvelopeSettings, FilterRouting, FilterSettings, FilterSubtype, FilterType, FlavorType,
-        LfoSettings, LfoShape, LfoSyncDivision, LfoSyncMode, LfoTriggerMode, ModDepthCurve,
-        ModRouting, ModSource, ModTarget, MsegCurve, MsegLoopMode, MtsEspClient, NoiseSettings,
-        NoiseType, OscFmMode, OscPhaseMode, OscRoute, OscSettings, OscType, PlayMode,
-        PortamentoCurve, StealMode, SynthEngine, Tuning, VoiceParams, VoicePriority, Waveshape,
-        WaveshaperSettings,
+        AttackShape, ClassicWaveform, CombinatorMode, DecayReleaseShape, EnvelopeMode,
+        EnvelopeRetriggerMode, EnvelopeSettings, FilterRouting, FilterSettings, FilterSubtype,
+        FilterType, FlavorType, LfoSettings, LfoShape, LfoSyncDivision, LfoSyncMode,
+        LfoTriggerMode, ModDepthCurve, ModRouting, ModSource, ModTarget, MsegCurve, MsegLoopMode,
+        MtsEspClient, NoiseSettings, NoiseType, OscFmMode, OscPhaseMode, OscRoute, OscSettings,
+        OscType, PlayMode, PortamentoCurve, StealMode, SynthEngine, Tuning, VoiceParams,
+        VoicePriority, Waveshape, WaveshaperSettings,
     },
     gui::GuiBridge,
     params::{PARAMS, ParamId, ParamStore, sanitize_param_value},
@@ -114,6 +114,19 @@ pub struct SharedState {
     pub resource_dir: RwLock<Option<String>>,
     /// Report of the last Surge XT preset import (GUI display + logging).
     pub surge_report: Mutex<crate::synth::surge::Report>,
+}
+
+fn migrate_legacy_sine(store: &ParamStore) {
+    for (type_id, waveform_id) in [
+        (ParamId::Osc1Type, ParamId::Osc1Waveform),
+        (ParamId::Osc2Type, ParamId::Osc2Waveform),
+        (ParamId::Osc3Type, ParamId::Osc3Waveform),
+    ] {
+        if store.get(type_id).round() as u8 == OscType::Sine as u8 {
+            store.set(type_id, OscType::Classic as u8 as f64);
+            store.set(waveform_id, ClassicWaveform::Sine as u8 as f64);
+        }
+    }
 }
 
 impl Default for SharedState {
@@ -271,6 +284,7 @@ impl SharedState {
     pub fn load_synth_preset(&self, path: &Path) -> Result<Option<String>, String> {
         let preset = SynthPreset::load_from_path(path)?;
         preset.apply(&self.params);
+        migrate_legacy_sine(&self.params);
         for osc_index in 0..self.custom_wavetables.len() {
             self.set_custom_wavetable(osc_index, None, None);
         }
@@ -3366,6 +3380,7 @@ unsafe extern "C-unwind" fn ext_state_load(
         return false;
     };
     state.apply(&inst.shared.params);
+    migrate_legacy_sine(&inst.shared.params);
 
     // Restore custom wavetables referenced by this patch. Loading happens on
     // the host state-load thread, never inside process().
@@ -3988,7 +4003,7 @@ impl crate::common::clap_harness::GuiHooks<SharedState> for GuiBridge {
 mod tests {
     use super::{
         ParamDirtyFlags, ParamStore, SharedState, apply_param_id_to_voice_params,
-        resolve_wavetable_load_path, resource_files,
+        migrate_legacy_sine, resolve_wavetable_load_path, resource_files,
     };
     use crate::synth::dsp::VoiceParams;
     use crate::synth::params::ParamId;
@@ -4060,5 +4075,27 @@ mod tests {
             resolve_wavetable_load_path(&shared, "missing.wav"),
             std::path::PathBuf::from("missing.wav")
         );
+    }
+
+    #[test]
+    fn legacy_sine_oscillators_migrate_to_classic_sine_waveform() {
+        let store = ParamStore::default();
+        for (type_id, waveform_id) in [
+            (ParamId::Osc1Type, ParamId::Osc1Waveform),
+            (ParamId::Osc2Type, ParamId::Osc2Waveform),
+            (ParamId::Osc3Type, ParamId::Osc3Waveform),
+        ] {
+            store.set(type_id, 1.0);
+            store.set(waveform_id, 0.0);
+        }
+        migrate_legacy_sine(&store);
+        for (type_id, waveform_id) in [
+            (ParamId::Osc1Type, ParamId::Osc1Waveform),
+            (ParamId::Osc2Type, ParamId::Osc2Waveform),
+            (ParamId::Osc3Type, ParamId::Osc3Waveform),
+        ] {
+            assert_eq!(store.get(type_id), 0.0);
+            assert_eq!(store.get(waveform_id), 4.0);
+        }
     }
 }

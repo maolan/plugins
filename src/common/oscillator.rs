@@ -80,8 +80,7 @@ pub enum OscType {
 impl OscType {
     pub fn from_u8(v: u8) -> Self {
         match v {
-            0 => OscType::Classic,
-            1 => OscType::Sine,
+            0 | 1 => OscType::Classic,
             2 => OscType::Fm2,
             3 => OscType::Wavetable,
             4 => OscType::Window,
@@ -124,6 +123,7 @@ pub enum ClassicWaveform {
     Square = 1,
     Pulse = 2,
     Triangle = 3,
+    Sine = 4,
 }
 
 impl ClassicWaveform {
@@ -132,6 +132,8 @@ impl ClassicWaveform {
             0 => ClassicWaveform::Saw,
             1 => ClassicWaveform::Square,
             2 => ClassicWaveform::Pulse,
+            3 => ClassicWaveform::Triangle,
+            4 => ClassicWaveform::Sine,
             _ => ClassicWaveform::Triangle,
         }
     }
@@ -141,7 +143,8 @@ impl ClassicWaveform {
             ClassicWaveform::Saw => ClassicWaveform::Square,
             ClassicWaveform::Square => ClassicWaveform::Pulse,
             ClassicWaveform::Pulse => ClassicWaveform::Triangle,
-            ClassicWaveform::Triangle => ClassicWaveform::Saw,
+            ClassicWaveform::Triangle => ClassicWaveform::Sine,
+            ClassicWaveform::Sine => ClassicWaveform::Saw,
         }
     }
 }
@@ -153,6 +156,7 @@ impl std::fmt::Display for ClassicWaveform {
             ClassicWaveform::Square => write!(f, "Square"),
             ClassicWaveform::Pulse => write!(f, "Pulse"),
             ClassicWaveform::Triangle => write!(f, "Triangle"),
+            ClassicWaveform::Sine => write!(f, "Sine"),
         }
     }
 }
@@ -315,6 +319,7 @@ impl ClassicOsc {
                     out.abs() * 2.0 - 1.0
                 }
             }
+            ClassicWaveform::Sine => (t * 2.0 * PI).sin(),
         }
     }
 
@@ -1277,7 +1282,7 @@ impl SineOsc {
 
 #[cfg(test)]
 mod tests {
-    use super::{OscType, Oscillator, SineOsc};
+    use super::{ClassicOsc, ClassicWaveform, OscType, Oscillator, SineOsc};
     use crate::common::wavetable::Wavetable;
     use std::sync::Arc;
 
@@ -1317,6 +1322,26 @@ mod tests {
             assert!(
                 mean.abs() < 0.02,
                 "cycle {cycle} has unexpected DC shift: {mean}"
+            );
+        }
+    }
+
+    #[test]
+    fn classic_sine_waveform_tracks_frequency() {
+        let sample_rate = 48_000.0f32;
+        let freq_hz = 100.0f32;
+        let period = (sample_rate / freq_hz).round() as usize;
+        let mut osc = ClassicOsc::new(sample_rate);
+        osc.set_waveform(ClassicWaveform::Sine);
+        osc.set_freq_hz(freq_hz);
+        osc.reset_to_zero();
+
+        for i in 0..period * 2 {
+            let expected = (2.0 * std::f32::consts::PI * i as f32 / period as f32).sin();
+            let actual = osc.next_mono(0.0);
+            assert!(
+                (actual - expected).abs() < 2e-4,
+                "sample {i}: expected {expected}, got {actual}"
             );
         }
     }

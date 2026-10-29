@@ -598,7 +598,18 @@ fn param_control<'a>(id: ParamId, label: &'a str, state: &'a State) -> Element<'
 fn osc_type_dropdown<'a>(id: ParamId, state: &'a State) -> Element<'a, Message> {
     let value = state.shared.params.get(id) as f32;
     let osc_type = OscType::from_u8(value as u8);
-    let options: Vec<OscType> = (0..=10).map(OscType::from_u8).collect();
+    let options = vec![
+        OscType::Classic,
+        OscType::Fm2,
+        OscType::Wavetable,
+        OscType::Window,
+        OscType::Modern,
+        OscType::ShNoise,
+        OscType::String,
+        OscType::Fm3,
+        OscType::Alias,
+        OscType::Twist,
+    ];
     let dropdown = maolan_baseview::iced::widget::pick_list(options, Some(osc_type), move |t| {
         Message::SetParam(id, t as u8 as f32)
     })
@@ -631,6 +642,7 @@ fn waveform_dropdown<'a>(state: &'a State, osc_index: usize) -> Element<'a, Mess
                 ClassicWaveform::Square,
                 ClassicWaveform::Pulse,
                 ClassicWaveform::Triangle,
+                ClassicWaveform::Sine,
             ];
             let dropdown =
                 maolan_baseview::iced::widget::pick_list(options, Some(waveform), move |t| {
@@ -1171,7 +1183,6 @@ fn view(state: &State) -> Element<'_, Message> {
             ParamId::AmpSustain,
             ParamId::AmpRelease,
         ],
-        ParamId::AmpEgMode,
     );
 
     let filter_eg = envelope::panel(
@@ -1182,7 +1193,6 @@ fn view(state: &State) -> Element<'_, Message> {
             ParamId::FilterSustain,
             ParamId::FilterRelease,
         ],
-        ParamId::FilterEgMode,
     );
 
     let pitch_eg = envelope::panel(
@@ -1193,7 +1203,6 @@ fn view(state: &State) -> Element<'_, Message> {
             ParamId::PitchSustain,
             ParamId::PitchRelease,
         ],
-        ParamId::PitchEgMode,
     );
 
     let filter_selector = row![

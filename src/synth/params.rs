@@ -882,7 +882,7 @@ pub static PARAMS: &[ParamDef] = &[
         0.01
     ),
     def_automatable!(ParamId::Osc1Sync, "Sync", "Osc1", 0.0, 60.0, 0.0, 0.0),
-    def_enum!(ParamId::Osc2Type, "Type", "Osc2", 10.0, 1.0),
+    def_enum!(ParamId::Osc2Type, "Type", "Osc2", 10.0, 0.0),
     def_enum!(ParamId::Osc2Octave, "Octave", "Osc2", 6.0, 3.0),
     def_enum!(ParamId::Osc2Semitone, "Semitone", "Osc2", 24.0, 12.0),
     def_automatable!(ParamId::Osc2Fine, "Fine", "Osc2", -100.0, 100.0, 0.0, 1.0),
@@ -1020,7 +1020,7 @@ pub static PARAMS: &[ParamDef] = &[
         0.0,
         0.01
     ),
-    def_enum!(ParamId::AmpEgMode, "Mode", "AmpEG", 1.0, 0.0),
+    def_enum!(ParamId::AmpEgMode, "Mode", "AmpEG", 0.0, 0.0),
     def_automatable!(
         ParamId::FilterAttack,
         "Attack",
@@ -1057,7 +1057,7 @@ pub static PARAMS: &[ParamDef] = &[
         0.0,
         0.01
     ),
-    def_enum!(ParamId::FilterEgMode, "Mode", "FilterEG", 1.0, 0.0),
+    def_enum!(ParamId::FilterEgMode, "Mode", "FilterEG", 0.0, 0.0),
     def_automatable!(
         ParamId::PitchAttack,
         "Attack",
@@ -1094,7 +1094,7 @@ pub static PARAMS: &[ParamDef] = &[
         0.0,
         0.01
     ),
-    def_enum!(ParamId::PitchEgMode, "Mode", "PitchEG", 1.0, 0.0),
+    def_enum!(ParamId::PitchEgMode, "Mode", "PitchEG", 0.0, 0.0),
     def_automatable!(ParamId::Lfo1Rate, "Rate", "LFO1", 0.01, 100.0, 1.0, 0.01),
     def_enum!(ParamId::Lfo1Shape, "Shape", "LFO1", 9.0, 0.0),
     def_automatable!(ParamId::Lfo1Amount, "Amount", "LFO1", 0.0, 1.0, 0.0, 0.01),
@@ -1686,7 +1686,7 @@ pub static PARAMS: &[ParamDef] = &[
     def_toggle!(ParamId::Lfo1Unipolar, "Unipolar", "LFO1", 0.0),
     def_toggle!(ParamId::Lfo2Unipolar, "Unipolar", "LFO2", 0.0),
     def_enum!(ParamId::Osc1Waveform, "Waveform", "Osc1", 15.0, 0.0),
-    def_enum!(ParamId::Osc2Waveform, "Waveform", "Osc2", 15.0, 0.0),
+    def_enum!(ParamId::Osc2Waveform, "Waveform", "Osc2", 15.0, 4.0),
     def_enum!(ParamId::Osc3Waveform, "Waveform", "Osc3", 15.0, 0.0),
     def_automatable!(
         ParamId::StepSeqShuffle,
