@@ -492,6 +492,7 @@ pub struct SpectralAnalyzerState {
     dragging_marker: Option<usize>,
     dragging_curve: Option<(usize, f32, f32, mouse::Button)>,
     last_click: Option<(Instant, Point)>,
+    modifiers: maolan_baseview::iced::keyboard::Modifiers,
 }
 
 impl<Message: Clone + 'static, const BINS: usize> Program<Message>
@@ -514,7 +515,16 @@ impl<Message: Clone + 'static, const BINS: usize> Program<Message>
         };
 
         match event {
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+            Event::Keyboard(maolan_baseview::iced::keyboard::Event::ModifiersChanged(
+                modifiers,
+            )) => {
+                state.modifiers = *modifiers;
+                None
+            }
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+                if !(cfg!(target_os = "macos")
+                    && (state.modifiers.alt() || state.modifiers.control())) =>
+            {
                 let pos = cursor.position_in(bounds)?;
                 let now = Instant::now();
                 let mut closest = None;
@@ -589,7 +599,12 @@ impl<Message: Clone + 'static, const BINS: usize> Program<Message>
                 state.last_click = Some((now, pos));
                 None
             }
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Middle)) => {
+            Event::Mouse(mouse::Event::ButtonPressed(button))
+                if *button == mouse::Button::Middle
+                    || (cfg!(target_os = "macos")
+                        && *button == mouse::Button::Left
+                        && state.modifiers.alt()) =>
+            {
                 let pos = cursor.position_in(bounds)?;
                 if let Some(curve_index) = self.closest_curve(pos, local_bounds) {
                     state.last_click = None;
@@ -615,7 +630,12 @@ impl<Message: Clone + 'static, const BINS: usize> Program<Message>
                 }
                 None
             }
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
+            Event::Mouse(mouse::Event::ButtonPressed(button))
+                if *button == mouse::Button::Right
+                    || (cfg!(target_os = "macos")
+                        && *button == mouse::Button::Left
+                        && state.modifiers.control()) =>
+            {
                 let pos = cursor.position_in(bounds)?;
                 if let Some(curve_index) = self.closest_curve(pos, local_bounds) {
                     state.last_click = None;
