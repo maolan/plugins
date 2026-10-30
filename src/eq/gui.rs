@@ -1300,6 +1300,7 @@ struct EqResponseState {
     hover_pos: Option<Point>,
     drag_last_pos: Option<Point>,
     last_press: Option<(Instant, Point)>,
+    pending_listen: Option<(usize, Point)>,
     modifiers: keyboard::Modifiers,
     sketching: bool,
     sketch_points: Vec<(f32, f32)>,
@@ -1573,6 +1574,11 @@ impl Program<Message> for EqResponseCanvas {
                     if let Some((local_idx, dynamic_target)) = hit_dot(p) {
                         let global_idx = self.bands[local_idx].0;
                         if state.modifiers.alt() {
+                            if cfg!(target_os = "macos") {
+                                state.pending_listen = Some((global_idx, p));
+                                state.drag_last_pos = Some(p);
+                                return Some(CanvasAction::capture());
+                            }
                             return Some(
                                 CanvasAction::publish(Message::ToggleListen(global_idx))
                                     .and_capture(),
@@ -1698,6 +1704,12 @@ impl Program<Message> for EqResponseCanvas {
             Event::Mouse(mouse::Event::ButtonReleased(
                 mouse::Button::Left | mouse::Button::Middle,
             )) => {
+                if let Some((global_idx, _)) = state.pending_listen.take() {
+                    state.drag_last_pos = None;
+                    return Some(
+                        CanvasAction::publish(Message::ToggleListen(global_idx)).and_capture(),
+                    );
+                }
                 if state.sketching {
                     state.sketching = false;
                     let points = std::mem::take(&mut state.sketch_points);
@@ -1730,6 +1742,36 @@ impl Program<Message> for EqResponseCanvas {
                             Self::x_to_freq(p.x, local_bounds),
                             self.y_to_gain(p.y, local_bounds),
                         ));
+                        return Some(CanvasAction::capture());
+                    }
+                    if let Some((global_idx, start)) = state.pending_listen
+                        && start.distance(p) >= 3.0
+                    {
+                        state.pending_listen = None;
+                        if Some(global_idx) == self.selected_band
+                            && let Some(local_idx) = self
+                                .bands
+                                .iter()
+                                .position(|(idx, _, _, _, _, _, _, _)| *idx == global_idx)
+                            && let Some((_, _, _, gain, on, typ, _, _)) =
+                                self.bands.get(local_idx).copied()
+                            && on
+                            && BandType::from(typ).supports_dynamic_target()
+                        {
+                            let threshold = self
+                                .y_to_threshold(self.gain_to_y(gain, local_bounds), local_bounds);
+                            state.dragging = Some(DragTarget::DynamicTarget(local_idx));
+                            state.drag_last_pos = Some(start);
+                            return Some(
+                                CanvasAction::publish(Message::StartBandDynamicTarget(
+                                    global_idx,
+                                    threshold,
+                                    self.y_to_gain(start.y, local_bounds),
+                                ))
+                                .and_capture(),
+                            );
+                        }
+                        state.drag_last_pos = None;
                         return Some(CanvasAction::capture());
                     }
                     if let Some(dragging) = state.dragging {
