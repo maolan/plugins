@@ -5,9 +5,9 @@ use rand::random;
 use super::{
     AdsrEnvelope, AliasWaveform, ClassicOsc, ClassicWaveform, EnvelopeSettings, ExciterType,
     Filter, FilterSettings, FilterType, FlavorFilter, Fm2FeedbackMode, Lfo, LfoSettings, LfoShape,
-    MSEG_MAX_NODES, MSEG_MAX_SEGMENTS, ModernSubWaveform, MsegCurve, MsegLoopMode, MtsEspClient,
-    NoiseColorMode, NoiseGenerator, NoiseType, OscType, Oscillator, PlayMode, PortamentoCurve,
-    SineShaperMode, Tuning, VoicePriority, Waveshape, Waveshaper, WaveshaperSettings, WindowType,
+    MSEG_MAX_NODES, MSEG_MAX_SEGMENTS, MsegCurve, MsegLoopMode, MtsEspClient, NoiseColorMode,
+    NoiseGenerator, NoiseType, OscType, Oscillator, PlayMode, PortamentoCurve, SineShaperMode,
+    Tuning, VoicePriority, WindowType,
 };
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -153,6 +153,8 @@ impl Default for OscSettings {
 pub struct NoiseSettings {
     pub noise_type: NoiseType,
     pub level: f32,
+    pub unison_voices: u8,
+    pub unison_spread: f32,
     pub filter_type: FilterType,
     pub filter_cutoff: f32,
     pub filter_resonance: f32,
@@ -171,6 +173,8 @@ impl Default for NoiseSettings {
         Self {
             noise_type: NoiseType::White,
             level: 0.0,
+            unison_voices: 1,
+            unison_spread: 0.0,
             filter_type: FilterType::Lowpass,
             filter_cutoff: 8000.0,
             filter_resonance: 0.7,
@@ -223,6 +227,12 @@ impl FilterRouting {
             FilterRouting::Dual2 => "Dual 2",
             FilterRouting::Ring => "Ring",
         }
+    }
+}
+
+impl std::fmt::Display for FilterRouting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name())
     }
 }
 
@@ -407,7 +417,6 @@ pub enum ModSource {
     Lfo6 = 10,
     AmpEg = 11,
     FilterEg = 12,
-    PitchEg = 13,
     RandomBipolar = 14,
     RandomUnipolar = 15,
     AlternateBipolar = 16,
@@ -449,7 +458,6 @@ impl ModSource {
             10 => Some(ModSource::Lfo6),
             11 => Some(ModSource::AmpEg),
             12 => Some(ModSource::FilterEg),
-            13 => Some(ModSource::PitchEg),
             14 => Some(ModSource::RandomBipolar),
             15 => Some(ModSource::RandomUnipolar),
             16 => Some(ModSource::AlternateBipolar),
@@ -513,10 +521,6 @@ pub enum ModTarget {
     FilterDecay = 28,
     FilterSustain = 29,
     FilterRelease = 30,
-    PitchAttack = 31,
-    PitchDecay = 32,
-    PitchSustain = 33,
-    PitchRelease = 34,
     Lfo1Rate = 35,
     Lfo1Amount = 36,
     Lfo1Deform = 37,
@@ -539,7 +543,6 @@ pub enum ModTarget {
     OutputPan = 54,
     OutputWidth = 55,
     NoiseLevel = 56,
-    WaveshaperDrive = 57,
     Portamento = 58,
     FlavorCutoff = 59,
     FilterBalance = 60,
@@ -565,6 +568,18 @@ pub enum ModTarget {
     ModRoute10Depth = 80,
     ModRoute11Depth = 81,
     ModRoute12Depth = 82,
+    Osc1EgAttack = 83,
+    Osc1EgDecay = 84,
+    Osc1EgSustain = 85,
+    Osc1EgRelease = 86,
+    Osc2EgAttack = 87,
+    Osc2EgDecay = 88,
+    Osc2EgSustain = 89,
+    Osc2EgRelease = 90,
+    Osc3EgAttack = 91,
+    Osc3EgDecay = 92,
+    Osc3EgSustain = 93,
+    Osc3EgRelease = 94,
 }
 
 impl ModTarget {
@@ -601,10 +616,6 @@ impl ModTarget {
             28 => Some(ModTarget::FilterDecay),
             29 => Some(ModTarget::FilterSustain),
             30 => Some(ModTarget::FilterRelease),
-            31 => Some(ModTarget::PitchAttack),
-            32 => Some(ModTarget::PitchDecay),
-            33 => Some(ModTarget::PitchSustain),
-            34 => Some(ModTarget::PitchRelease),
             35 => Some(ModTarget::Lfo1Rate),
             36 => Some(ModTarget::Lfo1Amount),
             37 => Some(ModTarget::Lfo1Deform),
@@ -627,7 +638,6 @@ impl ModTarget {
             54 => Some(ModTarget::OutputPan),
             55 => Some(ModTarget::OutputWidth),
             56 => Some(ModTarget::NoiseLevel),
-            57 => Some(ModTarget::WaveshaperDrive),
             58 => Some(ModTarget::Portamento),
             59 => Some(ModTarget::FlavorCutoff),
             60 => Some(ModTarget::FilterBalance),
@@ -653,11 +663,24 @@ impl ModTarget {
             80 => Some(ModTarget::ModRoute10Depth),
             81 => Some(ModTarget::ModRoute11Depth),
             82 => Some(ModTarget::ModRoute12Depth),
+            83 => Some(ModTarget::Osc1EgAttack),
+            84 => Some(ModTarget::Osc1EgDecay),
+            85 => Some(ModTarget::Osc1EgSustain),
+            86 => Some(ModTarget::Osc1EgRelease),
+            87 => Some(ModTarget::Osc2EgAttack),
+            88 => Some(ModTarget::Osc2EgDecay),
+            89 => Some(ModTarget::Osc2EgSustain),
+            90 => Some(ModTarget::Osc2EgRelease),
+            91 => Some(ModTarget::Osc3EgAttack),
+            92 => Some(ModTarget::Osc3EgDecay),
+            93 => Some(ModTarget::Osc3EgSustain),
+            94 => Some(ModTarget::Osc3EgRelease),
+
             _ => None,
         }
     }
 
-    pub const COUNT: u8 = 83;
+    pub const COUNT: u8 = 95;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -799,6 +822,7 @@ pub struct ModValues {
     f2_resonance: f32,
     f2_eg_amount: f32,
     f2_drive: f32,
+    osc_eg: [[f32; 4]; 3],
     amp_attack: f32,
     amp_decay: f32,
     amp_sustain: f32,
@@ -807,10 +831,6 @@ pub struct ModValues {
     filter_decay: f32,
     filter_sustain: f32,
     filter_release: f32,
-    pitch_attack: f32,
-    pitch_decay: f32,
-    pitch_sustain: f32,
-    pitch_release: f32,
     lfo1_rate: f32,
     lfo1_amount: f32,
     lfo1_deform: f32,
@@ -839,7 +859,6 @@ pub struct ModValues {
     output_pan: f32,
     output_width: f32,
     noise_level: f32,
-    waveshaper_drive: f32,
     portamento: f32,
     flavor_cutoff: f32,
     filter_balance: f32,
@@ -853,7 +872,6 @@ pub struct ModValues {
 #[derive(Debug, Clone, Copy)]
 struct VoiceFilterContext {
     balance: f32,
-    ws_active: bool,
     f1_enabled: bool,
     f2_enabled: bool,
     per_source_routing: bool,
@@ -867,7 +885,6 @@ struct VoiceFilterSampleParams {
     f2_cutoff: f32,
     f2_res: f32,
     f2_drive: f32,
-    ws_drive: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -878,8 +895,9 @@ pub struct VoiceParams {
     pub filter_routing: FilterRouting,
     pub filter_balance: f32,
     pub amp_eg: EnvelopeSettings,
+    /// None retains the legacy shared envelope for DSP callers.
+    pub osc_egs: Option<[EnvelopeSettings; 3]>,
     pub filter_eg: EnvelopeSettings,
-    pub pitch_eg: EnvelopeSettings,
     pub lfo1: LfoSettings,
     pub lfo2: LfoSettings,
     pub lfo3: LfoSettings,
@@ -893,7 +911,6 @@ pub struct VoiceParams {
     pub scene_lfo5: LfoSettings,
     pub scene_lfo6: LfoSettings,
     pub noise: NoiseSettings,
-    pub waveshaper: WaveshaperSettings,
     pub flavor: super::FlavorType,
     pub flavor_cutoff: f32,
     pub flavor_resonance: f32,
@@ -937,10 +954,8 @@ pub struct VoiceParams {
     pub step_seq_shuffle: f32,
     pub step_seq_trig_amp: u16,
     pub step_seq_trig_filter: u16,
-    pub step_seq_trig_pitch: u16,
     pub mseg_retrig_amp: u16,
     pub mseg_retrig_filter: u16,
-    pub mseg_retrig_pitch: u16,
     pub mseg_nodes: [f32; MSEG_MAX_NODES],
     pub mseg_curves: [MsegCurve; MSEG_MAX_SEGMENTS],
     pub mseg_loop_start: usize,
@@ -980,14 +995,8 @@ impl Default for VoiceParams {
             filter_routing: FilterRouting::Series,
             filter_balance: 0.0,
             amp_eg: EnvelopeSettings::default(),
+            osc_egs: None,
             filter_eg: EnvelopeSettings::default(),
-            pitch_eg: EnvelopeSettings {
-                attack: 0.0,
-                decay: 0.0,
-                sustain: 0.0,
-                release: 0.0,
-                ..EnvelopeSettings::default()
-            },
             lfo1: LfoSettings::default(),
             lfo2: LfoSettings::default(),
             lfo3: LfoSettings::default(),
@@ -1001,7 +1010,6 @@ impl Default for VoiceParams {
             scene_lfo5: LfoSettings::default(),
             scene_lfo6: LfoSettings::default(),
             noise: NoiseSettings::default(),
-            waveshaper: WaveshaperSettings::default(),
             flavor: super::FlavorType::Off,
             flavor_cutoff: 8000.0,
             flavor_resonance: 0.5,
@@ -1042,10 +1050,8 @@ impl Default for VoiceParams {
             step_seq_shuffle: 0.0,
             step_seq_trig_amp: 0,
             step_seq_trig_filter: 0,
-            step_seq_trig_pitch: 0,
             mseg_retrig_amp: 0,
             mseg_retrig_filter: 0,
-            mseg_retrig_pitch: 0,
             mseg_nodes: [0.0; MSEG_MAX_NODES],
             mseg_curves: [MsegCurve::Linear; MSEG_MAX_SEGMENTS],
             mseg_loop_start: 0,
@@ -1083,9 +1089,9 @@ pub struct Voice {
     oscillators: [Oscillator; 3],
     wavetables: [Option<Arc<Wavetable>>; 3],
     noise: NoiseGenerator,
+    noise_unison: [NoiseGenerator; 7],
     flavor: FlavorFilter,
     flavor2: FlavorFilter,
-    waveshaper: Waveshaper,
     filter1_l: Filter,
     filter1_r: Filter,
     filter2_l: Filter,
@@ -1095,8 +1101,8 @@ pub struct Voice {
     lowcut_states_l2: [f32; 4],
     lowcut_states_r2: [f32; 4],
     amp_eg: AdsrEnvelope,
+    osc_egs: [AdsrEnvelope; 3],
     filter_eg: AdsrEnvelope,
-    pitch_eg: AdsrEnvelope,
     pub lfo1: Lfo,
     pub lfo2: Lfo,
     pub lfo3: Lfo,
@@ -1135,7 +1141,6 @@ pub struct Voice {
     latest_key: f32,
     amp_eg_output: f32,
     filter_eg_output: f32,
-    pitch_eg_output: f32,
 
     random_value: f32,
     alternate_sign: f32,
@@ -1167,6 +1172,26 @@ pub struct Voice {
     mts_esp: Option<Arc<Mutex<MtsEspClient>>>,
 }
 
+fn configure_noise_source(source: &mut NoiseGenerator, settings: &NoiseSettings) {
+    source.noise_type = settings.noise_type;
+    source.color = settings.color;
+    source.color_mode = if settings.color_mode == 0 {
+        NoiseColorMode::Tilt
+    } else {
+        NoiseColorMode::Legacy
+    };
+    source.filter_enabled = settings.filter_enabled;
+    if settings.filter_enabled {
+        source.filter.set_filter_type(settings.filter_type);
+        source
+            .filter
+            .set_params(settings.filter_cutoff, settings.filter_resonance);
+        source
+            .filter
+            .prepare_block(settings.filter_cutoff, settings.filter_resonance, 1);
+    }
+}
+
 impl Voice {
     pub fn new(sample_rate: f32) -> Self {
         Self {
@@ -1178,9 +1203,9 @@ impl Voice {
             ],
             wavetables: [None, None, None],
             noise: NoiseGenerator::new(sample_rate),
+            noise_unison: std::array::from_fn(|_| NoiseGenerator::new(sample_rate)),
             flavor: FlavorFilter::new(sample_rate),
             flavor2: FlavorFilter::new(sample_rate),
-            waveshaper: Waveshaper::new(),
             filter1_l: Filter::new(FilterType::Lowpass, sample_rate),
             filter1_r: Filter::new(FilterType::Lowpass, sample_rate),
             filter2_l: Filter::new(FilterType::Lowpass, sample_rate),
@@ -1190,8 +1215,8 @@ impl Voice {
             lowcut_states_l2: [0.0; 4],
             lowcut_states_r2: [0.0; 4],
             amp_eg: AdsrEnvelope::new(sample_rate),
+            osc_egs: std::array::from_fn(|_| AdsrEnvelope::new(sample_rate)),
             filter_eg: AdsrEnvelope::new(sample_rate),
-            pitch_eg: AdsrEnvelope::new(sample_rate),
             lfo1: Lfo::new(sample_rate),
             lfo2: Lfo::new(sample_rate),
             lfo3: Lfo::new(sample_rate),
@@ -1226,7 +1251,6 @@ impl Voice {
             latest_key: 0.0,
             amp_eg_output: 0.0,
             filter_eg_output: 0.0,
-            pitch_eg_output: 0.0,
             random_value: random::<f32>() * 2.0 - 1.0,
             alternate_sign: 1.0,
             note_counter: 0,
@@ -1256,9 +1280,9 @@ impl Voice {
 
         // Compute change flags before overwriting self.params so we can skip
         // redundant per-component setup on the audio thread.
-        let amp_eg_changed = self.params.amp_eg != params.amp_eg;
+        let amp_eg_changed =
+            self.params.amp_eg != params.amp_eg || self.params.osc_egs != params.osc_egs;
         let filter_eg_changed = self.params.filter_eg != params.filter_eg;
-        let pitch_eg_changed = self.params.pitch_eg != params.pitch_eg;
 
         let step_seq_changed = self.params.step_seq_values != params.step_seq_values
             || self.params.step_seq_loop_start != params.step_seq_loop_start
@@ -1295,7 +1319,6 @@ impl Voice {
         let flavor_changed = self.params.flavor != params.flavor
             || self.params.flavor_cutoff != params.flavor_cutoff
             || self.params.flavor_resonance != params.flavor_resonance;
-        let waveshaper_changed = self.params.waveshaper != params.waveshaper;
 
         self.params = params.clone();
 
@@ -1307,6 +1330,7 @@ impl Voice {
         }
 
         if amp_eg_changed {
+            self.configure_osc_envelopes(params);
             self.amp_eg.set_params(
                 params.amp_eg.attack,
                 params.amp_eg.decay,
@@ -1349,29 +1373,6 @@ impl Voice {
                 .set_gated_release(params.filter_eg.gated_release);
             self.filter_eg
                 .set_correct_analog_mode(params.filter_eg.correct_analog_mode);
-        }
-
-        if pitch_eg_changed {
-            self.pitch_eg.set_params(
-                params.pitch_eg.attack,
-                params.pitch_eg.decay,
-                params.pitch_eg.sustain,
-                params.pitch_eg.release,
-            );
-            self.pitch_eg.set_mode(params.pitch_eg.mode);
-            self.pitch_eg.set_shapes(
-                params.pitch_eg.attack_shape,
-                params.pitch_eg.decay_shape,
-                params.pitch_eg.release_shape,
-            );
-            self.pitch_eg
-                .set_retrigger_mode(params.pitch_eg.retrigger_mode);
-            self.pitch_eg.set_tempo_sync(params.pitch_eg.tempo_sync);
-            self.pitch_eg.set_uber_release(params.pitch_eg.uber_release);
-            self.pitch_eg
-                .set_gated_release(params.pitch_eg.gated_release);
-            self.pitch_eg
-                .set_correct_analog_mode(params.pitch_eg.correct_analog_mode);
         }
 
         if lfo1_changed {
@@ -1644,11 +1645,6 @@ impl Voice {
                     o.set_lowcut(settings.window_lowcut);
                     o.set_highcut(settings.window_highcut);
                 }
-                if let Oscillator::Modern(o) = osc {
-                    o.set_sub_octave(settings.sub_octave as i8);
-                    o.set_sub_waveform(ModernSubWaveform::from_u8(settings.waveform));
-                    o.set_sub_one(settings.sub_one);
-                }
                 if let Oscillator::Alias(o) = osc {
                     for (i, &amp) in settings.alias_partials.iter().enumerate() {
                         o.set_partial_amplitude(i, amp);
@@ -1690,24 +1686,9 @@ impl Voice {
         }
 
         if noise_changed {
-            self.noise.noise_type = params.noise.noise_type;
-            self.noise.color = params.noise.color;
-            self.noise.color_mode = if params.noise.color_mode == 0 {
-                NoiseColorMode::Tilt
-            } else {
-                NoiseColorMode::Legacy
-            };
-            self.noise.filter_enabled = params.noise.filter_enabled;
-            if params.noise.filter_enabled {
-                self.noise.filter.set_filter_type(params.noise.filter_type);
-                self.noise
-                    .filter
-                    .set_params(params.noise.filter_cutoff, params.noise.filter_resonance);
-                self.noise.filter.prepare_block(
-                    params.noise.filter_cutoff,
-                    params.noise.filter_resonance,
-                    1,
-                );
+            configure_noise_source(&mut self.noise, &params.noise);
+            for source in &mut self.noise_unison {
+                configure_noise_source(source, &params.noise);
             }
         }
 
@@ -1718,12 +1699,6 @@ impl Voice {
             self.flavor2.set_type(params.flavor);
             self.flavor2.cutoff_hz = params.flavor_cutoff;
             self.flavor2.resonance = params.flavor_resonance;
-        }
-
-        if waveshaper_changed {
-            self.waveshaper.set_shape(params.waveshaper.shape);
-            self.waveshaper.drive = params.waveshaper.drive;
-            self.waveshaper.mix = params.waveshaper.mix;
         }
     }
 
@@ -1863,11 +1838,6 @@ impl Voice {
                 o.set_lowcut(settings.window_lowcut);
                 o.set_highcut(settings.window_highcut);
             }
-            if let Oscillator::Modern(o) = osc {
-                o.set_sub_octave(settings.sub_octave as i8);
-                o.set_sub_waveform(ModernSubWaveform::from_u8(settings.waveform));
-                o.set_sub_one(settings.sub_one);
-            }
             if let Oscillator::Alias(o) = osc {
                 for (i, &amp) in settings.alias_partials.iter().enumerate() {
                     o.set_partial_amplitude(i, amp);
@@ -1908,7 +1878,71 @@ impl Voice {
         }
     }
 
+    fn configure_osc_envelopes(&mut self, params: &VoiceParams) {
+        for (i, envelope) in self.osc_egs.iter_mut().enumerate() {
+            let settings = params
+                .osc_egs
+                .as_ref()
+                .map_or(&params.amp_eg, |egs| &egs[i]);
+            envelope.set_params(
+                settings.attack,
+                settings.decay,
+                settings.sustain,
+                settings.release,
+            );
+            envelope.set_mode(settings.mode);
+            envelope.set_shapes(
+                settings.attack_shape,
+                settings.decay_shape,
+                settings.release_shape,
+            );
+            envelope.set_retrigger_mode(settings.retrigger_mode);
+            envelope.set_tempo_sync(settings.tempo_sync);
+            envelope.set_uber_release(settings.uber_release);
+            envelope.set_gated_release(settings.gated_release);
+            envelope.set_correct_analog_mode(settings.correct_analog_mode);
+        }
+    }
+
+    fn amplitude_envelopes_active(&self) -> bool {
+        self.amp_eg.is_active() || self.osc_egs.iter().any(AdsrEnvelope::is_active)
+    }
+
+    // Keep the final VCA for filter tails. Relative source gains give each
+    // oscillator its own envelope while identical envelopes preserve the old
+    // filter input level and output response (rather than applying ADSR twice).
+    fn next_osc_envelope_gains(&mut self, mods: &ModValues) -> ([f32; 3], f32, f32) {
+        let outputs: [f32; 3] = std::array::from_fn(|i| {
+            let settings = self
+                .params
+                .osc_egs
+                .as_ref()
+                .map_or(&self.params.amp_eg, |egs| &egs[i]);
+            let envelope = &mut self.osc_egs[i];
+            envelope.set_attack((settings.attack + mods.amp_attack + mods.osc_eg[i][0]).max(0.0));
+            envelope.set_decay((settings.decay + mods.amp_decay + mods.osc_eg[i][1]).max(0.0));
+            envelope.set_sustain(
+                (settings.sustain + mods.amp_sustain + mods.osc_eg[i][2]).clamp(0.0, 1.0),
+            );
+            envelope
+                .set_release((settings.release + mods.amp_release + mods.osc_eg[i][3]).max(0.0));
+            envelope.next()
+        });
+        let gain = outputs.iter().copied().fold(self.amp_eg_output, f32::max);
+        if gain > 0.0 {
+            (
+                outputs.map(|value| value / gain),
+                self.amp_eg_output / gain,
+                gain,
+            )
+        } else {
+            ([0.0; 3], 0.0, 0.0)
+        }
+    }
+
     pub fn update_amp_eg_params(&mut self, params: &VoiceParams) {
+        self.configure_osc_envelopes(params);
+        self.params.osc_egs = params.osc_egs.clone();
         self.params.amp_eg = params.amp_eg.clone();
         self.amp_eg.set_params(
             params.amp_eg.attack,
@@ -1953,30 +1987,6 @@ impl Voice {
             .set_gated_release(params.filter_eg.gated_release);
         self.filter_eg
             .set_correct_analog_mode(params.filter_eg.correct_analog_mode);
-    }
-
-    pub fn update_pitch_eg_params(&mut self, params: &VoiceParams) {
-        self.params.pitch_eg = params.pitch_eg.clone();
-        self.pitch_eg.set_params(
-            params.pitch_eg.attack,
-            params.pitch_eg.decay,
-            params.pitch_eg.sustain,
-            params.pitch_eg.release,
-        );
-        self.pitch_eg.set_mode(params.pitch_eg.mode);
-        self.pitch_eg.set_shapes(
-            params.pitch_eg.attack_shape,
-            params.pitch_eg.decay_shape,
-            params.pitch_eg.release_shape,
-        );
-        self.pitch_eg
-            .set_retrigger_mode(params.pitch_eg.retrigger_mode);
-        self.pitch_eg.set_tempo_sync(params.pitch_eg.tempo_sync);
-        self.pitch_eg.set_uber_release(params.pitch_eg.uber_release);
-        self.pitch_eg
-            .set_gated_release(params.pitch_eg.gated_release);
-        self.pitch_eg
-            .set_correct_analog_mode(params.pitch_eg.correct_analog_mode);
     }
 
     pub fn update_lfo_params(&mut self, params: &VoiceParams, idx: usize) {
@@ -2037,34 +2047,44 @@ impl Voice {
         lfo.set_env_tempo_sync(settings.env_tempo_sync);
     }
 
-    pub fn update_noise_params(&mut self, params: &VoiceParams) {
-        self.params.noise = params.noise.clone();
-        self.noise.noise_type = params.noise.noise_type;
-        self.noise.color = params.noise.color;
-        self.noise.color_mode = if params.noise.color_mode == 0 {
-            NoiseColorMode::Tilt
-        } else {
-            NoiseColorMode::Legacy
-        };
-        self.noise.filter_enabled = params.noise.filter_enabled;
-        if params.noise.filter_enabled {
-            self.noise.filter.set_filter_type(params.noise.filter_type);
-            self.noise
-                .filter
-                .set_params(params.noise.filter_cutoff, params.noise.filter_resonance);
-            self.noise.filter.prepare_block(
-                params.noise.filter_cutoff,
-                params.noise.filter_resonance,
-                1,
-            );
+    fn next_noise_unison_stereo(&mut self) -> (f32, f32) {
+        let voices = self.params.noise.unison_voices.clamp(1, 8) as usize;
+        let stereo = self.params.noise.stereo;
+        if voices == 1 {
+            self.noise.stereo = stereo;
+            return self.noise.next_stereo();
         }
+
+        let spread = self.params.noise.unison_spread.clamp(0.0, 1.0);
+        let normalization = (voices as f32).sqrt().recip();
+        let mut left = 0.0;
+        let mut right = 0.0;
+        for voice in 0..voices {
+            let source = if voice == 0 {
+                &mut self.noise
+            } else {
+                &mut self.noise_unison[voice - 1]
+            };
+            source.stereo = stereo;
+            let (sample_l, sample_r) = source.next_stereo();
+            let position = if voices == 1 {
+                0.0
+            } else {
+                voice as f32 / (voices - 1) as f32 * 2.0 - 1.0
+            };
+            let pan = position * spread;
+            left += sample_l * (1.0 - pan).sqrt();
+            right += sample_r * (1.0 + pan).sqrt();
+        }
+        (left * normalization, right * normalization)
     }
 
-    pub fn update_waveshaper_params(&mut self, params: &VoiceParams) {
-        self.params.waveshaper = params.waveshaper.clone();
-        self.waveshaper.set_shape(params.waveshaper.shape);
-        self.waveshaper.drive = params.waveshaper.drive;
-        self.waveshaper.mix = params.waveshaper.mix;
+    pub fn update_noise_params(&mut self, params: &VoiceParams) {
+        self.params.noise = params.noise.clone();
+        configure_noise_source(&mut self.noise, &params.noise);
+        for source in &mut self.noise_unison {
+            configure_noise_source(source, &params.noise);
+        }
     }
 
     pub fn update_flavor_params(&mut self, params: &VoiceParams) {
@@ -2226,8 +2246,10 @@ impl Voice {
         self.filter2_l = Filter::new(self.params.filter2.filter_type, sample_rate);
         self.filter2_r = Filter::new(self.params.filter2.filter_type, sample_rate);
         self.amp_eg.set_sample_rate(sample_rate);
+        for envelope in &mut self.osc_egs {
+            envelope.set_sample_rate(sample_rate);
+        }
         self.filter_eg.set_sample_rate(sample_rate);
-        self.pitch_eg.set_sample_rate(sample_rate);
         self.lfo1.set_sample_rate(sample_rate);
         self.lfo2.set_sample_rate(sample_rate);
         self.lfo3.set_sample_rate(sample_rate);
@@ -2245,8 +2267,10 @@ impl Voice {
 
     pub fn set_eg_tempo(&mut self, tempo_bpm: f32) {
         self.amp_eg.set_tempo(tempo_bpm);
+        for envelope in &mut self.osc_egs {
+            envelope.set_tempo(tempo_bpm);
+        }
         self.filter_eg.set_tempo(tempo_bpm);
-        self.pitch_eg.set_tempo(tempo_bpm);
     }
 
     pub fn set_key_mod_values(&mut self, lowest: f32, highest: f32, latest: f32) {
@@ -2271,7 +2295,7 @@ impl Voice {
         } else {
             self.params.portamento
         };
-        if portamento_time <= 0.0 || !self.amp_eg.is_active() {
+        if portamento_time <= 0.0 || !self.amplitude_envelopes_active() {
             self.current_freq = self.target_freq;
         }
 
@@ -2290,8 +2314,10 @@ impl Voice {
         self.filter2_r.reset();
 
         self.amp_eg.trigger();
+        for envelope in &mut self.osc_egs {
+            envelope.trigger();
+        }
         self.filter_eg.trigger();
-        self.pitch_eg.trigger();
         self.last_scale_degree = freq_to_scale_degree(self.target_freq, &self.tuning);
 
         self.lfo1.reset();
@@ -2327,15 +2353,19 @@ impl Voice {
         self.uber_release = true;
         self.uber_fade = 1.0;
         self.amp_eg.release();
+        for envelope in &mut self.osc_egs {
+            envelope.release();
+        }
         self.filter_eg.release();
-        self.pitch_eg.release();
     }
 
     pub fn release(&mut self) {
         self.gate = false;
         self.amp_eg.release();
+        for envelope in &mut self.osc_egs {
+            envelope.release();
+        }
         self.filter_eg.release();
-        self.pitch_eg.release();
         self.lfo1.release();
         self.lfo2.release();
         self.lfo3.release();
@@ -2350,7 +2380,7 @@ impl Voice {
     }
 
     pub fn is_active(&self) -> bool {
-        self.active && (self.amp_eg.is_active() || self.gate)
+        self.active && (self.amplitude_envelopes_active() || self.gate)
     }
 
     pub fn note_age(&self) -> usize {
@@ -2376,7 +2406,6 @@ impl Voice {
             ModSource::Lfo6 => self.lfo6_output,
             ModSource::AmpEg => self.amp_eg_output,
             ModSource::FilterEg => self.filter_eg_output,
-            ModSource::PitchEg => self.pitch_eg_output,
             ModSource::RandomBipolar => self.random_value,
             ModSource::RandomUnipolar => (self.random_value + 1.0) * 0.5,
             ModSource::AlternateBipolar => self.alternate_sign,
@@ -2473,6 +2502,18 @@ impl Voice {
                 ModTarget::Filter2Resonance => vals.f2_resonance += delta,
                 ModTarget::Filter2EgAmount => vals.f2_eg_amount += delta,
                 ModTarget::Filter2Drive => vals.f2_drive += delta,
+                ModTarget::Osc1EgAttack => vals.osc_eg[0][0] += delta,
+                ModTarget::Osc1EgDecay => vals.osc_eg[0][1] += delta,
+                ModTarget::Osc1EgSustain => vals.osc_eg[0][2] += delta,
+                ModTarget::Osc1EgRelease => vals.osc_eg[0][3] += delta,
+                ModTarget::Osc2EgAttack => vals.osc_eg[1][0] += delta,
+                ModTarget::Osc2EgDecay => vals.osc_eg[1][1] += delta,
+                ModTarget::Osc2EgSustain => vals.osc_eg[1][2] += delta,
+                ModTarget::Osc2EgRelease => vals.osc_eg[1][3] += delta,
+                ModTarget::Osc3EgAttack => vals.osc_eg[2][0] += delta,
+                ModTarget::Osc3EgDecay => vals.osc_eg[2][1] += delta,
+                ModTarget::Osc3EgSustain => vals.osc_eg[2][2] += delta,
+                ModTarget::Osc3EgRelease => vals.osc_eg[2][3] += delta,
                 ModTarget::AmpAttack => vals.amp_attack += delta,
                 ModTarget::AmpDecay => vals.amp_decay += delta,
                 ModTarget::AmpSustain => vals.amp_sustain += delta,
@@ -2481,10 +2522,6 @@ impl Voice {
                 ModTarget::FilterDecay => vals.filter_decay += delta,
                 ModTarget::FilterSustain => vals.filter_sustain += delta,
                 ModTarget::FilterRelease => vals.filter_release += delta,
-                ModTarget::PitchAttack => vals.pitch_attack += delta,
-                ModTarget::PitchDecay => vals.pitch_decay += delta,
-                ModTarget::PitchSustain => vals.pitch_sustain += delta,
-                ModTarget::PitchRelease => vals.pitch_release += delta,
                 ModTarget::Lfo1Rate => vals.lfo1_rate += delta,
                 ModTarget::Lfo1Amount => vals.lfo1_amount += delta,
                 ModTarget::Lfo1Deform => vals.lfo1_deform += delta,
@@ -2513,7 +2550,6 @@ impl Voice {
                 ModTarget::OutputPan => vals.output_pan += delta,
                 ModTarget::OutputWidth => vals.output_width += delta,
                 ModTarget::NoiseLevel => vals.noise_level += delta,
-                ModTarget::WaveshaperDrive => vals.waveshaper_drive += delta,
                 ModTarget::Portamento => vals.portamento += delta,
                 ModTarget::FlavorCutoff => vals.flavor_cutoff += delta,
                 ModTarget::FilterBalance => vals.filter_balance += delta,
@@ -2614,11 +2650,7 @@ impl Voice {
     /// section, in absolute Hz. When the section runs at 2×, the voice
     /// filters are built with the doubled rate, so the same absolute cutoff
     /// maps to the same frequency at either rate.
-    fn compute_filter_sample_params(
-        &self,
-        mods: &ModValues,
-        ws_active: bool,
-    ) -> VoiceFilterSampleParams {
+    fn compute_filter_sample_params(&self, mods: &ModValues) -> VoiceFilterSampleParams {
         let f1_enabled = self.params.filter1.enabled;
         let f1_cutoff = if f1_enabled {
             let has_lfo1_f1 = self.params.modulations.iter().any(|r| {
@@ -2688,12 +2720,6 @@ impl Voice {
             0.0
         };
 
-        let ws_drive = if ws_active {
-            (self.params.waveshaper.drive + mods.waveshaper_drive).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-
         VoiceFilterSampleParams {
             f1_cutoff,
             f1_res,
@@ -2701,13 +2727,12 @@ impl Voice {
             f2_cutoff,
             f2_res,
             f2_drive,
-            ws_drive,
         }
     }
 
     /// One sample of the nonlinear filter section: feedback injection,
-    /// per-sample filter coefficient updates, the routing/waveshaper chain,
-    /// balance mix, and the filter-feedback pickup. This is the single
+    /// per-sample filter coefficient updates, filter routing, balance mix,
+    /// and the filter-feedback pickup. This is the single
     /// implementation of the section; it runs at host rate when the
     /// oversample toggle is off (or nothing nonlinear is active) and twice
     /// per host sample at 2× when it is on. In the 2× case the filter
@@ -2740,10 +2765,8 @@ impl Voice {
             .prepare_block(params.f2_cutoff, params.f2_res, 1);
 
         let balance = ctx.balance;
-        let ws_active = ctx.ws_active;
         let f1_enabled = ctx.f1_enabled;
         let f2_enabled = ctx.f2_enabled;
-        let ws_drive = params.ws_drive;
         let f1_drive = params.f1_drive;
         let f2_drive = params.f2_drive;
         let (mut char_l, mut char_r, f1_out_l, f1_out_r) = if ctx.per_source_routing {
@@ -2763,25 +2786,9 @@ impl Voice {
                 f2_l = self.filter2_l.process(f2_l);
                 f2_r = self.filter2_r.process(f2_r);
             }
-            let sum_l = f1_l + f2_l;
-            let sum_r = f1_r + f2_r;
-            let (ws_l, ws_r) = if ws_active {
-                let mut ws = self.waveshaper;
-                ws.drive = ws_drive;
-                (ws.process(sum_l), ws.process(sum_r))
-            } else {
-                (sum_l, sum_r)
-            };
-            (ws_l, ws_r, f1_l, f1_r)
+            (f1_l + f2_l, f1_r + f2_r, f1_l, f1_r)
         } else if !f1_enabled && !f2_enabled {
-            let (ws_l, ws_r) = if ws_active {
-                let mut ws = self.waveshaper;
-                ws.drive = ws_drive;
-                (ws.process(pre_filter_l), ws.process(pre_filter_r))
-            } else {
-                (pre_filter_l, pre_filter_r)
-            };
-            (ws_l, ws_r, ws_l, ws_r)
+            (pre_filter_l, pre_filter_r, pre_filter_l, pre_filter_r)
         } else {
             match self.params.filter_routing {
                 FilterRouting::Series => {
@@ -2793,22 +2800,15 @@ impl Voice {
                         s_l = self.filter1_l.process(s_l);
                         s_r = self.filter1_r.process(s_r);
                     }
-                    let (ws_l, ws_r) = if ws_active {
-                        let mut ws = self.waveshaper;
-                        ws.drive = ws_drive;
-                        (ws.process(s_l), ws.process(s_r))
-                    } else {
-                        (s_l, s_r)
-                    };
-                    let mut out_l = ws_l;
-                    let mut out_r = ws_r;
+                    let mut out_l = s_l;
+                    let mut out_r = s_r;
                     if f2_enabled {
                         self.filter2_l.set_drive(f2_drive);
                         self.filter2_r.set_drive(f2_drive);
                         out_l = self.filter2_l.process(out_l);
                         out_r = self.filter2_r.process(out_r);
                     }
-                    (out_l, out_r, ws_l, ws_r)
+                    (out_l, out_r, s_l, s_r)
                 }
                 FilterRouting::Parallel => {
                     let mut f1_l = pre_filter_l;
@@ -2829,14 +2829,7 @@ impl Voice {
                     }
                     let sum_l = (f1_l + f2_l) * 0.5;
                     let sum_r = (f1_r + f2_r) * 0.5;
-                    let (ws_l, ws_r) = if ws_active {
-                        let mut ws = self.waveshaper;
-                        ws.drive = ws_drive;
-                        (ws.process(sum_l), ws.process(sum_r))
-                    } else {
-                        (sum_l, sum_r)
-                    };
-                    (ws_l, ws_r, f1_l, f1_r)
+                    (sum_l, sum_r, f1_l, f1_r)
                 }
                 FilterRouting::Wide => {
                     let mut s_l = pre_filter_l;
@@ -2847,22 +2840,15 @@ impl Voice {
                         s_l = self.filter2_l.process(s_l);
                         s_r = self.filter2_r.process(s_r);
                     }
-                    let (ws_l, ws_r) = if ws_active {
-                        let mut ws = self.waveshaper;
-                        ws.drive = ws_drive;
-                        (ws.process(s_l), ws.process(s_r))
-                    } else {
-                        (s_l, s_r)
-                    };
-                    let mut out_l = ws_l;
-                    let mut out_r = ws_r;
+                    let mut out_l = s_l;
+                    let mut out_r = s_r;
                     if f1_enabled {
                         self.filter1_l.set_drive(f1_drive);
                         self.filter1_r.set_drive(f1_drive);
                         out_l = self.filter1_l.process(out_l);
                         out_r = self.filter1_r.process(out_r);
                     }
-                    (out_l, out_r, ws_l, ws_r)
+                    (out_l, out_r, s_l, s_r)
                 }
                 FilterRouting::Split => {
                     let mut f1_l = pre_filter_l;
@@ -2883,14 +2869,7 @@ impl Voice {
                     }
                     let stereo_l = f1_l;
                     let stereo_r = f2_r;
-                    let (ws_l, ws_r) = if ws_active {
-                        let mut ws = self.waveshaper;
-                        ws.drive = ws_drive;
-                        (ws.process(stereo_l), ws.process(stereo_r))
-                    } else {
-                        (stereo_l, stereo_r)
-                    };
-                    (ws_l, ws_r, stereo_l, stereo_r)
+                    (stereo_l, stereo_r, stereo_l, stereo_r)
                 }
                 FilterRouting::Serial2 => {
                     let mut s_l = pre_filter_l;
@@ -2901,22 +2880,15 @@ impl Voice {
                         s_l = self.filter2_l.process(s_l);
                         s_r = self.filter2_r.process(s_r);
                     }
-                    let (ws_l, ws_r) = if ws_active {
-                        let mut ws = self.waveshaper;
-                        ws.drive = ws_drive;
-                        (ws.process(s_l), ws.process(s_r))
-                    } else {
-                        (s_l, s_r)
-                    };
-                    let mut out_l = ws_l;
-                    let mut out_r = ws_r;
+                    let mut out_l = s_l;
+                    let mut out_r = s_r;
                     if f1_enabled {
                         self.filter1_l.set_drive(f1_drive);
                         self.filter1_r.set_drive(f1_drive);
                         out_l = self.filter1_l.process(out_l);
                         out_r = self.filter1_r.process(out_r);
                     }
-                    (out_l, out_r, ws_l, ws_r)
+                    (out_l, out_r, s_l, s_r)
                 }
                 FilterRouting::Serial3 => {
                     let mut s_l = pre_filter_l;
@@ -2927,13 +2899,6 @@ impl Voice {
                         s_l = self.filter1_l.process(s_l);
                         s_r = self.filter1_r.process(s_r);
                     }
-                    let (ws_l, ws_r) = if ws_active {
-                        let mut ws = self.waveshaper;
-                        ws.drive = ws_drive;
-                        (ws.process(s_l), ws.process(s_r))
-                    } else {
-                        (s_l, s_r)
-                    };
                     let mut f2_l = pre_filter_l;
                     let mut f2_r = pre_filter_r;
                     if f2_enabled {
@@ -2942,9 +2907,9 @@ impl Voice {
                         f2_l = self.filter2_l.process(f2_l);
                         f2_r = self.filter2_r.process(f2_r);
                     }
-                    let out_l = ws_l * 0.7 + f2_l * 0.3;
-                    let out_r = ws_r * 0.7 + f2_r * 0.3;
-                    (out_l, out_r, ws_l, ws_r)
+                    let out_l = s_l * 0.7 + f2_l * 0.3;
+                    let out_r = s_r * 0.7 + f2_r * 0.3;
+                    (out_l, out_r, s_l, s_r)
                 }
                 FilterRouting::Dual2 => {
                     let mut f1_l = pre_filter_l;
@@ -2957,22 +2922,15 @@ impl Voice {
                         f1_l = self.filter1_l.process(f1_l);
                         f1_r = self.filter1_r.process(f1_r);
                     }
-                    let (f1_ws_l, f1_ws_r) = if ws_active {
-                        let mut ws = self.waveshaper;
-                        ws.drive = ws_drive;
-                        (ws.process(f1_l), ws.process(f1_r))
-                    } else {
-                        (f1_l, f1_r)
-                    };
                     if f2_enabled {
                         self.filter2_l.set_drive(f2_drive);
                         self.filter2_r.set_drive(f2_drive);
                         f2_l = self.filter2_l.process(f2_l);
                         f2_r = self.filter2_r.process(f2_r);
                     }
-                    let out_l = (f1_ws_l + f2_l) * 0.5;
-                    let out_r = (f1_ws_r + f2_r) * 0.5;
-                    (out_l, out_r, f1_ws_l, f1_ws_r)
+                    let out_l = (f1_l + f2_l) * 0.5;
+                    let out_r = (f1_r + f2_r) * 0.5;
+                    (out_l, out_r, f1_l, f1_r)
                 }
                 FilterRouting::Ring => {
                     let mut f1_l = pre_filter_l;
@@ -2993,14 +2951,7 @@ impl Voice {
                     }
                     let ring_l = f1_l * f2_l;
                     let ring_r = f1_r * f2_r;
-                    let (ws_l, ws_r) = if ws_active {
-                        let mut ws = self.waveshaper;
-                        ws.drive = ws_drive;
-                        (ws.process(ring_l), ws.process(ring_r))
-                    } else {
-                        (ring_l, ring_r)
-                    };
-                    (ws_l, ws_r, f1_l, f1_r)
+                    (ring_l, ring_r, f1_l, f1_r)
                 }
             }
         };
@@ -3114,8 +3065,9 @@ impl Voice {
                 self.scene_lfo6_output = scene_lfo_bufs[5][i];
 
                 self.amp_eg_output = self.amp_eg.next();
+                let (osc_eg_gains, _, envelope_gain) =
+                    self.next_osc_envelope_gains(&ModValues::default());
                 self.filter_eg_output = self.filter_eg.next();
-                self.pitch_eg_output = self.pitch_eg.next();
                 self.lfo1_output = self.lfo1.next();
                 self.lfo2_output = self.lfo2.next();
                 self.lfo3_output = self.lfo3.next();
@@ -3185,10 +3137,8 @@ impl Voice {
                     }
                 };
                 let pb_mul = 2.0f32.powf(self.pitch_bend * pb_range / 12.0);
-                let pitch_eg_mul = 2.0f32.powf(self.pitch_eg_output * 2.0);
                 let lfo5_pitch_mul = 2.0f32.powf(self.lfo5_output * 50.0 / 1200.0);
-                self.oscillators[0]
-                    .set_freq_hz(self.current_freq * pb_mul * pitch_eg_mul * lfo5_pitch_mul);
+                self.oscillators[0].set_freq_hz(self.current_freq * pb_mul * lfo5_pitch_mul);
 
                 let (osc1_l, osc1_r) = self.oscillators[0].next(0.0, audio_l, audio_r);
 
@@ -3196,7 +3146,6 @@ impl Voice {
                 let lfo6_pitch_mul = 2.0f32.powf(self.lfo6_output * 50.0 / 1200.0);
                 let osc2_freq = self.current_freq
                     * pb_mul
-                    * pitch_eg_mul
                     * lfo6_pitch_mul
                     * 2.0f32.powi(osc2_settings.octave as i32)
                     * 2.0f32.powf(osc2_settings.semitone as f32 / 12.0)
@@ -3210,7 +3159,6 @@ impl Voice {
                 let osc3_settings = &self.params.oscs[2];
                 let osc3_freq = self.current_freq
                     * pb_mul
-                    * pitch_eg_mul
                     * 2.0f32.powi(osc3_settings.octave as i32)
                     * 2.0f32.powf(osc3_settings.semitone as f32 / 12.0)
                     * 2.0f32.powf(osc3_settings.fine / 1200.0);
@@ -3244,8 +3192,12 @@ impl Voice {
                 };
 
                 let (mut mix_l, mut mix_r) = (
-                    osc1_l * osc1_level + osc2_l * osc2_level + osc3_l * osc3_level,
-                    osc1_r * osc1_level + osc2_r * osc2_level + osc3_r * osc3_level,
+                    osc1_l * osc1_level * osc_eg_gains[0]
+                        + osc2_l * osc2_level * osc_eg_gains[1]
+                        + osc3_l * osc3_level * osc_eg_gains[2],
+                    osc1_r * osc1_level * osc_eg_gains[0]
+                        + osc2_r * osc2_level * osc_eg_gains[1]
+                        + osc3_r * osc3_level * osc_eg_gains[2],
                 );
 
                 if f1_enabled {
@@ -3268,12 +3220,12 @@ impl Voice {
                 let vca_level = self.params.vca_level.clamp(0.0, 2.0);
                 let vel_sense = self.params.vca_velsense.clamp(0.0, 1.0);
                 let effective_vel = 1.0 - vel_sense + vel_sense * self.velocity;
-                let gain = self.amp_eg_output * effective_vel * vol * vca_level;
+                let gain = envelope_gain * effective_vel * vol * vca_level;
 
                 out_l[i] = mix_l * gain;
                 out_r[i] = mix_r * gain;
             }
-            if !self.amp_eg.is_active() && !self.gate {
+            if !self.amplitude_envelopes_active() && !self.gate {
                 self.active = false;
             }
             return;
@@ -3286,15 +3238,13 @@ impl Voice {
         };
 
         // Decide the rate of the nonlinear filter section (filters with
-        // drive, waveshaper, filter feedback) for this whole block. The
-        // section only runs oversampled at 2× when the global toggle is on
-        // AND a nonlinear stage is active, so idle/dry voices pay nothing.
-        let ws_active =
-            self.params.waveshaper.enabled && self.params.waveshaper.shape != Waveshape::Off;
+        // drive and filter feedback) for this whole block. The section only
+        // runs oversampled at 2× when the global toggle is on AND a nonlinear
+        // stage is active, so idle/dry voices pay nothing.
         let f1_enabled = self.params.filter1.enabled;
         let f2_enabled = self.params.filter2.enabled;
         let fb_amount = self.params.filter_feedback.clamp(-1.0, 1.0).abs();
-        let nonlinear_active = ws_active || f1_enabled || f2_enabled || fb_amount > 0.0;
+        let nonlinear_active = f1_enabled || f2_enabled || fb_amount > 0.0;
         let oversample = self.params.voice_oversample && nonlinear_active;
         let target_filter_rate = if oversample {
             self.sample_rate * 2.0
@@ -3418,8 +3368,10 @@ impl Voice {
                 let current_degree = freq_to_scale_degree(self.current_freq, &self.tuning);
                 if current_degree != self.last_scale_degree {
                     self.amp_eg.trigger();
+                    for envelope in &mut self.osc_egs {
+                        envelope.trigger();
+                    }
                     self.filter_eg.trigger();
-                    self.pitch_eg.trigger();
                     self.last_scale_degree = current_degree;
                 }
             } else {
@@ -3487,15 +3439,6 @@ impl Voice {
                 .set_sustain((self.params.filter_eg.sustain + mods.filter_sustain).clamp(0.0, 1.0));
             self.filter_eg
                 .set_release((self.params.filter_eg.release + mods.filter_release).max(0.0));
-            self.pitch_eg
-                .set_attack((self.params.pitch_eg.attack + mods.pitch_attack).max(0.0));
-            self.pitch_eg
-                .set_decay((self.params.pitch_eg.decay + mods.pitch_decay).max(0.0));
-            self.pitch_eg
-                .set_sustain((self.params.pitch_eg.sustain + mods.pitch_sustain).clamp(0.0, 1.0));
-            self.pitch_eg
-                .set_release((self.params.pitch_eg.release + mods.pitch_release).max(0.0));
-
             self.lfo1_output = self.lfo1.next();
             self.lfo2_output = self.lfo2.next();
             self.lfo3_output = self.lfo3.next();
@@ -3516,31 +3459,31 @@ impl Voice {
                     let mask = 1u16 << lfo.stepseq.step_index.min(15);
                     if self.params.step_seq_trig_amp & mask != 0 {
                         self.amp_eg.trigger();
+                        for envelope in &mut self.osc_egs {
+                            envelope.trigger();
+                        }
                     }
                     if self.params.step_seq_trig_filter & mask != 0 {
                         self.filter_eg.trigger();
-                    }
-                    if self.params.step_seq_trig_pitch & mask != 0 {
-                        self.pitch_eg.trigger();
                     }
                 }
                 if *shape == LfoShape::Mseg && lfo.mseg_seg_changed {
                     let mask = 1u16 << lfo.mseg_prev_seg.min(15);
                     if self.params.mseg_retrig_amp & mask != 0 {
                         self.amp_eg.trigger();
+                        for envelope in &mut self.osc_egs {
+                            envelope.trigger();
+                        }
                     }
                     if self.params.mseg_retrig_filter & mask != 0 {
                         self.filter_eg.trigger();
-                    }
-                    if self.params.mseg_retrig_pitch & mask != 0 {
-                        self.pitch_eg.trigger();
                     }
                 }
             }
 
             self.amp_eg_output = self.amp_eg.next();
             self.filter_eg_output = self.filter_eg.next();
-            self.pitch_eg_output = self.pitch_eg.next();
+            let (osc_eg_gains, noise_eg_gain, envelope_gain) = self.next_osc_envelope_gains(&mods);
 
             self.update_oscillator_freqs(&mods);
 
@@ -3688,7 +3631,8 @@ impl Voice {
                 }
                 let passes = if any_soloed { osc.solo } else { !osc.mute };
                 if passes {
-                    let level = (osc.level + mods.osc_level[idx]).clamp(0.0, 2.0);
+                    let level =
+                        (osc.level + mods.osc_level[idx]).clamp(0.0, 2.0) * osc_eg_gains[idx];
                     let s_l = osc_sample.0 * level;
                     let s_r = osc_sample.1 * level;
                     match osc.route {
@@ -3710,13 +3654,13 @@ impl Voice {
                 }
             }
 
-            let noise = &self.params.noise;
+            let noise = self.params.noise.clone();
             if noise.enabled {
                 let passes = if any_soloed { noise.solo } else { !noise.mute };
                 if passes {
-                    let noise_level = (noise.level + mods.noise_level).clamp(0.0, 2.0);
-                    self.noise.stereo = noise.stereo;
-                    let (noise_l, noise_r) = self.noise.next_stereo();
+                    let noise_level =
+                        (noise.level + mods.noise_level).clamp(0.0, 2.0) * noise_eg_gain;
+                    let (noise_l, noise_r) = self.next_noise_unison_stereo();
                     let s_l = noise_l * noise_level;
                     let s_r = noise_r * noise_level;
                     match noise.route {
@@ -3819,12 +3763,11 @@ impl Voice {
 
             let ctx = VoiceFilterContext {
                 balance: (self.params.filter_balance + mods.filter_balance).clamp(-1.0, 1.0),
-                ws_active,
                 f1_enabled,
                 f2_enabled,
                 per_source_routing,
             };
-            let fp = self.compute_filter_sample_params(&mods, ws_active);
+            let fp = self.compute_filter_sample_params(&mods);
 
             let (mut char_l, mut char_r) = if oversample {
                 // The halfband round trip adds a fixed ~31 base-rate samples
@@ -3874,10 +3817,8 @@ impl Voice {
             } else {
                 1.0
             };
-            char_l *=
-                self.amp_eg_output * effective_vel * vol * vca_level * note_on_fade * uber_fade;
-            char_r *=
-                self.amp_eg_output * effective_vel * vol * vca_level * note_on_fade * uber_fade;
+            char_l *= envelope_gain * effective_vel * vol * vca_level * note_on_fade * uber_fade;
+            char_r *= envelope_gain * effective_vel * vol * vca_level * note_on_fade * uber_fade;
 
             let pan = (self.params.pan + mods.output_pan).clamp(-1.0, 1.0);
             let width = (self.params.width + mods.output_width).clamp(-1.0, 1.0);
@@ -3892,7 +3833,7 @@ impl Voice {
             out_r[i] = (mid - side) * pan_r;
         }
 
-        if !self.amp_eg.is_active() && !self.gate {
+        if !self.amplitude_envelopes_active() && !self.gate {
             self.active = false;
         }
     }
@@ -3911,7 +3852,6 @@ impl Voice {
             self.pitch_bend_smooth_state = self.pitch_bend;
         }
 
-        let pitch_eg_mod = self.pitch_eg_output * 2.0;
         let pb_range = if self.pitch_bend_smooth_state >= 0.0 {
             if self.params.pitch_bend_up > 0.0 {
                 self.params.pitch_bend_up
@@ -3949,7 +3889,7 @@ impl Voice {
             let octave_mul = 2.0f32.powi(settings.octave as i32);
             let semitone_mul = 2.0f32.powf(settings.semitone as f32 / 12.0);
             let fine_mul = 2.0f32.powf(settings.fine / 1200.0);
-            let pitch_mod_mul = 2.0f32.powf(mods.osc_pitch[idx] + pitch_eg_mod);
+            let pitch_mod_mul = 2.0f32.powf(mods.osc_pitch[idx]);
             let drift_cents = self.drift_phase[idx] * drift_amount * 20.0;
             let drift_mul = 2.0f32.powf(drift_cents / 1200.0);
 
@@ -4014,6 +3954,155 @@ fn freq_to_note(freq: f32) -> f32 {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    fn envelope_test_voice(envelopes: [EnvelopeSettings; 3], oscillator: usize) -> Voice {
+        let mut params = VoiceParams {
+            amp_eg: EnvelopeSettings {
+                attack: 0.0,
+                decay: 0.0,
+                sustain: 1.0,
+                release: 0.0,
+                ..EnvelopeSettings::default()
+            },
+            osc_egs: Some(envelopes),
+            ..VoiceParams::default()
+        };
+        for (i, osc) in params.oscs.iter_mut().enumerate() {
+            osc.enabled = i == oscillator;
+            osc.phase_mode = OscPhaseMode::Zero;
+            osc.osc_type = OscType::Classic;
+            osc.level = 0.5;
+        }
+        params.filter1.enabled = false;
+        params.filter2.enabled = false;
+        params.flavor = crate::common::flavor::FlavorType::Off;
+        params.noise.enabled = false;
+        params.drift_amount = 0.0;
+        let mut voice = Voice::new(48000.0);
+        voice.set_params(&params);
+        voice.trigger(60, 1.0);
+        voice
+    }
+
+    fn render_envelope_test(voice: &mut Voice, frames: usize) -> Vec<f32> {
+        let mut left = vec![0.0; frames];
+        let mut right = vec![0.0; frames];
+        let zero = vec![0.0; frames];
+        voice.process_block(&mut left, &mut right, None, None, &[&zero; 6]);
+        assert!(left.iter().chain(&right).all(|s| s.is_finite()));
+        left
+    }
+
+    #[test]
+    fn oscillator_envelope_sustain_only_controls_its_own_audio() {
+        let open = EnvelopeSettings {
+            attack: 0.0,
+            decay: 0.0,
+            sustain: 1.0,
+            release: 0.0,
+            ..EnvelopeSettings::default()
+        };
+        for oscillator in 0..3 {
+            let mut egs = [open.clone(), open.clone(), open.clone()];
+            // Silence the other two envelopes while keeping this oscillator open.
+            for (i, eg) in egs.iter_mut().enumerate() {
+                if i != oscillator {
+                    eg.sustain = 0.0;
+                }
+            }
+            let mut voice = envelope_test_voice(egs.clone(), oscillator);
+            let samples = render_envelope_test(&mut voice, 4096);
+            assert!(samples[1024..].iter().any(|s| s.abs() > 0.01));
+            egs[oscillator].sustain = 0.0;
+            let mut silent = envelope_test_voice(egs, oscillator);
+            let samples = render_envelope_test(&mut silent, 4096);
+            assert!(samples[1024..].iter().all(|s| s.abs() < 1e-6));
+        }
+    }
+
+    #[test]
+    fn longer_oscillator_release_survives_shared_amp_release() {
+        let short = EnvelopeSettings {
+            attack: 0.0,
+            decay: 0.0,
+            sustain: 1.0,
+            release: 0.0,
+            ..EnvelopeSettings::default()
+        };
+        for oscillator in 0..3 {
+            let mut egs = [short.clone(), short.clone(), short.clone()];
+            egs[oscillator].release = 0.2;
+            let mut voice = envelope_test_voice(egs, oscillator);
+            render_envelope_test(&mut voice, 1024);
+            voice.release();
+            let tail = render_envelope_test(&mut voice, 1024);
+            assert!(voice.is_active());
+            assert!(tail[128..].iter().any(|s| s.abs() > 0.001));
+            render_envelope_test(&mut voice, 48000);
+            assert!(!voice.is_active());
+        }
+    }
+
+    #[test]
+    fn oscillator_envelope_edit_updates_an_active_voice() {
+        let open = EnvelopeSettings {
+            attack: 0.0,
+            decay: 0.0,
+            sustain: 1.0,
+            release: 0.0,
+            ..EnvelopeSettings::default()
+        };
+        let mut voice = envelope_test_voice([open.clone(), open.clone(), open], 1);
+        assert!(
+            render_envelope_test(&mut voice, 2048)[1024..]
+                .iter()
+                .any(|s| s.abs() > 0.01)
+        );
+        let mut params = voice.params.clone();
+        params.osc_egs.as_mut().unwrap()[1].sustain = 0.0;
+        voice.update_amp_eg_params(&params);
+        // The output low-cut retains a tail even with the voice filters bypassed.
+        let tail = render_envelope_test(&mut voice, 48000);
+        assert_eq!(voice.osc_egs[1].next(), 0.0);
+        let peak = tail[47000..]
+            .iter()
+            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+        assert!(peak < 1e-6, "remaining output tail: {peak}");
+        params.osc_egs.as_mut().unwrap()[1].sustain = 1.0;
+        voice.update_amp_eg_params(&params);
+        assert!(
+            render_envelope_test(&mut voice, 2048)[1024..]
+                .iter()
+                .any(|s| s.abs() > 0.01)
+        );
+    }
+
+    #[test]
+    fn oscillator_envelope_modulation_targets_are_independent() {
+        let open = EnvelopeSettings {
+            attack: 0.0,
+            decay: 0.0,
+            sustain: 1.0,
+            release: 0.0,
+            ..EnvelopeSettings::default()
+        };
+        let mut voice = envelope_test_voice([open.clone(), open.clone(), open], 0);
+        voice.params.modulations[0] = ModRouting {
+            source: ModSource::Lfo1,
+            target: ModTarget::Osc2EgSustain,
+            depth: -1.0,
+            active: true,
+            ..ModRouting::default()
+        };
+        voice.lfo1_output = 1.0;
+        let mods = voice.compute_mod_values();
+        let mut result = ([0.0; 3], 0.0, 0.0);
+        for _ in 0..1024 {
+            voice.amp_eg_output = voice.amp_eg.next();
+            result = voice.next_osc_envelope_gains(&mods);
+        }
+        assert_eq!(result.0, [1.0, 0.0, 1.0]);
+    }
 
     fn write_wav_stereo(
         path: &std::path::Path,
@@ -4129,7 +4218,6 @@ mod tests {
         voice.params.filter1.enabled = false;
         voice.params.filter2.enabled = false;
         voice.params.filter_feedback = 0.0;
-        voice.params.waveshaper.enabled = false;
         voice.params.flavor = crate::common::flavor::FlavorType::Off;
         voice.params.amp_eg.attack = 0.0;
         voice.params.amp_eg.decay = 0.0;

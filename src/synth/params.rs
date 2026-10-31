@@ -5,9 +5,27 @@ use maolan_clap::ffi::{
 
 use crate::common::wavetable_factory::FACTORY_COUNT;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u16)]
-pub enum ParamId {
+// Generate conversion from the variants themselves: parameter IDs contain retired slots.
+macro_rules! synth_param_ids {
+    ($($name:ident = $value:literal,)*) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        #[repr(u16)]
+        pub enum ParamId {
+            $($name = $value,)*
+        }
+
+        impl ParamId {
+            pub fn from_raw(id: u32) -> Option<Self> {
+                match id {
+                    $($value => Some(Self::$name),)*
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+synth_param_ids! {
     Osc1Type = 0,
     Osc1Octave = 1,
     Osc1Semitone = 2,
@@ -71,12 +89,6 @@ pub enum ParamId {
     FilterSustain = 53,
     FilterRelease = 54,
     FilterEgMode = 55,
-
-    PitchAttack = 56,
-    PitchDecay = 57,
-    PitchSustain = 58,
-    PitchRelease = 59,
-    PitchEgMode = 60,
 
     Lfo1Rate = 61,
     Lfo1Shape = 62,
@@ -148,11 +160,6 @@ pub enum ParamId {
     NoiseFilterResonance = 123,
     NoiseFilterEnabled = 124,
     NoiseEnabled = 125,
-
-    WaveshaperShape = 126,
-    WaveshaperDrive = 127,
-    WaveshaperMix = 128,
-    WaveshaperEnabled = 129,
 
     FlavorType = 130,
     FlavorCutoff = 131,
@@ -316,7 +323,6 @@ pub enum ParamId {
     PitchBendDown = 267,
     AmpEgRetrigger = 268,
     FilterEgRetrigger = 269,
-    PitchEgRetrigger = 270,
     StealMode = 271,
     PortamentoSync = 272,
     PortamentoRetrigger = 273,
@@ -330,10 +336,8 @@ pub enum ParamId {
     Lfo6EnvTempoSync = 281,
     AmpEgTempoSync = 282,
     FilterEgTempoSync = 283,
-    PitchEgTempoSync = 284,
     StepSeqTrigAmp = 285,
     StepSeqTrigFilter = 286,
-    StepSeqTrigPitch = 287,
     F1FeedbackDrive = 288,
     F2FeedbackDrive = 289,
     Osc1FmDepth = 290,
@@ -366,12 +370,10 @@ pub enum ParamId {
     Fm2Feedback = 317,
     AmpEgUberRelease = 318,
     FilterEgUberRelease = 319,
-    PitchEgUberRelease = 320,
     StringStereoSpread = 321,
     WavetableKeytrack = 322,
     AmpEgGatedRelease = 323,
     FilterEgGatedRelease = 324,
-    PitchEgGatedRelease = 325,
     TuningScale = 326,
     TuningRoot = 327,
     TuningSclIndex = 393,
@@ -713,9 +715,6 @@ pub enum ParamId {
     FilterEgAttackCurve = 659,
     FilterEgDecayCurve = 660,
     FilterEgReleaseCurve = 661,
-    PitchEgAttackCurve = 662,
-    PitchEgDecayCurve = 663,
-    PitchEgReleaseCurve = 664,
     Osc1Solo = 665,
     Osc2Solo = 666,
     Osc3Solo = 667,
@@ -729,10 +728,8 @@ pub enum ParamId {
     TwistLpgDecay = 675,
     AmpEgCorrectAnalog = 676,
     FilterEgCorrectAnalog = 677,
-    PitchEgCorrectAnalog = 678,
     MsegRetrigAmp = 679,
     MsegRetrigFilter = 680,
-    MsegRetrigPitch = 681,
     AliasPartial1 = 682,
     AliasPartial2 = 683,
     AliasPartial3 = 684,
@@ -772,10 +769,25 @@ pub enum ParamId {
     Reserved717 = 717,
     Reserved718 = 718,
     Reserved719 = 719,
+    Osc1EgAttack = 720,
+    Osc1EgDecay = 721,
+    Osc1EgSustain = 722,
+    Osc1EgRelease = 723,
+    Osc2EgAttack = 724,
+    Osc2EgDecay = 725,
+    Osc2EgSustain = 726,
+    Osc2EgRelease = 727,
+    Osc3EgAttack = 728,
+    Osc3EgDecay = 729,
+    Osc3EgSustain = 730,
+    Osc3EgRelease = 731,
+    NoiseUnison = 732,
+    NoiseUnisonSpread = 733,
+
 }
 
 impl ParamId {
-    pub const COUNT: usize = 720;
+    pub const COUNT: usize = 734;
 
     pub fn all() -> impl Iterator<Item = ParamId> {
         PARAMS.iter().map(|param| param.id)
@@ -783,14 +795,6 @@ impl ParamId {
 
     pub const fn as_index(self) -> usize {
         self as usize
-    }
-
-    pub fn from_raw(id: u32) -> Option<Self> {
-        if id < Self::COUNT as u32 {
-            Some(unsafe { std::mem::transmute::<u16, ParamId>(id as u16) })
-        } else {
-            None
-        }
     }
 }
 
@@ -862,8 +866,144 @@ macro_rules! def_toggle {
     };
 }
 
+pub const OSC_ENVELOPE_IDS: [[ParamId; 4]; 3] = [
+    [
+        ParamId::Osc1EgAttack,
+        ParamId::Osc1EgDecay,
+        ParamId::Osc1EgSustain,
+        ParamId::Osc1EgRelease,
+    ],
+    [
+        ParamId::Osc2EgAttack,
+        ParamId::Osc2EgDecay,
+        ParamId::Osc2EgSustain,
+        ParamId::Osc2EgRelease,
+    ],
+    [
+        ParamId::Osc3EgAttack,
+        ParamId::Osc3EgDecay,
+        ParamId::Osc3EgSustain,
+        ParamId::Osc3EgRelease,
+    ],
+];
+
+pub const AMP_ENVELOPE_IDS: [ParamId; 4] = [
+    ParamId::AmpAttack,
+    ParamId::AmpDecay,
+    ParamId::AmpSustain,
+    ParamId::AmpRelease,
+];
+
 pub static PARAMS: &[ParamDef] = &[
-    def_enum!(ParamId::Osc1Type, "Type", "Osc1", 10.0, 0.0),
+    def_automatable!(
+        ParamId::Osc1EgAttack,
+        "Attack",
+        "Osc1EG",
+        0.0,
+        10.0,
+        0.0,
+        0.01
+    ),
+    def_automatable!(
+        ParamId::Osc1EgDecay,
+        "Decay",
+        "Osc1EG",
+        0.0,
+        10.0,
+        0.0,
+        0.01
+    ),
+    def_automatable!(
+        ParamId::Osc1EgSustain,
+        "Sustain",
+        "Osc1EG",
+        0.0,
+        1.0,
+        1.0,
+        0.01
+    ),
+    def_automatable!(
+        ParamId::Osc1EgRelease,
+        "Release",
+        "Osc1EG",
+        0.0,
+        10.0,
+        0.0,
+        0.01
+    ),
+    def_automatable!(
+        ParamId::Osc2EgAttack,
+        "Attack",
+        "Osc2EG",
+        0.0,
+        10.0,
+        0.0,
+        0.01
+    ),
+    def_automatable!(
+        ParamId::Osc2EgDecay,
+        "Decay",
+        "Osc2EG",
+        0.0,
+        10.0,
+        0.0,
+        0.01
+    ),
+    def_automatable!(
+        ParamId::Osc2EgSustain,
+        "Sustain",
+        "Osc2EG",
+        0.0,
+        1.0,
+        1.0,
+        0.01
+    ),
+    def_automatable!(
+        ParamId::Osc2EgRelease,
+        "Release",
+        "Osc2EG",
+        0.0,
+        10.0,
+        0.0,
+        0.01
+    ),
+    def_automatable!(
+        ParamId::Osc3EgAttack,
+        "Attack",
+        "Osc3EG",
+        0.0,
+        10.0,
+        0.0,
+        0.01
+    ),
+    def_automatable!(
+        ParamId::Osc3EgDecay,
+        "Decay",
+        "Osc3EG",
+        0.0,
+        10.0,
+        0.0,
+        0.01
+    ),
+    def_automatable!(
+        ParamId::Osc3EgSustain,
+        "Sustain",
+        "Osc3EG",
+        0.0,
+        1.0,
+        1.0,
+        0.01
+    ),
+    def_automatable!(
+        ParamId::Osc3EgRelease,
+        "Release",
+        "Osc3EG",
+        0.0,
+        10.0,
+        0.0,
+        0.01
+    ),
+    def_enum!(ParamId::Osc1Type, "Type", "Osc1", 13.0, 0.0),
     def_enum!(ParamId::Osc1Octave, "Octave", "Osc1", 6.0, 3.0),
     def_enum!(ParamId::Osc1Semitone, "Semitone", "Osc1", 24.0, 12.0),
     def_automatable!(ParamId::Osc1Fine, "Fine", "Osc1", -100.0, 100.0, 0.0, 1.0),
@@ -882,7 +1022,7 @@ pub static PARAMS: &[ParamDef] = &[
         0.01
     ),
     def_automatable!(ParamId::Osc1Sync, "Sync", "Osc1", 0.0, 60.0, 0.0, 0.0),
-    def_enum!(ParamId::Osc2Type, "Type", "Osc2", 10.0, 0.0),
+    def_enum!(ParamId::Osc2Type, "Type", "Osc2", 13.0, 0.0),
     def_enum!(ParamId::Osc2Octave, "Octave", "Osc2", 6.0, 3.0),
     def_enum!(ParamId::Osc2Semitone, "Semitone", "Osc2", 24.0, 12.0),
     def_automatable!(ParamId::Osc2Fine, "Fine", "Osc2", -100.0, 100.0, 0.0, 1.0),
@@ -901,7 +1041,7 @@ pub static PARAMS: &[ParamDef] = &[
         0.01
     ),
     def_automatable!(ParamId::Osc2Sync, "Sync", "Osc2", 0.0, 60.0, 0.0, 0.0),
-    def_enum!(ParamId::Osc3Type, "Type", "Osc3", 10.0, 2.0),
+    def_enum!(ParamId::Osc3Type, "Type", "Osc3", 13.0, 2.0),
     def_enum!(ParamId::Osc3Octave, "Octave", "Osc3", 6.0, 2.0),
     def_enum!(ParamId::Osc3Semitone, "Semitone", "Osc3", 24.0, 12.0),
     def_automatable!(ParamId::Osc3Fine, "Fine", "Osc3", -100.0, 100.0, 0.0, 1.0),
@@ -1058,43 +1198,6 @@ pub static PARAMS: &[ParamDef] = &[
         0.01
     ),
     def_enum!(ParamId::FilterEgMode, "Mode", "FilterEG", 0.0, 0.0),
-    def_automatable!(
-        ParamId::PitchAttack,
-        "Attack",
-        "PitchEG",
-        0.0,
-        10.0,
-        0.0,
-        0.01
-    ),
-    def_automatable!(
-        ParamId::PitchDecay,
-        "Decay",
-        "PitchEG",
-        0.0,
-        10.0,
-        0.0,
-        0.01
-    ),
-    def_automatable!(
-        ParamId::PitchSustain,
-        "Sustain",
-        "PitchEG",
-        0.0,
-        1.0,
-        0.0,
-        0.01
-    ),
-    def_automatable!(
-        ParamId::PitchRelease,
-        "Release",
-        "PitchEG",
-        0.0,
-        10.0,
-        0.0,
-        0.01
-    ),
-    def_enum!(ParamId::PitchEgMode, "Mode", "PitchEG", 0.0, 0.0),
     def_automatable!(ParamId::Lfo1Rate, "Rate", "LFO1", 0.01, 100.0, 1.0, 0.01),
     def_enum!(ParamId::Lfo1Shape, "Shape", "LFO1", 9.0, 0.0),
     def_automatable!(ParamId::Lfo1Amount, "Amount", "LFO1", 0.0, 1.0, 0.0, 0.01),
@@ -1142,7 +1245,7 @@ pub static PARAMS: &[ParamDef] = &[
     ),
     def_enum!(ParamId::PitchBendRange, "PB Range", "Global", 24.0, 2.0),
     def_enum!(ParamId::ModRoute1Source, "Source", "Mod1", 35.0, 0.0),
-    def_enum!(ParamId::ModRoute1Target, "Target", "Mod1", 82.0, 15.0),
+    def_enum!(ParamId::ModRoute1Target, "Target", "Mod1", 94.0, 15.0),
     def_automatable!(
         ParamId::ModRoute1Depth,
         "Depth",
@@ -1153,7 +1256,7 @@ pub static PARAMS: &[ParamDef] = &[
         0.01
     ),
     def_enum!(ParamId::ModRoute2Source, "Source", "Mod2", 35.0, 0.0),
-    def_enum!(ParamId::ModRoute2Target, "Target", "Mod2", 82.0, 15.0),
+    def_enum!(ParamId::ModRoute2Target, "Target", "Mod2", 94.0, 15.0),
     def_automatable!(
         ParamId::ModRoute2Depth,
         "Depth",
@@ -1164,7 +1267,7 @@ pub static PARAMS: &[ParamDef] = &[
         0.01
     ),
     def_enum!(ParamId::ModRoute3Source, "Source", "Mod3", 35.0, 0.0),
-    def_enum!(ParamId::ModRoute3Target, "Target", "Mod3", 82.0, 15.0),
+    def_enum!(ParamId::ModRoute3Target, "Target", "Mod3", 94.0, 15.0),
     def_automatable!(
         ParamId::ModRoute3Depth,
         "Depth",
@@ -1175,7 +1278,7 @@ pub static PARAMS: &[ParamDef] = &[
         0.01
     ),
     def_enum!(ParamId::ModRoute4Source, "Source", "Mod4", 35.0, 0.0),
-    def_enum!(ParamId::ModRoute4Target, "Target", "Mod4", 82.0, 15.0),
+    def_enum!(ParamId::ModRoute4Target, "Target", "Mod4", 94.0, 15.0),
     def_automatable!(
         ParamId::ModRoute4Depth,
         "Depth",
@@ -1186,7 +1289,7 @@ pub static PARAMS: &[ParamDef] = &[
         0.01
     ),
     def_enum!(ParamId::ModRoute5Source, "Source", "Mod5", 35.0, 0.0),
-    def_enum!(ParamId::ModRoute5Target, "Target", "Mod5", 82.0, 15.0),
+    def_enum!(ParamId::ModRoute5Target, "Target", "Mod5", 94.0, 15.0),
     def_automatable!(
         ParamId::ModRoute5Depth,
         "Depth",
@@ -1197,7 +1300,7 @@ pub static PARAMS: &[ParamDef] = &[
         0.01
     ),
     def_enum!(ParamId::ModRoute6Source, "Source", "Mod6", 35.0, 0.0),
-    def_enum!(ParamId::ModRoute6Target, "Target", "Mod6", 82.0, 15.0),
+    def_enum!(ParamId::ModRoute6Target, "Target", "Mod6", 94.0, 15.0),
     def_automatable!(
         ParamId::ModRoute6Depth,
         "Depth",
@@ -1208,7 +1311,7 @@ pub static PARAMS: &[ParamDef] = &[
         0.01
     ),
     def_enum!(ParamId::ModRoute7Source, "Source", "Mod7", 35.0, 0.0),
-    def_enum!(ParamId::ModRoute7Target, "Target", "Mod7", 82.0, 15.0),
+    def_enum!(ParamId::ModRoute7Target, "Target", "Mod7", 94.0, 15.0),
     def_automatable!(
         ParamId::ModRoute7Depth,
         "Depth",
@@ -1219,7 +1322,7 @@ pub static PARAMS: &[ParamDef] = &[
         0.01
     ),
     def_enum!(ParamId::ModRoute8Source, "Source", "Mod8", 35.0, 0.0),
-    def_enum!(ParamId::ModRoute8Target, "Target", "Mod8", 82.0, 15.0),
+    def_enum!(ParamId::ModRoute8Target, "Target", "Mod8", 94.0, 15.0),
     def_automatable!(
         ParamId::ModRoute8Depth,
         "Depth",
@@ -1230,7 +1333,7 @@ pub static PARAMS: &[ParamDef] = &[
         0.01
     ),
     def_enum!(ParamId::ModRoute9Source, "Source", "Mod9", 35.0, 0.0),
-    def_enum!(ParamId::ModRoute9Target, "Target", "Mod9", 82.0, 15.0),
+    def_enum!(ParamId::ModRoute9Target, "Target", "Mod9", 94.0, 15.0),
     def_automatable!(
         ParamId::ModRoute9Depth,
         "Depth",
@@ -1241,7 +1344,7 @@ pub static PARAMS: &[ParamDef] = &[
         0.01
     ),
     def_enum!(ParamId::ModRoute10Source, "Source", "Mod10", 35.0, 0.0),
-    def_enum!(ParamId::ModRoute10Target, "Target", "Mod10", 82.0, 15.0),
+    def_enum!(ParamId::ModRoute10Target, "Target", "Mod10", 94.0, 15.0),
     def_automatable!(
         ParamId::ModRoute10Depth,
         "Depth",
@@ -1252,7 +1355,7 @@ pub static PARAMS: &[ParamDef] = &[
         0.01
     ),
     def_enum!(ParamId::ModRoute11Source, "Source", "Mod11", 35.0, 0.0),
-    def_enum!(ParamId::ModRoute11Target, "Target", "Mod11", 82.0, 15.0),
+    def_enum!(ParamId::ModRoute11Target, "Target", "Mod11", 94.0, 15.0),
     def_automatable!(
         ParamId::ModRoute11Depth,
         "Depth",
@@ -1263,7 +1366,7 @@ pub static PARAMS: &[ParamDef] = &[
         0.01
     ),
     def_enum!(ParamId::ModRoute12Source, "Source", "Mod12", 35.0, 0.0),
-    def_enum!(ParamId::ModRoute12Target, "Target", "Mod12", 82.0, 15.0),
+    def_enum!(ParamId::ModRoute12Target, "Target", "Mod12", 94.0, 15.0),
     def_automatable!(
         ParamId::ModRoute12Depth,
         "Depth",
@@ -1341,15 +1444,6 @@ pub static PARAMS: &[ParamDef] = &[
         0.01
     ),
     def_automatable!(
-        ParamId::PitchEgUberRelease,
-        "Uber Release",
-        "PitchEG",
-        0.0,
-        1.0,
-        0.0,
-        0.01
-    ),
-    def_automatable!(
         ParamId::StringStereoSpread,
         "Stereo Spread",
         "String",
@@ -1363,12 +1457,6 @@ pub static PARAMS: &[ParamDef] = &[
         ParamId::FilterEgGatedRelease,
         "Gated Release",
         "FilterEG",
-        0.0
-    ),
-    def_toggle!(
-        ParamId::PitchEgGatedRelease,
-        "Gated Release",
-        "PitchEG",
         0.0
     ),
     def_automatable!(
@@ -1393,6 +1481,16 @@ pub static PARAMS: &[ParamDef] = &[
     def_enum!(ParamId::TuningSclIndex, "SCL File", "Tuning", 63.0, 0.0),
     def_enum!(ParamId::NoiseType, "Type", "Noise", 2.0, 0.0),
     def_automatable!(ParamId::NoiseLevel, "Level", "Noise", 0.0, 1.0, 0.0, 0.01),
+    def_enum!(ParamId::NoiseUnison, "Unison", "Noise", 8.0, 1.0),
+    def_automatable!(
+        ParamId::NoiseUnisonSpread,
+        "Spread",
+        "Noise",
+        0.0,
+        1.0,
+        0.0,
+        0.01
+    ),
     def_enum!(ParamId::NoiseFilterType, "Filter Type", "Noise", 14.0, 0.0),
     def_automatable!(
         ParamId::NoiseFilterCutoff,
@@ -1414,26 +1512,6 @@ pub static PARAMS: &[ParamDef] = &[
     ),
     def_toggle!(ParamId::NoiseFilterEnabled, "Filter On", "Noise", 0.0),
     def_toggle!(ParamId::NoiseEnabled, "Enabled", "Noise", 0.0),
-    def_enum!(ParamId::WaveshaperShape, "Shape", "Waveshaper", 45.0, 0.0),
-    def_automatable!(
-        ParamId::WaveshaperDrive,
-        "Drive",
-        "Waveshaper",
-        0.0,
-        1.0,
-        0.0,
-        0.01
-    ),
-    def_automatable!(
-        ParamId::WaveshaperMix,
-        "Mix",
-        "Waveshaper",
-        0.0,
-        1.0,
-        1.0,
-        0.01
-    ),
-    def_toggle!(ParamId::WaveshaperEnabled, "Enabled", "Waveshaper", 0.0),
     def_enum!(ParamId::FlavorType, "Type", "Flavor", 4.0, 0.0),
     def_automatable!(
         ParamId::FlavorCutoff,
@@ -1455,8 +1533,8 @@ pub static PARAMS: &[ParamDef] = &[
     ),
     def_enum!(ParamId::OscFmMode, "FM Mode", "Osc", 9.0, 0.0),
     def_automatable!(ParamId::OscFmDepth, "FM Depth", "Osc", 0.0, 1.0, 0.5, 0.01),
-    def_enum!(ParamId::F1Subtype, "Subtype", "Filter1", 21.0, 0.0),
-    def_enum!(ParamId::F2Subtype, "Subtype", "Filter2", 21.0, 0.0),
+    def_enum!(ParamId::F1Subtype, "Subtype", "Filter1", 6.0, 0.0),
+    def_enum!(ParamId::F2Subtype, "Subtype", "Filter2", 6.0, 0.0),
     def_automatable!(
         ParamId::FilterBalance,
         "Balance",
@@ -2039,7 +2117,6 @@ pub static PARAMS: &[ParamDef] = &[
         1.0,
         0.0
     ),
-    def_enum!(ParamId::PitchEgRetrigger, "Retrigger", "PitchEG", 1.0, 0.0),
     def_enum!(ParamId::StealMode, "Steal Mode", "Global", 1.0, 0.0),
     def_toggle!(ParamId::PortamentoSync, "Tempo Sync", "Global", 0.0),
     def_toggle!(
@@ -2066,7 +2143,6 @@ pub static PARAMS: &[ParamDef] = &[
     def_toggle!(ParamId::Lfo6EnvTempoSync, "Env Tempo Sync", "LFO6", 0.0),
     def_toggle!(ParamId::AmpEgTempoSync, "Tempo Sync", "AmpEG", 0.0),
     def_toggle!(ParamId::FilterEgTempoSync, "Tempo Sync", "FilterEG", 0.0),
-    def_toggle!(ParamId::PitchEgTempoSync, "Tempo Sync", "PitchEG", 0.0),
     def_automatable!(
         ParamId::StepSeqTrigAmp,
         "Trig Amp",
@@ -2079,15 +2155,6 @@ pub static PARAMS: &[ParamDef] = &[
     def_automatable!(
         ParamId::StepSeqTrigFilter,
         "Trig Filter",
-        "StepSeq",
-        0.0,
-        65535.0,
-        0.0,
-        1.0
-    ),
-    def_automatable!(
-        ParamId::StepSeqTrigPitch,
-        "Trig Pitch",
         "StepSeq",
         0.0,
         65535.0,
@@ -3121,27 +3188,6 @@ pub static PARAMS: &[ParamDef] = &[
         3.0,
         0.0
     ),
-    def_enum!(
-        ParamId::PitchEgAttackCurve,
-        "Attack Curve",
-        "Pitch EG",
-        3.0,
-        0.0
-    ),
-    def_enum!(
-        ParamId::PitchEgDecayCurve,
-        "Decay Curve",
-        "Pitch EG",
-        3.0,
-        0.0
-    ),
-    def_enum!(
-        ParamId::PitchEgReleaseCurve,
-        "Release Curve",
-        "Pitch EG",
-        3.0,
-        0.0
-    ),
     def_toggle!(ParamId::Osc1Solo, "Solo", "Osc1", 0.0),
     def_toggle!(ParamId::Osc2Solo, "Solo", "Osc2", 0.0),
     def_toggle!(ParamId::Osc3Solo, "Solo", "Osc3", 0.0),
@@ -3176,12 +3222,6 @@ pub static PARAMS: &[ParamDef] = &[
         "Filter EG",
         0.0
     ),
-    def_toggle!(
-        ParamId::PitchEgCorrectAnalog,
-        "Correct Analog",
-        "Pitch EG",
-        0.0
-    ),
     def_automatable!(
         ParamId::MsegRetrigAmp,
         "Retrig Amp",
@@ -3194,15 +3234,6 @@ pub static PARAMS: &[ParamDef] = &[
     def_automatable!(
         ParamId::MsegRetrigFilter,
         "Retrig Filter",
-        "MSEG",
-        0.0,
-        65535.0,
-        0.0,
-        1.0
-    ),
-    def_automatable!(
-        ParamId::MsegRetrigPitch,
-        "Retrig Pitch",
         "MSEG",
         0.0,
         65535.0,
@@ -3447,6 +3478,45 @@ impl crate::common::ClapParamId for ParamId {
 #[cfg(test)]
 mod tests {
     use super::{ParamId, param_def};
+
+    #[test]
+    fn raw_ids_reject_retired_and_out_of_range_slots() {
+        for raw in 56..=60 {
+            assert_eq!(ParamId::from_raw(raw), None);
+        }
+        for raw in [ParamId::COUNT as u32, u16::MAX as u32 + 1, u32::MAX] {
+            assert_eq!(ParamId::from_raw(raw), None);
+        }
+        for id in ParamId::all() {
+            assert_eq!(ParamId::from_raw(id as u32), Some(id));
+        }
+        assert_eq!(ParamId::from_raw(719), Some(ParamId::Reserved719));
+    }
+
+    #[test]
+    fn state_roundtrip_preserves_parameter_slots() {
+        use super::ParamStore;
+        use crate::common::state::PluginState;
+
+        let source = ParamStore::default();
+        for raw in 0..ParamId::COUNT as u32 {
+            if let Some(id) = ParamId::from_raw(raw) {
+                source.set(id, f64::from(raw) + 0.25);
+            }
+        }
+        let state = PluginState::from_runtime(&source);
+        assert_eq!(state.params.len(), ParamId::COUNT);
+        assert_eq!(&state.params[56..61], &[0.0; 5]);
+        assert_eq!(state.params[61], 61.25);
+        let loaded = PluginState::from_bytes(&state.to_bytes().unwrap()).unwrap();
+        let restored = ParamStore::default();
+        loaded.apply(&restored);
+        for raw in 0..ParamId::COUNT as u32 {
+            if let Some(id) = ParamId::from_raw(raw) {
+                assert_eq!(restored.get(id), source.get(id), "parameter {raw}");
+            }
+        }
+    }
 
     #[test]
     fn oscillator_sync_defaults_are_off() {

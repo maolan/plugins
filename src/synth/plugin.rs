@@ -50,7 +50,7 @@ use crate::synth::{
         LfoTriggerMode, ModDepthCurve, ModRouting, ModSource, ModTarget, MsegCurve, MsegLoopMode,
         MtsEspClient, NoiseSettings, NoiseType, OscFmMode, OscPhaseMode, OscRoute, OscSettings,
         OscType, PlayMode, PortamentoCurve, StealMode, SynthEngine, Tuning, VoiceParams,
-        VoicePriority, Waveshape, WaveshaperSettings,
+        VoicePriority,
     },
     gui::GuiBridge,
     params::{PARAMS, ParamId, ParamStore, sanitize_param_value},
@@ -112,8 +112,6 @@ pub struct SharedState {
     pub custom_wavetable_paths: [Mutex<Option<String>>; 3],
     /// Directory the host asked us to copy external resources into.
     pub resource_dir: RwLock<Option<String>>,
-    /// Report of the last Surge XT preset import (GUI display + logging).
-    pub surge_report: Mutex<crate::synth::surge::Report>,
 }
 
 fn migrate_legacy_sine(store: &ParamStore) {
@@ -161,7 +159,6 @@ impl Default for SharedState {
             custom_wavetables: [const { Mutex::new(None) }; 3],
             custom_wavetable_paths: [const { Mutex::new(None) }; 3],
             resource_dir: RwLock::new(None),
-            surge_report: Mutex::new(crate::synth::surge::Report::default()),
         }
     }
 }
@@ -249,23 +246,6 @@ impl SharedState {
 
     pub fn set_param_from_host(&self, id: ParamId, value: f64) {
         self.set_param_internal(id, value, false);
-    }
-
-    /// Import a Surge XT `.fxp` preset: converted parameters are applied to the
-    /// store (no per-param host notifications; one version bump at the end) and
-    /// the import report is kept for the GUI and the log.
-    pub fn load_surge_preset(&self, path: &Path) -> Result<(), String> {
-        let result = crate::synth::surge::load_preset(path)?;
-        for (id, value) in &result.values {
-            self.set_param_from_host(*id, *value);
-        }
-        let report = result.report.to_display_string();
-        if !report.is_empty() {
-            tracing::warn!("[surge] import report for '{}':\n{report}", result.name);
-        }
-        *self.surge_report.lock() = result.report;
-        self.bump_params_version();
-        Ok(())
     }
 
     pub fn save_synth_preset(&self, path: &Path) -> Result<(), String> {
@@ -540,7 +520,6 @@ pub(crate) fn build_voice_params(params: &ParamStore) -> VoiceParams {
     build_filter2_params(&mut result, params);
     build_amp_eg_params(&mut result, params);
     build_filter_eg_params(&mut result, params);
-    build_pitch_eg_params(&mut result, params);
     build_lfo_params(&mut result, params, 0);
     build_lfo_params(&mut result, params, 1);
     build_lfo_params(&mut result, params, 2);
@@ -554,7 +533,6 @@ pub(crate) fn build_voice_params(params: &ParamStore) -> VoiceParams {
     build_scene_lfo_params(&mut result, params, 4);
     build_scene_lfo_params(&mut result, params, 5);
     build_noise_params(&mut result, params);
-    build_waveshaper_params(&mut result, params);
     build_flavor_params(&mut result, params);
     build_tuning_params(&mut result, params);
     build_output_vca_params(&mut result, params);
@@ -684,7 +662,6 @@ fn build_step_seq_params(params: &mut VoiceParams, store: &ParamStore) {
     params.step_seq_shuffle = store.get(ParamId::StepSeqShuffle) as f32;
     params.step_seq_trig_amp = store.get(ParamId::StepSeqTrigAmp) as u16;
     params.step_seq_trig_filter = store.get(ParamId::StepSeqTrigFilter) as u16;
-    params.step_seq_trig_pitch = store.get(ParamId::StepSeqTrigPitch) as u16;
 }
 
 fn build_mseg_params(params: &mut VoiceParams, store: &ParamStore) {
@@ -960,7 +937,6 @@ fn build_mseg_params(params: &mut VoiceParams, store: &ParamStore) {
     params.mseg_loop_mode = MsegLoopMode::from_u8(store.get(ParamId::MsegLoopMode) as u8);
     params.mseg_retrig_amp = store.get(ParamId::MsegRetrigAmp) as u16;
     params.mseg_retrig_filter = store.get(ParamId::MsegRetrigFilter) as u16;
-    params.mseg_retrig_pitch = store.get(ParamId::MsegRetrigPitch) as u16;
 }
 
 fn build_filter1_params(params: &mut VoiceParams, store: &ParamStore) {
@@ -1038,6 +1014,13 @@ fn build_amp_eg_params(params: &mut VoiceParams, store: &ParamStore) {
         gated_release: store.get_bool(ParamId::AmpEgGatedRelease),
         correct_analog_mode: store.get_bool(ParamId::AmpEgCorrectAnalog),
     };
+    params.osc_egs = Some(super::params::OSC_ENVELOPE_IDS.map(|ids| EnvelopeSettings {
+        attack: store.get(ids[0]) as f32,
+        decay: store.get(ids[1]) as f32,
+        sustain: store.get(ids[2]) as f32,
+        release: store.get(ids[3]) as f32,
+        ..params.amp_eg.clone()
+    }));
 }
 
 fn build_filter_eg_params(params: &mut VoiceParams, store: &ParamStore) {
@@ -1059,28 +1042,6 @@ fn build_filter_eg_params(params: &mut VoiceParams, store: &ParamStore) {
         uber_release: store.get(ParamId::FilterEgUberRelease) as f32,
         gated_release: store.get_bool(ParamId::FilterEgGatedRelease),
         correct_analog_mode: store.get_bool(ParamId::FilterEgCorrectAnalog),
-    };
-}
-
-fn build_pitch_eg_params(params: &mut VoiceParams, store: &ParamStore) {
-    params.pitch_eg = EnvelopeSettings {
-        attack: store.get(ParamId::PitchAttack) as f32,
-        decay: store.get(ParamId::PitchDecay) as f32,
-        sustain: store.get(ParamId::PitchSustain) as f32,
-        release: store.get(ParamId::PitchRelease) as f32,
-        mode: if store.get(ParamId::PitchEgMode) > 0.5 {
-            EnvelopeMode::Analog
-        } else {
-            EnvelopeMode::Digital
-        },
-        attack_shape: AttackShape::from_u8(eg_attack(store, ParamId::PitchEgAttackCurve)),
-        decay_shape: DecayReleaseShape::from_u8(eg_decay(store, ParamId::PitchEgDecayCurve)),
-        release_shape: DecayReleaseShape::from_u8(eg_release(store, ParamId::PitchEgReleaseCurve)),
-        retrigger_mode: EnvelopeRetriggerMode::from_u8(store.get(ParamId::PitchEgRetrigger) as u8),
-        tempo_sync: store.get_bool(ParamId::PitchEgTempoSync),
-        uber_release: store.get(ParamId::PitchEgUberRelease) as f32,
-        gated_release: store.get_bool(ParamId::PitchEgGatedRelease),
-        correct_analog_mode: store.get_bool(ParamId::PitchEgCorrectAnalog),
     };
 }
 
@@ -1539,6 +1500,8 @@ fn build_noise_params(params: &mut VoiceParams, store: &ParamStore) {
     params.noise = NoiseSettings {
         noise_type: NoiseType::from_u8(store.get(ParamId::NoiseType) as u8),
         level: store.get(ParamId::NoiseLevel) as f32,
+        unison_voices: (store.get(ParamId::NoiseUnison) as u8).clamp(1, 8),
+        unison_spread: store.get(ParamId::NoiseUnisonSpread) as f32,
         filter_type: FilterType::from_u8(store.get(ParamId::NoiseFilterType) as u8),
         filter_cutoff: store.get(ParamId::NoiseFilterCutoff) as f32,
         filter_resonance: store.get(ParamId::NoiseFilterResonance) as f32,
@@ -1550,15 +1513,6 @@ fn build_noise_params(params: &mut VoiceParams, store: &ParamStore) {
         mute: store.get_bool(ParamId::NoiseMute),
         solo: store.get_bool(ParamId::NoiseSolo),
         route: OscRoute::from_u8(store.get(ParamId::NoiseRoute) as u8),
-    };
-}
-
-fn build_waveshaper_params(params: &mut VoiceParams, store: &ParamStore) {
-    params.waveshaper = WaveshaperSettings {
-        shape: Waveshape::from_u8(store.get(ParamId::WaveshaperShape) as u8),
-        drive: store.get(ParamId::WaveshaperDrive) as f32,
-        mix: store.get(ParamId::WaveshaperMix) as f32,
-        enabled: store.get_bool(ParamId::WaveshaperEnabled),
     };
 }
 
@@ -1636,13 +1590,11 @@ struct ParamDirtyFlags {
     filters_routing_balance: bool,
     amp_eg: bool,
     filter_eg: bool,
-    pitch_eg: bool,
     oscs: bool,
     osc_globals: bool,
     lfos: [bool; 6],
     scene_lfos: [bool; 6],
     noise: bool,
-    waveshaper: bool,
     flavor: bool,
     modulations: bool,
     step_seq: bool,
@@ -1844,8 +1796,20 @@ fn apply_param_id_to_voice_params(
             true
         }
 
-        // Amp EG
-        ParamId::AmpAttack
+        // Amp and oscillator envelopes
+        ParamId::Osc1EgAttack
+        | ParamId::Osc1EgDecay
+        | ParamId::Osc1EgSustain
+        | ParamId::Osc1EgRelease
+        | ParamId::Osc2EgAttack
+        | ParamId::Osc2EgDecay
+        | ParamId::Osc2EgSustain
+        | ParamId::Osc2EgRelease
+        | ParamId::Osc3EgAttack
+        | ParamId::Osc3EgDecay
+        | ParamId::Osc3EgSustain
+        | ParamId::Osc3EgRelease
+        | ParamId::AmpAttack
         | ParamId::AmpDecay
         | ParamId::AmpSustain
         | ParamId::AmpRelease
@@ -1882,25 +1846,6 @@ fn apply_param_id_to_voice_params(
         | ParamId::FilterEgReleaseCurve => {
             build_filter_eg_params(params, store);
             dirty.filter_eg = true;
-            true
-        }
-
-        // Pitch EG
-        ParamId::PitchAttack
-        | ParamId::PitchDecay
-        | ParamId::PitchSustain
-        | ParamId::PitchRelease
-        | ParamId::PitchEgMode
-        | ParamId::PitchEgRetrigger
-        | ParamId::PitchEgTempoSync
-        | ParamId::PitchEgUberRelease
-        | ParamId::PitchEgGatedRelease
-        | ParamId::PitchEgCorrectAnalog
-        | ParamId::PitchEgAttackCurve
-        | ParamId::PitchEgDecayCurve
-        | ParamId::PitchEgReleaseCurve => {
-            build_pitch_eg_params(params, store);
-            dirty.pitch_eg = true;
             true
         }
 
@@ -2085,6 +2030,8 @@ fn apply_param_id_to_voice_params(
         // Noise
         ParamId::NoiseType
         | ParamId::NoiseLevel
+        | ParamId::NoiseUnison
+        | ParamId::NoiseUnisonSpread
         | ParamId::NoiseFilterType
         | ParamId::NoiseFilterCutoff
         | ParamId::NoiseFilterResonance
@@ -2098,16 +2045,6 @@ fn apply_param_id_to_voice_params(
         | ParamId::NoiseRoute => {
             build_noise_params(params, store);
             dirty.noise = true;
-            true
-        }
-
-        // Waveshaper
-        ParamId::WaveshaperShape
-        | ParamId::WaveshaperDrive
-        | ParamId::WaveshaperMix
-        | ParamId::WaveshaperEnabled => {
-            build_waveshaper_params(params, store);
-            dirty.waveshaper = true;
             true
         }
 
@@ -2298,8 +2235,7 @@ fn apply_param_id_to_voice_params(
         | ParamId::StepSeqLoopEnd
         | ParamId::StepSeqShuffle
         | ParamId::StepSeqTrigAmp
-        | ParamId::StepSeqTrigFilter
-        | ParamId::StepSeqTrigPitch => {
+        | ParamId::StepSeqTrigFilter => {
             build_step_seq_params(params, store);
             dirty.step_seq = true;
             true
@@ -2565,8 +2501,7 @@ fn apply_param_id_to_voice_params(
         | ParamId::MsegLoopEnd
         | ParamId::MsegLoopMode
         | ParamId::MsegRetrigAmp
-        | ParamId::MsegRetrigFilter
-        | ParamId::MsegRetrigPitch => {
+        | ParamId::MsegRetrigFilter => {
             build_mseg_params(params, store);
             dirty.mseg = true;
             true
@@ -2873,9 +2808,6 @@ impl AudioProcessor {
                 if dirty.filter_eg {
                     self.engine.update_filter_eg_params();
                 }
-                if dirty.pitch_eg {
-                    self.engine.update_pitch_eg_params();
-                }
                 for i in 0..6 {
                     if dirty.lfos[i] {
                         self.engine.update_lfo_params(i);
@@ -2886,9 +2818,6 @@ impl AudioProcessor {
                 }
                 if dirty.noise {
                     self.engine.update_noise_params();
-                }
-                if dirty.waveshaper {
-                    self.engine.update_waveshaper_params();
                 }
                 if dirty.flavor {
                     self.engine.update_flavor_params();
@@ -3379,7 +3308,7 @@ unsafe extern "C-unwind" fn ext_state_load(
     let Ok(state) = PluginState::from_bytes(&bytes) else {
         return false;
     };
-    state.apply(&inst.shared.params);
+    super::state::apply_synth_state(&state, &inst.shared.params);
     migrate_legacy_sine(&inst.shared.params);
 
     // Restore custom wavetables referenced by this patch. Loading happens on
@@ -3996,6 +3925,19 @@ impl crate::common::clap_harness::GuiHooks<SharedState> for GuiBridge {
 
     fn hide(&mut self, shared: Arc<SharedState>) -> bool {
         GuiBridge::hide(self, shared)
+    }
+}
+
+impl crate::common::preset::PresetProvider for SharedState {
+    const DIR_NAME: &'static str = "synth";
+    const FORMAT: &'static str = "maolan-synth-preset";
+
+    fn save_preset(&self, path: &Path) -> Result<(), String> {
+        self.save_synth_preset(path)
+    }
+
+    fn load_preset(&self, path: &Path) -> Result<(), String> {
+        self.load_synth_preset(path).map(|_| ())
     }
 }
 

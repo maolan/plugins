@@ -94,4 +94,22 @@ where
             set_param_once(route.depth, self.default_depth);
         }
     }
+
+    pub fn unassign(
+        &self,
+        params: &ParamStore<P>,
+        lfo_index: usize,
+        target: u8,
+        mut set_param_once: impl FnMut(P, f32),
+    ) {
+        let source = self.lfo_source_value(lfo_index);
+        for route in self.routes {
+            if params.get(route.source) as u8 == source
+                && params.get(route.target) as u8 == target
+                && params.get(route.depth).abs() > 0.001
+            {
+                set_param_once(route.depth, 0.0);
+            }
+        }
+    }
 }

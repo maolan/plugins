@@ -50,6 +50,15 @@ impl SynthPreset {
             };
             store.set(id, sanitize_param_value(id, *value));
         }
+        // Older presets have only the shared amp envelope. Seed each missing
+        // oscillator stage from it, including when loading over an edited patch.
+        for ids in super::params::OSC_ENVELOPE_IDS {
+            for (id, legacy) in ids.into_iter().zip(super::params::AMP_ENVELOPE_IDS) {
+                if !self.parameters.contains_key(&param_key(id)) {
+                    store.set(id, store.get(legacy));
+                }
+            }
+        }
     }
 
     pub fn wavetable_paths(&self) -> Vec<(u8, String)> {
@@ -112,5 +121,40 @@ fn wavetable_index_for_key(key: &str) -> Option<u8> {
         "osc2" => Some(1),
         "osc3" => Some(2),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::synth::params::{AMP_ENVELOPE_IDS, OSC_ENVELOPE_IDS};
+
+    #[test]
+    fn old_presets_seed_missing_stages_without_overwriting_new_stages() {
+        let source = ParamStore::default();
+        for (id, value) in AMP_ENVELOPE_IDS.into_iter().zip([0.1, 0.2, 0.3, 0.4]) {
+            source.set(id, value);
+        }
+        let mut preset = SynthPreset::from_runtime(&source, None, &[]);
+        for ids in OSC_ENVELOPE_IDS {
+            for id in ids {
+                preset.parameters.remove(&param_key(id));
+            }
+        }
+        preset
+            .parameters
+            .insert(param_key(ParamId::Osc2EgRelease), 2.0);
+        let restored = ParamStore::default();
+        preset.apply(&restored);
+        for ids in OSC_ENVELOPE_IDS {
+            for (id, legacy) in ids.into_iter().zip(AMP_ENVELOPE_IDS) {
+                let expected = if id == ParamId::Osc2EgRelease {
+                    2.0
+                } else {
+                    source.get(legacy)
+                };
+                assert_eq!(restored.get(id), expected);
+            }
+        }
     }
 }

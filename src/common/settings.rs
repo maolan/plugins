@@ -2,7 +2,6 @@ use crate::common::{
     envelope::{AttackShape, DecayReleaseShape, EnvelopeMode, EnvelopeRetriggerMode},
     filter::{FilterSubtype, FilterType},
     lfo::{LfoShape, LfoSyncDivision, LfoSyncMode, LfoTriggerMode},
-    waveshaper::Waveshape,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -114,25 +113,6 @@ impl Default for LfoSettings {
             start_phase: 0.0,
             unipolar: false,
             env_tempo_sync: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct WaveshaperSettings {
-    pub shape: Waveshape,
-    pub drive: f32,
-    pub mix: f32,
-    pub enabled: bool,
-}
-
-impl Default for WaveshaperSettings {
-    fn default() -> Self {
-        Self {
-            shape: Waveshape::Off,
-            drive: 0.0,
-            mix: 1.0,
-            enabled: false,
         }
     }
 }

@@ -1,6 +1,6 @@
-use maolan_plugins::common::filter::{Filter, FilterType, SvfFilter};
+use maolan_plugins::common::filter::{Filter, FilterSubtype, FilterType, SvfFilter};
 use maolan_plugins::synth::dsp::{
-    FilterRouting, OscPhaseMode, OscType, SynthEngine, VoiceParams, Waveshape, soft_clip_master,
+    FilterRouting, OscPhaseMode, OscType, SynthEngine, VoiceParams, soft_clip_master,
 };
 
 fn osc1_saw_test_engine() -> SynthEngine {
@@ -26,14 +26,9 @@ fn osc1_saw_test_engine() -> SynthEngine {
     engine.params.filter_routing = FilterRouting::Ring;
     engine.params.flavor = maolan_plugins::common::flavor::FlavorType::Off;
     engine.params.noise.enabled = false;
-    engine.params.waveshaper.enabled = false;
     engine.params.filter_feedback = 0.0;
     engine.params.lowcut_hz = 20.0;
 
-    engine.params.pitch_eg.attack = 0.0;
-    engine.params.pitch_eg.decay = 0.0;
-    engine.params.pitch_eg.sustain = 0.0;
-    engine.params.pitch_eg.release = 0.0;
     engine.params.portamento = 0.0;
     engine.params.drift_amount = 0.0;
 
@@ -182,12 +177,7 @@ fn test_osc1_only_single_pitch() {
     engine.params.filter2.enabled = false;
     engine.params.flavor = maolan_plugins::common::flavor::FlavorType::Off;
     engine.params.noise.enabled = false;
-    engine.params.waveshaper.enabled = false;
 
-    engine.params.pitch_eg.attack = 0.0;
-    engine.params.pitch_eg.decay = 0.0;
-    engine.params.pitch_eg.sustain = 0.0;
-    engine.params.pitch_eg.release = 0.0;
     engine.params.portamento = 0.0;
     engine.params.drift_amount = 0.0;
 
@@ -231,92 +221,6 @@ fn test_osc1_only_single_pitch() {
 }
 
 #[test]
-fn test_osc1_pitch_eg_effect() {
-    let mut engine = SynthEngine::new(48000.0, 8);
-    engine.params = VoiceParams::default();
-
-    engine.params.oscs[1].enabled = false;
-    engine.params.oscs[2].enabled = false;
-
-    engine.params.oscs[0].osc_type = OscType::Classic;
-    engine.params.oscs[0].waveform = 0;
-    engine.params.oscs[0].sub_level = 0.0;
-    engine.params.oscs[0].sync = 0.0;
-
-    engine.params.filter1.enabled = false;
-    engine.params.filter2.enabled = false;
-    engine.params.flavor = maolan_plugins::common::flavor::FlavorType::Off;
-    engine.params.noise.enabled = false;
-    engine.params.waveshaper.enabled = false;
-
-    engine.update_params();
-
-    let mut out_l = vec![0.0f32; 48000];
-    let mut out_r = vec![0.0f32; 48000];
-
-    engine.trigger(60, 0.8);
-    engine.process_block(&mut out_l, &mut out_r, None, None);
-
-    let start = 24000;
-    let mut crossings = vec![];
-    for i in (start + 1)..out_l.len() {
-        if out_l[i - 1] < 0.0 && out_l[i] >= 0.0 {
-            crossings.push(i);
-        }
-    }
-
-    if crossings.len() >= 2 {
-        let avg_period = (crossings.last().unwrap() - crossings.first().unwrap()) as f32
-            / (crossings.len() - 1) as f32;
-        let _est_freq = 48000.0 / avg_period;
-    }
-
-    let mut engine2 = SynthEngine::new(48000.0, 8);
-    engine2.params = VoiceParams::default();
-    engine2.params.oscs[1].enabled = false;
-    engine2.params.oscs[2].enabled = false;
-    engine2.params.oscs[0].osc_type = OscType::Classic;
-    engine2.params.oscs[0].waveform = 0;
-    engine2.params.oscs[0].sub_level = 0.0;
-    engine2.params.oscs[0].sync = 0.0;
-    engine2.params.filter1.enabled = false;
-    engine2.params.filter2.enabled = false;
-    engine2.params.flavor = maolan_plugins::common::flavor::FlavorType::Off;
-    engine2.params.noise.enabled = false;
-    engine2.params.waveshaper.enabled = false;
-    engine2.params.pitch_eg.attack = 0.0;
-    engine2.params.pitch_eg.decay = 0.0;
-    engine2.params.pitch_eg.sustain = 0.0;
-    engine2.params.pitch_eg.release = 0.0;
-    engine2.update_params();
-
-    out_l.fill(0.0);
-    out_r.fill(0.0);
-    engine2.trigger(60, 0.8);
-    engine2.process_block(&mut out_l, &mut out_r, None, None);
-
-    let start = 24000;
-    let mut crossings = vec![];
-    for i in (start + 1)..out_l.len() {
-        if out_l[i - 1] < 0.0 && out_l[i] >= 0.0 {
-            crossings.push(i);
-        }
-    }
-
-    if crossings.len() >= 2 {
-        let avg_period = (crossings.last().unwrap() - crossings.first().unwrap()) as f32
-            / (crossings.len() - 1) as f32;
-        let est_freq = 48000.0 / avg_period;
-        let ratio = est_freq / 261.63;
-        assert!(
-            ratio > 0.9 && ratio < 1.1,
-            "Frequency still wrong after disabling pitch_eg: {:.1} Hz",
-            est_freq
-        );
-    }
-}
-
-#[test]
 fn test_osc1_debug_freq() {
     let mut engine = SynthEngine::new(48000.0, 8);
     engine.params = VoiceParams::default();
@@ -332,12 +236,6 @@ fn test_osc1_debug_freq() {
     engine.params.filter2.enabled = false;
     engine.params.flavor = maolan_plugins::common::flavor::FlavorType::Off;
     engine.params.noise.enabled = false;
-    engine.params.waveshaper.enabled = false;
-
-    engine.params.pitch_eg.sustain = 0.0;
-    engine.params.pitch_eg.attack = 0.0;
-    engine.params.pitch_eg.decay = 0.0;
-    engine.params.pitch_eg.release = 0.0;
 
     engine.params.portamento = 0.0;
 
@@ -624,17 +522,16 @@ fn test_filter_family_switching_rebuilds_dsp() {
     let input: Vec<f32> = (0..block).map(|_| noise.next()).collect();
     let input_rms = rms(&input);
 
-    let mut filter = Filter::new(FilterType::Ladder, sr);
+    let mut filter = Filter::new(FilterType::DiodeLadder, sr);
     filter.set_params(800.0, 0.7);
     filter.prepare_block(800.0, 0.7, block);
-    let ladder: Vec<f32> = input.iter().map(|&s| filter.process(s)).collect();
-    assert!(matches!(filter, Filter::Ladder(_)));
+    let diode: Vec<f32> = input.iter().map(|&s| filter.process(s)).collect();
+    assert!(matches!(filter, Filter::DiodeLadder(_)));
 
-    // Ladder -> CytomicSvf: a different DSP family must be built.
     filter.set_filter_type(FilterType::CytomicLp);
     assert!(
         matches!(filter, Filter::CytomicSvf(_)),
-        "Ladder -> CytomicLp must rebuild the CytomicSvf variant"
+        "DiodeLadder -> CytomicLp must rebuild the CytomicSvf variant"
     );
     filter.prepare_block(800.0, 0.7, block);
     let cytomic: Vec<f32> = input.iter().map(|&s| filter.process(s)).collect();
@@ -649,14 +546,13 @@ fn test_filter_family_switching_rebuilds_dsp() {
     filter.prepare_block(800.0, 0.7, block);
     let svf: Vec<f32> = input.iter().map(|&s| filter.process(s)).collect();
 
-    // SVF -> Ladder: the reverse direction must rebuild too.
-    filter.set_filter_type(FilterType::Ladder);
+    filter.set_filter_type(FilterType::DiodeLadder);
     assert!(
-        matches!(filter, Filter::Ladder(_)),
-        "Lowpass -> Ladder must rebuild the Ladder variant"
+        matches!(filter, Filter::DiodeLadder(_)),
+        "Lowpass -> DiodeLadder must rebuild the DiodeLadder variant"
     );
 
-    for (name, seg) in [("ladder", &ladder), ("cytomic", &cytomic), ("svf", &svf)] {
+    for (name, seg) in [("diode", &diode), ("cytomic", &cytomic), ("svf", &svf)] {
         assert!(
             seg.iter().all(|s| s.is_finite()),
             "{name} segment contains NaN/INF"
@@ -665,7 +561,7 @@ fn test_filter_family_switching_rebuilds_dsp() {
 
     // All three families are lowpasses at 800 Hz, so each must attenuate
     // white noise well below the input level (a passthrough would not).
-    for (name, seg) in [("ladder", &ladder), ("cytomic", &cytomic), ("svf", &svf)] {
+    for (name, seg) in [("diode", &diode), ("cytomic", &cytomic), ("svf", &svf)] {
         let seg_rms = rms(seg);
         assert!(
             seg_rms < input_rms * 0.6,
@@ -674,7 +570,7 @@ fn test_filter_family_switching_rebuilds_dsp() {
     }
 
     // The families must not silently keep the previous family's DSP running.
-    let ladder_vs_cytomic = ladder
+    let diode_vs_cytomic = diode
         .iter()
         .zip(&cytomic)
         .map(|(a, b)| (a - b).abs())
@@ -687,8 +583,8 @@ fn test_filter_family_switching_rebuilds_dsp() {
         .sum::<f32>()
         / block as f32;
     assert!(
-        ladder_vs_cytomic > 1.0e-4,
-        "Ladder and Cytomic outputs identical (family switch was a no-op): {ladder_vs_cytomic}"
+        diode_vs_cytomic > 1.0e-4,
+        "Diode and Cytomic outputs identical (family switch was a no-op): {diode_vs_cytomic}"
     );
     assert!(
         cytomic_vs_svf > 1.0e-4,
@@ -704,7 +600,7 @@ fn test_filter_cutoff_preserved_across_family_switch() {
     let input: Vec<f32> = (0..block).map(|_| noise.next()).collect();
     let input_rms = rms(&input);
 
-    let mut filter = Filter::new(FilterType::Ladder, sr);
+    let mut filter = Filter::new(FilterType::DiodeLadder, sr);
     filter.set_params(800.0, 0.7);
     filter.prepare_block(800.0, 0.7, block);
     let _warmup: Vec<f32> = input.iter().map(|&s| filter.process(s)).collect();
@@ -1105,7 +1001,7 @@ fn test_filter_feedback_full_amount_stays_bounded() {
     // this configuration grew without bound.
     let mut engine = osc1_saw_test_engine();
     engine.params.filter1.enabled = true;
-    engine.params.filter1.filter_type = FilterType::Ladder;
+    engine.params.filter1.filter_type = FilterType::DiodeLadder;
     engine.params.filter1.cutoff_hz = 800.0;
     engine.params.filter1.resonance = 0.95;
     engine.params.filter_feedback = 1.0;
@@ -1131,16 +1027,16 @@ fn test_filter_feedback_full_amount_stays_bounded() {
     }
 }
 
-fn waveshaper_patch_engine(oversample: bool) -> SynthEngine {
+fn nonlinear_filter_patch_engine(oversample: bool) -> SynthEngine {
     let mut engine = osc1_saw_test_engine();
     engine.params.amp_eg.attack = 0.0;
     engine.params.amp_eg.decay = 0.0;
     engine.params.amp_eg.sustain = 1.0;
     engine.params.oscs[0].level = 0.8;
     engine.params.oscs[0].phase_mode = OscPhaseMode::Zero;
-    engine.params.waveshaper.enabled = true;
-    engine.params.waveshaper.shape = Waveshape::Tanh;
-    engine.params.waveshaper.drive = 0.8;
+    engine.params.filter1.enabled = true;
+    engine.params.filter1.subtype = FilterSubtype::HeavyDrive;
+    engine.params.filter1.drive = 0.8;
     engine.params.voice_oversample = oversample;
     engine.update_params();
     engine
@@ -1187,7 +1083,7 @@ fn test_oversample_toggle_default_is_on() {
 #[test]
 fn test_oversample_on_vs_off_stays_finite_and_similar_level() {
     fn render(oversample: bool) -> Vec<f32> {
-        let mut engine = waveshaper_patch_engine(oversample);
+        let mut engine = nonlinear_filter_patch_engine(oversample);
         let mut out_l = vec![0.0f32; 48000];
         let mut out_r = vec![0.0f32; 48000];
         engine.trigger(60, 0.8);
@@ -1220,42 +1116,6 @@ fn test_oversample_on_vs_off_stays_finite_and_similar_level() {
             "oversample {name} shifted the pitch: {freq} Hz"
         );
     }
-}
-
-#[test]
-fn test_oversample_reduces_waveshaper_aliasing() {
-    fn render(oversample: bool) -> Vec<f32> {
-        let mut engine = waveshaper_patch_engine(oversample);
-        // Bright source high up the keyboard: harmonics reach well past the
-        // audible band, so host-rate waveshaping folds a lot of energy back
-        // below Nyquist. 48k render; inspect the last block only.
-        let mut out_l = vec![0.0f32; 48000];
-        let mut out_r = vec![0.0f32; 48000];
-        engine.trigger(84, 0.8);
-        engine.process_block(&mut out_l, &mut out_r, None, None);
-        out_l
-    }
-
-    let on = render(true);
-    let off = render(false);
-    // ~10 Hz analysis spacing so the sharp square-wave harmonics (and their
-    // aliases) are actually captured by the DFT bins.
-    let tail_on = band_energy(&on[43008..], 48000.0, 18_000.0, 23_500.0, 550);
-    let tail_off = band_energy(&off[43008..], 48000.0, 18_000.0, 23_500.0, 550);
-    let total_on = band_energy(&on[43008..], 48000.0, 100.0, 23_500.0, 470);
-    let total_off = band_energy(&off[43008..], 48000.0, 100.0, 23_500.0, 470);
-    // The renders must carry the same overall energy (the toggle changes
-    // where high-frequency energy lands, not how much there is)...
-    let rel_on = tail_on / total_on;
-    let rel_off = tail_off / total_off;
-    // Measured on a drive-0.8 tanh-square at note 84, 48 kHz host rate: the
-    // oversampled render keeps ~58% of the host-rate 18-23.5 kHz energy —
-    // the difference is the harmonics that fold back into the band when the
-    // waveshaper runs at host rate.
-    assert!(
-        rel_on < rel_off * 0.75,
-        "oversampled render should have relatively less 18-23.5 kHz energy:          on={rel_on} off={rel_off}"
-    );
 }
 
 // ---- SYNTH.md P1 items 10/11: octave-space filter cutoff modulation and
@@ -1441,8 +1301,7 @@ fn test_master_limiter_bounds_loud_patch() {
     // The pre-limiter voice sum reaches roughly ±24 (six voices at ~±4 each),
     // far past ±1; the engine output must stay bounded, and the render peak
     // right at the ~1.0 ceiling proves the limiter engaged rather than the
-    // patch simply being quiet. (The waveshaper is gain-compensated —
-    // `shaped / drive_gain` — so it is left out; it would only attenuate.)
+    // patch simply being quiet.
     let mut engine = osc1_saw_test_engine();
     engine.params.amp_eg.attack = 0.0;
     engine.params.amp_eg.decay = 0.0;
@@ -1497,7 +1356,7 @@ fn test_master_limiter_transparent_for_quiet_patch() {
     );
 }
 
-// ---- SYNTH.md P1 item 8 (Classic hard sync, Twist VA, Modern DPW) and
+// ---- SYNTH.md P1 item 8 (Classic hard sync and Twist VA) and
 // item 12 (StringOsc filter state). All alias assertions run at the 48 kHz
 // host rate with the voice-path 2x oversampling disabled so they
 // discriminate the oscillator-level band-limiting.
@@ -1594,94 +1453,6 @@ fn test_twist_virtual_analog_is_band_limited() {
     assert!(
         spurious < total * 1.0e-4,
         "sub-fundamental spurious energy too high: spurious={spurious:e} total={total:e}"
-    );
-}
-
-/// Modern osc with the sub oscillator off and no detune: seven identical
-/// DPW saws, so the render must be a clean band-limited saw at note pitch.
-fn modern_test_engine() -> SynthEngine {
-    let mut engine = osc1_saw_test_engine();
-    engine.params.amp_eg.attack = 0.0;
-    engine.params.amp_eg.decay = 0.0;
-    engine.params.amp_eg.sustain = 1.0;
-    engine.params.oscs[0].osc_type = OscType::Modern;
-    engine.params.oscs[0].shape = 0.0; // detune ladder off
-    engine.params.oscs[0].skew = 0.0; // width 0: all voices centered
-    engine.params.oscs[0].formant = 0.25; // sub_mix = 0 (sub is naive by design)
-    engine.params.voice_oversample = false;
-    engine.update_params();
-    engine
-}
-
-#[test]
-fn test_modern_dpw_tracks_note_pitch() {
-    let mut engine = modern_test_engine();
-    let mut out_l = vec![0.0f32; 48000];
-    let mut out_r = vec![0.0f32; 48000];
-    engine.trigger(60, 0.8);
-    engine.process_block(&mut out_l, &mut out_r, None, None);
-
-    assert!(
-        out_l.iter().all(|s| s.is_finite()),
-        "Modern render produced NaN/INF"
-    );
-    let level = rms(&out_l[4096..]);
-    assert!(level > 1.0e-3, "Modern osc must not be silent, rms {level}");
-
-    let freq = estimate_positive_zero_cross_freq(&out_l, 48000.0, 4096).expect("modern pitch");
-    assert!(
-        (freq - 261.63).abs() < 5.0,
-        "Modern DPW saw must track note pitch, got {freq}"
-    );
-}
-
-#[test]
-fn test_modern_dpw_is_band_limited_at_high_pitch() {
-    let mut engine = modern_test_engine();
-    let mut out_l = vec![0.0f32; 48000];
-    let mut out_r = vec![0.0f32; 48000];
-    engine.trigger(96, 0.8); // 2093 Hz
-    engine.process_block(&mut out_l, &mut out_r, None, None);
-
-    assert!(
-        out_l.iter().all(|s| s.is_finite()),
-        "Modern high-note render produced NaN/INF"
-    );
-
-    let tail = &out_l[43008..];
-    let high = band_energy(tail, 48000.0, 18_000.0, 23_500.0, 550);
-    let total = band_energy(tail, 48000.0, 100.0, 23_500.0, 470);
-    let rel = high / total;
-    // Measured: DPW rel = 1.3e-2 and spurious/total = 5.6e-9; a naive saw
-    // measures rel = 7.3e-2 and spurious/total = 1.1e-2 (~2,000,000x more
-    // sub-fundamental energy).
-    let spurious = band_energy(tail, 48000.0, 100.0, 1900.0, 360);
-    assert!(
-        rel < 0.04,
-        "18-23.5 kHz band too hot for DPW Modern: rel={rel}"
-    );
-    assert!(
-        spurious < total * 1.0e-4,
-        "sub-fundamental spurious energy too high: spurious={spurious:e} total={total:e}"
-    );
-}
-
-#[test]
-fn test_modern_reset_has_no_dpw_click() {
-    // The DPW history is re-derived from the current phases on reset; the
-    // first samples of a note must continue the parabola exactly instead of
-    // emitting a one-sample spike from a stale history.
-    let mut engine = modern_test_engine();
-    let mut out_l = vec![0.0f32; 1024];
-    let mut out_r = vec![0.0f32; 1024];
-    engine.trigger(60, 0.8);
-    engine.process_block(&mut out_l, &mut out_r, None, None);
-
-    let first_peak = out_l[..16].iter().map(|&s| s.abs()).fold(0.0f32, f32::max);
-    let steady_peak = out_l[512..].iter().map(|&s| s.abs()).fold(0.0f32, f32::max);
-    assert!(
-        first_peak <= steady_peak * 1.5 + 0.05,
-        "DPW history reset click: first_peak={first_peak} steady={steady_peak}"
     );
 }
 

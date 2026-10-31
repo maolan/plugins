@@ -67,7 +67,6 @@ pub enum OscType {
     Fm2 = 2,
     Wavetable = 3,
     Window = 4,
-    Modern = 5,
     ShNoise = 6,
     String = 7,
     Fm3 = 8,
@@ -75,16 +74,16 @@ pub enum OscType {
     Twist = 10,
     AudioInput = 11,
     Sample = 12,
+    Off = 13,
 }
 
 impl OscType {
     pub fn from_u8(v: u8) -> Self {
         match v {
-            0 | 1 => OscType::Classic,
+            0 | 1 | 5 => OscType::Classic,
             2 => OscType::Fm2,
             3 => OscType::Wavetable,
             4 => OscType::Window,
-            5 => OscType::Modern,
             6 => OscType::ShNoise,
             7 => OscType::String,
             8 => OscType::Fm3,
@@ -92,6 +91,7 @@ impl OscType {
             10 => OscType::Twist,
             11 => OscType::AudioInput,
             12 => OscType::Sample,
+            13 => OscType::Off,
             _ => OscType::AudioInput,
         }
     }
@@ -100,12 +100,12 @@ impl OscType {
 impl std::fmt::Display for OscType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            OscType::Off => write!(f, "Off"),
             OscType::Classic => write!(f, "Classic"),
             OscType::Sine => write!(f, "Sine"),
             OscType::Fm2 => write!(f, "FM2"),
             OscType::Wavetable => write!(f, "Wavetable"),
             OscType::Window => write!(f, "Window"),
-            OscType::Modern => write!(f, "Modern"),
             OscType::ShNoise => write!(f, "ShNoise"),
             OscType::String => write!(f, "String"),
             OscType::Fm3 => write!(f, "FM3"),
@@ -1384,13 +1384,13 @@ mod tests {
     #[test]
     fn set_sample_rate_keeps_every_variant_finite() {
         for ty in [
+            OscType::Off,
             OscType::Classic,
             OscType::Sine,
             OscType::Fm2,
             OscType::Fm3,
             OscType::Wavetable,
             OscType::Window,
-            OscType::Modern,
             OscType::ShNoise,
             OscType::String,
             OscType::Alias,
@@ -1408,6 +1408,15 @@ mod tests {
                     "{ty:?} non-finite output after set_sample_rate"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn off_oscillator_is_silent() {
+        let mut osc = Oscillator::new(OscType::Off, 48_000.0);
+        assert_eq!(osc.osc_type(), OscType::Off);
+        for _ in 0..256 {
+            assert_eq!(osc.next(1.0, 1.0, 1.0), (0.0, 0.0));
         }
     }
 }
@@ -2254,79 +2263,6 @@ impl WindowOsc {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModernSubWaveform {
-    Square = 0,
-    Triangle = 1,
-    Saw = 2,
-}
-
-impl ModernSubWaveform {
-    pub fn from_u8(v: u8) -> Self {
-        match v {
-            1 => ModernSubWaveform::Triangle,
-            2 => ModernSubWaveform::Saw,
-            _ => ModernSubWaveform::Square,
-        }
-    }
-}
-
-impl std::fmt::Display for ModernSubWaveform {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ModernSubWaveform::Square => write!(f, "Square"),
-            ModernSubWaveform::Triangle => write!(f, "Triangle"),
-            ModernSubWaveform::Saw => write!(f, "Saw"),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ModernOsc {
-    sample_rate: f32,
-    freq_hz: f32,
-    detune: f32,
-    width: f32,
-    sub_mix: f32,
-    sub_octave: i8,
-    sub_waveform: ModernSubWaveform,
-    sub_one: bool,
-    phases: [f32; 8],
-    /// DPW (differentiated parabolic waveform) history: the previous two
-    /// parabolic-wave samples per voice. Kept in f64 — the second difference
-    /// cancels down to ~dt², which f32 cannot represent at low pitch.
-    dpw_state: [[f64; 2]; 8],
-}
-
-/// Surge-style Modern detune ladder: voice 0 (and the sub) at base pitch,
-/// voices 1..=3 sharpened by fractions of the detune range, voices 4..=6
-/// flattened symmetrically. `detune` is 0..=1 (×50 cents).
-#[inline]
-fn modern_detune_ladder(detune: f32) -> [f32; 8] {
-    let detune_cents = detune * 50.0;
-    [
-        0.0,
-        detune_cents * 0.25,
-        detune_cents * 0.5,
-        detune_cents * 0.75,
-        -detune_cents * 0.25,
-        -detune_cents * 0.5,
-        -detune_cents * 0.75,
-        0.0,
-    ]
-}
-
-/// Periodic double integral of the unit sawtooth `2t - 1`: its second
-/// derivative is exactly the sawtooth, so a discrete second difference of
-/// sampled `dpw_parabola` values (scaled by `1/dt²`) yields a band-limited
-/// saw (DPW). The parabola is chosen so both value and slope are continuous
-/// across the phase wrap.
-#[inline]
-fn dpw_parabola(phase: f32) -> f64 {
-    let p = (phase as f64).rem_euclid(1.0);
-    p * p * p / 3.0 - p * p / 2.0 + p / 6.0
-}
-
 /// Amplitude compensation for the discrete second-difference operator
 /// `x[n] - 2x[n-1] + x[n-2]`, whose frequency response is
 /// `4 sin²(ω/2)` instead of the continuous `ω²`. `dt` is the phase
@@ -2340,159 +2276,6 @@ pub(crate) fn dpw_droop_compensation(dt: f32) -> f32 {
     } else {
         let sinc = h.sin() / h;
         1.0 / (sinc * sinc)
-    }
-}
-
-impl ModernOsc {
-    pub fn new(sample_rate: f32) -> Self {
-        let mut osc = Self {
-            sample_rate,
-            freq_hz: 440.0,
-            detune: 0.2,
-            width: 0.0,
-            sub_mix: 0.0,
-            sub_octave: -1,
-            sub_waveform: ModernSubWaveform::Square,
-            sub_one: false,
-            phases: [0.0; 8],
-            dpw_state: [[0.0; 2]; 8],
-        };
-        osc.rebuild_dpw_history();
-        osc
-    }
-
-    pub fn set_freq_hz(&mut self, freq: f32) {
-        self.freq_hz = freq.max(0.1);
-        // The DPW history is indexed by phase; a frequency change alters the
-        // phase stride, so re-derive the history to avoid a one-sample spike
-        // (e.g. under portamento).
-        self.rebuild_dpw_history();
-    }
-
-    pub fn set_detune(&mut self, detune: f32) {
-        self.detune = detune.clamp(0.0, 1.0);
-    }
-
-    pub fn set_width(&mut self, width: f32) {
-        self.width = width.clamp(-1.0, 1.0);
-    }
-
-    pub fn set_sub_mix(&mut self, sub_mix: f32) {
-        self.sub_mix = sub_mix.clamp(0.0, 1.0);
-    }
-
-    pub fn set_sub_octave(&mut self, oct: i8) {
-        self.sub_octave = match oct {
-            1 => -2,
-            _ => -1,
-        };
-    }
-
-    pub fn set_sub_waveform(&mut self, wf: ModernSubWaveform) {
-        self.sub_waveform = wf;
-    }
-
-    pub fn set_sub_one(&mut self, v: bool) {
-        self.sub_one = v;
-    }
-
-    pub fn reset(&mut self) {
-        for p in &mut self.phases {
-            *p = rand::random();
-        }
-        self.rebuild_dpw_history();
-    }
-
-    pub fn reset_to_zero(&mut self) {
-        self.phases.fill(0.0);
-        self.rebuild_dpw_history();
-    }
-
-    /// Re-derive the two-sample DPW history for each voice from its current
-    /// phase and per-voice stride, so the next rendered sample continues the
-    /// parabola exactly (no click on note-on / pitch change).
-    fn rebuild_dpw_history(&mut self) {
-        let base_inc = self.freq_hz / self.sample_rate;
-        let detunes = modern_detune_ladder(self.detune);
-        for (i, &det) in detunes.iter().enumerate() {
-            let dt = base_inc * 2.0f32.powf(det / 1200.0);
-            let phase = self.phases[i];
-            self.dpw_state[i][0] = dpw_parabola(phase - dt);
-            self.dpw_state[i][1] = dpw_parabola(phase - 2.0 * dt);
-        }
-    }
-
-    pub fn generate(&mut self) -> (f32, f32) {
-        let base_inc = self.freq_hz / self.sample_rate;
-        let mut sum_l = 0.0f32;
-        let mut sum_r = 0.0f32;
-
-        let detunes = modern_detune_ladder(self.detune);
-
-        for (i, detune) in detunes.iter().enumerate().take(7) {
-            let dt = base_inc * 2.0f32.powf(*detune / 1200.0);
-            let phase = self.phases[i];
-
-            // DPW saw: the discrete second difference of the double
-            // integral `dpw_parabola`, scaled by 1/dt² and compensated for
-            // the second-difference droop. Per-voice `dt` keeps it exact for
-            // each voice's instantaneous frequency.
-            let p = dpw_parabola(phase);
-            let d = p - 2.0 * self.dpw_state[i][0] + self.dpw_state[i][1];
-            self.dpw_state[i][1] = self.dpw_state[i][0];
-            self.dpw_state[i][0] = p;
-            let dt64 = dt as f64;
-            let mut out = (d / (dt64 * dt64)) as f32;
-            out *= dpw_droop_compensation(dt);
-            out = soft_clip(out);
-
-            self.phases[i] += dt;
-            while self.phases[i] >= 1.0 {
-                self.phases[i] -= 1.0;
-            }
-
-            let pan = if i == 0 {
-                0.5
-            } else {
-                let spread = self.width.abs();
-                let side = if i <= 3 { 1.0 } else { -1.0 };
-                0.5 + side * spread * 0.5
-            };
-            sum_l += out * (1.0 - pan);
-            sum_r += out * pan;
-        }
-
-        if self.sub_mix > 0.0 {
-            let sub_ratio = 2.0f32.powi(self.sub_octave as i32);
-            let extra_div = if self.sub_one { 2.0 } else { 1.0 };
-            let sub_inc = base_inc * sub_ratio / extra_div;
-            let sub_phase = self.phases[7];
-            let sub_out = match self.sub_waveform {
-                ModernSubWaveform::Square => {
-                    if sub_phase < 0.5 {
-                        1.0
-                    } else {
-                        -1.0
-                    }
-                }
-                ModernSubWaveform::Triangle => 1.0 - 4.0 * (sub_phase - 0.5).abs(),
-                ModernSubWaveform::Saw => {
-                    let mut v = 2.0 * sub_phase - 1.0;
-                    v -= poly_blep(sub_phase, sub_inc);
-                    v
-                }
-            };
-            self.phases[7] += sub_inc;
-            while self.phases[7] >= 1.0 {
-                self.phases[7] -= 1.0;
-            }
-            sum_l += sub_out * self.sub_mix;
-            sum_r += sub_out * self.sub_mix;
-        }
-
-        let total_voices = 7.0 + self.sub_mix;
-        let atten = 1.0 / total_voices.sqrt();
-        (sum_l * atten, sum_r * atten)
     }
 }
 
@@ -3775,13 +3558,13 @@ impl SampleOsc {
 
 #[derive(Debug, Clone)]
 pub enum Oscillator {
+    Off,
     Classic(ClassicOsc),
     Sine(SineOsc),
     Fm2(Fm2Osc),
     Fm3(Fm3Osc),
     Wavetable(WavetableOsc),
     Window(WindowOsc),
-    Modern(ModernOsc),
     ShNoise(ShNoiseOsc),
     String(Box<StringOsc>),
     Alias(Box<AliasOsc>),
@@ -3793,13 +3576,13 @@ pub enum Oscillator {
 impl Oscillator {
     pub fn new(osc_type: OscType, sample_rate: f32) -> Self {
         match osc_type {
+            OscType::Off => Oscillator::Off,
             OscType::Classic => Oscillator::Classic(ClassicOsc::new(sample_rate)),
             OscType::Sine => Oscillator::Sine(SineOsc::new(sample_rate)),
             OscType::Fm2 => Oscillator::Fm2(Fm2Osc::new(sample_rate)),
             OscType::Fm3 => Oscillator::Fm3(Fm3Osc::new(sample_rate)),
             OscType::Wavetable => Oscillator::Wavetable(WavetableOsc::new(sample_rate)),
             OscType::Window => Oscillator::Window(WindowOsc::new(sample_rate)),
-            OscType::Modern => Oscillator::Modern(ModernOsc::new(sample_rate)),
             OscType::ShNoise => Oscillator::ShNoise(ShNoiseOsc::new(sample_rate)),
             OscType::String => Oscillator::String(Box::new(StringOsc::new(sample_rate))),
             OscType::Alias => Oscillator::Alias(Box::new(AliasOsc::new(sample_rate))),
@@ -3811,13 +3594,13 @@ impl Oscillator {
 
     pub fn osc_type(&self) -> OscType {
         match self {
+            Oscillator::Off => OscType::Off,
             Oscillator::Classic(_) => OscType::Classic,
             Oscillator::Sine(_) => OscType::Sine,
             Oscillator::Fm2(_) => OscType::Fm2,
             Oscillator::Fm3(_) => OscType::Fm3,
             Oscillator::Wavetable(_) => OscType::Wavetable,
             Oscillator::Window(_) => OscType::Window,
-            Oscillator::Modern(_) => OscType::Modern,
             Oscillator::ShNoise(_) => OscType::ShNoise,
             Oscillator::String(_) => OscType::String,
             Oscillator::Alias(_) => OscType::Alias,
@@ -3829,13 +3612,13 @@ impl Oscillator {
 
     pub fn set_freq_hz(&mut self, freq: f32) {
         match self {
+            Oscillator::Off => {}
             Oscillator::Classic(o) => o.set_freq_hz(freq),
             Oscillator::Sine(o) => o.set_freq_hz(freq),
             Oscillator::Fm2(o) => o.set_freq_hz(freq),
             Oscillator::Fm3(o) => o.set_freq_hz(freq),
             Oscillator::Wavetable(o) => o.set_freq_hz(freq),
             Oscillator::Window(o) => o.set_freq_hz(freq),
-            Oscillator::Modern(o) => o.set_freq_hz(freq),
             Oscillator::ShNoise(o) => o.set_freq_hz(freq),
             Oscillator::String(o) => o.set_freq_hz(freq),
             Oscillator::Alias(o) => o.set_freq_hz(freq),
@@ -3870,7 +3653,6 @@ impl Oscillator {
                 o.lowcut_r.set_sample_rate(sr);
                 o.highcut_r.set_sample_rate(sr);
             }
-            Oscillator::Modern(o) => o.sample_rate = sr,
             Oscillator::ShNoise(o) => {
                 o.sample_rate = sr;
                 o.lowcut.set_sample_rate(sr);
@@ -3898,19 +3680,19 @@ impl Oscillator {
             Oscillator::Alias(o) => o.sample_rate = sr,
             Oscillator::Twist(o) => o.set_sample_rate(sr),
             Oscillator::AudioInput(o) => o.sample_rate = sr,
-            Oscillator::Sample(_) => {}
+            Oscillator::Off | Oscillator::Sample(_) => {}
         }
     }
 
     pub fn reset(&mut self) {
         match self {
+            Oscillator::Off => {}
             Oscillator::Classic(o) => o.reset(),
             Oscillator::Sine(o) => o.reset(),
             Oscillator::Fm2(o) => o.reset(),
             Oscillator::Fm3(o) => o.reset(),
             Oscillator::Wavetable(o) => o.reset(),
             Oscillator::Window(o) => o.reset(),
-            Oscillator::Modern(o) => o.reset(),
             Oscillator::ShNoise(o) => o.reset(),
             Oscillator::String(o) => o.reset(),
             Oscillator::Alias(o) => o.reset(),
@@ -3922,13 +3704,13 @@ impl Oscillator {
 
     pub fn reset_to_zero(&mut self) {
         match self {
+            Oscillator::Off => {}
             Oscillator::Classic(o) => o.reset_to_zero(),
             Oscillator::Sine(o) => o.reset_to_zero(),
             Oscillator::Fm2(o) => o.reset_to_zero(),
             Oscillator::Fm3(o) => o.reset_to_zero(),
             Oscillator::Wavetable(o) => o.reset_to_zero(),
             Oscillator::Window(o) => o.reset_to_zero(),
-            Oscillator::Modern(o) => o.reset_to_zero(),
             Oscillator::ShNoise(o) => o.reset_to_zero(),
             Oscillator::String(o) => o.reset_to_zero(),
             Oscillator::Alias(o) => o.reset_to_zero(),
@@ -3940,13 +3722,13 @@ impl Oscillator {
 
     pub fn next(&mut self, fm_input: f32, audio_in_l: f32, audio_in_r: f32) -> (f32, f32) {
         match self {
+            Oscillator::Off => (0.0, 0.0),
             Oscillator::Classic(o) => o.next(fm_input),
             Oscillator::Sine(o) => o.next(fm_input),
             Oscillator::Fm2(o) => o.generate(),
             Oscillator::Fm3(o) => o.generate(),
             Oscillator::Wavetable(o) => o.next(fm_input),
             Oscillator::Window(o) => o.next(fm_input),
-            Oscillator::Modern(o) => o.generate(),
             Oscillator::ShNoise(o) => o.generate(),
             Oscillator::String(o) => o.generate(),
             Oscillator::Alias(o) => o.generate(),
@@ -3979,8 +3761,7 @@ impl Oscillator {
             Oscillator::ShNoise(o) => o.set_unison(voices, detune),
             Oscillator::Alias(o) => o.set_unison(voices, detune),
             Oscillator::Twist(o) => o.set_unison(voices, detune),
-            Oscillator::Modern(_o) => {}
-            Oscillator::String(_o) => {}
+            Oscillator::Off | Oscillator::String(_) => {}
             Oscillator::AudioInput(_o) => {}
             Oscillator::Sample(_o) => {}
         }
@@ -3997,8 +3778,7 @@ impl Oscillator {
             Oscillator::ShNoise(o) => o.set_unison_spread(spread),
             Oscillator::Alias(o) => o.set_unison_spread(spread),
             Oscillator::Twist(o) => o.set_unison_spread(spread),
-            Oscillator::Modern(_o) => {}
-            Oscillator::String(_o) => {}
+            Oscillator::Off | Oscillator::String(_) => {}
             Oscillator::AudioInput(_o) => {}
             Oscillator::Sample(_o) => {}
         }
@@ -4012,13 +3792,12 @@ impl Oscillator {
             Oscillator::Fm3(o) => o.set_algorithm((shape * 3.0) as u8),
             Oscillator::Wavetable(o) => o.set_shape(shape),
             Oscillator::Window(o) => o.set_shape(shape),
-            Oscillator::Modern(o) => o.set_detune(shape),
             Oscillator::String(o) => o.set_damping(shape),
             Oscillator::Alias(o) => o.set_quant_bits(shape * 15.0 + 1.0),
             Oscillator::Twist(o) => o.set_model(crate::common::twist::TwistModel::from_u8(
                 ((shape.clamp(0.0, 1.0) * 16.0) as u8).min(15),
             )),
-            Oscillator::ShNoise(_o) => {}
+            Oscillator::Off | Oscillator::ShNoise(_) => {}
             Oscillator::AudioInput(o) => o.set_gain(shape * 4.0),
             Oscillator::Sample(_o) => {}
         }
@@ -4030,7 +3809,6 @@ impl Oscillator {
             Oscillator::Fm2(o) => o.set_depth(skew.clamp(0.0, 1.0)),
             Oscillator::Fm3(o) => o.set_ratio2((skew + 1.0) * 2.0 + 0.25),
             Oscillator::Wavetable(o) => o.set_skew(skew),
-            Oscillator::Modern(o) => o.set_width(skew),
             Oscillator::String(o) => o.set_pickup_pos(skew),
             Oscillator::Alias(o) => o.set_decim_factor(skew * 63.0 + 1.0),
             Oscillator::Sine(o) => o.set_feedback(skew.clamp(0.0, 1.0)),
@@ -4050,7 +3828,6 @@ impl Oscillator {
     pub fn set_formant(&mut self, formant: f32) {
         match self {
             Oscillator::Window(o) => o.set_formant(formant),
-            Oscillator::Modern(o) => o.set_sub_mix((formant - 0.25) / 3.75),
             Oscillator::Fm3(o) => o.set_ratio3(formant * 4.0 + 0.25),
             Oscillator::Alias(o) => o.set_dirty(formant),
             Oscillator::Wavetable(o) => o.set_formant(formant),
@@ -4079,18 +3856,6 @@ impl Oscillator {
     pub fn set_window_type(&mut self, wt: WindowType) {
         if let Oscillator::Window(o) = self {
             o.set_window_type(wt)
-        }
-    }
-
-    pub fn set_sub_waveform(&mut self, wf: ModernSubWaveform) {
-        if let Oscillator::Modern(o) = self {
-            o.set_sub_waveform(wf)
-        }
-    }
-
-    pub fn set_sub_one(&mut self, v: bool) {
-        if let Oscillator::Modern(o) = self {
-            o.set_sub_one(v)
         }
     }
 
