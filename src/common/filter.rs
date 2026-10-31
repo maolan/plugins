@@ -13,12 +13,7 @@ pub enum FilterType {
     CombPos = 6,
     CombNeg = 7,
     Allpass = 8,
-    Ladder = 9,
-    K35Lp = 10,
-    K35Hp = 11,
     DiodeLadder = 12,
-    CutoffWarp = 13,
-    ResonanceWarp = 14,
     Lowpass12dB = 15,
     Highpass12dB = 16,
     Bandpass12dB = 17,
@@ -39,23 +34,6 @@ pub enum FilterType {
     CytomicHs = 31,
     TriPole = 32,
     SampleHold = 33,
-
-    CutoffWarpHp = 34,
-    CutoffWarpBp = 35,
-    CutoffWarpNotch = 36,
-    CutoffWarpAp = 37,
-
-    ResonanceWarpLp = 38,
-    ResonanceWarpHp = 39,
-    ResonanceWarpNotch = 40,
-    ResonanceWarpAp = 41,
-
-    Obxd2PoleLp = 42,
-    Obxd2PoleHp = 43,
-    Obxd2PoleBp = 44,
-    Obxd2PoleNotch = 45,
-    Obxd4Pole = 46,
-    ObxdXpander = 47,
     Notch24dB = 48,
 }
 
@@ -71,12 +49,7 @@ impl FilterType {
             6 => FilterType::CombPos,
             7 => FilterType::CombNeg,
             8 => FilterType::Allpass,
-            9 => FilterType::Ladder,
-            10 => FilterType::K35Lp,
-            11 => FilterType::K35Hp,
             12 => FilterType::DiodeLadder,
-            13 => FilterType::CutoffWarp,
-            14 => FilterType::ResonanceWarp,
             15 => FilterType::Lowpass12dB,
             16 => FilterType::Highpass12dB,
             17 => FilterType::Bandpass12dB,
@@ -96,22 +69,8 @@ impl FilterType {
             31 => FilterType::CytomicHs,
             32 => FilterType::TriPole,
             33 => FilterType::SampleHold,
-            34 => FilterType::CutoffWarpHp,
-            35 => FilterType::CutoffWarpBp,
-            36 => FilterType::CutoffWarpNotch,
-            37 => FilterType::CutoffWarpAp,
-            38 => FilterType::ResonanceWarpLp,
-            39 => FilterType::ResonanceWarpHp,
-            40 => FilterType::ResonanceWarpNotch,
-            41 => FilterType::ResonanceWarpAp,
-            42 => FilterType::Obxd2PoleLp,
-            43 => FilterType::Obxd2PoleHp,
-            44 => FilterType::Obxd2PoleBp,
-            45 => FilterType::Obxd2PoleNotch,
-            46 => FilterType::Obxd4Pole,
-            47 => FilterType::ObxdXpander,
             48 => FilterType::Notch24dB,
-            _ => FilterType::ResonanceWarpAp,
+            _ => FilterType::Lowpass,
         }
     }
 }
@@ -162,12 +121,7 @@ impl FilterType {
             FilterType::CombPos => "Comb+",
             FilterType::CombNeg => "Comb-",
             FilterType::Allpass => "Allpass",
-            FilterType::Ladder => "Ladder",
-            FilterType::K35Lp => "K35 LP",
-            FilterType::K35Hp => "K35 HP",
             FilterType::DiodeLadder => "Diode Ldr",
-            FilterType::CutoffWarp => "CW LP",
-            FilterType::ResonanceWarp => "RW LP",
             FilterType::Lowpass12dB => "LP 12",
             FilterType::Highpass12dB => "HP 12",
             FilterType::Bandpass12dB => "BP 12",
@@ -187,20 +141,6 @@ impl FilterType {
             FilterType::CytomicHs => "SVF Hi Shf",
             FilterType::TriPole => "TriPole",
             FilterType::SampleHold => "S&H",
-            FilterType::CutoffWarpHp => "CW HP",
-            FilterType::CutoffWarpBp => "CW BP",
-            FilterType::CutoffWarpNotch => "CW Notch",
-            FilterType::CutoffWarpAp => "CW AP",
-            FilterType::ResonanceWarpLp => "RW LP",
-            FilterType::ResonanceWarpHp => "RW HP",
-            FilterType::ResonanceWarpNotch => "RW Notch",
-            FilterType::ResonanceWarpAp => "RW AP",
-            FilterType::Obxd2PoleLp => "OBXd 2p LP",
-            FilterType::Obxd2PoleHp => "OBXd 2p HP",
-            FilterType::Obxd2PoleBp => "OBXd 2p BP",
-            FilterType::Obxd2PoleNotch => "OBXd 2p Nt",
-            FilterType::Obxd4Pole => "OBXd 4p",
-            FilterType::ObxdXpander => "OBXd Xpndr",
             FilterType::Notch24dB => "Notch 24",
         }
     }
@@ -221,22 +161,6 @@ pub enum FilterSubtype {
     SoftClip = 4,
     SineSat = 5,
     Ojd = 6,
-
-    XpanderLp1 = 7,
-    XpanderLp2 = 8,
-    XpanderLp3 = 9,
-    XpanderLp4 = 10,
-    XpanderHp1 = 11,
-    XpanderHp2 = 12,
-    XpanderHp3 = 13,
-    XpanderBp2 = 14,
-    XpanderBp4 = 15,
-    XpanderN2 = 16,
-    XpanderPh3 = 17,
-    XpanderHp2Lp1 = 18,
-    XpanderHp3Lp1 = 19,
-    XpanderN2Lp1 = 20,
-    XpanderPh3Lp1 = 21,
 }
 
 impl std::fmt::Display for FilterSubtype {
@@ -249,21 +173,6 @@ impl std::fmt::Display for FilterSubtype {
             Self::SoftClip => "SoftClip",
             Self::SineSat => "SineSat",
             Self::Ojd => "Ojd",
-            Self::XpanderLp1 => "XpanderLp1",
-            Self::XpanderLp2 => "XpanderLp2",
-            Self::XpanderLp3 => "XpanderLp3",
-            Self::XpanderLp4 => "XpanderLp4",
-            Self::XpanderHp1 => "XpanderHp1",
-            Self::XpanderHp2 => "XpanderHp2",
-            Self::XpanderHp3 => "XpanderHp3",
-            Self::XpanderBp2 => "XpanderBp2",
-            Self::XpanderBp4 => "XpanderBp4",
-            Self::XpanderN2 => "XpanderN2",
-            Self::XpanderPh3 => "XpanderPh3",
-            Self::XpanderHp2Lp1 => "XpanderHp2Lp1",
-            Self::XpanderHp3Lp1 => "XpanderHp3Lp1",
-            Self::XpanderN2Lp1 => "XpanderN2Lp1",
-            Self::XpanderPh3Lp1 => "XpanderPh3Lp1",
         };
         write!(f, "{name}")
     }
@@ -278,22 +187,6 @@ impl FilterSubtype {
             3 => FilterSubtype::Asymmetric,
             4 => FilterSubtype::SoftClip,
             5 => FilterSubtype::SineSat,
-            6 => FilterSubtype::Ojd,
-            7 => FilterSubtype::XpanderLp1,
-            8 => FilterSubtype::XpanderLp2,
-            9 => FilterSubtype::XpanderLp3,
-            10 => FilterSubtype::XpanderLp4,
-            11 => FilterSubtype::XpanderHp1,
-            12 => FilterSubtype::XpanderHp2,
-            13 => FilterSubtype::XpanderHp3,
-            14 => FilterSubtype::XpanderBp2,
-            15 => FilterSubtype::XpanderBp4,
-            16 => FilterSubtype::XpanderN2,
-            17 => FilterSubtype::XpanderPh3,
-            18 => FilterSubtype::XpanderHp2Lp1,
-            19 => FilterSubtype::XpanderHp3Lp1,
-            20 => FilterSubtype::XpanderN2Lp1,
-            21 => FilterSubtype::XpanderPh3Lp1,
             _ => FilterSubtype::Ojd,
         }
     }
@@ -833,76 +726,6 @@ impl BiquadFilter {
 }
 
 #[derive(Debug, Clone)]
-pub struct LadderFilter {
-    sample_rate: f32,
-    pub cutoff_hz: f32,
-    pub resonance: f32,
-    pub drive: f32,
-    pub subtype: FilterSubtype,
-    pub feedback_drive: f32,
-    stages: [f32; 4],
-    g: f32,
-    k: f32,
-}
-
-impl LadderFilter {
-    pub fn new(sample_rate: f32) -> Self {
-        Self {
-            sample_rate,
-            cutoff_hz: 20000.0,
-            resonance: 0.0,
-            drive: 0.0,
-            subtype: FilterSubtype::Clean,
-            feedback_drive: 0.0,
-            stages: [0.0; 4],
-            g: 0.0,
-            k: 0.0,
-        }
-    }
-
-    pub fn set_sample_rate(&mut self, sample_rate: f32) {
-        self.sample_rate = sample_rate;
-    }
-
-    pub fn reset(&mut self) {
-        self.stages = [0.0; 4];
-    }
-
-    pub fn set_params(&mut self, cutoff: f32, resonance: f32) {
-        self.cutoff_hz = cutoff;
-        self.resonance = resonance;
-    }
-
-    pub fn prepare_block(&mut self, _cutoff: f32, _resonance: f32, _block_size: usize) {
-        let fc = (self.cutoff_hz / self.sample_rate).clamp(0.0001, 0.4999);
-        let g = (std::f32::consts::PI * fc).tan();
-        self.g = g / (1.0 + g);
-        self.k = self.resonance * 4.0;
-    }
-
-    pub fn process(&mut self, input: f32) -> f32 {
-        let in_driven = apply_subtype(input, self.subtype, self.drive);
-        let fb_gain = 1.0 + self.feedback_drive * 4.0;
-        let fb = tanh_sat(self.stages[3] * fb_gain);
-        let mut x = in_driven - self.k * fb;
-        x = tanh_sat(x);
-
-        for i in 0..4 {
-            self.stages[i] = self.stages[i] + self.g * (x - self.stages[i]);
-            x = self.stages[i];
-        }
-
-        match self.subtype {
-            FilterSubtype::Clean => self.stages[3],
-            FilterSubtype::MildDrive => self.stages[2],
-            FilterSubtype::HeavyDrive => self.stages[1],
-            FilterSubtype::Asymmetric => self.stages[0],
-            _ => self.stages[3],
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
 pub struct CytomicSvfFilter {
     sample_rate: f32,
     pub cutoff_hz: f32,
@@ -1205,143 +1028,6 @@ impl VintageLadderFilter {
 }
 
 #[derive(Debug, Clone)]
-pub struct K35Filter {
-    sample_rate: f32,
-    pub filter_type: FilterType,
-    pub cutoff_hz: f32,
-    pub resonance: f32,
-    pub saturation: f32,
-    pub drive: f32,
-    pub subtype: FilterSubtype,
-    lpf1_state: f32,
-    lpf2_state: f32,
-    hpf1_state: f32,
-    g_val: f32,
-    gp1: f32,
-    k: f32,
-    alpha: f32,
-}
-
-impl K35Filter {
-    pub fn new(sample_rate: f32) -> Self {
-        Self {
-            sample_rate,
-            filter_type: FilterType::K35Lp,
-            cutoff_hz: 20000.0,
-            resonance: 0.7,
-            saturation: 0.0,
-            drive: 0.0,
-            subtype: FilterSubtype::Clean,
-            lpf1_state: 0.0,
-            lpf2_state: 0.0,
-            hpf1_state: 0.0,
-            g_val: 0.0,
-            gp1: 1.0,
-            k: 0.0,
-            alpha: 1.0,
-        }
-    }
-
-    pub fn set_sample_rate(&mut self, sample_rate: f32) {
-        self.sample_rate = sample_rate;
-    }
-
-    pub fn reset(&mut self) {
-        self.lpf1_state = 0.0;
-        self.lpf2_state = 0.0;
-        self.hpf1_state = 0.0;
-    }
-
-    pub fn set_params(&mut self, cutoff: f32, resonance: f32) {
-        self.cutoff_hz = cutoff;
-        self.resonance = resonance;
-    }
-
-    pub fn prepare_block(&mut self, _cutoff: f32, _resonance: f32, _block_size: usize) {
-        let wd = (self.cutoff_hz * 2.0 * std::f32::consts::PI).clamp(0.0, self.sample_rate * 0.499);
-        let wa = (2.0 * self.sample_rate) * (wd / self.sample_rate * 0.5).tan();
-        let g = wa / self.sample_rate * 0.5;
-        self.gp1 = 1.0 + g;
-        self.g_val = g / self.gp1;
-        self.k = self.resonance.clamp(0.01, 1.96);
-        self.alpha = 1.0 / (1.0 - self.k * self.g_val + self.k * self.g_val * self.g_val);
-    }
-
-    fn k35_saturate(&self, x: f32) -> f32 {
-        match self.subtype {
-            FilterSubtype::Clean => x,
-            FilterSubtype::MildDrive => tanh_sat(x * 2.0) / 2.0,
-            FilterSubtype::HeavyDrive => tanh_sat(x * 4.0) / 4.0,
-            FilterSubtype::Asymmetric => {
-                if x >= 0.0 {
-                    tanh_sat(x * 3.0) / 3.0
-                } else {
-                    tanh_sat(x)
-                }
-            }
-            FilterSubtype::SoftClip => {
-                let threshold = 1.0 / 3.0;
-                if x.abs() <= threshold {
-                    x * 2.0
-                } else if x.abs() <= 2.0 * threshold {
-                    let sign = x.signum();
-                    let t = x.abs() - threshold;
-                    sign * (2.0 * threshold + t * (1.0 - t * 1.5))
-                } else {
-                    x.signum() * 4.0 / 3.0
-                }
-            }
-            _ => {
-                let sat = 1.0 + self.drive * 3.0;
-                tanh_sat(x * sat) / sat
-            }
-        }
-    }
-
-    pub fn process(&mut self, input: f32) -> f32 {
-        let in_driven = apply_subtype(input, self.subtype, self.drive);
-
-        if self.filter_type == FilterType::K35Lp {
-            let lb = (self.k - self.k * self.g_val) / self.gp1;
-            let hb = -1.0 / self.gp1;
-
-            let y1 = self.g_val * in_driven + (1.0 - self.g_val) * self.lpf1_state;
-            self.lpf1_state = y1;
-
-            let s35 = lb * self.lpf2_state + hb * self.hpf1_state;
-            let u = self.alpha * (y1 + s35);
-            let u_driven = self.k35_saturate(u);
-
-            let y = self.k * (self.g_val * u_driven + (1.0 - self.g_val) * self.lpf2_state);
-            self.lpf2_state = self.g_val * u_driven + (1.0 - self.g_val) * self.lpf2_state;
-
-            let hpf_out = self.g_val * y + (1.0 - self.g_val) * self.hpf1_state;
-            self.hpf1_state = hpf_out;
-
-            y / self.k.max(0.01)
-        } else {
-            let lb = 1.0 / self.gp1;
-            let hb = -self.g_val / self.gp1;
-
-            let y1 = self.g_val * in_driven + (1.0 - self.g_val) * self.lpf1_state;
-            self.lpf1_state = y1;
-
-            let s35 = lb * self.lpf2_state + hb * self.hpf1_state;
-            let u = self.alpha * (y1 + s35);
-            let u_driven = self.k35_saturate(u);
-
-            let y = self.k * (self.g_val * u_driven + (1.0 - self.g_val) * self.lpf2_state);
-            self.lpf2_state = self.g_val * u_driven + (1.0 - self.g_val) * self.lpf2_state;
-
-            let hpf_out = self.g_val * y + (1.0 - self.g_val) * self.hpf1_state;
-            self.hpf1_state = hpf_out;
-
-            (in_driven - y) / self.k.max(0.01)
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
 pub struct DiodeLadderFilter {
     sample_rate: f32,
     pub cutoff_hz: f32,
@@ -1403,460 +1089,6 @@ impl DiodeLadderFilter {
         }
 
         self.stages[3] / drive.max(1.0)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct WarpFilter {
-    sample_rate: f32,
-    pub filter_type: FilterType,
-    pub cutoff_hz: f32,
-    pub resonance: f32,
-    pub drive: f32,
-    pub subtype: FilterSubtype,
-
-    l: [f32; 4],
-    b: [f32; 4],
-    f: f32,
-    q: f32,
-}
-
-impl WarpFilter {
-    pub fn new(sample_rate: f32) -> Self {
-        Self {
-            sample_rate,
-            filter_type: FilterType::CutoffWarp,
-            cutoff_hz: 20000.0,
-            resonance: 0.7,
-            drive: 0.0,
-            subtype: FilterSubtype::Clean,
-            l: [0.0; 4],
-            b: [0.0; 4],
-            f: 0.0,
-            q: 0.0,
-        }
-    }
-
-    pub fn set_sample_rate(&mut self, sample_rate: f32) {
-        self.sample_rate = sample_rate;
-    }
-
-    pub fn reset(&mut self) {
-        self.l = [0.0; 4];
-        self.b = [0.0; 4];
-    }
-
-    pub fn set_params(&mut self, cutoff: f32, resonance: f32) {
-        self.cutoff_hz = cutoff;
-        self.resonance = resonance;
-    }
-
-    pub fn prepare_block(&mut self, _cutoff: f32, _resonance: f32, _block_size: usize) {
-        let omega = (self.cutoff_hz / self.sample_rate).clamp(0.0001, 0.4999);
-        self.f = 2.0 * (std::f32::consts::PI * omega).sin();
-        self.q = 1.0 / self.resonance.max(0.1);
-    }
-
-    fn apply_warp_sat(&self, x: f32) -> f32 {
-        let sat_idx = (self.subtype as u8) % 3;
-        match sat_idx {
-            0 => x,
-            1 => tanh_sat(x * 2.0) / 2.0,
-            2 => {
-                let t = x.abs();
-                if t < 1.0 {
-                    x * (1.5 - 0.5 * t * t)
-                } else {
-                    x.signum()
-                }
-            }
-            _ => x,
-        }
-    }
-
-    pub fn process(&mut self, input: f32) -> f32 {
-        let stage_count = ((self.subtype as u8) / 3).clamp(1, 4) as usize;
-        let drive = 1.0 + self.drive * 2.0;
-        let in_driven = apply_subtype(input, self.subtype, self.drive);
-
-        let mut h = 0.0f32;
-        for i in 0..stage_count {
-            let input_to_stage = if i == 0 { in_driven } else { self.b[i - 1] };
-            self.l[i] = self.f.mul_add(self.b[i], self.l[i]);
-            h = self
-                .q
-                .mul_add(-self.b[i], input_to_stage * self.q - self.l[i]);
-            self.b[i] = self.f.mul_add(h, self.b[i]);
-
-            self.b[i] = self.apply_warp_sat(self.b[i]);
-        }
-
-        let last = stage_count - 1;
-        let l_last = self.l[last];
-        let b_last = self.b[last];
-
-        let out = match self.filter_type {
-            FilterType::CutoffWarp => tanh_sat(l_last * 1.5) / 1.5,
-            FilterType::CutoffWarpHp => tanh_sat(h * 1.5) / 1.5,
-            FilterType::CutoffWarpBp => tanh_sat(b_last * 1.5) / 1.5,
-            FilterType::CutoffWarpNotch => tanh_sat((in_driven - b_last) * 1.5) / 1.5,
-            FilterType::CutoffWarpAp => tanh_sat((in_driven - 2.0 * b_last) * 1.5) / 1.5,
-
-            FilterType::ResonanceWarp => tanh_sat(b_last * 2.0) / 2.0,
-            FilterType::ResonanceWarpLp => tanh_sat(l_last * 2.0) / 2.0,
-            FilterType::ResonanceWarpHp => tanh_sat(h * 2.0) / 2.0,
-            FilterType::ResonanceWarpNotch => tanh_sat((in_driven - b_last) * 2.0) / 2.0,
-            FilterType::ResonanceWarpAp => tanh_sat((in_driven - 2.0 * b_last) * 2.0) / 2.0,
-            _ => l_last,
-        };
-
-        out / drive.max(1.0)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Obxd2PoleFilter {
-    sample_rate: f32,
-    pub filter_type: FilterType,
-    pub cutoff_hz: f32,
-    pub resonance: f32,
-    pub drive: f32,
-    pub subtype: FilterSubtype,
-    s1: f32,
-    s2: f32,
-    cutoff: f32,
-    r: f32,
-}
-
-impl Obxd2PoleFilter {
-    pub fn new(sample_rate: f32) -> Self {
-        Self {
-            sample_rate,
-            filter_type: FilterType::Obxd2PoleLp,
-            cutoff_hz: 20000.0,
-            resonance: 0.7,
-            drive: 0.0,
-            subtype: FilterSubtype::Clean,
-            s1: 0.0,
-            s2: 0.0,
-            cutoff: 0.0,
-            r: 0.0,
-        }
-    }
-
-    pub fn set_sample_rate(&mut self, sample_rate: f32) {
-        self.sample_rate = sample_rate;
-    }
-
-    pub fn reset(&mut self) {
-        self.s1 = 0.0;
-        self.s2 = 0.0;
-    }
-
-    pub fn set_params(&mut self, cutoff: f32, resonance: f32) {
-        self.cutoff_hz = cutoff;
-        self.resonance = resonance;
-    }
-
-    #[inline]
-    fn diode_pair_resistance_approx(x: f32) -> f32 {
-        let a = 0.0103592f32.mul_add(x, 0.00920833);
-        let b = a.mul_add(x, 0.185);
-        let c = b.mul_add(x, 0.05);
-        c.mul_add(x, 1.0)
-    }
-
-    pub fn prepare_block(&mut self, _cutoff: f32, _resonance: f32, _block_size: usize) {
-        let sr = self.sample_rate;
-        self.cutoff = (std::f32::consts::PI * self.cutoff_hz / sr)
-            .tan()
-            .clamp(0.0, 10.0);
-        self.r = (1.0 - self.resonance * 0.85).max(0.01);
-    }
-
-    pub fn process(&mut self, input: f32) -> f32 {
-        let in_driven = apply_subtype(input, self.subtype, self.drive);
-
-        let self_osc = self.subtype != FilterSubtype::Clean;
-        let tcfb = Self::diode_pair_resistance_approx(self.s1 * 0.0876)
-            - if self_osc { 1.035 } else { 1.0 };
-
-        let denom = 1.0 + self.cutoff * (2.0 * (self.r + tcfb) + self.cutoff);
-        let v = (in_driven - 2.0 * self.s1 * (self.r + tcfb) - self.cutoff * self.s1 - self.s2)
-            / denom.max(1e-6);
-
-        let y1 = self.cutoff.mul_add(v, self.s1);
-        self.s1 = self.cutoff.mul_add(v, y1);
-
-        let y2 = self.cutoff.mul_add(y1, self.s2);
-        self.s2 = self.cutoff.mul_add(y1, y2);
-
-        let mc = match self.filter_type {
-            FilterType::Obxd2PoleLp => y2,
-            FilterType::Obxd2PoleHp => v,
-            FilterType::Obxd2PoleBp => y1,
-            FilterType::Obxd2PoleNotch => v + y2,
-            _ => y2,
-        };
-
-        mc * 0.74
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Obxd4PoleFilter {
-    sample_rate: f32,
-    pub cutoff_hz: f32,
-    pub resonance: f32,
-    pub drive: f32,
-    pub subtype: FilterSubtype,
-    s1: f32,
-    s2: f32,
-    s3: f32,
-    s4: f32,
-    g: f32,
-    lpc: f32,
-    r: f32,
-    rcor: f32,
-    rcorinv: f32,
-}
-
-impl Obxd4PoleFilter {
-    pub fn new(sample_rate: f32) -> Self {
-        Self {
-            sample_rate,
-            cutoff_hz: 20000.0,
-            resonance: 0.7,
-            drive: 0.0,
-            subtype: FilterSubtype::Clean,
-            s1: 0.0,
-            s2: 0.0,
-            s3: 0.0,
-            s4: 0.0,
-            g: 0.0,
-            lpc: 0.0,
-            r: 0.0,
-            rcor: 0.0,
-            rcorinv: 0.0,
-        }
-    }
-
-    pub fn set_sample_rate(&mut self, sample_rate: f32) {
-        self.sample_rate = sample_rate;
-    }
-
-    pub fn reset(&mut self) {
-        self.s1 = 0.0;
-        self.s2 = 0.0;
-        self.s3 = 0.0;
-        self.s4 = 0.0;
-    }
-
-    pub fn set_params(&mut self, cutoff: f32, resonance: f32) {
-        self.cutoff_hz = cutoff;
-        self.resonance = resonance;
-    }
-
-    #[inline]
-    fn tptpc(state: &mut f32, inp: f32, g: f32) -> f32 {
-        let v = (inp - *state) * g / (1.0 + g);
-        let res = v + *state;
-        *state = res + v;
-        res
-    }
-
-    pub fn prepare_block(&mut self, _cutoff: f32, _resonance: f32, _block_size: usize) {
-        let sr = self.sample_rate;
-        let sr_inv = 1.0 / sr;
-        let rcrate = (44000.0f32 * sr_inv).sqrt();
-        self.g = (std::f32::consts::PI * self.cutoff_hz / sr)
-            .tan()
-            .clamp(0.0, 10.0);
-        self.lpc = self.g / (1.0 + self.g);
-        self.r = 3.5 * self.resonance;
-        self.rcor = (970.0 / 44000.0) * rcrate;
-        self.rcorinv = 1.0 / self.rcor.max(1e-6);
-    }
-
-    pub fn process(&mut self, input: f32) -> f32 {
-        let in_driven = apply_subtype(input, self.subtype, self.drive);
-
-        let s = (self.lpc * (self.lpc * (self.lpc * self.s1 + self.s2) + self.s3) + self.s4)
-            / (1.0 + self.g);
-        let gg = self.lpc * self.lpc * self.lpc * self.lpc;
-
-        let y0 = (in_driven - self.r * s) / (1.0 + self.r * gg).max(1e-6);
-
-        let v = (y0 - self.s1) * self.lpc;
-        let res = v + self.s1;
-        self.s1 = res + v;
-        self.s1 = (self.s1 * self.rcor).atan() * self.rcorinv;
-        let y1 = res;
-
-        let y2 = Self::tptpc(&mut self.s2, y1, self.g);
-        let y3 = Self::tptpc(&mut self.s3, y2, self.g);
-        let y4 = Self::tptpc(&mut self.s4, y3, self.g);
-
-        let mc = match self.subtype {
-            FilterSubtype::Clean => y4,
-            FilterSubtype::MildDrive => y3,
-            FilterSubtype::HeavyDrive => y2,
-            FilterSubtype::Asymmetric => y1,
-            FilterSubtype::SoftClip => y3 + y4,
-            _ => y4,
-        };
-
-        let out = mc * (1.0 + self.r * 0.45);
-        out * 0.6
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ObxdXpanderFilter {
-    sample_rate: f32,
-    pub cutoff_hz: f32,
-    pub resonance: f32,
-    pub drive: f32,
-    pub subtype: FilterSubtype,
-    s1: f32,
-    s2: f32,
-    s3: f32,
-    s4: f32,
-    g: f32,
-    lpc: f32,
-    r: f32,
-    rcor: f32,
-    rcorinv: f32,
-}
-
-impl ObxdXpanderFilter {
-    pub fn new(sample_rate: f32) -> Self {
-        Self {
-            sample_rate,
-            cutoff_hz: 20000.0,
-            resonance: 0.7,
-            drive: 0.0,
-            subtype: FilterSubtype::XpanderLp4,
-            s1: 0.0,
-            s2: 0.0,
-            s3: 0.0,
-            s4: 0.0,
-            g: 0.0,
-            lpc: 0.0,
-            r: 0.0,
-            rcor: 0.0,
-            rcorinv: 0.0,
-        }
-    }
-
-    pub fn set_sample_rate(&mut self, sample_rate: f32) {
-        self.sample_rate = sample_rate;
-    }
-
-    pub fn reset(&mut self) {
-        self.s1 = 0.0;
-        self.s2 = 0.0;
-        self.s3 = 0.0;
-        self.s4 = 0.0;
-    }
-
-    pub fn set_params(&mut self, cutoff: f32, resonance: f32) {
-        self.cutoff_hz = cutoff;
-        self.resonance = resonance;
-    }
-
-    #[inline]
-    fn tptpc(state: &mut f32, inp: f32, g: f32) -> f32 {
-        let v = (inp - *state) * g / (1.0 + g);
-        let res = v + *state;
-        *state = res + v;
-        res
-    }
-
-    pub fn prepare_block(&mut self, _cutoff: f32, _resonance: f32, _block_size: usize) {
-        let sr = self.sample_rate;
-        let sr_inv = 1.0 / sr;
-        let rcrate = (44000.0f32 * sr_inv).sqrt();
-        self.g = (std::f32::consts::PI * self.cutoff_hz / sr)
-            .tan()
-            .clamp(0.0, 10.0);
-        self.lpc = self.g / (1.0 + self.g);
-        self.r = 3.5 * self.resonance;
-        self.rcor = (970.0 / 44000.0) * rcrate;
-        self.rcorinv = 1.0 / self.rcor.max(1e-6);
-    }
-
-    pub fn process(&mut self, input: f32) -> f32 {
-        let in_driven = apply_subtype(input, self.subtype, self.drive);
-
-        let s = (self.lpc * (self.lpc * (self.lpc * self.s1 + self.s2) + self.s3) + self.s4)
-            / (1.0 + self.g);
-        let gg = self.lpc * self.lpc * self.lpc * self.lpc;
-
-        let y0 = (in_driven - self.r * s) / (1.0 + self.r * gg).max(1e-6);
-
-        let v = (y0 - self.s1) * self.lpc;
-        let res = v + self.s1;
-        self.s1 = res + v;
-        self.s1 = (self.s1 * self.rcor).atan() * self.rcorinv;
-        let y1 = res;
-
-        let y2 = Self::tptpc(&mut self.s2, y1, self.g);
-        let y3 = Self::tptpc(&mut self.s3, y2, self.g);
-        let y4 = Self::tptpc(&mut self.s4, y3, self.g);
-
-        let mc = match self.subtype {
-            FilterSubtype::XpanderLp1 => y1,
-            FilterSubtype::XpanderLp2 => y2,
-            FilterSubtype::XpanderLp3 => y3,
-            FilterSubtype::XpanderLp4 => y4,
-            FilterSubtype::XpanderHp1 => y0 - y1,
-            FilterSubtype::XpanderHp2 => (y0 - y1) + (y2 - y1),
-            FilterSubtype::XpanderHp3 => {
-                let t1 = y0 - 3.0 * y1;
-                let t2 = 3.0 * y2 - y3;
-                t1 + t2
-            }
-            FilterSubtype::XpanderBp2 => 2.0 * (y2 - y1),
-            FilterSubtype::XpanderBp4 => {
-                let t1 = y2 - y3;
-                let t2 = y4 - y3;
-                2.0 * (t1 + t2)
-            }
-            FilterSubtype::XpanderN2 => {
-                let t1 = y2 - y1;
-                y0 + 2.0 * t1
-            }
-            FilterSubtype::XpanderPh3 => {
-                let t1 = y0 - 3.0 * y1;
-                let t2 = 3.0 * y2 - 2.0 * y3;
-                t1 + 2.0 * t2
-            }
-            FilterSubtype::XpanderHp2Lp1 => {
-                let t1 = y2 - y1;
-                let t2 = y2 - y3;
-                t1 + t2
-            }
-            FilterSubtype::XpanderHp3Lp1 => {
-                let t1 = 3.0 * y2 - y1;
-                let t2 = y4 - 3.0 * y3;
-                t1 + t2
-            }
-            FilterSubtype::XpanderN2Lp1 => {
-                let t1 = 2.0 * y2 - y1;
-                let t2 = 2.0 * y3;
-                t1 - t2
-            }
-            FilterSubtype::XpanderPh3Lp1 => {
-                let t1 = 3.0 * y2 - y1;
-                let t2 = 2.0 * y4 - 3.0 * y3;
-                t1 + 2.0 * t2
-            }
-            _ => y4,
-        };
-
-        let out = mc * (1.0 + self.r * 0.45);
-        out * 0.6
     }
 }
 
@@ -1994,17 +1226,11 @@ pub enum Filter {
     Comb(CombFilter),
     Allpass(AllpassFilter),
     Biquad(BiquadFilter),
-    Ladder(LadderFilter),
-    K35(K35Filter),
     DiodeLadder(DiodeLadderFilter),
-    Warp(WarpFilter),
     VintageLadder(VintageLadderFilter),
     CytomicSvf(CytomicSvfFilter),
     TriPole(TriPoleFilter),
     SampleHold(SampleHoldFilter),
-    Obxd2Pole(Obxd2PoleFilter),
-    Obxd4Pole(Obxd4PoleFilter),
-    ObxdXpander(ObxdXpanderFilter),
     Notch24(Notch24Filter),
 }
 
@@ -2014,17 +1240,11 @@ enum FilterFamily {
     Comb,
     Allpass,
     Biquad,
-    Ladder,
-    K35,
     DiodeLadder,
-    Warp,
     VintageLadder,
     CytomicSvf,
     TriPole,
     SampleHold,
-    Obxd2Pole,
-    Obxd4Pole,
-    ObxdXpander,
     Notch24,
 }
 
@@ -2046,20 +1266,8 @@ impl FilterFamily {
             | FilterType::HighShelf
             | FilterType::Bell
             | FilterType::Notch12dB => FilterFamily::Biquad,
-            FilterType::Ladder => FilterFamily::Ladder,
             FilterType::VintageLadder => FilterFamily::VintageLadder,
-            FilterType::K35Lp | FilterType::K35Hp => FilterFamily::K35,
             FilterType::DiodeLadder => FilterFamily::DiodeLadder,
-            FilterType::CutoffWarp
-            | FilterType::ResonanceWarp
-            | FilterType::CutoffWarpHp
-            | FilterType::CutoffWarpBp
-            | FilterType::CutoffWarpNotch
-            | FilterType::CutoffWarpAp
-            | FilterType::ResonanceWarpLp
-            | FilterType::ResonanceWarpHp
-            | FilterType::ResonanceWarpNotch
-            | FilterType::ResonanceWarpAp => FilterFamily::Warp,
             FilterType::CytomicLp
             | FilterType::CytomicHp
             | FilterType::CytomicBp
@@ -2071,12 +1279,6 @@ impl FilterFamily {
             | FilterType::CytomicHs => FilterFamily::CytomicSvf,
             FilterType::TriPole => FilterFamily::TriPole,
             FilterType::SampleHold => FilterFamily::SampleHold,
-            FilterType::Obxd2PoleLp
-            | FilterType::Obxd2PoleHp
-            | FilterType::Obxd2PoleBp
-            | FilterType::Obxd2PoleNotch => FilterFamily::Obxd2Pole,
-            FilterType::Obxd4Pole => FilterFamily::Obxd4Pole,
-            FilterType::ObxdXpander => FilterFamily::ObxdXpander,
             FilterType::Notch24dB => FilterFamily::Notch24,
         }
     }
@@ -2111,18 +1313,7 @@ impl Filter {
                 f.filter_type = filter_type;
                 Filter::Biquad(f)
             }
-            FilterFamily::Ladder => Filter::Ladder(LadderFilter::new(sample_rate)),
-            FilterFamily::K35 => {
-                let mut f = K35Filter::new(sample_rate);
-                f.filter_type = filter_type;
-                Filter::K35(f)
-            }
             FilterFamily::DiodeLadder => Filter::DiodeLadder(DiodeLadderFilter::new(sample_rate)),
-            FilterFamily::Warp => {
-                let mut f = WarpFilter::new(sample_rate);
-                f.filter_type = filter_type;
-                Filter::Warp(f)
-            }
             FilterFamily::VintageLadder => {
                 Filter::VintageLadder(VintageLadderFilter::new(sample_rate))
             }
@@ -2133,13 +1324,6 @@ impl Filter {
             }
             FilterFamily::TriPole => Filter::TriPole(TriPoleFilter::new(sample_rate)),
             FilterFamily::SampleHold => Filter::SampleHold(SampleHoldFilter::new(sample_rate)),
-            FilterFamily::Obxd2Pole => {
-                let mut f = Obxd2PoleFilter::new(sample_rate);
-                f.filter_type = filter_type;
-                Filter::Obxd2Pole(f)
-            }
-            FilterFamily::Obxd4Pole => Filter::Obxd4Pole(Obxd4PoleFilter::new(sample_rate)),
-            FilterFamily::ObxdXpander => Filter::ObxdXpander(ObxdXpanderFilter::new(sample_rate)),
             FilterFamily::Notch24 => Filter::Notch24(Notch24Filter::new(sample_rate)),
         }
     }
@@ -2163,8 +1347,6 @@ impl Filter {
             match self {
                 Filter::Svf(f) => f.filter_type = filter_type,
                 Filter::Comb(f) => f.filter_type = filter_type,
-                Filter::K35(f) => f.filter_type = filter_type,
-                Filter::Warp(f) => f.filter_type = filter_type,
                 Filter::Biquad(f) => f.filter_type = filter_type,
                 Filter::CytomicSvf(f) => f.filter_type = filter_type,
                 _ => {}
@@ -2178,17 +1360,11 @@ impl Filter {
             Filter::Comb(_) => FilterFamily::Comb,
             Filter::Allpass(_) => FilterFamily::Allpass,
             Filter::Biquad(_) => FilterFamily::Biquad,
-            Filter::Ladder(_) => FilterFamily::Ladder,
-            Filter::K35(_) => FilterFamily::K35,
             Filter::DiodeLadder(_) => FilterFamily::DiodeLadder,
-            Filter::Warp(_) => FilterFamily::Warp,
             Filter::VintageLadder(_) => FilterFamily::VintageLadder,
             Filter::CytomicSvf(_) => FilterFamily::CytomicSvf,
             Filter::TriPole(_) => FilterFamily::TriPole,
             Filter::SampleHold(_) => FilterFamily::SampleHold,
-            Filter::Obxd2Pole(_) => FilterFamily::Obxd2Pole,
-            Filter::Obxd4Pole(_) => FilterFamily::Obxd4Pole,
-            Filter::ObxdXpander(_) => FilterFamily::ObxdXpander,
             Filter::Notch24(_) => FilterFamily::Notch24,
         }
     }
@@ -2199,17 +1375,11 @@ impl Filter {
             Filter::Comb(f) => f.sample_rate,
             Filter::Allpass(f) => f.sample_rate,
             Filter::Biquad(f) => f.sample_rate,
-            Filter::Ladder(f) => f.sample_rate,
-            Filter::K35(f) => f.sample_rate,
             Filter::DiodeLadder(f) => f.sample_rate,
-            Filter::Warp(f) => f.sample_rate,
             Filter::VintageLadder(f) => f.sample_rate,
             Filter::CytomicSvf(f) => f.sample_rate,
             Filter::TriPole(f) => f.sample_rate,
             Filter::SampleHold(f) => f.sample_rate,
-            Filter::Obxd2Pole(f) => f.sample_rate,
-            Filter::Obxd4Pole(f) => f.sample_rate,
-            Filter::ObxdXpander(f) => f.sample_rate,
             Filter::Notch24(f) => f.sample_rate,
         }
     }
@@ -2248,22 +1418,6 @@ impl Filter {
                 gain_db: f.gain_db,
                 feedback_drive: 0.0,
             },
-            Filter::Ladder(f) => FilterSnapshot {
-                cutoff_hz: f.cutoff_hz,
-                resonance: f.resonance,
-                drive: f.drive,
-                subtype: f.subtype,
-                gain_db: 0.0,
-                feedback_drive: f.feedback_drive,
-            },
-            Filter::K35(f) => FilterSnapshot {
-                cutoff_hz: f.cutoff_hz,
-                resonance: f.resonance,
-                drive: f.drive,
-                subtype: f.subtype,
-                gain_db: 0.0,
-                feedback_drive: 0.0,
-            },
             Filter::DiodeLadder(f) => FilterSnapshot {
                 cutoff_hz: f.cutoff_hz,
                 resonance: f.resonance,
@@ -2271,14 +1425,6 @@ impl Filter {
                 subtype: f.subtype,
                 gain_db: 0.0,
                 feedback_drive: f.feedback_drive,
-            },
-            Filter::Warp(f) => FilterSnapshot {
-                cutoff_hz: f.cutoff_hz,
-                resonance: f.resonance,
-                drive: f.drive,
-                subtype: f.subtype,
-                gain_db: 0.0,
-                feedback_drive: 0.0,
             },
             Filter::VintageLadder(f) => FilterSnapshot {
                 cutoff_hz: f.cutoff_hz,
@@ -2312,30 +1458,6 @@ impl Filter {
                 gain_db: 0.0,
                 feedback_drive: 0.0,
             },
-            Filter::Obxd2Pole(f) => FilterSnapshot {
-                cutoff_hz: f.cutoff_hz,
-                resonance: f.resonance,
-                drive: f.drive,
-                subtype: f.subtype,
-                gain_db: 0.0,
-                feedback_drive: 0.0,
-            },
-            Filter::Obxd4Pole(f) => FilterSnapshot {
-                cutoff_hz: f.cutoff_hz,
-                resonance: f.resonance,
-                drive: f.drive,
-                subtype: f.subtype,
-                gain_db: 0.0,
-                feedback_drive: 0.0,
-            },
-            Filter::ObxdXpander(f) => FilterSnapshot {
-                cutoff_hz: f.cutoff_hz,
-                resonance: f.resonance,
-                drive: f.drive,
-                subtype: f.subtype,
-                gain_db: 0.0,
-                feedback_drive: 0.0,
-            },
             Filter::Notch24(f) => FilterSnapshot {
                 cutoff_hz: f.cutoff_hz,
                 resonance: f.resonance,
@@ -2353,18 +1475,12 @@ impl Filter {
             Filter::Comb(f) => f.set_params(cutoff, resonance),
             Filter::Allpass(f) => f.set_params(cutoff, resonance),
             Filter::Biquad(f) => f.set_params(cutoff, resonance),
-            Filter::Ladder(f) => f.set_params(cutoff, resonance),
-            Filter::K35(f) => f.set_params(cutoff, resonance),
             Filter::DiodeLadder(f) => f.set_params(cutoff, resonance),
-            Filter::Warp(f) => f.set_params(cutoff, resonance),
             Filter::VintageLadder(f) => f.set_params(cutoff, resonance),
             Filter::CytomicSvf(f) => f.set_params(cutoff, resonance),
             Filter::TriPole(f) => f.set_params(cutoff, resonance),
             Filter::SampleHold(f) => f.set_params(cutoff, 0.0),
-            Filter::Obxd2Pole(f) => f.set_params(cutoff, resonance),
-            Filter::Obxd4Pole(f) => f.set_params(cutoff, resonance),
             Filter::Notch24(f) => f.set_params(cutoff, resonance),
-            Filter::ObxdXpander(f) => f.set_params(cutoff, resonance),
         }
     }
 
@@ -2377,17 +1493,11 @@ impl Filter {
             Filter::Comb(f) => f.set_sample_rate(sample_rate),
             Filter::Allpass(f) => f.set_sample_rate(sample_rate),
             Filter::Biquad(f) => f.set_sample_rate(sample_rate),
-            Filter::Ladder(f) => f.set_sample_rate(sample_rate),
-            Filter::K35(f) => f.set_sample_rate(sample_rate),
             Filter::DiodeLadder(f) => f.set_sample_rate(sample_rate),
-            Filter::Warp(f) => f.set_sample_rate(sample_rate),
             Filter::VintageLadder(f) => f.set_sample_rate(sample_rate),
             Filter::CytomicSvf(f) => f.set_sample_rate(sample_rate),
             Filter::TriPole(f) => f.set_sample_rate(sample_rate),
             Filter::SampleHold(f) => f.set_sample_rate(sample_rate),
-            Filter::Obxd2Pole(f) => f.set_sample_rate(sample_rate),
-            Filter::Obxd4Pole(f) => f.set_sample_rate(sample_rate),
-            Filter::ObxdXpander(f) => f.set_sample_rate(sample_rate),
             Filter::Notch24(_) => {}
         }
     }
@@ -2398,18 +1508,12 @@ impl Filter {
             Filter::Comb(f) => f.prepare_block(cutoff, resonance, block_size),
             Filter::Allpass(f) => f.prepare_block(cutoff, resonance, block_size),
             Filter::Biquad(f) => f.prepare_block(cutoff, resonance, block_size),
-            Filter::Ladder(f) => f.prepare_block(cutoff, resonance, block_size),
-            Filter::K35(f) => f.prepare_block(cutoff, resonance, block_size),
             Filter::DiodeLadder(f) => f.prepare_block(cutoff, resonance, block_size),
-            Filter::Warp(f) => f.prepare_block(cutoff, resonance, block_size),
             Filter::VintageLadder(f) => f.prepare_block(cutoff, resonance, block_size),
             Filter::CytomicSvf(f) => f.prepare_block(cutoff, resonance, block_size),
             Filter::TriPole(f) => f.prepare_block(cutoff, resonance, block_size),
             Filter::SampleHold(f) => f.prepare_block(cutoff, 0.0, block_size),
-            Filter::Obxd2Pole(f) => f.prepare_block(cutoff, resonance, block_size),
-            Filter::Obxd4Pole(f) => f.prepare_block(cutoff, resonance, block_size),
             Filter::Notch24(f) => f.prepare_block(cutoff, resonance, block_size),
-            Filter::ObxdXpander(f) => f.prepare_block(cutoff, resonance, block_size),
         }
     }
 
@@ -2419,36 +1523,26 @@ impl Filter {
             Filter::Comb(f) => f.gain_db = gain,
             Filter::Biquad(f) => f.gain_db = gain,
             Filter::CytomicSvf(f) => f.gain_db = gain,
-            Filter::Obxd2Pole(_f) => {}
-            Filter::Obxd4Pole(_f) => {}
-            Filter::ObxdXpander(_f) => {}
             _ => {}
         }
     }
 
     pub fn set_drive(&mut self, drive: f32) {
         match self {
-            Filter::Ladder(f) => f.drive = drive,
-            Filter::K35(f) => f.drive = drive,
             Filter::Svf(f) => f.drive = drive,
             Filter::DiodeLadder(f) => f.drive = drive,
-            Filter::Warp(f) => f.drive = drive,
             Filter::VintageLadder(f) => f.drive = drive,
             Filter::Biquad(f) => f.drive = drive,
             Filter::CytomicSvf(f) => f.drive = drive,
             Filter::TriPole(f) => f.drive = drive,
             Filter::Comb(f) => f.drive = drive,
             Filter::Allpass(f) => f.drive = drive,
-            Filter::Obxd2Pole(f) => f.drive = drive,
-            Filter::Obxd4Pole(f) => f.drive = drive,
-            Filter::ObxdXpander(f) => f.drive = drive,
             _ => {}
         }
     }
 
     pub fn set_feedback_drive(&mut self, feedback_drive: f32) {
         match self {
-            Filter::Ladder(f) => f.feedback_drive = feedback_drive,
             Filter::VintageLadder(f) => f.feedback_drive = feedback_drive,
             Filter::DiodeLadder(f) => f.feedback_drive = feedback_drive,
             _ => {}
@@ -2461,17 +1555,11 @@ impl Filter {
             Filter::Comb(f) => f.subtype = subtype,
             Filter::Allpass(f) => f.subtype = subtype,
             Filter::Biquad(f) => f.subtype = subtype,
-            Filter::Ladder(f) => f.subtype = subtype,
-            Filter::K35(f) => f.subtype = subtype,
             Filter::DiodeLadder(f) => f.subtype = subtype,
-            Filter::Warp(f) => f.subtype = subtype,
             Filter::VintageLadder(f) => f.subtype = subtype,
             Filter::CytomicSvf(f) => f.subtype = subtype,
             Filter::TriPole(f) => f.subtype = subtype,
-            Filter::Obxd2Pole(f) => f.subtype = subtype,
-            Filter::Obxd4Pole(f) => f.subtype = subtype,
             Filter::Notch24(f) => f.subtype = subtype,
-            Filter::ObxdXpander(f) => f.subtype = subtype,
             Filter::SampleHold(_f) => {}
         }
     }
@@ -2482,18 +1570,12 @@ impl Filter {
             Filter::Comb(f) => f.reset(),
             Filter::Allpass(f) => f.reset(),
             Filter::Biquad(f) => f.reset(),
-            Filter::Ladder(f) => f.reset(),
-            Filter::K35(f) => f.reset(),
             Filter::DiodeLadder(f) => f.reset(),
-            Filter::Warp(f) => f.reset(),
             Filter::VintageLadder(f) => f.reset(),
             Filter::CytomicSvf(f) => f.reset(),
             Filter::TriPole(f) => f.reset(),
             Filter::SampleHold(f) => f.reset(),
-            Filter::Obxd2Pole(f) => f.reset(),
-            Filter::Obxd4Pole(f) => f.reset(),
             Filter::Notch24(f) => f.reset(),
-            Filter::ObxdXpander(f) => f.reset(),
         }
     }
 
@@ -2503,18 +1585,12 @@ impl Filter {
             Filter::Comb(f) => f.process(input),
             Filter::Allpass(f) => f.process(input),
             Filter::Biquad(f) => f.process(input),
-            Filter::Ladder(f) => f.process(input),
-            Filter::K35(f) => f.process(input),
             Filter::DiodeLadder(f) => f.process(input),
-            Filter::Warp(f) => f.process(input),
             Filter::VintageLadder(f) => f.process(input),
             Filter::CytomicSvf(f) => f.process(input),
             Filter::TriPole(f) => f.process(input),
             Filter::SampleHold(f) => f.process(input),
-            Filter::Obxd2Pole(f) => f.process(input),
-            Filter::Obxd4Pole(f) => f.process(input),
             Filter::Notch24(f) => f.process(input),
-            Filter::ObxdXpander(f) => f.process(input),
         }
     }
 }
@@ -2571,21 +1647,5 @@ fn apply_subtype(input: f32, subtype: FilterSubtype, drive: f32) -> f32 {
             };
             y / d.max(1.0)
         }
-
-        FilterSubtype::XpanderLp1
-        | FilterSubtype::XpanderLp2
-        | FilterSubtype::XpanderLp3
-        | FilterSubtype::XpanderLp4
-        | FilterSubtype::XpanderHp1
-        | FilterSubtype::XpanderHp2
-        | FilterSubtype::XpanderHp3
-        | FilterSubtype::XpanderBp2
-        | FilterSubtype::XpanderBp4
-        | FilterSubtype::XpanderN2
-        | FilterSubtype::XpanderPh3
-        | FilterSubtype::XpanderHp2Lp1
-        | FilterSubtype::XpanderHp3Lp1
-        | FilterSubtype::XpanderN2Lp1
-        | FilterSubtype::XpanderPh3Lp1 => input,
     }
 }

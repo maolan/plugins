@@ -9,7 +9,6 @@ pub enum TwistModel {
     Wavefolder = 1,
     Fm = 2,
     Harmonic = 3,
-    String = 4,
     Noise = 5,
     Chords = 6,
     FilteredNoise = 7,
@@ -29,7 +28,6 @@ impl TwistModel {
             1 => TwistModel::Wavefolder,
             2 => TwistModel::Fm,
             3 => TwistModel::Harmonic,
-            4 => TwistModel::String,
             5 => TwistModel::Noise,
             6 => TwistModel::Chords,
             7 => TwistModel::FilteredNoise,
@@ -72,11 +70,6 @@ pub struct TwistOsc {
     wf_tri_state: [f64; 2],
 
     har_phases: [f32; 16],
-
-    string_buffer: Vec<f32>,
-    string_pos: usize,
-    string_exciter: f32,
-    string_filter: f32,
 
     noise_filter_l: f32,
     noise_filter_r: f32,
@@ -146,10 +139,6 @@ impl TwistOsc {
             fm_fb_buf: 0.0,
             wf_tri_state: [0.0; 2],
             har_phases: [0.0; 16],
-            string_buffer: vec![0.0; 2048],
-            string_pos: 0,
-            string_exciter: 0.0,
-            string_filter: 0.0,
             noise_filter_l: 0.0,
             noise_filter_r: 0.0,
             noise_filter_bp: 0.0,
@@ -198,8 +187,6 @@ impl TwistOsc {
         self.fm_mod_phase = 0.0;
         self.fm_fb_buf = 0.0;
         self.har_phases = [0.0; 16];
-        self.string_pos = 0;
-        self.string_buffer.fill(0.0);
         self.noise_filter_l = 0.0;
         self.noise_filter_r = 0.0;
         self.noise_filter_bp = 0.0;
@@ -286,7 +273,6 @@ impl TwistOsc {
             TwistModel::Wavefolder => self.next_wavefolder(fm_input),
             TwistModel::Fm => self.next_fm(fm_input),
             TwistModel::Harmonic => self.next_harmonic(fm_input),
-            TwistModel::String => self.next_string(fm_input),
             TwistModel::Noise => self.next_noise(),
             TwistModel::Chords => self.next_chords(),
             TwistModel::FilteredNoise => self.next_filtered_noise(),
@@ -487,42 +473,6 @@ impl TwistOsc {
 
         let norm = 1.0 / (num_harm as f32).sqrt();
         (out * norm, out * norm)
-    }
-
-    fn next_string(&mut self, fm_input: f32) -> (f32, f32) {
-        let delay_len = (self.sample_rate / self.freq_hz).clamp(2.0, 2046.0) as usize;
-        let decay = 0.9 + self.timbre * 0.099;
-        let brightness = self.harmonics;
-        let pluck_pos = self.morph;
-
-        let lp_coef = brightness * 0.9;
-
-        if fm_input.abs() > 0.5 && self.string_exciter <= 0.0 {
-            self.string_exciter = 1.0;
-        }
-
-        let excite = if self.string_exciter > 0.0 {
-            let noise = fast_rand() * 2.0 - 1.0;
-            let pos = (pluck_pos * delay_len as f32) as usize;
-            if self.string_pos == pos || self.string_pos == 0 {
-                self.string_exciter -= 0.01;
-            }
-            noise * self.string_exciter
-        } else {
-            0.0
-        };
-
-        let read_pos = (self.string_pos + delay_len) % self.string_buffer.len();
-        let sample = self.string_buffer[read_pos];
-
-        self.string_filter = self.string_filter + lp_coef * (sample - self.string_filter);
-
-        let next = (self.string_filter + sample) * 0.5 * decay + excite;
-
-        self.string_buffer[self.string_pos] = next;
-        self.string_pos = (self.string_pos + 1) % self.string_buffer.len();
-
-        (sample, sample)
     }
 
     fn next_noise(&mut self) -> (f32, f32) {

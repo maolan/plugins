@@ -2770,11 +2770,14 @@ fn adsr_panel<'a>(state: &'a State, ids: [ParamId; 4]) -> Element<'a, Message> {
         ids.map(|id| param_has_lfo_assignment(state, id)),
     )
     .map(move |message| {
-        let index = match message {
+        let index = match &message {
             AdsrMessage::Change(i, _)
             | AdsrMessage::Release(i)
             | AdsrMessage::Reset(i)
-            | AdsrMessage::Assign(i) => i,
+            | AdsrMessage::Assign(i)
+            | AdsrMessage::Edit(i)
+            | AdsrMessage::EditChanged(i, _)
+            | AdsrMessage::EditSubmit(i) => *i,
         };
         let id = ids[index];
         match message {
@@ -2782,6 +2785,9 @@ fn adsr_panel<'a>(state: &'a State, ids: [ParamId; 4]) -> Element<'a, Message> {
             AdsrMessage::Release(_) => Message::ReleaseParam(id),
             AdsrMessage::Reset(_) => Message::ResetParam(id),
             AdsrMessage::Assign(_) => Message::AssignLfoToParam(id),
+            AdsrMessage::Edit(_) | AdsrMessage::EditChanged(_, _) | AdsrMessage::EditSubmit(_) => {
+                Message::None
+            }
         }
     })
 }
@@ -3957,7 +3963,12 @@ fn group_eg_widget<'a>(params: Option<AdsrParams>, eg: usize) -> Element<'a, Mes
             };
             Message::SetSelectedGroupParam(field, value)
         }
-        AdsrMessage::Release(_) | AdsrMessage::Reset(_) | AdsrMessage::Assign(_) => Message::None,
+        AdsrMessage::Release(_)
+        | AdsrMessage::Reset(_)
+        | AdsrMessage::Assign(_)
+        | AdsrMessage::Edit(_)
+        | AdsrMessage::EditChanged(_, _)
+        | AdsrMessage::EditSubmit(_) => Message::None,
     })
 }
 

@@ -245,12 +245,6 @@ impl SynthEngine {
         }
     }
 
-    pub fn update_pitch_eg_params(&mut self) {
-        for voice in &mut self.voices {
-            voice.update_pitch_eg_params(&self.params);
-        }
-    }
-
     pub fn update_lfo_params(&mut self, idx: usize) {
         for voice in &mut self.voices {
             voice.update_lfo_params(&self.params, idx);
@@ -281,12 +275,6 @@ impl SynthEngine {
     pub fn update_noise_params(&mut self) {
         for voice in &mut self.voices {
             voice.update_noise_params(&self.params);
-        }
-    }
-
-    pub fn update_waveshaper_params(&mut self) {
-        for voice in &mut self.voices {
-            voice.update_waveshaper_params(&self.params);
         }
     }
 

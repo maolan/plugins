@@ -215,8 +215,9 @@ impl PluginState {
 
     pub fn from_runtime<P: ClapParamId>(store: &ParamStore<P>) -> Self {
         let params = (0..P::COUNT)
-            .filter_map(|i| P::from_raw(i as u32))
-            .map(|id| store.get(id))
+            // State values are indexed by raw ID; retain retired slots so later
+            // parameters keep their IDs when apply() restores the array.
+            .map(|i| P::from_raw(i as u32).map_or(0.0, |id| store.get(id)))
             .collect();
         Self {
             version: Self::CURRENT_VERSION,
