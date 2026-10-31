@@ -24,10 +24,12 @@ use maolan_baseview::iced::{
 use raw_window_handle::RawWindowHandle;
 use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
+use maolan_widgets::knob::Knob;
+
 use crate::{
     common::{
         preset::{self, PresetProvider, PresetUi},
-        ui::{SmallKnob, VerticalSlider, small_knob, vertical_slider, vu_meter},
+        ui::{VerticalSlider, vertical_slider, vu_meter},
     },
     flanger::{
         params::{FRACTION_NAMES, LFO_TYPE_NAMES, LFO2_TYPE_NAMES, PARAMS, PERIOD_NAMES, ParamId},
@@ -182,8 +184,8 @@ fn knob<'a>(id: ParamId, label: &'a str, state: &'a State) -> Element<'a, Messag
         _ => format!("{value:.2}"),
     };
 
-    small_knob(
-        SmallKnob {
+    maolan_widgets::knob::knob(
+        Knob {
             label: label.to_string(),
             value,
             range: def.min as f32..=def.max as f32,
@@ -194,6 +196,7 @@ fn knob<'a>(id: ParamId, label: &'a str, state: &'a State) -> Element<'a, Messag
                 0.01
             },
             value_text,
+            assigned: false,
         },
         move |v| Message::ParamChanged(id, v),
         Message::ParamReleased(id),

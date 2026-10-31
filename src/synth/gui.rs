@@ -19,7 +19,7 @@ use maolan_clap::ffi::CLAP_WINDOW_API_WIN32;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_widgets::horizontal_slider::HorizontalSlider;
-use maolan_widgets::knob::{Knob, knob};
+use maolan_widgets::knob::Knob;
 use maolan_widgets::multi_toggler::{LabelPosition, horizontal_multi_toggler};
 mod envelope;
 mod oscillator_display;
@@ -518,7 +518,7 @@ fn synth_knob(id: ParamId, label: &str, state: &State, step: f32) -> Element<'st
     let def = param_def(id).expect("valid param id");
     let assigned = param_has_lfo_assignment(state, id);
     let display_value = visual_param_value(state, id, value);
-    let content = knob(
+    let content = maolan_widgets::knob::knob(
         Knob {
             label: label.to_string(),
             value: display_value,

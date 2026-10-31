@@ -21,10 +21,10 @@ use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_widgets::arch_slider::arch_slider;
 use maolan_widgets::meters::meters;
 
+use maolan_widgets::knob::Knob;
+
 use crate::common::preset::{self, PresetProvider, PresetUi};
-use crate::common::ui::{
-    FADER_MAX_DB, FADER_MIN_DB, SmallKnob, VerticalSlider, small_knob, vertical_slider,
-};
+use crate::common::ui::{FADER_MAX_DB, FADER_MIN_DB, VerticalSlider, vertical_slider};
 #[cfg(any(
     target_os = "windows",
     target_os = "macos",
@@ -1446,14 +1446,15 @@ fn knob(
     let def = param_type_def(id.param_type());
     let value_text = knob_value_text(value, units);
 
-    small_knob(
-        SmallKnob {
+    maolan_widgets::knob::knob(
+        Knob {
             label: label.to_string(),
             value,
             range: def.min as f32..=def.max as f32,
             default: def.default as f32,
             step,
             value_text,
+            assigned: false,
         },
         move |v| Message::SetParam(id, v),
         Message::ReleaseParam(id),

@@ -21,10 +21,9 @@ use maolan_baseview::iced::{
 use raw_window_handle::RawWindowHandle;
 use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
-use crate::common::{
-    preset::{self, PresetProvider, PresetUi},
-    ui::{SmallKnob, small_knob},
-};
+use maolan_widgets::knob::Knob;
+
+use crate::common::preset::{self, PresetProvider, PresetUi};
 use crate::wah::{
     params::{MODE_LABELS, PARAMS, ParamId, SHAPE_LABELS},
     plugin::SharedState,
@@ -177,14 +176,15 @@ fn knob<'a>(id: ParamId, label: &'static str, state: &'a State) -> Element<'a, M
     let def = &PARAMS[id.as_index()];
     let value_text = format_param(&state.shared, id);
 
-    small_knob(
-        SmallKnob {
+    maolan_widgets::knob::knob(
+        Knob {
             label: label.to_string(),
             value,
             range: def.min as f32..=def.max as f32,
             default: def.default as f32,
             step: def.step as f32,
             value_text,
+            assigned: false,
         },
         move |v| Message::SetParam(id, v),
         Message::ReleaseParam(id),

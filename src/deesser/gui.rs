@@ -20,11 +20,10 @@ use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use raw_window_handle::RawWindowHandle;
 use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
+use maolan_widgets::knob::Knob;
+
 use crate::{
-    common::{
-        preset::{self, PresetProvider, PresetUi},
-        ui::{SmallKnob, small_knob},
-    },
+    common::preset::{self, PresetProvider, PresetUi},
     deesser::{
         params::{PARAMS, ParamId},
         plugin::SharedState,
@@ -200,14 +199,15 @@ fn knob(
         format!("{value:.1} {units}")
     };
 
-    small_knob(
-        SmallKnob {
+    maolan_widgets::knob::knob(
+        Knob {
             label: label.to_string(),
             value,
             range: def.min as f32..=def.max as f32,
             default: def.default as f32,
             step,
             value_text,
+            assigned: false,
         },
         move |v| Message::SetParam(id, v),
         Message::ReleaseParam(id),

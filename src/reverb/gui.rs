@@ -20,10 +20,12 @@ use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use raw_window_handle::RawWindowHandle;
 use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
+use maolan_widgets::knob::Knob;
+
 use crate::{
     common::{
         preset::{self, PresetProvider, PresetUi},
-        ui::{SmallKnob, panel, small_knob},
+        ui::panel,
     },
     reverb::{
         params::{MODES, PARAMS, ParamId, value_text},
@@ -214,8 +216,8 @@ fn view(state: &State) -> Element<'_, Message> {
             }
         };
         let (min, max) = (def.min, def.max);
-        small_knob(
-            SmallKnob {
+        maolan_widgets::knob::knob(
+            Knob {
                 label: label.to_string(),
                 value: to_normalized(value),
                 range: if logarithmic {
@@ -226,6 +228,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 default: to_normalized(def.default as f32),
                 step: if logarithmic { 0.001 } else { def.step as f32 },
                 value_text,
+                assigned: false,
             },
             move |v| {
                 Message::SetParam(

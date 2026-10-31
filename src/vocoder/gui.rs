@@ -21,11 +21,10 @@ use maolan_baseview::iced::{
 use raw_window_handle::RawWindowHandle;
 use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
+use maolan_widgets::knob::Knob;
+
 use crate::{
-    common::{
-        preset::{self, PresetProvider, PresetUi},
-        ui::{SmallKnob, small_knob},
-    },
+    common::preset::{self, PresetProvider, PresetUi},
     vocoder::{
         params::{PARAMS, ParamId},
         plugin::SharedState,
@@ -175,14 +174,15 @@ fn knob<'a>(id: ParamId, label: &'a str, state: &'a State) -> Element<'a, Messag
         ParamId::DryWet => format!("{:.0}%", value * 100.0),
     };
 
-    small_knob(
-        SmallKnob {
+    maolan_widgets::knob::knob(
+        Knob {
             label: label.to_string(),
             value,
             range: def.min as f32..=def.max as f32,
             default: def.default as f32,
             step: def.step as f32,
             value_text,
+            assigned: false,
         },
         move |v| Message::ParamChanged(id, v),
         Message::ParamReleased(id),

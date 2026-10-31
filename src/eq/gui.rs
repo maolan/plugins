@@ -1,8 +1,10 @@
+use maolan_widgets::knob::Knob;
+
 use crate::common::{
     bus,
     preset::{self, PresetProvider, PresetUi},
     spectrum::{db_to_y, display_range_bounds, freq_to_x, x_to_freq, y_to_db},
-    ui::{SmallKnob, VerticalSlider, small_knob, vertical_slider, vertical_ticks, vu_meter},
+    ui::{VerticalSlider, vertical_slider, vertical_ticks, vu_meter},
 };
 use crate::eq::dsp::{self, Biquad};
 use crate::eq::params::{PARAMS, ParamId, ParamIdExt};
@@ -2725,14 +2727,15 @@ fn knob(
         format!("{value:.1} {units}")
     };
 
-    small_knob(
-        SmallKnob {
+    maolan_widgets::knob::knob(
+        Knob {
             label,
             value,
             range: def.min as f32..=def.max as f32,
             default: def.default as f32,
             step,
             value_text,
+            assigned: false,
         },
         move |v| Message::SetParam(id, v),
         Message::ReleaseParam(id),
@@ -3195,14 +3198,15 @@ fn freq_knob(id: ParamId, value_hz: f32) -> Element<'static, Message> {
     let value_norm = freq_to_norm(value_hz);
     let default_norm = freq_to_norm(def.default as f32);
 
-    small_knob(
-        SmallKnob {
+    maolan_widgets::knob::knob(
+        Knob {
             label: "Freq".to_string(),
             value: value_norm,
             range: 0.0..=1.0,
             default: default_norm,
             step: 0.001,
             value_text: String::new(),
+            assigned: false,
         },
         move |n| Message::SetParam(id, norm_to_freq(n)),
         Message::ReleaseParam(id),
