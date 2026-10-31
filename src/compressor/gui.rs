@@ -5,6 +5,8 @@ use std::{
     time::Duration,
 };
 
+use maolan_widgets::knob::Knob;
+
 use crate::common::{
     bus,
     preset::{self, PresetProvider, PresetUi},
@@ -12,7 +14,7 @@ use crate::common::{
         DEFAULT_SPECTRUM_BINS, SPECTRUM_FLOOR_DB, SpectralAnalyzerWidget, SpectrumMarker,
         SpectrumThresholdCurve, display_range_bounds,
     },
-    ui::{SmallKnob, VerticalSlider, small_knob, vertical_slider, vertical_ticks, vu_meter},
+    ui::{VerticalSlider, vertical_slider, vertical_ticks, vu_meter},
 };
 
 use maolan_baseview::iced::{
@@ -1249,14 +1251,15 @@ fn knob_with_range(
         format!("{value:.1} {units}")
     };
 
-    small_knob(
-        SmallKnob {
+    maolan_widgets::knob::knob(
+        Knob {
             label: label.to_string(),
             value,
             range: min..=max,
             default: def.default as f32,
             step,
             value_text,
+            assigned: false,
         },
         move |v| Message::SetParam(id, v.clamp(min, max)),
         Message::ReleaseParam(id),

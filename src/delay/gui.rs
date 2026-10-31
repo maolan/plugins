@@ -20,11 +20,10 @@ use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use raw_window_handle::RawWindowHandle;
 use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
+use maolan_widgets::knob::Knob;
+
 use crate::{
-    common::{
-        preset::{self, PresetProvider, PresetUi},
-        ui::{SmallKnob, small_knob},
-    },
+    common::preset::{self, PresetProvider, PresetUi},
     delay::{
         params::{NOTE_DIVISIONS, PARAMS, ParamId},
         plugin::SharedState,
@@ -204,14 +203,15 @@ fn view(state: &State) -> Element<'_, Message> {
         let def = &PARAMS[id.as_index()];
         let value_text = format!("{value:.2}");
 
-        small_knob(
-            SmallKnob {
+        maolan_widgets::knob::knob(
+            Knob {
                 label: label.to_string(),
                 value,
                 range: def.min as f32..=def.max as f32,
                 default: def.default as f32,
                 step: 0.01,
                 value_text,
+                assigned: false,
             },
             move |v| Message::SetParam(id, v),
             Message::ReleaseParam(id),
@@ -237,14 +237,15 @@ fn view(state: &State) -> Element<'_, Message> {
             format!("{value:.0} ms")
         };
 
-        small_knob(
-            SmallKnob {
+        maolan_widgets::knob::knob(
+            Knob {
                 label: label.to_string(),
                 value,
                 range: def.min as f32..=def.max as f32,
                 default: def.default as f32,
                 step: def.step as f32,
                 value_text,
+                assigned: false,
             },
             move |v| Message::SetParam(id, v),
             Message::ReleaseParam(id),

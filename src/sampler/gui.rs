@@ -27,9 +27,9 @@ use maolan_clap::ffi::CLAP_WINDOW_API_WIN32;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_widgets::adsr::{AdsrMessage, adsr_envelope};
-use maolan_widgets::arch_range_slider::ArchRangeSlider;
-use maolan_widgets::arch_slider::{ArchSlider, arch_slider};
+use maolan_widgets::arch_slider::ArchSlider;
 use maolan_widgets::iced_aw::Wrap;
+use maolan_widgets::knob::{Knob, RangeKnob, range_knob};
 use maolan_widgets::meters;
 use maolan_widgets::multi_toggler::{LabelPosition, horizontal_multi_toggler};
 use maolan_widgets::piano::{
@@ -2669,10 +2669,6 @@ fn mod_target_for_param(id: ParamId) -> Option<ModTarget> {
     }
 }
 
-fn assignment_color() -> Color {
-    Color::from_rgb(1.0, 0.83, 0.10)
-}
-
 fn small_knob<'a>(
     id: ParamId,
     label: &'a str,
@@ -2682,54 +2678,31 @@ fn small_knob<'a>(
     let value = state.shared.params.get(id) as f32;
     let def = &PARAMS[id.as_index()];
     let assigned = param_has_lfo_assignment(state, id);
-    let mut slider = arch_slider(def.min as f32..=def.max as f32, value, move |v| {
-        Message::SetParam(id, v)
-    })
-    .step(step)
-    .double_click_reset(def.default as f32)
-    .on_release(Message::ReleaseParam(id))
-    .fill_from_start()
-    .width(Length::Fixed(41.0))
-    .height(Length::Fixed(41.0));
-    if assigned {
-        slider = slider
-            .filled_color(Color::from_rgb(0.82, 0.58, 0.08))
-            .handle_color(assignment_color());
-    }
-
     let value_text = if def.step >= 1.0 {
         format!("{value:.0}")
     } else {
         format!("{value:.2}")
     };
-
-    let content = container(
-        column![text(label).size(11), slider, text(value_text).size(10)]
-            .spacing(2)
-            .align_x(Alignment::Center),
-    )
-    .width(Length::Fixed(50.0))
-    .padding(2)
-    .style(move |_theme: &Theme| container::Style {
-        background: assigned.then(|| Background::Color(Color::from_rgba(1.0, 0.83, 0.10, 0.10))),
-        border: Border {
-            color: if assigned {
-                assignment_color()
-            } else {
-                Color::TRANSPARENT
-            },
-            width: if assigned { 1.0 } else { 0.0 },
-            radius: 3.0.into(),
+    let content = maolan_widgets::knob::knob(
+        Knob {
+            label: label.to_string(),
+            value,
+            range: def.min as f32..=def.max as f32,
+            default: def.default as f32,
+            step,
+            value_text,
+            assigned,
         },
-        ..container::Style::default()
-    });
+        move |value| Message::SetParam(id, value),
+        Message::ReleaseParam(id),
+    );
 
     if mod_target_for_param(id).is_some() {
         mouse_area(content)
             .on_press(Message::AssignLfoToParam(id))
             .into()
     } else {
-        content.into()
+        content
     }
 }
 
@@ -4061,26 +4034,28 @@ fn group_controls_panel<'a>(state: &'a State, group: &SampleGroup) -> Element<'a
                     ]),
                     knob_row(vec![
                         keyswitch_knob("Previous", group.sw_previous, GroupEditField::SwPrevious),
-                        knob_field(
-                            "Lo - Hi",
-                            ArchRangeSlider::new(
-                                0.0..=127.0,
-                                f32::from(group.sw_lolast.or(group.sw_hilast).unwrap_or(0)),
-                                f32::from(group.sw_hilast.or(group.sw_lolast).unwrap_or(0)),
-                                Message::SetSelectedGroupSwLastRange,
-                            )
-                            .step(1.0)
-                            .width(Length::Fixed(41.0))
-                            .height(Length::Fixed(41.0)),
-                            if group.sw_lolast.is_none() && group.sw_hilast.is_none() {
-                                String::from("off")
-                            } else {
-                                format!(
-                                    "{} - {}",
-                                    group.sw_lolast.unwrap_or(0),
-                                    group.sw_hilast.unwrap_or(0)
-                                )
+                        range_knob(
+                            RangeKnob {
+                                label: "Lo - Hi".into(),
+                                low: f32::from(group.sw_lolast.or(group.sw_hilast).unwrap_or(0)),
+                                high: f32::from(group.sw_hilast.or(group.sw_lolast).unwrap_or(0)),
+                                range: 0.0..=127.0,
+                                step: 1.0,
+                                value_text: if group.sw_lolast.is_none()
+                                    && group.sw_hilast.is_none()
+                                {
+                                    String::from("off")
+                                } else {
+                                    format!(
+                                        "{} - {}",
+                                        group.sw_lolast.unwrap_or(0),
+                                        group.sw_hilast.unwrap_or(0)
+                                    )
+                                },
+                                assigned: false,
                             },
+                            Message::SetSelectedGroupSwLastRange,
+                            Message::None,
                         ),
                         keyswitch_knob("Default", group.sw_default, GroupEditField::SwDefault),
                     ]),
@@ -4725,14 +4700,19 @@ fn zone_range_knob<'a>(
     field: ZoneRangeField,
     value_text: String,
 ) -> Element<'a, Message> {
-    let knob = ArchRangeSlider::new(range, low, high, move |low, high| {
-        Message::SetEditingZoneRange(field, low, high)
-    })
-    .step(step)
-    .width(Length::Fixed(41.0))
-    .height(Length::Fixed(41.0));
-
-    knob_field(label, knob, value_text)
+    range_knob(
+        RangeKnob {
+            label: label.into(),
+            low,
+            high,
+            range,
+            step,
+            value_text,
+            assigned: false,
+        },
+        move |low, high| Message::SetEditingZoneRange(field, low, high),
+        Message::None,
+    )
 }
 
 fn reverse_toggler(reverse: bool) -> Element<'static, Message> {
@@ -4908,18 +4888,18 @@ fn cc_condition_row<'a>(index: usize, condition: &CcCondition) -> Element<'a, Me
         .fill_from_start(),
         condition.cc.to_string(),
     );
-    let range_knob = knob_field(
-        "Lo - Hi",
-        ArchRangeSlider::new(
-            0.0..=127.0,
-            condition.low as f32,
-            condition.high as f32,
-            move |low, high| Message::SetEditingZoneCcConditionRange(index, low, high),
-        )
-        .step(1.0)
-        .width(Length::Fixed(41.0))
-        .height(Length::Fixed(41.0)),
-        format!("{} - {}", condition.low, condition.high),
+    let range_knob = range_knob(
+        RangeKnob {
+            label: "Lo - Hi".into(),
+            low: condition.low as f32,
+            high: condition.high as f32,
+            range: 0.0..=127.0,
+            step: 1.0,
+            value_text: format!("{} - {}", condition.low, condition.high),
+            assigned: false,
+        },
+        move |low, high| Message::SetEditingZoneCcConditionRange(index, low, high),
+        Message::None,
     );
 
     row![
@@ -5480,18 +5460,18 @@ fn view(state: &State) -> Element<'_, Message> {
 
     let bend_down = state.shared.params.get(ParamId::PitchBendDown) as f32;
     let bend_up = state.shared.params.get(ParamId::PitchBendUp) as f32;
-    let bend_range = knob_field(
-        "Bend",
-        ArchRangeSlider::new(
-            0.0..=12000.0,
-            bend_down.min(bend_up),
-            bend_down.max(bend_up),
-            Message::SetPitchBendRange,
-        )
-        .step(1.0)
-        .width(Length::Fixed(41.0))
-        .height(Length::Fixed(41.0)),
-        format!("{bend_down:.0} - {bend_up:.0} c"),
+    let bend_range = range_knob(
+        RangeKnob {
+            label: "Bend".into(),
+            low: bend_down.min(bend_up),
+            high: bend_down.max(bend_up),
+            range: 0.0..=12000.0,
+            step: 1.0,
+            value_text: format!("{bend_down:.0} - {bend_up:.0} c"),
+            assigned: false,
+        },
+        Message::SetPitchBendRange,
+        Message::None,
     );
 
     let filter1: Element<'_, Message> = column![

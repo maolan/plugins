@@ -2,7 +2,6 @@ use maolan_baseview::iced::{
     Alignment, Background, Border, Color, Element, Length, Theme,
     widget::{column, container, text},
 };
-use maolan_widgets::arch_slider::arch_slider;
 use maolan_widgets::meters;
 use maolan_widgets::slider::Slider as VerticalSliderWidget;
 use maolan_widgets::ticks;
@@ -12,43 +11,6 @@ pub const FADER_MAX_DB: f32 = 20.0;
 const SIDE_FADER_WIDTH: f32 = 50.0;
 const SIDE_TICKS_WIDTH: f32 = 25.0;
 const SIDE_COLUMN_WIDTH: f32 = SIDE_FADER_WIDTH + SIDE_TICKS_WIDTH;
-
-pub struct SmallKnob {
-    pub label: String,
-    pub value: f32,
-    pub range: std::ops::RangeInclusive<f32>,
-    pub default: f32,
-    pub step: f32,
-    pub value_text: String,
-}
-
-pub fn small_knob<Message: Clone + 'static>(
-    knob: SmallKnob,
-    on_change: impl Fn(f32) -> Message + 'static,
-    on_release: Message,
-) -> Element<'static, Message> {
-    let min = *knob.range.start();
-    let max = *knob.range.end();
-    let slider = arch_slider(knob.range, knob.value.clamp(min, max), on_change)
-        .step(knob.step)
-        .double_click_reset(knob.default)
-        .on_release(on_release)
-        .fill_from_start()
-        .width(Length::Fixed(41.0))
-        .height(Length::Fixed(41.0));
-
-    container(
-        column![
-            text(knob.label).size(11),
-            slider,
-            text(knob.value_text).size(10)
-        ]
-        .spacing(2)
-        .align_x(Alignment::Center),
-    )
-    .width(Length::Fixed(SIDE_FADER_WIDTH))
-    .into()
-}
 
 pub struct VerticalSlider {
     pub value: f32,
