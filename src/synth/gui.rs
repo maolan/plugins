@@ -38,7 +38,7 @@ use crate::{
         lfo_assignment::{LfoAssignmentConfig, LfoAssignmentState, ModRouteParamIds},
         preset::{self, PresetProvider, PresetUi},
         wavetable::Wavetable,
-        wavetable_factory::{CUSTOM_WAVETABLE_LABEL, FACTORY_COUNT, FACTORY_NAMES},
+        wavetable_factory::FACTORY_COUNT,
     },
     synth::{
         dsp::{FilterRouting, LfoShape, ModTarget, OscType},
@@ -655,49 +655,6 @@ fn waveform_options(osc_type: OscType) -> Vec<&'static str> {
     }
 }
 
-/// Wavetable selector for the Wavetable and Window oscillator types. Renders
-/// as a zero-width empty container for other oscillator types so the osc
-/// panel layout stays stable.
-fn wavetable_dropdown<'a>(state: &'a State, osc_index: usize) -> Element<'a, Message> {
-    let (type_id, wt_id) = match osc_index {
-        0 => (ParamId::Osc1Type, ParamId::Osc1Wavetable),
-        1 => (ParamId::Osc2Type, ParamId::Osc2Wavetable),
-        _ => (ParamId::Osc3Type, ParamId::Osc3Wavetable),
-    };
-    let osc_type = OscType::from_u8(state.shared.params.get(type_id) as u8);
-    if osc_type != OscType::Wavetable && osc_type != OscType::Window {
-        return container(text("")).width(Length::Fixed(0.0)).into();
-    }
-
-    let value = state.shared.params.get(wt_id) as usize;
-    let selected: &'static str = if value >= FACTORY_COUNT {
-        CUSTOM_WAVETABLE_LABEL
-    } else {
-        FACTORY_NAMES[value]
-    };
-    let options: Vec<&'static str> = FACTORY_NAMES
-        .iter()
-        .copied()
-        .chain(std::iter::once(CUSTOM_WAVETABLE_LABEL))
-        .collect();
-    let dropdown = maolan_baseview::iced::widget::pick_list(options, Some(selected), move |name| {
-        match FACTORY_NAMES.iter().position(|&n| n == name) {
-            Some(index) => Message::SetParam(wt_id, index as f32),
-            None => Message::PickWavetableFile(osc_index),
-        }
-    })
-    .placeholder("Wavetable")
-    .width(Length::Fixed(104.0));
-
-    container(
-        column![text("Wavetable").size(11), dropdown]
-            .spacing(2)
-            .align_x(Alignment::Center),
-    )
-    .width(Length::Fixed(110.0))
-    .into()
-}
-
 const FILTER_TYPES: &[FilterType] = &[
     FilterType::Off,
     FilterType::Lowpass,
@@ -792,7 +749,6 @@ fn lfo_shape_dropdown<'a>(id: ParamId, state: &'a State) -> Element<'a, Message>
 fn named_enum_dropdown<'a>(
     id: ParamId,
     options: &'static [&'static str],
-    width: f32,
     state: &'a State,
 ) -> Element<'a, Message> {
     let index = (state.shared.params.get(id) as usize).min(options.len() - 1);
@@ -808,8 +764,8 @@ fn named_enum_dropdown<'a>(
             Message::SetParam(id, value as f32)
         },
     )
-    .width(Length::Fixed(width));
-    container(dropdown).width(Length::Fixed(width + 6.0)).into()
+    .width(Length::Shrink);
+    container(dropdown).width(Length::Shrink).into()
 }
 
 const OSC_FM_MODE_NAMES: &[&str] = &[
@@ -1032,10 +988,13 @@ fn lfo_tab_button(label: &'static str, index: usize, state: &State) -> Element<'
 }
 
 fn view(state: &State) -> Element<'_, Message> {
-    let fm_panel = panel_no_title(knob_row(vec![
-        named_enum_dropdown(ParamId::OscFmMode, OSC_FM_MODE_NAMES, 112.0, state),
-        param_control(ParamId::OscFmDepth, "Depth", state),
-    ]));
+    let fm_panel = panel(
+        "FM Mode",
+        knob_row(vec![
+            named_enum_dropdown(ParamId::OscFmMode, OSC_FM_MODE_NAMES, state),
+            param_control(ParamId::OscFmDepth, "Depth", state),
+        ]),
+    );
 
     let filter_routing = column![
         filter_routing_dropdown(state),
@@ -1076,7 +1035,6 @@ fn view(state: &State) -> Element<'_, Message> {
 
     let osc1 = column![
         knob_row(vec![
-            wavetable_dropdown(state, 0),
             param_control(ParamId::Osc1Octave, "Oct", state),
             param_control(ParamId::Osc1Semitone, "Semi", state),
             param_control(ParamId::Osc1Fine, "Fine", state),
@@ -1095,7 +1053,6 @@ fn view(state: &State) -> Element<'_, Message> {
 
     let osc2 = column![
         knob_row(vec![
-            wavetable_dropdown(state, 1),
             param_control(ParamId::Osc2Octave, "Oct", state),
             param_control(ParamId::Osc2Semitone, "Semi", state),
             param_control(ParamId::Osc2Fine, "Fine", state),
@@ -1114,7 +1071,6 @@ fn view(state: &State) -> Element<'_, Message> {
 
     let osc3 = column![
         knob_row(vec![
-            wavetable_dropdown(state, 2),
             param_control(ParamId::Osc3Octave, "Oct", state),
             param_control(ParamId::Osc3Semitone, "Semi", state),
             param_control(ParamId::Osc3Fine, "Fine", state),

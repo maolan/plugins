@@ -13,13 +13,12 @@ pub const FACTORY_SIZE: usize = 2048;
 /// Number of bundled factory wavetables. Param values `0..FACTORY_COUNT`
 /// select factory tables, `FACTORY_COUNT` selects the custom file loaded
 /// through the GUI.
-pub const FACTORY_COUNT: usize = 12;
+pub const FACTORY_COUNT: usize = 11;
 
 /// Entry label selecting the per-patch custom file instead of a factory table.
 pub const CUSTOM_WAVETABLE_LABEL: &str = "Custom file...";
 
 pub const FACTORY_NAMES: [&str; FACTORY_COUNT] = [
-    "Sine",
     "Triangle",
     "Square",
     "Sawtooth",
@@ -60,19 +59,18 @@ fn additive(size: usize, max_harmonic: usize, mut amp: impl FnMut(usize) -> f32)
 fn build_factory_table(index: usize) -> Wavetable {
     let size = FACTORY_SIZE;
     let frames = match index {
-        0 => additive(size, 1, |_| 1.0),
-        1 => additive(size, 64, |h| {
+        0 => additive(size, 64, |h| {
             if h % 2 == 1 {
                 1.0 / (h * h) as f32
             } else {
                 0.0
             }
         }),
-        2 => additive(size, 64, |h| if h % 2 == 1 { 1.0 / h as f32 } else { 0.0 }),
-        3 => additive(size, 96, |h| 1.0 / h as f32),
-        4 => additive(size, 32, |h| 1.0 / (h * h) as f32),
-        5 => additive(size, 192, |h| 1.0 / h as f32),
-        6 => additive(size, 64, |h| {
+        1 => additive(size, 64, |h| if h % 2 == 1 { 1.0 / h as f32 } else { 0.0 }),
+        2 => additive(size, 96, |h| 1.0 / h as f32),
+        3 => additive(size, 32, |h| 1.0 / (h * h) as f32),
+        4 => additive(size, 192, |h| 1.0 / h as f32),
+        5 => additive(size, 64, |h| {
             // 25% pulse via odd-harmonic Lanczos-ish sigma approximation.
             let sigma = 0.25f32;
             if h % 2 == 1 {
@@ -82,8 +80,8 @@ fn build_factory_table(index: usize) -> Wavetable {
                 0.0
             }
         }),
-        7 => additive(size, 8, |h| 1.0 / h as f32),
-        8 => additive(size, 12, |h| match h {
+        6 => additive(size, 8, |h| 1.0 / h as f32),
+        7 => additive(size, 12, |h| match h {
             1 => 1.0,
             2 => 0.6,
             3 => 0.35,
@@ -92,8 +90,8 @@ fn build_factory_table(index: usize) -> Wavetable {
             6 => 0.08,
             _ => 0.05,
         }),
-        9 => additive(size, 48, |h| 1.0 / (h as f32).powi(3).sqrt()),
-        10 => {
+        8 => additive(size, 48, |h| 1.0 / (h as f32).powi(3).sqrt()),
+        9 => {
             // Two slightly detuned saws plus a touch of noise for a "dirty" table.
             let mut table = additive(size, 48, |h| 1.0 / h as f32);
             for (i, slot) in table.iter_mut().enumerate() {

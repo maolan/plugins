@@ -1,13 +1,10 @@
 use std::sync::Arc;
 
 use maolan_baseview::iced::{
-    Color, Element, Length, Point, Rectangle, Renderer, Theme, mouse,
-    widget::{
-        Space, Stack, canvas,
-        canvas::{Frame, Geometry, Path, Program, Stroke},
-        container, mouse_area, row, text,
-    },
+    Element, Length, mouse,
+    widget::{Space, Stack, button, container, mouse_area, row, text},
 };
+use maolan_widgets::shape::shape;
 
 use crate::{
     common::{
@@ -39,83 +36,206 @@ impl OscillatorDisplay {
 
     pub fn view(self) -> Element<'static, super::Message> {
         let (osc_type, waveform) = display_labels(&self.shared, self.osc_index);
+        let wavetable_id = match self.osc_index {
+            0 => Some(ParamId::Osc1Wavetable),
+            1 => Some(ParamId::Osc2Wavetable),
+            2 => Some(ParamId::Osc3Wavetable),
+            _ => None,
+        };
+        let osc_type_id = match self.osc_index {
+            0 => Some(ParamId::Osc1Type),
+            1 => Some(ParamId::Osc2Type),
+            2 => Some(ParamId::Osc3Type),
+            _ => None,
+        };
+        let selected_osc_type =
+            osc_type_id.map(|id| OscType::from_u8(self.shared.params.get(id) as u8));
+        let custom_selected = wavetable_id.is_some_and(|id| {
+            matches!(
+                selected_osc_type,
+                Some(OscType::Wavetable | OscType::Window)
+            ) && self.shared.params.get(id) as usize >= FACTORY_COUNT
+        });
         let type_shared = self.shared.clone();
-        let type_label: Element<'static, super::Message> = if self.osc_index == 3 {
-            text(osc_type).size(11).into()
+        let type_index = self.osc_index;
+        let type_label = row![
+            button(text("‹").size(10))
+                .padding(1)
+                .style(|theme, status| {
+                    let mut style = maolan_baseview::iced::widget::button::text(theme, status);
+                    style.background = None;
+                    style
+                })
+                .on_press(scroll_osc_type(
+                    &type_shared,
+                    type_index,
+                    mouse::ScrollDelta::Lines { x: 0.0, y: 1.0 },
+                )),
+            mouse_area(
+                text(osc_type)
+                    .size(11)
+                    .width(Length::Fill)
+                    .align_x(maolan_baseview::iced::alignment::Horizontal::Center),
+            )
+            .on_scroll(move |delta| scroll_osc_type(&type_shared, type_index, delta)),
+            button(text("›").size(10))
+                .padding(1)
+                .style(|theme, status| {
+                    let mut style = maolan_baseview::iced::widget::button::text(theme, status);
+                    style.background = None;
+                    style
+                })
+                .on_press(scroll_osc_type(
+                    &self.shared,
+                    type_index,
+                    mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 },
+                )),
+        ]
+        .align_y(maolan_baseview::iced::Alignment::Center);
+        let waveform_shared = self.shared.clone();
+        let waveform_index = self.osc_index;
+        let waveform_text = text(waveform)
+            .size(11)
+            .width(Length::Fill)
+            .align_x(maolan_baseview::iced::alignment::Horizontal::Center);
+        let waveform_text = if custom_selected {
+            mouse_area(waveform_text)
+                .on_scroll(move |delta| scroll_waveform(&waveform_shared, waveform_index, delta))
+                .on_press(super::Message::PickWavetableFile(waveform_index))
         } else {
-            mouse_area(text(osc_type).size(11))
-                .on_scroll(move |delta| scroll_osc_type(&type_shared, self.osc_index, delta))
-                .into()
+            mouse_area(waveform_text)
+                .on_scroll(move |delta| scroll_waveform(&waveform_shared, waveform_index, delta))
         };
         let waveform_shared = self.shared.clone();
-        let waveform_label = mouse_area(text(waveform).size(11))
-            .on_scroll(move |delta| scroll_waveform(&waveform_shared, self.osc_index, delta));
-        let waveform_canvas = canvas(self)
+        let waveform_label = row![
+            button(text("‹").size(10))
+                .padding(1)
+                .style(|theme, status| {
+                    let mut style = maolan_baseview::iced::widget::button::text(theme, status);
+                    style.background = None;
+                    style
+                })
+                .on_press(scroll_waveform(
+                    &waveform_shared,
+                    waveform_index,
+                    mouse::ScrollDelta::Lines { x: 0.0, y: 1.0 },
+                )),
+            waveform_text,
+            button(text("›").size(10))
+                .padding(1)
+                .style(|theme, status| {
+                    let mut style = maolan_baseview::iced::widget::button::text(theme, status);
+                    style.background = None;
+                    style
+                })
+                .on_press(scroll_waveform(
+                    &self.shared,
+                    waveform_index,
+                    mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 },
+                )),
+        ]
+        .align_y(maolan_baseview::iced::Alignment::Center);
+        let selector_shared = self.shared.clone();
+        let waveform_canvas = container(shape(render_samples(&self.shared, self.osc_index)))
             .width(Length::Fixed(220.0))
             .height(Length::Fill)
             .into();
-        let labels = container(row![
-            type_label,
-            Space::new().width(Length::Fill),
-            waveform_label,
-        ])
+        let waveform_canvas: Element<'static, super::Message> = if custom_selected {
+            mouse_area(waveform_canvas)
+                .on_press(super::Message::PickWavetableFile(waveform_index))
+                .into()
+        } else {
+            waveform_canvas
+        };
+        let labels = container(
+            row![
+                container(type_label)
+                    .width(Length::Fill)
+                    .align_x(maolan_baseview::iced::alignment::Horizontal::Center),
+                container(waveform_label)
+                    .width(Length::Fill)
+                    .align_x(maolan_baseview::iced::alignment::Horizontal::Center),
+            ]
+            .spacing(6),
+        )
         .width(Length::Fill)
         .padding(6);
 
-        Stack::with_children(vec![waveform_canvas, labels.into()]).into()
-    }
-}
+        let window_wavetable_selector: Element<'static, super::Message> = if selected_osc_type
+            == Some(OscType::Window)
+        {
+            let wavetable_id = wavetable_id.expect("window oscillator has a wavetable param");
+            let table_index = selector_shared.params.get(wavetable_id) as usize;
+            let selected = if table_index >= FACTORY_COUNT {
+                CUSTOM_WAVETABLE_LABEL
+            } else {
+                FACTORY_NAMES[table_index]
+            };
+            let label_text = text(selected)
+                .size(11)
+                .width(Length::Fill)
+                .align_x(maolan_baseview::iced::alignment::Horizontal::Center);
+            let label_shared = selector_shared.clone();
+            let label = if table_index >= FACTORY_COUNT {
+                mouse_area(label_text)
+                    .on_scroll(move |delta| scroll_wavetable(&label_shared, waveform_index, delta))
+                    .on_press(super::Message::PickWavetableFile(waveform_index))
+            } else {
+                mouse_area(label_text)
+                    .on_scroll(move |delta| scroll_wavetable(&label_shared, waveform_index, delta))
+            };
+            let left_shared = selector_shared.clone();
+            let right_shared = selector_shared.clone();
+            let selector = row![
+                button(text("‹").size(10))
+                    .padding(1)
+                    .style(|theme, status| {
+                        let mut style = maolan_baseview::iced::widget::button::text(theme, status);
+                        style.background = None;
+                        style
+                    })
+                    .on_press(scroll_wavetable(
+                        &left_shared,
+                        waveform_index,
+                        mouse::ScrollDelta::Lines { x: 0.0, y: 1.0 },
+                    )),
+                label,
+                button(text("›").size(10))
+                    .padding(1)
+                    .style(|theme, status| {
+                        let mut style = maolan_baseview::iced::widget::button::text(theme, status);
+                        style.background = None;
+                        style
+                    })
+                    .on_press(scroll_wavetable(
+                        &right_shared,
+                        waveform_index,
+                        mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 },
+                    )),
+            ]
+            .align_y(maolan_baseview::iced::Alignment::Center);
+            container(
+                row![
+                    Space::new().width(Length::Fill),
+                    selector.width(Length::Fill)
+                ]
+                .spacing(6),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(6)
+            .align_y(maolan_baseview::iced::alignment::Vertical::Bottom)
+            .into()
+        } else {
+            container(Space::new()).into()
+        };
 
-impl<Message> Program<Message> for OscillatorDisplay {
-    type State = ();
-
-    fn draw(
-        &self,
-        _state: &Self::State,
-        renderer: &Renderer,
-        _theme: &Theme,
-        bounds: Rectangle,
-        _cursor: maolan_baseview::iced::mouse::Cursor,
-    ) -> Vec<Geometry> {
-        let samples = render_samples(&self.shared, self.osc_index);
-        let mut frame = Frame::new(renderer, bounds.size());
-        frame.fill_rectangle(
-            Point::ORIGIN,
-            bounds.size(),
-            Color::from_rgb(0.075, 0.09, 0.115),
-        );
-
-        let center_y = bounds.height * 0.5;
-        let center = Path::line(
-            Point::new(0.0, center_y),
-            Point::new(bounds.width, center_y),
-        );
-        frame.stroke(
-            &center,
-            Stroke::default()
-                .with_color(Color::from_rgba(0.55, 0.60, 0.66, 0.22))
-                .with_width(1.0),
-        );
-
-        let path = Path::new(|builder| {
-            for (index, sample) in samples.iter().copied().enumerate() {
-                let x = index as f32 / (POINT_COUNT - 1) as f32 * bounds.width;
-                let y = center_y - sample.clamp(-1.0, 1.0) * center_y * 0.9;
-                if index == 0 {
-                    builder.move_to(Point::new(x, y));
-                } else {
-                    builder.line_to(Point::new(x, y));
-                }
-            }
-        });
-        frame.stroke(
-            &path,
-            Stroke::default()
-                .with_color(Color::from_rgb(0.72, 0.58, 0.28))
-                .with_width(1.6),
-        );
-
-        vec![frame.into_geometry()]
+        Stack::with_children(vec![
+            waveform_canvas,
+            labels.into(),
+            window_wavetable_selector,
+        ])
+        .into()
     }
 }
 
@@ -154,31 +274,14 @@ fn scroll_waveform(
         return super::Message::SetParam(ParamId::NoiseType, next as f32);
     }
 
-    let (type_id, waveform_id, shape_id, wavetable_id) = match osc_index {
-        0 => (
-            ParamId::Osc1Type,
-            ParamId::Osc1Waveform,
-            ParamId::Osc1Shape,
-            ParamId::Osc1Wavetable,
-        ),
-        1 => (
-            ParamId::Osc2Type,
-            ParamId::Osc2Waveform,
-            ParamId::Osc2Shape,
-            ParamId::Osc2Wavetable,
-        ),
-        _ => (
-            ParamId::Osc3Type,
-            ParamId::Osc3Waveform,
-            ParamId::Osc3Shape,
-            ParamId::Osc3Wavetable,
-        ),
+    let (type_id, waveform_id, shape_id) = match osc_index {
+        0 => (ParamId::Osc1Type, ParamId::Osc1Waveform, ParamId::Osc1Shape),
+        1 => (ParamId::Osc2Type, ParamId::Osc2Waveform, ParamId::Osc2Shape),
+        _ => (ParamId::Osc3Type, ParamId::Osc3Waveform, ParamId::Osc3Shape),
     };
     let osc_type = OscType::from_u8(shared.params.get(type_id) as u8);
     if osc_type == OscType::Wavetable {
-        let current = shared.params.get(wavetable_id) as usize;
-        let next = offset_index(current, FACTORY_COUNT, direction);
-        return super::Message::SetParam(wavetable_id, next as f32);
+        return scroll_wavetable(shared, osc_index, delta);
     }
 
     let options = super::waveform_options(osc_type);
@@ -196,6 +299,21 @@ fn scroll_waveform(
     } else {
         super::Message::SetParam(waveform_id, next as f32)
     }
+}
+
+fn scroll_wavetable(
+    shared: &SharedState,
+    osc_index: usize,
+    delta: mouse::ScrollDelta,
+) -> super::Message {
+    let wavetable_id = match osc_index {
+        0 => ParamId::Osc1Wavetable,
+        1 => ParamId::Osc2Wavetable,
+        _ => ParamId::Osc3Wavetable,
+    };
+    let current = shared.params.get(wavetable_id) as usize;
+    let next = offset_index(current, FACTORY_COUNT + 1, scroll_direction(delta));
+    super::Message::SetParam(wavetable_id, next as f32)
 }
 
 fn scroll_direction(delta: mouse::ScrollDelta) -> isize {
