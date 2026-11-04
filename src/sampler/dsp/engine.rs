@@ -71,6 +71,7 @@ pub struct SamplerEngine {
     note_volume: [f32; 128],
 
     zone_trigger_counts: HashMap<usize, u32>,
+    zone_cache: HashMap<usize, Arc<Zone>>,
 
     sustain_pedal: bool,
 
@@ -119,6 +120,7 @@ impl SamplerEngine {
             note_timbre: [0.0; 128],
             note_volume: [1.0; 128],
             zone_trigger_counts: HashMap::new(),
+            zone_cache: HashMap::new(),
             sustain_pedal: false,
             sustained_notes: Vec::new(),
             mod_wheel: 0.0,
@@ -145,6 +147,15 @@ impl SamplerEngine {
             for group in &part.groups {
                 if let Some(default) = group.sw_default {
                     part.last_keyswitch_note = Some(default);
+                }
+            }
+        }
+        self.zone_cache.clear();
+        for part in &self.patch.parts {
+            for group in &part.groups {
+                for zone in &group.zones {
+                    let key = zone as *const Zone as usize;
+                    self.zone_cache.insert(key, Arc::new(zone.clone()));
                 }
             }
         }
@@ -497,6 +508,12 @@ impl SamplerEngine {
                 self.patch.parts[part_index].previous_note = Some(note);
                 return;
             };
+            let zone_key = zone as *const Zone as usize;
+            let cached_zone = self
+                .zone_cache
+                .get(&zone_key)
+                .cloned()
+                .expect("selected zone is cached");
             (
                 gi,
                 group.play_mode,
@@ -507,8 +524,8 @@ impl SamplerEngine {
                 part.transpose,
                 part.gain_db,
                 part.pan,
-                zone as *const Zone as usize,
-                Arc::new(zone.clone()),
+                zone_key,
+                cached_zone,
             )
         };
         self.patch.parts[part_index].previous_note = Some(note);
@@ -538,12 +555,7 @@ impl SamplerEngine {
             .map(|v| v.increment());
 
         if zone.variant_mode == crate::sampler::dsp::zone::VariantMode::Unison {
-            let samples: Vec<_> = if zone.variants.is_empty() {
-                vec![zone.sample.clone()]
-            } else {
-                zone.variants.clone()
-            };
-            for sample in samples {
+            let mut trigger = |sample: Arc<Sample>| {
                 let args = TriggerArgs {
                     zone: zone.clone(),
                     note: play_note,
@@ -565,6 +577,13 @@ impl SamplerEngine {
                         prev_increment,
                     },
                 );
+            };
+            if zone.variants.is_empty() {
+                trigger(zone.sample.clone());
+            } else {
+                for sample in &zone.variants {
+                    trigger(sample.clone());
+                }
             }
             return;
         }
@@ -708,7 +727,12 @@ impl SamplerEngine {
                             pitch_bend_raw,
                             &self.held_note_flags,
                         ) {
-                            let zone = Arc::new(zone.clone());
+                            let zone_key = zone as *const Zone as usize;
+                            let zone = self
+                                .zone_cache
+                                .get(&zone_key)
+                                .cloned()
+                                .expect("selected zone is cached");
                             let portamento = group.portamento;
                             if let Some(voice) = self.voices.iter_mut().find(|v| v.is_active()) {
                                 voice.retarget(zone, next_note, portamento);
@@ -887,78 +911,67 @@ impl SamplerEngine {
             }
         }
 
-        let stolen_index = {
-            let group_poly = self
-                .patch
-                .parts
-                .get(args.part_index)
-                .and_then(|p| p.groups.get(args.group_index))
-                .map(|g| g.poly_limit)
-                .unwrap_or(0);
-            if group_poly > 0 {
-                let group_voices: Vec<usize> = self
-                    .voices
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, v)| {
-                        v.is_active()
-                            && v.group_index() == args.group_index
-                            && v.part_index() == args.part_index
-                    })
-                    .map(|(i, _)| i)
-                    .collect();
-                if group_voices.len() >= group_poly {
-                    group_voices.first().copied()
-                } else {
-                    None
+        let group_poly = self
+            .patch
+            .parts
+            .get(args.part_index)
+            .and_then(|p| p.groups.get(args.group_index))
+            .map(|g| g.poly_limit)
+            .unwrap_or(0);
+        let mut group_voice_count = 0;
+        let mut first_group_voice = None;
+        if group_poly > 0 {
+            for (index, voice) in self.voices.iter().enumerate() {
+                if voice.is_active()
+                    && voice.group_index() == args.group_index
+                    && voice.part_index() == args.part_index
+                {
+                    first_group_voice.get_or_insert(index);
+                    group_voice_count += 1;
                 }
-            } else {
-                None
             }
-        };
+        }
+        let stolen_index = (group_voice_count >= group_poly && group_poly > 0)
+            .then_some(first_group_voice)
+            .flatten();
 
-        let stolen_index = stolen_index.or_else(|| {
-            let part_poly = self
-                .patch
-                .parts
-                .get(args.part_index)
-                .map(|p| p.poly_limit)
-                .unwrap_or(0);
-            if part_poly > 0 {
-                let part_voices: Vec<usize> = self
-                    .voices
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, v)| v.is_active() && v.part_index() == args.part_index)
-                    .map(|(i, _)| i)
-                    .collect();
-                if part_voices.len() >= part_poly {
-                    part_voices.first().copied()
-                } else {
-                    None
+        let part_poly = self
+            .patch
+            .parts
+            .get(args.part_index)
+            .map(|p| p.poly_limit)
+            .unwrap_or(0);
+        let mut part_voice_count = 0;
+        let mut first_part_voice = None;
+        if stolen_index.is_none() && part_poly > 0 {
+            for (index, voice) in self.voices.iter().enumerate() {
+                if voice.is_active() && voice.part_index() == args.part_index {
+                    first_part_voice.get_or_insert(index);
+                    part_voice_count += 1;
                 }
-            } else {
-                None
             }
+        }
+        let stolen_index = stolen_index.or_else(|| {
+            (part_voice_count >= part_poly && part_poly > 0)
+                .then_some(first_part_voice)
+                .flatten()
         });
 
         let stolen_index = stolen_index.or_else(|| {
-            if self.global_poly_limit > 0 {
-                let active: Vec<usize> = self
-                    .voices
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, v)| v.is_active())
-                    .map(|(i, _)| i)
-                    .collect();
-                if active.len() >= self.global_poly_limit {
-                    active.first().copied()
-                } else {
-                    None
-                }
-            } else {
-                None
+            if self.global_poly_limit == 0 {
+                return None;
             }
+            let mut active_count = 0;
+            let mut first_active = None;
+            for (index, voice) in self.voices.iter().enumerate() {
+                if voice.is_active() {
+                    first_active.get_or_insert(index);
+                    active_count += 1;
+                }
+            }
+            (active_count >= self.global_poly_limit)
+                .then_some(first_active)
+                .flatten()
         });
 
         let index = stolen_index

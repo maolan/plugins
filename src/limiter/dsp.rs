@@ -72,15 +72,14 @@ impl ChannelState {
         if self.detector.factor() == factor {
             return;
         }
-        let mut detector = TruePeakDetector::new(factor);
+        self.detector.set_factor(factor);
         if !self.delay.is_empty() {
             let write_pos = position % self.delay.len();
             for offset in (1..=TRUE_PEAK_TAPS).rev() {
                 let index = (write_pos + self.delay.len() - offset) % self.delay.len();
-                detector.detect(self.delay[index]);
+                self.detector.detect(self.delay[index]);
             }
         }
-        self.detector = detector;
     }
 
     fn shape_weight(&self, len: usize, index: usize) -> f64 {

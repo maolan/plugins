@@ -162,6 +162,7 @@ impl AudioProcessor {
     fn new(sample_rate: f64, max_frames: u32, bus_data: Option<bus::PluginSharedData>) -> Self {
         let mut dsp = Delay::default();
         dsp.set_sample_rate(sample_rate);
+        dsp.prepare(max_frames as usize);
         Self {
             dsp,
             temp_left: vec![0.0; max_frames as usize],

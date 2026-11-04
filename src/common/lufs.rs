@@ -13,6 +13,7 @@ const INTEGRATED_HOP_MS: f64 = 100.0;
 const LOUDNESS_OFFSET: f64 = -0.691;
 const ABSOLUTE_GATE_LUFS: f64 = -70.0;
 const RELATIVE_GATE_LU: f64 = -10.0;
+const MAX_INTEGRATED_BLOCKS: usize = 24 * 60 * 60 * 1000 / INTEGRATED_HOP_MS as usize;
 
 #[derive(Clone, Copy)]
 struct Biquad {
@@ -193,8 +194,11 @@ pub struct LufsMeter {
     hop_len: usize,
     hop_remaining: usize,
     /// Channel-averaged 400 ms energies, one per 100 ms hop, for the
-    /// integrated measurement's absolute and relative gating.
+    /// integrated measurement's absolute and relative gating. The most recent
+    /// 24 hours are retained in fixed storage.
     blocks: Vec<f64>,
+    blocks_len: usize,
+    block_pos: usize,
 }
 
 impl LufsMeter {
@@ -207,7 +211,9 @@ impl LufsMeter {
             ],
             hop_len,
             hop_remaining: hop_len,
-            blocks: Vec::new(),
+            blocks: vec![0.0; MAX_INTEGRATED_BLOCKS],
+            blocks_len: 0,
+            block_pos: 0,
         }
     }
 
@@ -216,7 +222,8 @@ impl LufsMeter {
             channel.reset();
         }
         self.hop_remaining = self.hop_len;
-        self.blocks.clear();
+        self.blocks_len = 0;
+        self.block_pos = 0;
     }
 
     /// Feed one block of interleaved-by-slice stereo samples.
@@ -234,7 +241,16 @@ impl LufsMeter {
                         .map(|c| c.momentary.mean_square())
                         .sum::<f64>()
                         / self.channels.len() as f64;
-                    self.blocks.push(energy);
+                    let write_pos = if self.blocks_len < self.blocks.len() {
+                        let position = self.blocks_len;
+                        self.blocks_len += 1;
+                        position
+                    } else {
+                        let position = self.block_pos;
+                        self.block_pos = (self.block_pos + 1) % self.blocks.len();
+                        position
+                    };
+                    self.blocks[write_pos] = energy;
                 }
             }
         }
@@ -257,26 +273,34 @@ impl LufsMeter {
     }
 
     pub fn integrated_lufs(&self) -> f64 {
-        if self.blocks.is_empty() {
+        let blocks = &self.blocks[..self.blocks_len];
+        if blocks.is_empty() {
             return f64::NEG_INFINITY;
         }
         let absolute_gate = 10.0_f64.powf((ABSOLUTE_GATE_LUFS - LOUDNESS_OFFSET) / 10.0);
-        let gated: Vec<f64> = self
-            .blocks
+        let (gated_sum, gated_count) = blocks
             .iter()
             .copied()
             .filter(|&e| e >= absolute_gate)
-            .collect();
-        if gated.is_empty() {
+            .fold((0.0, 0_usize), |(sum, count), energy| {
+                (sum + energy, count + 1)
+            });
+        if gated_count == 0 {
             return f64::NEG_INFINITY;
         }
-        let gated_mean = gated.iter().sum::<f64>() / gated.len() as f64;
+        let gated_mean = gated_sum / gated_count as f64;
         let relative_gate = gated_mean * 10.0_f64.powf(RELATIVE_GATE_LU / 10.0);
-        let final_blocks: Vec<f64> = gated.into_iter().filter(|&e| e >= relative_gate).collect();
-        if final_blocks.is_empty() {
+        let (final_sum, final_count) = blocks
+            .iter()
+            .copied()
+            .filter(|&e| e >= absolute_gate && e >= relative_gate)
+            .fold((0.0, 0_usize), |(sum, count), energy| {
+                (sum + energy, count + 1)
+            });
+        if final_count == 0 {
             return f64::NEG_INFINITY;
         }
-        let final_mean = final_blocks.iter().sum::<f64>() / final_blocks.len() as f64;
+        let final_mean = final_sum / final_count as f64;
         LOUDNESS_OFFSET + 10.0 * final_mean.log10()
     }
 }

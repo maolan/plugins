@@ -45,10 +45,10 @@ impl Default for Mild {
             fpd_l: rand::random(),
             fpd_r: rand::random(),
             sample_rate: 48_000.0,
-            temp_dry_l: vec![0.0; 1024],
-            temp_dry_r: vec![0.0; 1024],
-            temp_wet_l: vec![0.0; 1024],
-            temp_wet_r: vec![0.0; 1024],
+            temp_dry_l: vec![0.0; 16_384],
+            temp_dry_r: vec![0.0; 16_384],
+            temp_wet_l: vec![0.0; 16_384],
+            temp_wet_r: vec![0.0; 16_384],
         }
     }
 }
@@ -67,6 +67,13 @@ impl Mild {
 
     pub fn set_sample_rate(&mut self, sr: f64) {
         self.sample_rate = sr;
+    }
+
+    fn prepare(&mut self, max_frames: usize) {
+        self.temp_dry_l = vec![0.0; max_frames];
+        self.temp_dry_r = vec![0.0; max_frames];
+        self.temp_wet_l = vec![0.0; max_frames];
+        self.temp_wet_r = vec![0.0; max_frames];
     }
 
     pub fn process_stereo(
@@ -96,14 +103,6 @@ impl Mild {
         let near_level = 1.0 - far_level;
 
         let frames = left.len().min(right.len());
-        if self.temp_dry_l.len() < frames {
-            let new_len = frames.next_power_of_two();
-            self.temp_dry_l.resize(new_len, 0.0);
-            self.temp_dry_r.resize(new_len, 0.0);
-            self.temp_wet_l.resize(new_len, 0.0);
-            self.temp_wet_r.resize(new_len, 0.0);
-        }
-
         for i in 0..frames {
             let mut input_l = left[i] as f64;
             let mut input_r = right[i] as f64;
@@ -465,8 +464,8 @@ impl Default for Stereo {
             smooth_output: ParamSmoother::new(0.0),
             smooth_boost: ParamSmoother::new(1.0),
             mild: Mild::default(),
-            section_out_l: vec![0.0; 1024],
-            section_out_r: vec![0.0; 1024],
+            section_out_l: vec![0.0; 16_384],
+            section_out_r: vec![0.0; 16_384],
         };
         s.update_band_maxima_from_sample_rate();
         s.rebuild_band_luts();
@@ -476,6 +475,12 @@ impl Default for Stereo {
 }
 
 impl Stereo {
+    pub fn prepare(&mut self, max_frames: usize) {
+        self.section_out_l = vec![0.0; max_frames];
+        self.section_out_r = vec![0.0; max_frames];
+        self.mild.prepare(max_frames);
+    }
+
     fn update_smoothing_coeff(&mut self) {
         let tau_seconds = 0.005_f64;
         let sr = self.sample_rate.max(1.0);
@@ -628,12 +633,6 @@ impl Stereo {
         }
         let any_solo = params.solo_low || params.solo_mid || params.solo_high;
         let frames = left.len().min(right.len());
-        if self.section_out_l.len() < frames {
-            let new_len = frames.next_power_of_two();
-            self.section_out_l.resize(new_len, 0.0);
-            self.section_out_r.resize(new_len, 0.0);
-        }
-
         for i in 0..frames {
             let low_gain = Self::step_smoother(&mut self.smooth_low_gain, self.smooth_coeff);
             let mid_gain = Self::step_smoother(&mut self.smooth_mid_gain, self.smooth_coeff);

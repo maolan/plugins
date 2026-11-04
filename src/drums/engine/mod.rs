@@ -115,6 +115,7 @@ unsafe impl Send for ChannelPlayback {}
 #[derive(Debug)]
 pub struct AudioState {
     pub voices: Vec<Voice>,
+    pub voice_pool: Vec<Voice>,
     pub velocity_filter: VelocityFilter,
     pub powermap_filter: PowermapFilter,
     pub stamina_filter: StaminaFilter,
@@ -127,19 +128,29 @@ impl Default for AudioState {
     fn default() -> Self {
         Self {
             voices: Vec::with_capacity(MAX_VOICES),
+            voice_pool: (0..MAX_VOICES)
+                .map(|_| Voice {
+                    instrument_index: 0,
+                    sample_index: 0,
+                    velocity: 0.0,
+                    active: false,
+                    playback_position: 0,
+                    playbacks: Vec::with_capacity(MAX_CHANNELS),
+                })
+                .collect(),
             velocity_filter: VelocityFilter::new(0.08),
             powermap_filter: PowermapFilter::new(false),
             stamina_filter: StaminaFilter::new(0.5, 0.25),
             latency_filter: LatencyFilter::new(5.0, 20.0),
             humanizer_rng: LockFreeRandom::default(),
-            last_sample_index: Vec::new(),
+            last_sample_index: vec![None; 128],
         }
     }
 }
 
 impl AudioState {
     pub fn reset(&mut self, seed: u64) {
-        self.voices.clear();
+        self.voice_pool.append(&mut self.voices);
         self.last_sample_index.fill(None);
         if seed > 0 {
             self.velocity_filter.set_seed(seed);
@@ -262,26 +273,38 @@ fn select_sample_with_diversity(
 
     let target_power = min_power + velocity * (max_power - min_power);
     let tolerance = (max_power - min_power) * 0.25;
-    let mut candidates: Vec<usize> = Vec::with_capacity(4);
+    let mut candidate_storage = [0_usize; 4];
+    let mut candidate_count = 0;
     for (i, sample) in instr.samples.iter().enumerate() {
-        if (sample.power - target_power).abs() < tolerance && candidates.len() < 4 {
-            candidates.push(i);
+        if (sample.power - target_power).abs() < tolerance && candidate_count < 4 {
+            candidate_storage[candidate_count] = i;
+            candidate_count += 1;
         }
     }
 
-    if candidates.is_empty() {
-        let mut sorted: Vec<(usize, f32)> = instr
-            .samples
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (i, (s.power - target_power).abs()))
-            .collect();
-        sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        for (i, _) in sorted.into_iter().take(4) {
-            candidates.push(i);
+    if candidate_count == 0 {
+        let mut nearest = [(0_usize, f32::INFINITY); 4];
+        for (index, sample) in instr.samples.iter().enumerate() {
+            let distance = (sample.power - target_power).abs();
+            if let Some(slot) = nearest
+                .iter_mut()
+                .rev()
+                .find(|(_, best_distance)| distance < *best_distance)
+            {
+                *slot = (index, distance);
+                nearest.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            }
+        }
+        for (candidate, (index, _)) in candidate_storage
+            .iter_mut()
+            .zip(nearest.into_iter().take(instr.samples.len().min(4)))
+        {
+            *candidate = index;
+            candidate_count += 1;
         }
     }
 
+    let candidates = &candidate_storage[..candidate_count];
     if candidates.is_empty() {
         return Some(0);
     }
@@ -294,7 +317,7 @@ fn select_sample_with_diversity(
     if round_robin_mix < 0.01 {
         let mut best_idx = candidates[0];
         let mut best_dist = f32::INFINITY;
-        for &idx in &candidates {
+        for &idx in candidates {
             let dist = (instr.samples[idx].power - target_power).abs();
             if dist < best_dist {
                 best_dist = dist;
@@ -308,9 +331,9 @@ fn select_sample_with_diversity(
         Some(candidates[next])
     } else {
         let mut total_weight = 0.0f32;
-        let mut weights: Vec<(usize, f32)> = Vec::with_capacity(candidates.len());
+        let mut weights = [(0_usize, 0.0_f32); 4];
 
-        for &idx in &candidates {
+        for (weight_slot, &idx) in weights.iter_mut().zip(candidates) {
             let dist = (instr.samples[idx].power - target_power).abs();
             let mut weight = 1.0 / (1.0 + dist * 5.0);
 
@@ -329,13 +352,13 @@ fn select_sample_with_diversity(
                 weight *= 1.0 + round_robin_mix * 1.5;
             }
 
-            weights.push((idx, weight));
+            *weight_slot = (idx, weight);
             total_weight += weight;
         }
 
         let random_value = rng.next_f32() * total_weight;
         let mut cumulative = 0.0f32;
-        for (idx, weight) in weights {
+        for (idx, weight) in weights.into_iter().take(candidate_count) {
             cumulative += weight;
             if random_value <= cumulative {
                 return Some(idx);
@@ -833,7 +856,33 @@ impl DrumGizmoEngine {
                     let sample = &instr.samples[sample_idx];
                     state.last_sample_index[event.instrument_index] = Some(sample_idx);
 
-                    let mut playbacks = Vec::with_capacity(sample.audiofiles.len());
+                    if state.voices.len() >= MAX_VOICES {
+                        let mut best_idx = None;
+                        let mut best_score = i64::MIN;
+                        for (i, voice) in state.voices.iter().enumerate() {
+                            if !voice.active {
+                                continue;
+                            }
+                            let mut score = voice.playback_position as i64;
+                            if score < 2000 {
+                                score -= 1_000_000;
+                            }
+                            if voice.playbacks.iter().any(|pb| pb.delay_remaining > 0) {
+                                score -= 10_000_000;
+                            }
+                            if score > best_score {
+                                best_score = score;
+                                best_idx = Some(i);
+                            }
+                        }
+                        let index = best_idx.unwrap_or(0);
+                        let voice = state.voices.remove(index);
+                        state.voice_pool.push(voice);
+                    }
+                    let Some(mut new_voice) = state.voice_pool.pop() else {
+                        return;
+                    };
+                    new_voice.playbacks.clear();
 
                     for af in &sample.audiofiles {
                         if let Some(&file_idx) = audio_index.get(&af.abs_path)
@@ -860,7 +909,7 @@ impl DrumGizmoEngine {
                                 };
 
                                 let buffer = &audio_file.channels[loaded_channel];
-                                playbacks.push(ChannelPlayback {
+                                new_voice.playbacks.push(ChannelPlayback {
                                     audio_ref: AudioRef {
                                         file_index: file_idx,
                                         filechannel: af.filechannel,
@@ -880,107 +929,82 @@ impl DrumGizmoEngine {
                         }
                     }
 
-                    if !playbacks.is_empty() {
-                        let num_both = playbacks
+                    if !new_voice.playbacks.is_empty() {
+                        let num_both = new_voice
+                            .playbacks
                             .iter()
                             .filter(|pb| matches!(pb.side, ChannelSide::Both))
                             .count();
                         if num_both > 1 {
                             let channel_gain = 1.0 / (num_both as f32).sqrt();
-                            for pb in &mut playbacks {
+                            for pb in &mut new_voice.playbacks {
                                 pb.gain *= channel_gain;
                             }
                         }
                     }
 
-                    if !playbacks.is_empty() {
-                        if !instr.group.is_empty() {
-                            for voice in &mut state.voices {
-                                if !voice.active {
-                                    continue;
-                                }
-                                if voice.instrument_index == event.instrument_index {
-                                    continue;
-                                }
-                                if let Some(other_instr) =
-                                    kit.instruments.get(voice.instrument_index)
-                                    && other_instr.group == instr.group
-                                {
-                                    let ramp_samples = (0.068 * sr) as usize;
-                                    for pb in &mut voice.playbacks {
-                                        if pb.rampdown_samples.is_none() {
-                                            pb.rampdown_total = ramp_samples.max(1);
-                                            pb.rampdown_samples = Some(pb.rampdown_total);
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    if new_voice.playbacks.is_empty() {
+                        state.voice_pool.push(new_voice);
+                        return;
+                    }
 
-                        let same_instr_count = state
-                            .voices
-                            .iter()
-                            .filter(|v| v.active && v.instrument_index == event.instrument_index)
-                            .count();
-                        if same_instr_count >= voice_limit_max {
-                            let to_ramp = same_instr_count - voice_limit_max + 1;
-                            let ramp_samples = (voice_limit_rampdown * sr) as usize;
-                            let mut ramped = 0;
-                            for voice in &mut state.voices {
-                                if !voice.active {
-                                    continue;
-                                }
-                                if voice.instrument_index != event.instrument_index {
-                                    continue;
-                                }
-                                if ramped >= to_ramp {
-                                    break;
-                                }
+                    if !instr.group.is_empty() {
+                        for voice in &mut state.voices {
+                            if !voice.active {
+                                continue;
+                            }
+                            if voice.instrument_index == event.instrument_index {
+                                continue;
+                            }
+                            if let Some(other_instr) = kit.instruments.get(voice.instrument_index)
+                                && other_instr.group == instr.group
+                            {
+                                let ramp_samples = (0.068 * sr) as usize;
                                 for pb in &mut voice.playbacks {
                                     if pb.rampdown_samples.is_none() {
                                         pb.rampdown_total = ramp_samples.max(1);
                                         pb.rampdown_samples = Some(pb.rampdown_total);
                                     }
                                 }
-                                ramped += 1;
                             }
                         }
-
-                        if state.voices.len() >= MAX_VOICES {
-                            let mut best_idx = None;
-                            let mut best_score = i64::MIN;
-                            for (i, voice) in state.voices.iter().enumerate() {
-                                if !voice.active {
-                                    continue;
-                                }
-                                let mut score = voice.playback_position as i64;
-                                if score < 2000 {
-                                    score -= 1_000_000;
-                                }
-                                if voice.playbacks.iter().any(|pb| pb.delay_remaining > 0) {
-                                    score -= 10_000_000;
-                                }
-                                if score > best_score {
-                                    best_score = score;
-                                    best_idx = Some(i);
-                                }
-                            }
-                            if let Some(idx) = best_idx {
-                                state.voices.remove(idx);
-                            } else {
-                                state.voices.remove(0);
-                            }
-                        }
-
-                        state.voices.push(Voice {
-                            instrument_index: event.instrument_index,
-                            sample_index: sample_idx,
-                            velocity,
-                            active: true,
-                            playback_position: 0,
-                            playbacks,
-                        });
                     }
+
+                    let same_instr_count = state
+                        .voices
+                        .iter()
+                        .filter(|v| v.active && v.instrument_index == event.instrument_index)
+                        .count();
+                    if same_instr_count >= voice_limit_max {
+                        let to_ramp = same_instr_count - voice_limit_max + 1;
+                        let ramp_samples = (voice_limit_rampdown * sr) as usize;
+                        let mut ramped = 0;
+                        for voice in &mut state.voices {
+                            if !voice.active {
+                                continue;
+                            }
+                            if voice.instrument_index != event.instrument_index {
+                                continue;
+                            }
+                            if ramped >= to_ramp {
+                                break;
+                            }
+                            for pb in &mut voice.playbacks {
+                                if pb.rampdown_samples.is_none() {
+                                    pb.rampdown_total = ramp_samples.max(1);
+                                    pb.rampdown_samples = Some(pb.rampdown_total);
+                                }
+                            }
+                            ramped += 1;
+                        }
+                    }
+
+                    new_voice.instrument_index = event.instrument_index;
+                    new_voice.sample_index = sample_idx;
+                    new_voice.velocity = velocity;
+                    new_voice.active = true;
+                    new_voice.playback_position = 0;
+                    state.voices.push(new_voice);
                 }
             }
             EventType::Choke => {
@@ -1141,7 +1165,15 @@ impl DrumGizmoEngine {
             }
         }
 
-        state.voices.retain(|v| v.active);
+        let mut index = 0;
+        while index < state.voices.len() {
+            if state.voices[index].active {
+                index += 1;
+            } else {
+                let voice = state.voices.remove(index);
+                state.voice_pool.push(voice);
+            }
+        }
     }
 
     pub fn render(&self, frames: usize, outputs: &mut [Vec<f32>]) {
@@ -1239,7 +1271,15 @@ impl DrumGizmoEngine {
             }
         }
 
-        state.voices.retain(|v| v.active);
+        let mut index = 0;
+        while index < state.voices.len() {
+            if state.voices[index].active {
+                index += 1;
+            } else {
+                let voice = state.voices.remove(index);
+                state.voice_pool.push(voice);
+            }
+        }
     }
 }
 

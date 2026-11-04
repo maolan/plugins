@@ -80,10 +80,24 @@ pub fn build_chain(
     q: f32,
     gain_db: f32,
 ) -> Vec<Biquad> {
+    let mut chain = Vec::with_capacity(2 * slope_stages(effective_slope(shape, slope)));
+    build_chain_into(&mut chain, shape, slope, sample_rate, freq, q, gain_db);
+    chain
+}
+
+pub fn build_chain_into(
+    chain: &mut Vec<Biquad>,
+    shape: u8,
+    slope: u8,
+    sample_rate: f32,
+    freq: f32,
+    q: f32,
+    gain_db: f32,
+) {
+    chain.clear();
     let slope = effective_slope(shape, slope);
     let n = slope_stages(slope);
     let stage_gain = gain_db / n as f32;
-    let mut chain = Vec::with_capacity(2 * n);
     for stage in 0..n {
         let stage_q = cut_stage_q(shape, slope, stage, q);
         let mut b = Biquad::default();
@@ -125,7 +139,6 @@ pub fn build_chain(
             }
         }
     }
-    chain
 }
 
 fn chain_len(shape: u8, slope: u8) -> usize {

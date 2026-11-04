@@ -24,10 +24,13 @@ pub fn soft_clip_master(x: f32) -> f32 {
     x.signum() * (MASTER_CLIP_KNEE + (1.0 - MASTER_CLIP_KNEE) * over.tanh())
 }
 
+const MAX_VOICE_POOL: usize = 64;
+
 #[derive(Debug, Clone)]
 pub struct SynthEngine {
     sample_rate: f32,
     voices: Vec<Voice>,
+    spare_voices: Vec<Voice>,
     max_voices: usize,
     steal_mode: StealMode,
     pub params: VoiceParams,
@@ -53,18 +56,26 @@ pub struct SynthEngine {
 
 impl SynthEngine {
     pub fn new(sample_rate: f32, max_voices: usize) -> Self {
-        let mut voices = Vec::with_capacity(max_voices);
-        for _ in 0..max_voices {
-            voices.push(Voice::new(sample_rate));
+        let max_voices = max_voices.clamp(1, MAX_VOICE_POOL);
+        let mut voices = Vec::with_capacity(MAX_VOICE_POOL);
+        let mut spare_voices = Vec::with_capacity(MAX_VOICE_POOL);
+        for index in 0..MAX_VOICE_POOL {
+            let voice = Voice::new(sample_rate);
+            if index < max_voices {
+                voices.push(voice);
+            } else {
+                spare_voices.push(voice);
+            }
         }
         let mut engine = Self {
             sample_rate,
             voices,
+            spare_voices,
             max_voices,
             steal_mode: StealMode::Oldest,
             params: VoiceParams::default(),
-            held_notes: Vec::new(),
-            sustained_notes: Vec::new(),
+            held_notes: Vec::with_capacity(128),
+            sustained_notes: Vec::with_capacity(128),
             last_note: 0,
             mts_esp: None,
             scene_lfo1: Lfo::new(sample_rate),
@@ -73,17 +84,10 @@ impl SynthEngine {
             scene_lfo4: Lfo::new(sample_rate),
             scene_lfo5: Lfo::new(sample_rate),
             scene_lfo6: Lfo::new(sample_rate),
-            scene_lfo_bufs: [
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-            ],
+            scene_lfo_bufs: std::array::from_fn(|_| vec![0.0; 16_384]),
             pitch_bend: 0.0,
-            temp_l: Vec::new(),
-            temp_r: Vec::new(),
+            temp_l: vec![0.0; 16_384],
+            temp_r: vec![0.0; 16_384],
             visual_lfo_mod_values: [[0.0; ModTarget::COUNT as usize]; 6],
             custom_wavetables: [None, None, None],
         };
@@ -96,9 +100,15 @@ impl SynthEngine {
         engine
     }
 
+    pub fn prepare(&mut self, max_frames: usize) {
+        self.temp_l = vec![0.0; max_frames];
+        self.temp_r = vec![0.0; max_frames];
+        self.scene_lfo_bufs = std::array::from_fn(|_| vec![0.0; max_frames]);
+    }
+
     pub fn set_sample_rate(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
-        for voice in &mut self.voices {
+        for voice in self.voices.iter_mut().chain(self.spare_voices.iter_mut()) {
             voice.set_sample_rate(sample_rate);
         }
         self.scene_lfo1 = Lfo::new(sample_rate);
@@ -116,11 +126,13 @@ impl SynthEngine {
     }
 
     pub fn set_max_voices(&mut self, max_voices: usize) {
-        self.max_voices = max_voices.max(1);
+        self.max_voices = max_voices.clamp(1, MAX_VOICE_POOL);
         if self.voices.len() < self.max_voices {
             let pitch_bend = self.pitch_bend;
             for _ in self.voices.len()..self.max_voices {
-                let mut voice = Voice::new(self.sample_rate);
+                let Some(mut voice) = self.spare_voices.pop() else {
+                    break;
+                };
                 voice.pitch_bend = pitch_bend;
                 self.voices.push(voice);
             }
@@ -741,18 +753,33 @@ impl SynthEngine {
         audio_in_r: Option<&[f32]>,
     ) {
         let frames = out_l.len().min(out_r.len());
-        if frames == 0 {
+        let chunk_size = self.temp_l.len();
+        if chunk_size == 0 {
             return;
         }
+        for start in (0..frames).step_by(chunk_size) {
+            let end = (start + chunk_size).min(frames);
+            self.process_block_chunk(
+                &mut out_l[start..end],
+                &mut out_r[start..end],
+                audio_in_l.map(|input| &input[start..end]),
+                audio_in_r.map(|input| &input[start..end]),
+            );
+        }
+    }
+
+    fn process_block_chunk(
+        &mut self,
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+        audio_in_l: Option<&[f32]>,
+        audio_in_r: Option<&[f32]>,
+    ) {
+        let frames = out_l.len().min(out_r.len());
 
         out_l.fill(0.0);
         out_r.fill(0.0);
         self.visual_lfo_mod_values = [[0.0; ModTarget::COUNT as usize]; 6];
-
-        if self.temp_l.len() < frames {
-            self.temp_l.resize(frames, 0.0);
-            self.temp_r.resize(frames, 0.0);
-        }
 
         let scene_lfo_bufs = &mut self.scene_lfo_bufs;
         let scene_lfos = [
@@ -766,9 +793,6 @@ impl SynthEngine {
         // Advance the scene LFOs exactly once per output sample, even when no
         // voices are active, so they keep time regardless of voice count.
         for (buf, lfo) in scene_lfo_bufs.iter_mut().zip(scene_lfos) {
-            if buf.len() < frames {
-                buf.resize(frames, 0.0);
-            }
             for sample in buf[..frames].iter_mut() {
                 *sample = lfo.next();
             }
@@ -851,14 +875,15 @@ impl SynthEngine {
         // release once they are fully faded. This also drops inactive pool
         // voices when `set_max_voices` shrank the pool.
         let mut overflow = self.voices.len().saturating_sub(self.max_voices);
-        self.voices.retain(|v| {
-            if v.is_active() || overflow == 0 {
-                true
-            } else {
+        let mut index = self.voices.len();
+        while overflow > 0 && index > 0 {
+            index -= 1;
+            if !self.voices[index].is_active() {
+                let voice = self.voices.remove(index);
+                self.spare_voices.push(voice);
                 overflow -= 1;
-                false
             }
-        });
+        }
     }
 
     pub fn visual_lfo_mod_values(&self) -> &[[f32; ModTarget::COUNT as usize]; 6] {
@@ -887,7 +912,9 @@ impl SynthEngine {
         };
         self.voices[idx].begin_uber_release();
 
-        let mut voice = Voice::new(self.sample_rate);
+        let Some(mut voice) = self.spare_voices.pop() else {
+            return;
+        };
         voice.pitch_bend = self.pitch_bend;
         if let Some(template) = self.voices.first() {
             let tempo_bpm = template.tempo_bpm;

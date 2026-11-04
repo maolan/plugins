@@ -30,6 +30,7 @@ pub const OSCILLATORS_PER_LAYER: usize = 2;
 pub const LAYERS_PER_INSTRUMENT: usize = 3;
 pub const INSTRUMENTS_PER_KIT: usize = 16;
 const MAX_SAMPLES: usize = 192_000 * 4;
+const RENDER_BLOCK: usize = 1024;
 
 #[derive(Clone)]
 pub struct Layer {
@@ -80,45 +81,47 @@ impl Layer {
             return;
         }
 
-        let mut osc_bufs: [Vec<f32>; OSCILLATORS_PER_LAYER] =
-            [vec![0.0; num_samples], vec![0.0; num_samples]];
+        let mut osc_bufs = [[0.0_f32; RENDER_BLOCK]; OSCILLATORS_PER_LAYER];
+        let mut noise_buf = [0.0_f32; RENDER_BLOCK];
+        let mut dist_vol_buf = [0.0_f32; RENDER_BLOCK];
+        for out in out[..num_samples].chunks_mut(RENDER_BLOCK) {
+            let chunk_len = out.len();
+            for i in 0..OSCILLATORS_PER_LAYER {
+                self.oscillators[i].set_midi_note(midi_note);
+                let fm_src = self.fm_routing[i] as usize;
+                let fm_input = if fm_src != i && fm_src < OSCILLATORS_PER_LAYER {
+                    let fm_buf = unsafe { &*std::ptr::addr_of!(osc_bufs[fm_src]) };
+                    Some(&fm_buf[..chunk_len])
+                } else {
+                    None
+                };
+                let buf = unsafe { &mut *std::ptr::addr_of_mut!(osc_bufs[i]) };
+                self.oscillators[i].render(&mut buf[..chunk_len], chunk_len, fm_input);
+            }
 
-        for i in 0..OSCILLATORS_PER_LAYER {
-            self.oscillators[i].set_midi_note(midi_note);
-            let fm_src = self.fm_routing[i] as usize;
-            let fm_input = if fm_src != i && fm_src < OSCILLATORS_PER_LAYER {
-                let fm_buf = unsafe { &*std::ptr::addr_of!(osc_bufs[fm_src]) };
-                Some(fm_buf.as_slice())
-            } else {
-                None
-            };
-            let buf = unsafe { &mut *std::ptr::addr_of_mut!(osc_bufs[i]) };
-            self.oscillators[i].render(buf, num_samples, fm_input);
-        }
+            out.fill(0.0);
+            for buf in &osc_bufs {
+                simd::add_inplace(out, &buf[..chunk_len]);
+            }
 
-        out[..num_samples].fill(0.0);
-        for buf in &osc_bufs {
-            simd::add_inplace(out, buf);
-        }
+            self.noise.render(&mut noise_buf, chunk_len);
+            simd::add_inplace(out, &noise_buf[..chunk_len]);
 
-        let mut noise_buf = vec![0.0f32; num_samples];
-        self.noise.render(&mut noise_buf, num_samples);
-        simd::add_inplace(out, &noise_buf);
+            self.filter.filter_type = self.filter_type;
+            self.filter
+                .prepare_block(self.filter_cutoff_hz, self.filter_q, chunk_len);
+            self.filter.process_block(out);
 
-        self.filter.filter_type = self.filter_type;
-        self.filter
-            .prepare_block(self.filter_cutoff_hz, self.filter_q, num_samples);
-        self.filter.process_block(out);
+            let dist_vol = &mut dist_vol_buf[..chunk_len];
+            self.distortion
+                .volume_env
+                .fill_buffer(dist_vol, 1.0 / chunk_len.max(1) as f32);
+            self.distortion
+                .process_block_modulated(out, None, Some(dist_vol));
 
-        let mut dist_vol_buf = vec![0.0f32; num_samples];
-        self.distortion
-            .volume_env
-            .fill_buffer(&mut dist_vol_buf, 1.0 / num_samples.max(1) as f32);
-        self.distortion
-            .process_block_modulated(out, None, Some(&dist_vol_buf));
-
-        if (self.amplitude - 1.0).abs() > 1.0e-6 {
-            crate::kick::simd_kick::mul_gain_inplace(out, self.amplitude);
+            if (self.amplitude - 1.0).abs() > 1.0e-6 {
+                crate::kick::simd_kick::mul_gain_inplace(out, self.amplitude);
+            }
         }
     }
 }
@@ -204,42 +207,47 @@ impl Instrument {
     }
 
     pub fn render(&mut self, out: &mut [f32], num_samples: usize, midi_note: u8) {
-        let mut mix = vec![0.0f32; num_samples];
+        let mut mix = [0.0_f32; RENDER_BLOCK];
+        let mut layer_buf = [0.0_f32; RENDER_BLOCK];
+        let mut dist_vol_buf = [0.0_f32; RENDER_BLOCK];
+        let mut env_buf = [0.0_f32; RENDER_BLOCK];
+        for out in out[..num_samples].chunks_mut(RENDER_BLOCK) {
+            let chunk_len = out.len();
+            let mix = &mut mix[..chunk_len];
+            mix.fill(0.0);
+            for layer in &mut self.layers {
+                layer.render(&mut layer_buf, chunk_len, midi_note);
+                simd::add_inplace(mix, &layer_buf[..chunk_len]);
+            }
 
-        for layer in &mut self.layers {
-            let mut layer_buf = vec![0.0f32; num_samples];
-            layer.render(&mut layer_buf, num_samples, midi_note);
-            simd::add_inplace(&mut mix, &layer_buf);
+            self.master_filter.filter_type = self.master_filter_type;
+            self.master_filter.prepare_block(
+                self.master_filter_cutoff_hz,
+                self.master_filter_q,
+                chunk_len,
+            );
+            self.master_filter.process_block(mix);
+
+            let dist_vol = &mut dist_vol_buf[..chunk_len];
+            self.master_distortion
+                .volume_env
+                .fill_buffer(dist_vol, 1.0 / chunk_len.max(1) as f32);
+            self.master_distortion
+                .process_block_modulated(mix, None, Some(dist_vol));
+
+            let dt = 1.0 / chunk_len.max(1) as f32;
+            let env = &mut env_buf[..chunk_len];
+            self.global_amp_env.fill_buffer(env, dt);
+            simd::mul_per_sample_inplace(mix, env);
+
+            let gain_lin = db_to_linear(self.output_gain_db);
+            if (gain_lin - 1.0).abs() > 1.0e-6 {
+                crate::kick::simd_kick::mul_gain_inplace(mix, gain_lin);
+            }
+
+            self.master_limiter.process_block(mix);
+            out.copy_from_slice(mix);
         }
-
-        self.master_filter.filter_type = self.master_filter_type;
-        self.master_filter.prepare_block(
-            self.master_filter_cutoff_hz,
-            self.master_filter_q,
-            num_samples,
-        );
-        self.master_filter.process_block(&mut mix);
-
-        let mut dist_vol_buf = vec![0.0f32; num_samples];
-        self.master_distortion
-            .volume_env
-            .fill_buffer(&mut dist_vol_buf, 1.0 / num_samples.max(1) as f32);
-        self.master_distortion
-            .process_block_modulated(&mut mix, None, Some(&dist_vol_buf));
-
-        let dt = 1.0 / num_samples.max(1) as f32;
-        let mut env_buf = vec![0.0f32; num_samples];
-        self.global_amp_env.fill_buffer(&mut env_buf, dt);
-        simd::mul_per_sample_inplace(&mut mix, &env_buf);
-
-        let gain_lin = db_to_linear(self.output_gain_db);
-        if (gain_lin - 1.0).abs() > 1.0e-6 {
-            crate::kick::simd_kick::mul_gain_inplace(&mut mix, gain_lin);
-        }
-
-        self.master_limiter.process_block(&mut mix);
-
-        out[..num_samples].copy_from_slice(&mix);
     }
 }
 

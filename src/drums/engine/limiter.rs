@@ -5,6 +5,7 @@ pub struct Limiter {
     release_coeff: f32,
     gain_reduction: f32,
     enabled: bool,
+    gains: Vec<f32>,
 }
 
 impl Default for Limiter {
@@ -22,7 +23,12 @@ impl Limiter {
             release_coeff: 1.0 - (-1000.0 / (release_ms * sr)).exp(),
             gain_reduction: 1.0,
             enabled: true,
+            gains: Vec::new(),
         }
+    }
+
+    pub fn prepare(&mut self, max_frames: usize) {
+        self.gains = vec![1.0; max_frames];
     }
 
     pub fn set_enabled(&mut self, enabled: bool) {
@@ -44,20 +50,12 @@ impl Limiter {
         self.release_coeff = 1.0 - (-1000.0 / (release_ms * sr)).exp();
     }
 
-    pub fn process(&mut self, buffers: &mut [Vec<f32>], frames: usize) {
-        if !self.enabled || buffers.is_empty() {
-            return;
-        }
-        let mut slices: Vec<&mut [f32]> = buffers.iter_mut().map(|b| b.as_mut_slice()).collect();
-        self.process_slices(&mut slices, frames);
-    }
-
     pub fn process_slices(&mut self, slices: &mut [&mut [f32]], frames: usize) {
         if !self.enabled || slices.is_empty() {
             return;
         }
 
-        let mut gains = vec![1.0f32; frames];
+        let gains = &mut self.gains[..frames];
 
         #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
         unsafe {

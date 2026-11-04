@@ -56,7 +56,7 @@ fn phase_taps(factor: usize, phase: usize) -> [f32; TRUE_PEAK_TAPS] {
 /// Polyphase interpolator producing `factor` sub-samples per input sample.
 pub struct TruePeakDetector {
     factor: usize,
-    taps: Vec<[f32; TRUE_PEAK_TAPS]>,
+    taps: [[f32; TRUE_PEAK_TAPS]; 8],
     state: [f32; TRUE_PEAK_TAPS],
     position: usize,
 }
@@ -73,13 +73,30 @@ impl TruePeakDetector {
         } else {
             1
         };
-        let taps = (0..factor).map(|phase| phase_taps(factor, phase)).collect();
-        Self {
+        let mut detector = Self {
             factor,
-            taps,
+            taps: [[0.0; TRUE_PEAK_TAPS]; 8],
             state: [0.0; TRUE_PEAK_TAPS],
             position: 0,
+        };
+        detector.set_factor(factor);
+        detector
+    }
+
+    pub fn set_factor(&mut self, factor: usize) {
+        self.factor = if factor >= 8 {
+            8
+        } else if factor >= 4 {
+            4
+        } else if factor >= 2 {
+            2
+        } else {
+            1
+        };
+        for (phase, taps) in self.taps.iter_mut().enumerate().take(self.factor) {
+            *taps = phase_taps(self.factor, phase);
         }
+        self.reset();
     }
 
     pub fn factor(&self) -> usize {
@@ -109,7 +126,7 @@ impl TruePeakDetector {
         self.state[self.position] = x;
         let mask = TRUE_PEAK_TAPS - 1;
         let mut peak = 0.0_f32;
-        for phase_taps in &self.taps {
+        for phase_taps in self.taps.iter().take(self.factor) {
             let mut acc = 0.0_f32;
             for (k, &tap) in phase_taps.iter().enumerate() {
                 let index = (self.position + TRUE_PEAK_TAPS - k) & mask;

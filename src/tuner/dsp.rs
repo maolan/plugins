@@ -39,6 +39,9 @@ impl Tuner {
         let window_size = 4096;
         let hop_size = window_size / 2;
         let padding = window_size / 2;
+        let mut detector = YINDetector::new(window_size, padding);
+        let work = vec![1.0; window_size];
+        detector.get_pitch(&work, sample_rate as usize, 5.0, 0.7);
         Self {
             sample_rate,
             window_size,
@@ -46,9 +49,9 @@ impl Tuner {
             power_threshold: 5.0,
             clarity_threshold: 0.7,
             reference_hz: 440.0,
-            detector: YINDetector::new(window_size, padding),
+            detector,
             buffer: Vec::with_capacity(window_size),
-            work: vec![0.0; window_size],
+            work,
             samples_since_report: 0,
         }
     }

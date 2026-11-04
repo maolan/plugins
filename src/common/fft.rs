@@ -1,44 +1,40 @@
-use rustfft::{FftPlanner, num_complex::Complex};
+use std::sync::Arc;
+
+use rustfft::{Fft, FftPlanner, num_complex::Complex};
 
 pub struct SpectrumAnalyzer {
-    planner: FftPlanner<f32>,
+    fft: Arc<dyn Fft<f32>>,
     complex_buf: Vec<Complex<f32>>,
     scratch: Vec<Complex<f32>>,
 }
 
 impl SpectrumAnalyzer {
     pub fn new(max_size: usize) -> Self {
+        let mut planner = FftPlanner::new();
+        let fft = planner.plan_fft_forward(max_size);
+        let scratch = vec![Complex { re: 0.0, im: 0.0 }; fft.get_inplace_scratch_len()];
         Self {
-            planner: FftPlanner::new(),
+            fft,
             complex_buf: vec![Complex { re: 0.0, im: 0.0 }; max_size],
-            scratch: vec![Complex { re: 0.0, im: 0.0 }; max_size],
+            scratch,
         }
     }
 
     pub fn process(&mut self, input: &[f32], output: &mut [f32]) {
-        let n = input.len();
-        if n == 0 {
+        if input.is_empty() {
             output.fill(0.0);
             return;
         }
 
-        let fft = self.planner.plan_fft_forward(n);
-
-        for (i, &s) in input.iter().enumerate() {
-            self.complex_buf[i].re = s;
-            self.complex_buf[i].im = 0.0;
+        for (complex, &sample) in self.complex_buf.iter_mut().zip(input) {
+            *complex = Complex {
+                re: sample,
+                im: 0.0,
+            };
         }
-        for complex in self.complex_buf.iter_mut().take(n).skip(input.len()) {
-            complex.re = 0.0;
-            complex.im = 0.0;
-        }
-
-        let scratch_len = fft.get_inplace_scratch_len();
-        if self.scratch.len() < scratch_len {
-            self.scratch
-                .resize(scratch_len, Complex { re: 0.0, im: 0.0 });
-        }
-        fft.process_with_scratch(&mut self.complex_buf[..n], &mut self.scratch[..scratch_len]);
+        self.complex_buf[input.len()..].fill(Complex { re: 0.0, im: 0.0 });
+        self.fft
+            .process_with_scratch(&mut self.complex_buf, &mut self.scratch);
 
         let out_len = output.len().min(self.complex_buf.len());
         for (c, o) in self.complex_buf[..out_len]

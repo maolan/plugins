@@ -47,6 +47,8 @@ struct SpectralBand {
     region: Vec<bool>,
     env_db: Vec<f32>,
     gain_db: Vec<f32>,
+    threshold_chain: Vec<dsp::Biquad>,
+    target_chain: Vec<dsp::Biquad>,
     attack_coef: f32,
     release_coef: f32,
     gain_smooth: f32,
@@ -62,6 +64,8 @@ impl SpectralBand {
             region: vec![false; NUM_BINS],
             env_db: vec![-120.0; NUM_BINS],
             gain_db: vec![0.0; NUM_BINS],
+            threshold_chain: Vec::with_capacity(2 * dsp::slope_stages(dsp::SLOPE_BRICKWALL)),
+            target_chain: Vec::with_capacity(2 * dsp::slope_stages(dsp::SLOPE_BRICKWALL)),
             attack_coef: 0.0,
             release_coef: 0.0,
             gain_smooth: 0.0,
@@ -83,7 +87,8 @@ impl SpectralBand {
         self.gain_smooth = (-hop_dt / 0.010).exp();
 
         let sense = dsp::detector_biquad(config.shape, sample_rate, config.freq, config.q);
-        let threshold_chain = dsp::build_chain(
+        dsp::build_chain_into(
+            &mut self.threshold_chain,
             config.shape,
             config.slope,
             sample_rate,
@@ -96,7 +101,8 @@ impl SpectralBand {
         } else {
             0.0
         };
-        let target_chain = dsp::build_chain(
+        dsp::build_chain_into(
+            &mut self.target_chain,
             config.shape,
             config.slope,
             sample_rate,
@@ -104,6 +110,8 @@ impl SpectralBand {
             config.q,
             target_gain,
         );
+        let threshold_chain = &self.threshold_chain;
+        let target_chain = &self.target_chain;
         let bin_hz = sample_rate / SPECTRAL_FFT_SIZE as f32;
         for bin in 0..NUM_BINS {
             let freq = bin as f32 * bin_hz;
@@ -195,6 +203,8 @@ pub struct SpectralDynamics {
     window: Vec<f32>,
     frame: Vec<Complex32>,
     sc_frame: Vec<Complex32>,
+    fft_scratch: Vec<Complex32>,
+    ifft_scratch: Vec<Complex32>,
     specs: [Vec<Complex32>; 2],
     sc_spec: Vec<Complex32>,
     bands: Vec<SpectralBand>,
@@ -214,6 +224,8 @@ impl SpectralDynamics {
         let mut planner = FftPlanner::<f32>::new();
         let fft = planner.plan_fft_forward(SPECTRAL_FFT_SIZE);
         let ifft = planner.plan_fft_inverse(SPECTRAL_FFT_SIZE);
+        let fft_scratch = vec![Complex32::ZERO; fft.get_inplace_scratch_len()];
+        let ifft_scratch = vec![Complex32::ZERO; ifft.get_inplace_scratch_len()];
         let window = (0..SPECTRAL_FFT_SIZE)
             .map(|i| {
                 0.5 - 0.5
@@ -230,6 +242,8 @@ impl SpectralDynamics {
             window,
             frame: vec![Complex32::ZERO; SPECTRAL_FFT_SIZE],
             sc_frame: vec![Complex32::ZERO; SPECTRAL_FFT_SIZE],
+            fft_scratch,
+            ifft_scratch,
             specs: [
                 vec![Complex32::ZERO; SPECTRAL_FFT_SIZE],
                 vec![Complex32::ZERO; SPECTRAL_FFT_SIZE],
@@ -377,7 +391,7 @@ impl SpectralDynamics {
             let idx = (start + i) % SPECTRAL_FFT_SIZE;
             *f = Complex32::new(src[idx] * w, 0.0);
         }
-        self.fft.process(frame);
+        self.fft.process_with_scratch(frame, &mut self.fft_scratch);
         if sidechain {
             self.sc_spec.copy_from_slice(frame);
         } else {
@@ -464,7 +478,8 @@ impl SpectralDynamics {
         let start = self.consumed - SPECTRAL_FFT_SIZE;
         for ch in 0..channels {
             self.frame.copy_from_slice(&self.specs[ch]);
-            self.ifft.process(&mut self.frame);
+            self.ifft
+                .process_with_scratch(&mut self.frame, &mut self.ifft_scratch);
             for i in 0..SPECTRAL_FFT_SIZE {
                 let slot = (start + i) % SPECTRAL_FFT_SIZE;
                 self.ola[ch][slot] += self.frame[i].re * self.window[i] / SPECTRAL_FFT_SIZE as f32;
