@@ -40,8 +40,8 @@ impl Chorus {
         self.buf_r.fill(0.0);
         self.write_pos = 0;
         self.phases = [0.0; MAX_VOICES];
-        for i in 0..MAX_VOICES {
-            self.phases[i] = TWO_PI * i as f32 / MAX_VOICES as f32;
+        for (i, phase) in self.phases.iter_mut().enumerate() {
+            *phase = TWO_PI * i as f32 / MAX_VOICES as f32;
         }
     }
 

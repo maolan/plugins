@@ -10,6 +10,7 @@ crate::define_params! {
         Feedback = 3,
         DryWet = 4,
         Channels = 5,
+        DelayMode = 6,
     }
     pub const PARAMS: [ParamDef] = [
         {
@@ -69,6 +70,16 @@ crate::define_params! {
             min: 1.0,
             max: 2.0,
             default: 1.0,
+            step: 1.0,
+            flags: STEPPED_BOOL,
+        }
+        {
+            id: ParamId::DelayMode,
+            name: "Mode",
+            module: "Delay",
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
             step: 1.0,
             flags: STEPPED_BOOL,
         }

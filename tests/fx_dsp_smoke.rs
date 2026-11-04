@@ -149,6 +149,7 @@ fn delay_smoke() {
     let mut dsp = Delay::default();
     dsp.set_sample_rate(SR);
     let p = DelayParams {
+        delay_mode: 0.0,
         time_mode: 0.0,
         time_ms: 250.0,
         time_note: 0.0,
@@ -157,6 +158,40 @@ fn delay_smoke() {
         tempo: Some(120.0),
     };
     smoke(|l, r| dsp.process_stereo(l, r, &p));
+}
+
+#[test]
+fn delay_ping_pong_alternates_feedback_between_channels() {
+    let params = |delay_mode| DelayParams {
+        delay_mode,
+        time_mode: 0.0,
+        time_ms: 1.0,
+        time_note: 0.0,
+        feedback: 0.5,
+        dry_wet: 1.0,
+        tempo: None,
+    };
+    let mut normal = Delay::default();
+    let mut ping_pong = Delay::default();
+    normal.set_sample_rate(1000.0);
+    ping_pong.set_sample_rate(1000.0);
+
+    let mut silence_l = [0.0; 10_000];
+    let mut silence_r = [0.0; 10_000];
+    normal.process_stereo(&mut silence_l, &mut silence_r, &params(0.0));
+    ping_pong.process_stereo(&mut silence_l, &mut silence_r, &params(1.0));
+
+    let mut normal_l = [1.0, 0.0, 0.0, 0.0, 0.0];
+    let mut normal_r = [0.0; 5];
+    normal.process_stereo(&mut normal_l, &mut normal_r, &params(0.0));
+    assert_eq!(normal_l, [0.0, 1.0, 0.5, 0.25, 0.125]);
+    assert_eq!(normal_r, [0.0; 5]);
+
+    let mut ping_pong_l = [1.0, 0.0, 0.0, 0.0, 0.0];
+    let mut ping_pong_r = [0.0; 5];
+    ping_pong.process_stereo(&mut ping_pong_l, &mut ping_pong_r, &params(1.0));
+    assert_eq!(ping_pong_l, [0.0, 1.0, 0.0, 0.25, 0.0]);
+    assert_eq!(ping_pong_r, [0.0, 0.0, 0.5, 0.0, 0.125]);
 }
 
 #[test]
@@ -205,6 +240,7 @@ fn denormal_input_stays_finite_and_bounded() {
     let mut delay = Delay::default();
     delay.set_sample_rate(SR);
     let dp = DelayParams {
+        delay_mode: 0.0,
         time_mode: 0.0,
         time_ms: 250.0,
         time_note: 0.0,

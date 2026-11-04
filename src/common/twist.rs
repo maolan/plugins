@@ -460,15 +460,15 @@ impl TwistOsc {
         let fm = fm_input * 0.02;
 
         let mut out = 0.0f32;
-        for i in 0..num_harm {
+        for (i, phase) in self.har_phases.iter_mut().enumerate().take(num_harm) {
             let n = (i + 1) as f32;
             let harm_inc = base_inc * n * (1.0 + inharm * n * n);
-            self.har_phases[i] += harm_inc + fm * harm_inc;
-            if self.har_phases[i] >= 1.0 {
-                self.har_phases[i] -= 1.0;
+            *phase += harm_inc + fm * harm_inc;
+            if *phase >= 1.0 {
+                *phase -= 1.0;
             }
             let amp = (1.0 - tilt).powf(n - 1.0) * (1.0 / n).sqrt();
-            out += (self.har_phases[i] * 2.0 * PI).sin() * amp;
+            out += (*phase * 2.0 * PI).sin() * amp;
         }
 
         let norm = 1.0 / (num_harm as f32).sqrt();
@@ -752,8 +752,8 @@ impl TwistOsc {
             self.inh_string_exciter = 1.0;
 
             let burst_len = (self.inh_string_buffer.len() as f32 * 0.3) as usize;
-            for i in 0..burst_len {
-                self.inh_string_buffer[i] = fast_rand() * 2.0 - 1.0;
+            for sample in self.inh_string_buffer.iter_mut().take(burst_len) {
+                *sample = fast_rand() * 2.0 - 1.0;
             }
         }
         self.inh_string_exciter *= 0.999;

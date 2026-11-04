@@ -556,8 +556,8 @@ mod tests {
             valid_bins: 512,
             ..Default::default()
         };
-        for i in 0..512 {
-            fft.bins[i] = i as f32;
+        for (i, bin) in fft.bins.iter_mut().enumerate().take(512) {
+            *bin = i as f32;
         }
 
         let data = PluginSharedData::new(PluginType::Eq).with_fft(fft);

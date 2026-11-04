@@ -444,15 +444,20 @@ impl SpectralDynamics {
                 + 0.25 * total_gain_db[bin + 1];
         }
 
-        for ch in 0..channels {
-            for (bin, spec) in self.specs[ch].iter_mut().enumerate().take(NUM_BINS) {
+        for channel in self.specs.iter_mut().take(channels) {
+            for (bin, spec) in channel.iter_mut().enumerate().take(NUM_BINS) {
                 let g = dsp::db_to_gain(smoothed[bin].clamp(-60.0, 36.0));
                 *spec *= g;
             }
-            for bin in NUM_BINS..SPECTRAL_FFT_SIZE {
+            for (bin, spec) in channel
+                .iter_mut()
+                .enumerate()
+                .take(SPECTRAL_FFT_SIZE)
+                .skip(NUM_BINS)
+            {
                 let mirrored = SPECTRAL_FFT_SIZE - bin;
                 let g = dsp::db_to_gain(smoothed[mirrored].clamp(-60.0, 36.0));
-                self.specs[ch][bin] *= g;
+                *spec *= g;
             }
         }
 

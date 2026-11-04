@@ -263,9 +263,16 @@ fn view(state: &State) -> Element<'_, Message> {
             })
         });
 
+    let delay_mode_value = state.shared.params.get(ParamId::DelayMode);
+    let delay_mode_selected = usize::from(delay_mode_value >= 0.5);
+    let delay_mode_toggle =
+        horizontal_multi_toggler(["Normal", "Ping Pong"], delay_mode_selected, |index| {
+            Message::SetBoolParam(ParamId::DelayMode, index >= 1)
+        });
+
     let time_mode_value = state.shared.params.get(ParamId::TimeMode) as f32;
     let time_mode_switch = row![
-        text("Mode").size(14),
+        text("Time").size(14),
         text("ms").size(13),
         toggler(time_mode_value >= 0.5).on_toggle(|v| Message::SetBoolParam(ParamId::TimeMode, v)),
         text("Note").size(13),
@@ -275,9 +282,10 @@ fn view(state: &State) -> Element<'_, Message> {
 
     let content = column![
         preset::bar(&state.preset_ui),
+        row![channels_toggle, delay_mode_toggle, time_mode_switch,]
+            .spacing(8)
+            .align_y(Alignment::Center),
         row![
-            channels_toggle,
-            time_mode_switch,
             time_knob(state),
             knob(ParamId::Feedback, "Feedback", state),
             knob(ParamId::DryWet, "Dry/Wet", state),

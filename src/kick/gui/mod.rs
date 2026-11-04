@@ -1583,21 +1583,6 @@ fn render_source_column(
     .into()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn frequency_knob_log_scale_roundtrips_and_favors_low_range() {
-        let min = 1000.0;
-        let max = 20000.0;
-        let midpoint_freq = log_knob_to_freq(0.5, min, max);
-
-        assert!(midpoint_freq < (min + max) * 0.5);
-        assert!((freq_to_log_knob(midpoint_freq, min, max) - 0.5).abs() < 1.0e-6);
-    }
-}
-
 struct PreviewLayerParams {
     render: [[bool; 3]; 3],
     enabled: [bool; 3],
@@ -1804,5 +1789,20 @@ impl GuiBridge {
 
     pub fn size(&self) -> (u32, u32) {
         (EDITOR_WIDTH, EDITOR_HEIGHT)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frequency_knob_log_scale_roundtrips_and_favors_low_range() {
+        let min = 1000.0;
+        let max = 20000.0;
+        let midpoint_freq = log_knob_to_freq(0.5, min, max);
+
+        assert!(midpoint_freq < (min + max) * 0.5);
+        assert!((freq_to_log_knob(midpoint_freq, min, max) - 0.5).abs() < 1.0e-6);
     }
 }

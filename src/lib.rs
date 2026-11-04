@@ -1,4 +1,5 @@
 #![deny(dead_code)]
+#![recursion_limit = "256"]
 
 use std::{
     ffi::{CStr, c_char, c_void},

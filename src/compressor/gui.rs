@@ -452,9 +452,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 if let Some(slot) = peer.bands_slot()
                     && slot.read(&mut bands)
                 {
-                    for i in 0..bands.len.min(bands.bands.len()) {
-                        if bands.bands[i].on {
-                            freqs.push(bands.bands[i].freq);
+                    for band in bands.bands.iter().take(bands.len.min(bands.bands.len())) {
+                        if band.on {
+                            freqs.push(band.freq);
                         }
                     }
                 }
@@ -469,9 +469,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 let mut gr = bus::CompressorGrData::default();
                 if slot.read(&mut gr) {
                     state.gain_reduction_db.clear();
-                    for i in 0..gr.valid_bands.min(gr.gr_db.len()) {
-                        state.gain_reduction_db.push(gr.gr_db[i]);
-                    }
+                    state.gain_reduction_db.extend(
+                        gr.gr_db
+                            .iter()
+                            .take(gr.valid_bands.min(gr.gr_db.len()))
+                            .copied(),
+                    );
                 }
             }
 

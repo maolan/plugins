@@ -214,6 +214,7 @@ impl AudioProcessor {
                 &mut self.temp_left[..frames],
                 &mut self.temp_right[..frames],
                 &crate::delay::dsp::DelayParams {
+                    delay_mode: shared.params.get(ParamId::DelayMode),
                     time_mode: shared.params.get(ParamId::TimeMode),
                     time_ms: shared.params.get(ParamId::TimeMs),
                     time_note: shared.params.get(ParamId::TimeNote),
@@ -240,6 +241,7 @@ impl AudioProcessor {
                 &mut self.temp_left[..frames],
                 &mut self.temp_right[..frames],
                 &crate::delay::dsp::DelayParams {
+                    delay_mode: shared.params.get(ParamId::DelayMode),
                     time_mode: shared.params.get(ParamId::TimeMode),
                     time_ms: shared.params.get(ParamId::TimeMs),
                     time_note: shared.params.get(ParamId::TimeNote),
@@ -278,6 +280,13 @@ impl AudioProcessor {
 fn param_text(id: ParamId, value: f64) -> String {
     use crate::delay::params::NOTE_DIVISIONS;
     match id {
+        ParamId::DelayMode => {
+            if value >= 0.5 {
+                "Ping Pong".to_string()
+            } else {
+                "Normal".to_string()
+            }
+        }
         ParamId::TimeMode => {
             if value >= 0.5 {
                 "Note".to_string()
@@ -305,6 +314,11 @@ fn param_text(id: ParamId, value: f64) -> String {
 
 fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
     match id {
+        ParamId::DelayMode => match text.trim().to_ascii_lowercase().as_str() {
+            "normal" => Some(0.0),
+            "ping pong" | "ping-pong" | "pingpong" => Some(1.0),
+            _ => text.parse().ok(),
+        },
         ParamId::TimeMode => match text.trim() {
             "ms" | "MS" | "Ms" => Some(0.0),
             "note" | "Note" | "NOTE" => Some(1.0),

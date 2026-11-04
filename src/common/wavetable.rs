@@ -543,11 +543,13 @@ mod tests {
             .collect();
         let mut wt = table_wavetable(size, table);
         wt.build_mipmaps();
-        for level in 0..=wt.mipmaps.len().saturating_sub(4) {
-            let peak = wt.mipmaps[level][0]
-                .iter()
-                .map(|s| s.abs())
-                .fold(0.0f32, f32::max);
+        for (level, mipmap) in wt
+            .mipmaps
+            .iter()
+            .enumerate()
+            .take(wt.mipmaps.len().saturating_sub(4) + 1)
+        {
+            let peak = mipmap[0].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
             assert!((peak - 1.0).abs() < 1.0e-3, "level {level} peak {peak}");
         }
     }

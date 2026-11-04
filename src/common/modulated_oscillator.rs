@@ -18,46 +18,6 @@ impl FreqEnvMode {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::common::envelope::EnvPoint;
-
-    #[test]
-    fn changing_base_frequency_preserves_linear_freq_env_hz() {
-        let mut oscillator = ModulatedOscillator::new(48_000.0);
-        oscillator.set_base_freq_hz(1000.0);
-        oscillator.set_freq_env(Some(Envelope::new(vec![
-            EnvPoint::new(0.0, 0.5),
-            EnvPoint::new(1.0, 1.0),
-        ])));
-
-        oscillator.set_base_freq_hz_preserving_freq_env(2000.0);
-        let points = oscillator.freq_env().expect("frequency envelope").points();
-
-        assert_eq!(points[0].v, 0.25);
-        assert_eq!(points[1].v, 0.5);
-    }
-
-    #[test]
-    fn centered_stereo_oscillator_sums_to_mono_without_level_loss() {
-        let mut oscillator = ModulatedOscillator::new(48_000.0);
-        oscillator.set_base_freq_hz(100.0);
-        oscillator.set_amplitude(1.0);
-        let mut out = vec![0.0; 480];
-
-        oscillator.render(&mut out, 480, None);
-
-        let peak = out
-            .iter()
-            .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
-        assert!(
-            peak > 0.9,
-            "mono summed oscillator should be near full scale, got {peak}"
-        );
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct ModulatedOscillator {
     oscillator: Oscillator,
@@ -495,5 +455,45 @@ impl ModulatedOscillator {
 
             out[i] = sample;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::envelope::EnvPoint;
+
+    #[test]
+    fn changing_base_frequency_preserves_linear_freq_env_hz() {
+        let mut oscillator = ModulatedOscillator::new(48_000.0);
+        oscillator.set_base_freq_hz(1000.0);
+        oscillator.set_freq_env(Some(Envelope::new(vec![
+            EnvPoint::new(0.0, 0.5),
+            EnvPoint::new(1.0, 1.0),
+        ])));
+
+        oscillator.set_base_freq_hz_preserving_freq_env(2000.0);
+        let points = oscillator.freq_env().expect("frequency envelope").points();
+
+        assert_eq!(points[0].v, 0.25);
+        assert_eq!(points[1].v, 0.5);
+    }
+
+    #[test]
+    fn centered_stereo_oscillator_sums_to_mono_without_level_loss() {
+        let mut oscillator = ModulatedOscillator::new(48_000.0);
+        oscillator.set_base_freq_hz(100.0);
+        oscillator.set_amplitude(1.0);
+        let mut out = vec![0.0; 480];
+
+        oscillator.render(&mut out, 480, None);
+
+        let peak = out
+            .iter()
+            .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+        assert!(
+            peak > 0.9,
+            "mono summed oscillator should be near full scale, got {peak}"
+        );
     }
 }

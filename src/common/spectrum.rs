@@ -1013,8 +1013,8 @@ impl LogSpectrumAnalyzer {
             k_hi = k_hi.clamp(k_lo + 1, fft_bins);
 
             let mut power_sum = 0.0;
-            for k in k_lo..k_hi {
-                power_sum += self.powers[k];
+            for &power in self.powers.iter().take(k_hi).skip(k_lo) {
+                power_sum += power;
             }
             *display_power = power_sum;
         }
@@ -1023,10 +1023,16 @@ impl LogSpectrumAnalyzer {
             let start = i.saturating_sub(2);
             let end = (i + 2).min(self.bins - 1);
             let mut weighted_power = 0.0;
-            for j in start..=end {
+            for (j, &power) in self
+                .display_power
+                .iter()
+                .enumerate()
+                .take(end + 1)
+                .skip(start)
+            {
                 let distance = i.abs_diff(j) as f32;
                 let weight = 3.0 - distance;
-                weighted_power += self.display_power[j] * weight;
+                weighted_power += power * weight;
             }
             let power = weighted_power / 3.0;
             let db = if power > 1.0e-14 {
