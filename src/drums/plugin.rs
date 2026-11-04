@@ -87,6 +87,7 @@ impl AudioProcessor {
         engine.set_sample_rate(sample_rate as f32);
         let mut limiter = Limiter::default();
         limiter.set_sample_rate(sample_rate as f32);
+        limiter.prepare(max_frames as usize);
         Self {
             shared,
             engine,
@@ -104,27 +105,24 @@ impl AudioProcessor {
 
         let kit_ready = self.engine.kit_ready.load(Ordering::Acquire);
 
-        let mut out_outputs: Vec<Option<&mut [f32]>> = Vec::with_capacity(MAX_CHANNELS);
+        let mut out_outputs: [Option<&mut [f32]>; MAX_CHANNELS] = std::array::from_fn(|_| None);
         let output_count = process.audio_outputs_count() as usize;
+        let output_channels = output_count.min(MAX_CHANNELS / 2) * 2;
         for out in 0..output_count.min(MAX_CHANNELS / 2) {
             let mut port = process.audio_outputs(out as u32);
             if port.channel_count() >= 1 {
                 unsafe {
                     let buf_l = std::slice::from_raw_parts_mut(port.data32(0).as_mut_ptr(), frames);
                     buf_l.fill(0.0);
-                    out_outputs.push(Some(buf_l));
+                    out_outputs[out * 2] = Some(buf_l);
                 }
-            } else {
-                out_outputs.push(None);
             }
             if port.channel_count() >= 2 {
                 unsafe {
                     let buf_r = std::slice::from_raw_parts_mut(port.data32(1).as_mut_ptr(), frames);
                     buf_r.fill(0.0);
-                    out_outputs.push(Some(buf_r));
+                    out_outputs[out * 2 + 1] = Some(buf_r);
                 }
-            } else {
-                out_outputs.push(None);
             }
         }
 
@@ -210,7 +208,8 @@ impl AudioProcessor {
             self.last_params_version = params_version;
         }
         if !bypass && kit_ready {
-            self.engine.render_outputs(frames, &mut out_outputs);
+            self.engine
+                .render_outputs(frames, &mut out_outputs[..output_channels]);
         }
 
         let gain = 10.0_f32.powf(self.shared.params.get(ParamId::MasterGain) as f32 * 0.05);
@@ -246,15 +245,18 @@ impl AudioProcessor {
             }
         }
 
-        let mut flat_slices: Vec<&mut [f32]> = Vec::with_capacity(MAX_CHANNELS);
+        let mut flat_slices: [&mut [f32]; MAX_CHANNELS] = std::array::from_fn(|_| &mut [][..]);
+        let mut flat_count = 0;
         for buf in out_outputs.iter_mut().flatten() {
-            flat_slices.push(buf);
+            flat_slices[flat_count] = buf;
+            flat_count += 1;
         }
 
         let limiter_threshold = self.shared.params.get(ParamId::LimiterThreshold) as f32;
         self.limiter.set_enabled(limiter_threshold < 0.0);
         self.limiter.set_threshold_db(limiter_threshold);
-        self.limiter.process_slices(&mut flat_slices, frames);
+        self.limiter
+            .process_slices(&mut flat_slices[..flat_count], frames);
 
         if let Some(ref bus) = self.bus_data
             && bus::needs(bus::NEED_FFT)

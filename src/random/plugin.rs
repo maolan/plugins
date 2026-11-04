@@ -127,11 +127,11 @@ struct AudioProcessor {
     silent_output: Vec<f32>,
 }
 impl AudioProcessor {
-    fn new(sample_rate: f64, _max_frames: u32) -> Self {
+    fn new(sample_rate: f64, max_frames: u32) -> Self {
         Self {
             dsp: Random::new(sample_rate),
-            midi_events: Vec::new(),
-            silent_output: Vec::new(),
+            midi_events: Vec::with_capacity(2 * max_frames as usize + 2),
+            silent_output: vec![0.0; max_frames as usize],
         }
     }
     fn reset(&mut self) {
@@ -158,9 +158,8 @@ impl AudioProcessor {
             shared.params.get(ParamId::LowestNote) as u8,
             shared.params.get(ParamId::HighestNote) as u8,
         );
-        self.silent_output.resize(frames, 0.0);
         self.dsp.render(
-            &mut self.silent_output,
+            &mut self.silent_output[..frames],
             RenderSettings {
                 playing,
                 tempo,

@@ -2591,6 +2591,7 @@ struct AudioProcessor {
     engine: SynthEngine,
     temp_l: Vec<f32>,
     temp_r: Vec<f32>,
+    timed_events: Vec<(u32, TimedEvent)>,
     bus_data: Option<bus::PluginSharedData>,
     fft_scratch: Vec<f32>,
     fft_mag: Vec<f32>,
@@ -2607,6 +2608,7 @@ impl AudioProcessor {
     fn new(sample_rate: f64, max_frames: u32, bus_data: Option<bus::PluginSharedData>) -> Self {
         let frames = max_frames as usize;
         let mut engine = SynthEngine::new(sample_rate as f32, 8);
+        engine.prepare(frames);
         let mts_esp = MtsEspClient::try_new();
         engine.set_mts_esp(mts_esp);
         let (scl_files, scl_cache) = Self::scan_scl_files();
@@ -2614,6 +2616,7 @@ impl AudioProcessor {
             engine,
             temp_l: vec![0.0; frames],
             temp_r: vec![0.0; frames],
+            timed_events: Vec::with_capacity(1024),
             bus_data,
             fft_scratch: vec![0.0; frames],
             fft_mag: vec![0.0; 1024],
@@ -2881,7 +2884,8 @@ impl AudioProcessor {
 
         // Collect note/CC events with their sample offsets so they can be
         // applied at the exact sample position instead of at block start.
-        let mut timed_events: Vec<(u32, TimedEvent)> = Vec::new();
+        let mut timed_events = std::mem::take(&mut self.timed_events);
+        timed_events.clear();
         let events = process.in_events();
         for i in 0..events.size() {
             let header = unsafe { events.get_unchecked(i) };
@@ -2936,11 +2940,6 @@ impl AudioProcessor {
         // sort anyway (stable, so same-offset events keep their order).
         timed_events.sort_by_key(|(time, _)| *time);
 
-        if self.temp_l.len() < frames {
-            self.temp_l.resize(frames, 0.0);
-            self.temp_r.resize(frames, 0.0);
-        }
-
         self.temp_l[..frames].fill(0.0);
         self.temp_r[..frames].fill(0.0);
 
@@ -2988,6 +2987,7 @@ impl AudioProcessor {
                 audio_in_r.map(|s| &s[seg_start..frames]),
             );
         }
+        self.timed_events = timed_events;
         shared.set_visual_lfo_mod_values(self.engine.visual_lfo_mod_values());
         if let Some(ref notifier) = *shared.poll_notifier.lock() {
             notifier.notify();

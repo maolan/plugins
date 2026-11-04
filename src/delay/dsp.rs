@@ -37,10 +37,10 @@ impl Default for Delay {
             current_delay: 0.0,
             chase: 0.0,
             sample_rate: 48_000.0,
-            temp_dry_l: vec![0.0; 1024],
-            temp_dry_r: vec![0.0; 1024],
-            temp_wet_l: vec![0.0; 1024],
-            temp_wet_r: vec![0.0; 1024],
+            temp_dry_l: vec![0.0; 16_384],
+            temp_dry_r: vec![0.0; 16_384],
+            temp_wet_l: vec![0.0; 16_384],
+            temp_wet_r: vec![0.0; 16_384],
         }
     }
 }
@@ -48,6 +48,13 @@ impl Default for Delay {
 impl Delay {
     pub fn set_sample_rate(&mut self, sample_rate: f64) {
         self.sample_rate = sample_rate;
+    }
+
+    pub fn prepare(&mut self, max_frames: usize) {
+        self.temp_dry_l = vec![0.0; max_frames];
+        self.temp_dry_r = vec![0.0; max_frames];
+        self.temp_wet_l = vec![0.0; max_frames];
+        self.temp_wet_r = vec![0.0; max_frames];
     }
 
     pub fn reset(&mut self) {
@@ -112,14 +119,6 @@ impl Delay {
         let ping_pong = params.delay_mode >= 0.5;
         let max_len = self.buf_l.len();
         let frames = left.len().min(right.len());
-
-        if self.temp_dry_l.len() < frames {
-            let new_len = frames.next_power_of_two();
-            self.temp_dry_l.resize(new_len, 0.0);
-            self.temp_dry_r.resize(new_len, 0.0);
-            self.temp_wet_l.resize(new_len, 0.0);
-            self.temp_wet_r.resize(new_len, 0.0);
-        }
 
         for i in 0..frames {
             let wp = self.write_pos;

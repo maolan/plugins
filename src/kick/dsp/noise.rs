@@ -168,30 +168,35 @@ impl NoiseGenerator {
     }
 
     pub fn render(&mut self, out: &mut [f32], num_samples: usize) {
-        let dt = 1.0 / num_samples.max(1) as f32;
-        let mut env_buf = vec![0.0f32; num_samples];
-        let mut density_buf = vec![0.0f32; num_samples];
-        self.amp_env.fill_buffer_linear(&mut env_buf, dt);
-        self.density_env.fill_buffer_linear(&mut density_buf, dt);
+        let mut env_buf = [0.0_f32; super::RENDER_BLOCK];
+        let mut density_buf = [0.0_f32; super::RENDER_BLOCK];
+        for out in out[..num_samples].chunks_mut(super::RENDER_BLOCK) {
+            let chunk_len = out.len();
+            let dt = 1.0 / chunk_len.max(1) as f32;
+            let env = &mut env_buf[..chunk_len];
+            let density = &mut density_buf[..chunk_len];
+            self.amp_env.fill_buffer_linear(env, dt);
+            self.density_env.fill_buffer_linear(density, dt);
 
-        let thresh = (1.0 - self.density) * u32::MAX as f32;
-        for i in 0..num_samples {
-            let sample = if self.rng.next_u32() as f32 >= thresh {
-                let white = self.rng.next_f32();
-                match self.noise_type {
-                    NoiseType::White => white,
-                    NoiseType::Pink => self.pink.next(white),
-                    NoiseType::Brownian => self.brown.next(white),
-                }
-            } else {
-                0.0
-            };
-            out[i] = sample * self.amplitude * env_buf[i] * density_buf[i];
+            let thresh = (1.0 - self.density) * u32::MAX as f32;
+            for i in 0..chunk_len {
+                let sample = if self.rng.next_u32() as f32 >= thresh {
+                    let white = self.rng.next_f32();
+                    match self.noise_type {
+                        NoiseType::White => white,
+                        NoiseType::Pink => self.pink.next(white),
+                        NoiseType::Brownian => self.brown.next(white),
+                    }
+                } else {
+                    0.0
+                };
+                out[i] = sample * self.amplitude * env[i] * density[i];
+            }
+
+            self.filter.filter_type = self.filter_type;
+            self.filter
+                .prepare_block(self.filter_cutoff_hz, self.filter_q, chunk_len);
+            self.filter.process_block(out);
         }
-
-        self.filter.filter_type = self.filter_type;
-        self.filter
-            .prepare_block(self.filter_cutoff_hz, self.filter_q, num_samples);
-        self.filter.process_block(out);
     }
 }

@@ -35,6 +35,9 @@ pub struct LinearPhaseEq {
     ola: [Vec<f32>; 2],
     frame: Vec<Complex32>,
     product: Vec<Complex32>,
+    fft_scratch: Vec<Complex32>,
+    ifft_scratch: Vec<Complex32>,
+    chain: Vec<dsp::Biquad>,
     designs: Vec<BandDesign>,
     redesign_pending: bool,
     redesign_countdown: usize,
@@ -53,6 +56,8 @@ impl LinearPhaseEq {
         let mut planner = FftPlanner::<f32>::new();
         let fft = planner.plan_fft_forward(LP_FFT);
         let ifft = planner.plan_fft_inverse(LP_FFT);
+        let fft_scratch = vec![Complex32::ZERO; fft.get_inplace_scratch_len()];
+        let ifft_scratch = vec![Complex32::ZERO; ifft.get_inplace_scratch_len()];
         Self {
             fft,
             ifft,
@@ -61,7 +66,10 @@ impl LinearPhaseEq {
             ola: [vec![0.0; LP_FFT], vec![0.0; LP_FFT]],
             frame: vec![Complex32::ZERO; LP_FFT],
             product: vec![Complex32::ZERO; LP_FFT],
-            designs: Vec::new(),
+            fft_scratch,
+            ifft_scratch,
+            chain: Vec::with_capacity(2 * dsp::slope_stages(dsp::SLOPE_BRICKWALL)),
+            designs: Vec::with_capacity(dsp::MAX_BANDS),
             redesign_pending: true,
             redesign_countdown: 0,
             consumed: 0,
@@ -92,17 +100,19 @@ impl LinearPhaseEq {
             self.redesign_countdown = (sample_rate as usize / LP_BLOCK / 10).max(1);
         } else {
             self.redesign_pending = true;
-            self.designs = designs.to_vec();
+            self.designs.clear();
+            self.designs.extend_from_slice(designs);
         }
     }
 
     fn redesign(&mut self, designs: &[BandDesign], sample_rate: f32) {
-        self.designs = designs.to_vec();
+        self.designs.clear();
+        self.designs.extend_from_slice(designs);
         self.redesign_pending = false;
 
+        let mut chain = std::mem::take(&mut self.chain);
         let bin_hz = sample_rate / LP_FFT as f32;
-        let mut spec = vec![Complex32::ZERO; LP_FFT];
-        for (k, h) in spec.iter_mut().enumerate().take(LP_FFT / 2 + 1) {
+        for (k, h) in self.product.iter_mut().enumerate().take(LP_FFT / 2 + 1) {
             let freq = k as f32 * bin_hz;
             let mut re = 1.0_f32;
             let mut im = 0.0_f32;
@@ -110,7 +120,8 @@ impl LinearPhaseEq {
                 if !design.on || freq < 1.0 {
                     continue;
                 }
-                let chain = dsp::build_chain(
+                dsp::build_chain_into(
+                    &mut chain,
                     design.shape,
                     design.slope,
                     sample_rate,
@@ -128,26 +139,29 @@ impl LinearPhaseEq {
             *h = Complex32::new(re, im);
         }
         for k in LP_FFT / 2 + 1..LP_FFT {
-            spec[k] = spec[LP_FFT - k].conj();
+            self.product[k] = self.product[LP_FFT - k].conj();
         }
 
-        self.frame.copy_from_slice(&spec);
-        self.ifft.process(&mut self.frame);
+        self.frame.copy_from_slice(&self.product);
+        self.ifft
+            .process_with_scratch(&mut self.frame, &mut self.ifft_scratch);
 
         // Extract the centered LP_IR_LEN tap window and Hann-window it.
-        let mut ir = vec![0.0_f32; LP_FFT];
-        for (i, tap) in ir.iter_mut().enumerate().take(LP_IR_LEN) {
-            let src = (i + LP_FFT - LP_IR_LEN / 2) % LP_FFT;
-            let w =
-                0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (LP_IR_LEN - 1) as f32).cos();
-            *tap = self.frame[src].re * w / LP_FFT as f32;
+        for (i, tap) in self.product.iter_mut().enumerate() {
+            *tap = if i < LP_IR_LEN {
+                let src = (i + LP_FFT - LP_IR_LEN / 2) % LP_FFT;
+                let w = 0.5
+                    - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (LP_IR_LEN - 1) as f32).cos();
+                Complex32::new(self.frame[src].re * w / LP_FFT as f32, 0.0)
+            } else {
+                Complex32::ZERO
+            };
         }
-        self.frame.iter_mut().for_each(|c| *c = Complex32::ZERO);
-        for (i, c) in self.frame.iter_mut().enumerate().take(LP_IR_LEN) {
-            *c = Complex32::new(ir[i], 0.0);
-        }
-        self.fft.process(&mut self.frame);
+        self.frame.copy_from_slice(&self.product);
+        self.fft
+            .process_with_scratch(&mut self.frame, &mut self.fft_scratch);
         self.ir_spec.copy_from_slice(&self.frame);
+        self.chain = chain;
     }
 
     fn process_block(&mut self, channels: usize) {
@@ -160,11 +174,13 @@ impl LinearPhaseEq {
                     Complex32::ZERO
                 };
             }
-            self.fft.process(&mut self.frame);
+            self.fft
+                .process_with_scratch(&mut self.frame, &mut self.fft_scratch);
             for (i, p) in self.product.iter_mut().enumerate() {
                 *p = self.frame[i] * self.ir_spec[i];
             }
-            self.ifft.process(&mut self.product);
+            self.ifft
+                .process_with_scratch(&mut self.product, &mut self.ifft_scratch);
             let scale = 1.0 / LP_FFT as f32;
             for (i, p) in self
                 .product

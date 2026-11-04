@@ -1433,8 +1433,7 @@ impl AudioProcessor {
             display.0.resize(num, 0.0);
             display.1.resize(num, 0.0);
             self.synth.copy_active_buffer(&mut display.0);
-            let mono = display.0.clone();
-            display.1.copy_from_slice(&mono);
+            self.synth.copy_active_buffer(&mut display.1);
         }
 
         if let Some(ref bus) = self.bus_data
