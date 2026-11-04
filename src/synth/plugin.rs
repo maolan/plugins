@@ -2861,8 +2861,8 @@ impl AudioProcessor {
         }
 
         // Pick up custom wavetables loaded by the GUI (off the audio thread).
-        for osc_index in 0..3 {
-            let wavetable = shared.custom_wavetables[osc_index].lock().take();
+        for (osc_index, custom_wavetable) in shared.custom_wavetables.iter().enumerate() {
+            let wavetable = custom_wavetable.lock().take();
             if let Some(wavetable) = wavetable {
                 self.engine.set_wavetable(osc_index, Some(wavetable));
             }

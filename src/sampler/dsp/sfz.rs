@@ -177,7 +177,7 @@ fn parse_note_name(value: &str) -> Option<u8> {
         return None;
     }
     let letter = letter.to_ascii_lowercase();
-    if !matches!(letter, 'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g') {
+    if !matches!(letter, 'a'..='g') {
         return None;
     }
 

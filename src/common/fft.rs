@@ -28,9 +28,9 @@ impl SpectrumAnalyzer {
             self.complex_buf[i].re = s;
             self.complex_buf[i].im = 0.0;
         }
-        for i in input.len()..n {
-            self.complex_buf[i].re = 0.0;
-            self.complex_buf[i].im = 0.0;
+        for complex in self.complex_buf.iter_mut().take(n).skip(input.len()) {
+            complex.re = 0.0;
+            complex.im = 0.0;
         }
 
         let scratch_len = fft.get_inplace_scratch_len();

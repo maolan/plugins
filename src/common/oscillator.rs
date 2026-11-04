@@ -1280,147 +1280,6 @@ impl SineOsc {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{ClassicOsc, ClassicWaveform, OscType, Oscillator, SineOsc};
-    use crate::common::wavetable::Wavetable;
-    use std::sync::Arc;
-
-    fn sine_wavetable() -> Wavetable {
-        let size = 2048;
-        let table: Vec<f32> = (0..size)
-            .map(|i| (2.0 * std::f32::consts::PI * i as f32 / size as f32).sin())
-            .collect();
-        let mut wt = Wavetable {
-            size,
-            n_tables: 1,
-            size_po2: size.trailing_zeros() as usize,
-            frames: vec![table],
-            ..Default::default()
-        };
-        wt.build_mipmaps();
-        wt
-    }
-
-    #[test]
-    fn sine_default_filters_do_not_shift_initial_cycles() {
-        let sample_rate = 4096.0f32;
-        let freq_hz = 100.0f32;
-        let period = (sample_rate / freq_hz).round() as usize;
-        let mut osc = SineOsc::new(sample_rate);
-        osc.set_freq_hz(freq_hz);
-
-        let mut samples = Vec::with_capacity(period * 3);
-        for _ in 0..samples.capacity() {
-            samples.push(osc.next(0.0).0);
-        }
-
-        for cycle in 0..3 {
-            let start = cycle * period;
-            let end = start + period;
-            let mean = samples[start..end].iter().sum::<f32>() / period as f32;
-            assert!(
-                mean.abs() < 0.02,
-                "cycle {cycle} has unexpected DC shift: {mean}"
-            );
-        }
-    }
-
-    #[test]
-    fn classic_sine_waveform_tracks_frequency() {
-        let sample_rate = 48_000.0f32;
-        let freq_hz = 100.0f32;
-        let period = (sample_rate / freq_hz).round() as usize;
-        let mut osc = ClassicOsc::new(sample_rate);
-        osc.set_waveform(ClassicWaveform::Sine);
-        osc.set_freq_hz(freq_hz);
-        osc.reset_to_zero();
-
-        for i in 0..period * 2 {
-            let expected = (2.0 * std::f32::consts::PI * i as f32 / period as f32).sin();
-            let actual = osc.next_mono(0.0);
-            assert!(
-                (actual - expected).abs() < 2e-4,
-                "sample {i}: expected {expected}, got {actual}"
-            );
-        }
-    }
-
-    #[test]
-    fn stereo_filters_persist_across_sample_rate_change() {
-        for ty in [OscType::Sine, OscType::Window] {
-            let mut osc = Oscillator::new(ty, 48000.0);
-            osc.set_freq_hz(440.0);
-            osc.set_unison(3, 0.5);
-            match &mut osc {
-                Oscillator::Sine(o) => {
-                    o.set_lowcut(150.0);
-                    o.set_highcut(6000.0);
-                }
-                Oscillator::Window(o) => {
-                    o.set_lowcut(150.0);
-                    o.set_highcut(6000.0);
-                }
-                _ => unreachable!(),
-            }
-            if ty == OscType::Window {
-                osc.set_wavetable(Some(Arc::new(sine_wavetable())));
-            }
-
-            osc.set_sample_rate(96000.0);
-
-            let mut channels_differ = false;
-            for _ in 0..1024 {
-                let (l, r) = osc.next(0.0, 0.0, 0.0);
-                assert!(l.is_finite() && r.is_finite(), "{ty:?} non-finite output");
-                if (l - r).abs() > 1e-6 {
-                    channels_differ = true;
-                }
-            }
-            assert!(channels_differ, "{ty:?} L/R channels should differ");
-        }
-    }
-
-    #[test]
-    fn set_sample_rate_keeps_every_variant_finite() {
-        for ty in [
-            OscType::Off,
-            OscType::Classic,
-            OscType::Sine,
-            OscType::Fm2,
-            OscType::Fm3,
-            OscType::Wavetable,
-            OscType::Window,
-            OscType::ShNoise,
-            OscType::String,
-            OscType::Alias,
-            OscType::Twist,
-            OscType::AudioInput,
-            OscType::Sample,
-        ] {
-            let mut osc = Oscillator::new(ty, 48000.0);
-            osc.set_freq_hz(220.0);
-            osc.set_sample_rate(44100.0);
-            for _ in 0..256 {
-                let (l, r) = osc.next(0.0, 0.0, 0.0);
-                assert!(
-                    l.is_finite() && r.is_finite(),
-                    "{ty:?} non-finite output after set_sample_rate"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn off_oscillator_is_silent() {
-        let mut osc = Oscillator::new(OscType::Off, 48_000.0);
-        assert_eq!(osc.osc_type(), OscType::Off);
-        for _ in 0..256 {
-            assert_eq!(osc.next(1.0, 1.0, 1.0), (0.0, 0.0));
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fm2FeedbackMode {
     Classic = 0,
@@ -3996,6 +3855,147 @@ impl Oscillator {
     pub fn set_oversample(&mut self, os: bool) {
         if let Oscillator::String(o) = self {
             o.set_oversample(os)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ClassicOsc, ClassicWaveform, OscType, Oscillator, SineOsc};
+    use crate::common::wavetable::Wavetable;
+    use std::sync::Arc;
+
+    fn sine_wavetable() -> Wavetable {
+        let size = 2048;
+        let table: Vec<f32> = (0..size)
+            .map(|i| (2.0 * std::f32::consts::PI * i as f32 / size as f32).sin())
+            .collect();
+        let mut wt = Wavetable {
+            size,
+            n_tables: 1,
+            size_po2: size.trailing_zeros() as usize,
+            frames: vec![table],
+            ..Default::default()
+        };
+        wt.build_mipmaps();
+        wt
+    }
+
+    #[test]
+    fn sine_default_filters_do_not_shift_initial_cycles() {
+        let sample_rate = 4096.0f32;
+        let freq_hz = 100.0f32;
+        let period = (sample_rate / freq_hz).round() as usize;
+        let mut osc = SineOsc::new(sample_rate);
+        osc.set_freq_hz(freq_hz);
+
+        let mut samples = Vec::with_capacity(period * 3);
+        for _ in 0..samples.capacity() {
+            samples.push(osc.next(0.0).0);
+        }
+
+        for cycle in 0..3 {
+            let start = cycle * period;
+            let end = start + period;
+            let mean = samples[start..end].iter().sum::<f32>() / period as f32;
+            assert!(
+                mean.abs() < 0.02,
+                "cycle {cycle} has unexpected DC shift: {mean}"
+            );
+        }
+    }
+
+    #[test]
+    fn classic_sine_waveform_tracks_frequency() {
+        let sample_rate = 48_000.0f32;
+        let freq_hz = 100.0f32;
+        let period = (sample_rate / freq_hz).round() as usize;
+        let mut osc = ClassicOsc::new(sample_rate);
+        osc.set_waveform(ClassicWaveform::Sine);
+        osc.set_freq_hz(freq_hz);
+        osc.reset_to_zero();
+
+        for i in 0..period * 2 {
+            let expected = (2.0 * std::f32::consts::PI * i as f32 / period as f32).sin();
+            let actual = osc.next_mono(0.0);
+            assert!(
+                (actual - expected).abs() < 2e-4,
+                "sample {i}: expected {expected}, got {actual}"
+            );
+        }
+    }
+
+    #[test]
+    fn stereo_filters_persist_across_sample_rate_change() {
+        for ty in [OscType::Sine, OscType::Window] {
+            let mut osc = Oscillator::new(ty, 48000.0);
+            osc.set_freq_hz(440.0);
+            osc.set_unison(3, 0.5);
+            match &mut osc {
+                Oscillator::Sine(o) => {
+                    o.set_lowcut(150.0);
+                    o.set_highcut(6000.0);
+                }
+                Oscillator::Window(o) => {
+                    o.set_lowcut(150.0);
+                    o.set_highcut(6000.0);
+                }
+                _ => unreachable!(),
+            }
+            if ty == OscType::Window {
+                osc.set_wavetable(Some(Arc::new(sine_wavetable())));
+            }
+
+            osc.set_sample_rate(96000.0);
+
+            let mut channels_differ = false;
+            for _ in 0..1024 {
+                let (l, r) = osc.next(0.0, 0.0, 0.0);
+                assert!(l.is_finite() && r.is_finite(), "{ty:?} non-finite output");
+                if (l - r).abs() > 1e-6 {
+                    channels_differ = true;
+                }
+            }
+            assert!(channels_differ, "{ty:?} L/R channels should differ");
+        }
+    }
+
+    #[test]
+    fn set_sample_rate_keeps_every_variant_finite() {
+        for ty in [
+            OscType::Off,
+            OscType::Classic,
+            OscType::Sine,
+            OscType::Fm2,
+            OscType::Fm3,
+            OscType::Wavetable,
+            OscType::Window,
+            OscType::ShNoise,
+            OscType::String,
+            OscType::Alias,
+            OscType::Twist,
+            OscType::AudioInput,
+            OscType::Sample,
+        ] {
+            let mut osc = Oscillator::new(ty, 48000.0);
+            osc.set_freq_hz(220.0);
+            osc.set_sample_rate(44100.0);
+            for _ in 0..256 {
+                let (l, r) = osc.next(0.0, 0.0, 0.0);
+                assert!(
+                    l.is_finite() && r.is_finite(),
+                    "{ty:?} non-finite output after set_sample_rate"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn off_oscillator_is_silent() {
+        let mut osc = Oscillator::new(OscType::Off, 48_000.0);
+        assert_eq!(osc.osc_type(), OscType::Off);
+        for _ in 0..256 {
+            assert_eq!(osc.next(1.0, 1.0, 1.0), (0.0, 0.0));
         }
     }
 }

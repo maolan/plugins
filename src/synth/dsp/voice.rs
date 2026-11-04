@@ -3935,8 +3935,8 @@ fn freq_to_scale_degree(freq: f32, tuning: &Tuning) -> i32 {
     let cents_in_octave = cents - octave as f32 * octave_cents;
     let mut best_idx = 0usize;
     let mut best_diff = cents_in_octave.abs();
-    for i in 1..tuning.degrees.len() {
-        let diff = (cents_in_octave - tuning.degrees[i]).abs();
+    for (i, &degree) in tuning.degrees.iter().enumerate().skip(1) {
+        let diff = (cents_in_octave - degree).abs();
         if diff < best_diff {
             best_diff = diff;
             best_idx = i;

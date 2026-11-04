@@ -18,6 +18,7 @@ pub struct Delay {
 }
 
 pub struct DelayParams {
+    pub delay_mode: f64,
     pub time_mode: f64,
     pub time_ms: f64,
     pub time_note: f64,
@@ -108,6 +109,7 @@ impl Delay {
         let fb = params.feedback.clamp(0.0, 1.0) as f32;
         let wet = params.dry_wet.clamp(0.0, 1.0) as f32;
         let dry = 1.0 - wet;
+        let ping_pong = params.delay_mode >= 0.5;
         let max_len = self.buf_l.len();
         let frames = left.len().min(right.len());
 
@@ -129,8 +131,13 @@ impl Delay {
             self.temp_dry_r[i] = r;
             self.temp_wet_l[i] = delayed_l;
             self.temp_wet_r[i] = delayed_r;
-            self.buf_l[wp] = l + delayed_l * fb;
-            self.buf_r[wp] = r + delayed_r * fb;
+            let (feedback_l, feedback_r) = if ping_pong {
+                (delayed_r, delayed_l)
+            } else {
+                (delayed_l, delayed_r)
+            };
+            self.buf_l[wp] = l + feedback_l * fb;
+            self.buf_r[wp] = r + feedback_r * fb;
             self.write_pos = if wp + 1 >= max_len { 0 } else { wp + 1 };
             self.chase += (self.current_delay - target).abs();
             if self.chase > CHASE_THRESHOLD {

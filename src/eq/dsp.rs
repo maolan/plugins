@@ -781,12 +781,12 @@ impl ParametricEqualizer {
         }
         crate::simd::mul_inplace(buffer, self.input_gain_lin);
         let ctx = self.ctx();
-        for i in 0..MAX_BANDS {
-            if !self.bands[i].on {
+        for band in self.bands.iter_mut().take(MAX_BANDS) {
+            if !band.on {
                 continue;
             }
             let sc_pair = sidechain.map(|s| (s, s));
-            self.bands[i].tick_dynamics_only(&ctx, buffer, buffer, sc_pair);
+            band.tick_dynamics_only(&ctx, buffer, buffer, sc_pair);
         }
     }
 
@@ -1022,11 +1022,11 @@ impl ParametricEqualizer {
             0.0
         };
         let ctx = self.ctx();
-        for i in 0..MAX_BANDS {
-            if !self.bands[i].on || Some(i) == skip {
+        for (i, band) in self.bands.iter_mut().enumerate().take(MAX_BANDS) {
+            if !band.on || Some(i) == skip {
                 continue;
             }
-            self.bands[i].process_mono(&ctx, buffer, sidechain);
+            band.process_mono(&ctx, buffer, sidechain);
         }
         let comp = self.auto_gain_comp(in_rms, block_rms_mono(buffer), buffer.len());
         let polarity = if self.phase_invert { -1.0 } else { 1.0 };
