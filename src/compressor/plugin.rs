@@ -155,7 +155,7 @@ impl crate::common::SharedStateExt<ParamId> for SharedState {
     fn set_param_from_host(&self, id: ParamId, value: f64) {
         self.core.set_param_from_host(id, value);
         self.bump_params_version();
-        if id == ParamId::Channels {
+        if matches!(id, ParamId::Channels | ParamId::ExternalSidechain) {
             self.sync_channels_from_params();
             self.core.request_audio_ports_rescan();
         }
@@ -198,7 +198,7 @@ impl SharedState {
     pub fn set_param_outbound_only(&self, id: ParamId, value: f64) {
         self.core.set_param_outbound_only(id, value);
         self.bump_params_version();
-        if id == ParamId::Channels {
+        if matches!(id, ParamId::Channels | ParamId::ExternalSidechain) {
             self.sync_channels_from_params();
             self.core.request_audio_ports_rescan();
         }
@@ -280,6 +280,8 @@ struct AudioProcessor {
     compressor: Compressor,
     temp_left: Vec<f32>,
     temp_right: Vec<f32>,
+    detector_left: Vec<f32>,
+    detector_right: Vec<f32>,
     bus_data: Option<bus::PluginSharedData>,
     spectrum: StereoSpectrumAnalyzer<DEFAULT_SPECTRUM_BINS>,
     spectrum_samples_since_update: usize,
@@ -294,6 +296,8 @@ impl AudioProcessor {
             compressor,
             temp_left: vec![0.0; max_frames as usize],
             temp_right: vec![0.0; max_frames as usize],
+            detector_left: vec![0.0; max_frames as usize],
+            detector_right: vec![0.0; max_frames as usize],
             bus_data,
             spectrum: StereoSpectrumAnalyzer::new(),
             spectrum_samples_since_update: 0,
@@ -468,17 +472,26 @@ impl AudioProcessor {
         if self.temp_left.len() < frames {
             self.temp_left.resize(frames, 0.0);
             self.temp_right.resize(frames, 0.0);
+            self.detector_left.resize(frames, 0.0);
+            self.detector_right.resize(frames, 0.0);
         }
         let sample_rate = shared.sample_rate();
         let spectrum_update_interval_samples = (sample_rate / 10.0).round().max(1.0) as usize;
         self.spectrum_samples_since_update =
             self.spectrum_samples_since_update.saturating_add(frames);
 
-        let inputs_count = process.audio_inputs_count();
-        let outputs_count = process.audio_outputs_count();
+        let inputs_count = process.audio_inputs_count() as usize;
+        let outputs_count = process.audio_outputs_count() as usize;
         let mut spectrum_ready = false;
+        let main_channels = if inputs_count >= 2 && outputs_count >= 2 {
+            2
+        } else if inputs_count >= 1 && outputs_count >= 1 {
+            1
+        } else {
+            0
+        };
 
-        if inputs_count >= 2 && outputs_count >= 2 {
+        if main_channels == 2 {
             let input_l = process.audio_inputs(0);
             let input_r = process.audio_inputs(1);
             self.temp_left[..frames].copy_from_slice(input_l.data32(0));
@@ -488,9 +501,27 @@ impl AudioProcessor {
                 peak_db(&self.temp_right[..frames]),
             );
 
-            self.compressor.process_stereo(
+            let external_requested = shared.params.get_bool(ParamId::ExternalSidechain);
+            let mut external_copied = false;
+            if external_requested && inputs_count >= 4 {
+                let sc_l = process.audio_inputs(2);
+                let sc_r = process.audio_inputs(3);
+                if sc_l.data32(0).len() >= frames && sc_r.data32(0).len() >= frames {
+                    self.detector_left[..frames].copy_from_slice(&sc_l.data32(0)[..frames]);
+                    self.detector_right[..frames].copy_from_slice(&sc_r.data32(0)[..frames]);
+                    external_copied = true;
+                }
+            }
+            if !external_copied {
+                self.detector_left[..frames].copy_from_slice(&self.temp_left[..frames]);
+                self.detector_right[..frames].copy_from_slice(&self.temp_right[..frames]);
+            }
+
+            self.compressor.process_stereo_with_sidechain(
                 &mut self.temp_left[..frames],
                 &mut self.temp_right[..frames],
+                &self.detector_left[..frames],
+                &self.detector_right[..frames],
             );
             shared.set_output_levels_db(
                 peak_db(&self.temp_left[..frames]),
@@ -508,11 +539,27 @@ impl AudioProcessor {
             self.spectrum
                 .push_stereo(&self.temp_left[..frames], &self.temp_right[..frames]);
             spectrum_ready = true;
-        } else if inputs_count >= 1 && outputs_count >= 1 {
+        } else if main_channels == 1 {
             let input_port = process.audio_inputs(0);
             self.temp_left[..frames].copy_from_slice(input_port.data32(0));
             shared.set_input_levels_db(peak_db(&self.temp_left[..frames]), -90.0);
-            self.compressor.process_mono(&mut self.temp_left[..frames]);
+
+            let external_requested = shared.params.get_bool(ParamId::ExternalSidechain);
+            let mut external_copied = false;
+            if external_requested && inputs_count >= 2 {
+                let sidechain = process.audio_inputs(1);
+                if sidechain.data32(0).len() >= frames {
+                    self.detector_left[..frames].copy_from_slice(&sidechain.data32(0)[..frames]);
+                    external_copied = true;
+                }
+            }
+            if !external_copied {
+                self.detector_left[..frames].copy_from_slice(&self.temp_left[..frames]);
+            }
+            self.compressor.process_mono_with_sidechain(
+                &mut self.temp_left[..frames],
+                &self.detector_left[..frames],
+            );
             shared.set_output_levels_db(peak_db(&self.temp_left[..frames]), -90.0);
 
             let mut output_port = process.audio_outputs(0);
@@ -604,6 +651,13 @@ fn param_text(id: ParamId, value: f64) -> String {
                 "Off".into()
             }
         }
+        ParamId::ExternalSidechain => {
+            if value >= 0.5 {
+                "External".into()
+            } else {
+                "Internal".into()
+            }
+        }
         ParamId::B1Attack
         | ParamId::B1Release
         | ParamId::B2Attack
@@ -686,6 +740,11 @@ fn parse_param_text(id: ParamId, text: &str) -> Option<f64> {
             "on" | "true" | "1" => Some(1.0),
             "off" | "false" | "0" => Some(0.0),
             _ => None,
+        },
+        ParamId::ExternalSidechain => match text.to_ascii_lowercase().as_str() {
+            "external" | "on" | "true" | "1" => Some(1.0),
+            "internal" | "off" | "false" | "0" => Some(0.0),
+            _ => text.parse().ok(),
         },
         ParamId::Channels => match text.to_ascii_lowercase().as_str() {
             "mono" | "1" => Some(1.0),
@@ -1135,7 +1194,7 @@ fn apply_param_id(
             dirty.global = true;
             true
         }
-        ParamId::Channels => true,
+        ParamId::Channels | ParamId::ExternalSidechain => true,
     }
 }
 
@@ -1171,13 +1230,24 @@ impl StateHooks<SharedState> for PluginState {
             return false;
         };
         state.apply(&shared.params);
+        shared.sync_channels_from_params();
+        shared.bump_params_version();
+        shared.core.request_audio_ports_rescan();
         true
+    }
+}
+
+fn audio_port_count(is_input: bool, channels: u32, external_sidechain: bool) -> u32 {
+    if is_input && external_sidechain {
+        channels * 2
+    } else {
+        channels
     }
 }
 
 unsafe extern "C-unwind" fn ext_audio_ports_count(
     plugin: *const clap_plugin,
-    _is_input: bool,
+    is_input: bool,
 ) -> u32 {
     if plugin.is_null() {
         return 0;
@@ -1185,7 +1255,11 @@ unsafe extern "C-unwind" fn ext_audio_ports_count(
     let instance = unsafe {
         crate::common::clap_harness::instance::<SharedState, AudioProcessor, GuiBridge, ()>(plugin)
     };
-    instance.shared.channels.load(Ordering::Acquire)
+    audio_port_count(
+        is_input,
+        instance.shared.channels.load(Ordering::Acquire),
+        instance.shared.params.get_bool(ParamId::ExternalSidechain),
+    )
 }
 
 unsafe extern "C-unwind" fn ext_audio_ports_get(
@@ -1201,27 +1275,32 @@ unsafe extern "C-unwind" fn ext_audio_ports_get(
         crate::common::clap_harness::instance::<SharedState, AudioProcessor, GuiBridge, ()>(plugin)
     };
     let channels = instance.shared.channels.load(Ordering::Acquire);
-    if index >= channels {
+    let external = instance.shared.params.get_bool(ParamId::ExternalSidechain);
+    if index >= audio_port_count(is_input, channels, external) {
         return false;
     }
     let info = unsafe { &mut *info };
     info.id = index;
-    info.flags = maolan_clap::ffi::CLAP_AUDIO_PORT_IS_MAIN;
+    let is_sidechain = is_input && external && index >= channels;
+    info.flags = if is_sidechain {
+        0
+    } else {
+        maolan_clap::ffi::CLAP_AUDIO_PORT_IS_MAIN
+    };
     info.channel_count = 1;
     info.port_type = maolan_clap::ffi::CLAP_PORT_MONO.as_ptr();
     info.in_place_pair = maolan_clap::ffi::CLAP_INVALID_ID;
-    let name = if channels == 2 {
-        match (is_input, index) {
-            (true, 0) => "in_l",
-            (true, 1) => "in_r",
-            (false, 0) => "out_l",
-            (false, 1) => "out_r",
-            _ => "",
-        }
-    } else if is_input {
-        "in"
-    } else {
-        "out"
+    let name = match (is_input, channels, index) {
+        (true, 2, 0) => "in_l",
+        (true, 2, 1) => "in_r",
+        (true, 2, 2) => "sc_l",
+        (true, 2, 3) => "sc_r",
+        (true, 1, 0) => "in",
+        (true, 1, 1) => "sc",
+        (false, 2, 0) => "out_l",
+        (false, 2, 1) => "out_r",
+        (false, 1, 0) => "out",
+        _ => "",
     };
     crate::common::copy_str_to_array(name, &mut info.name);
     true
@@ -1303,5 +1382,33 @@ mod tests {
 
         assert_eq!(shared.params.get(ParamId::B1Threshold), 12.0);
         assert_eq!(shared.params.get(ParamId::B6Threshold), 30.0);
+    }
+
+    #[test]
+    fn external_sidechain_adds_matching_auxiliary_inputs() {
+        assert_eq!(audio_port_count(true, 1, false), 1);
+        assert_eq!(audio_port_count(false, 1, true), 1);
+        assert_eq!(audio_port_count(true, 1, true), 2);
+        assert_eq!(audio_port_count(true, 2, true), 4);
+        assert_eq!(audio_port_count(false, 2, true), 2);
+    }
+
+    #[test]
+    fn state_load_refreshes_channels_sidechain_and_dsp_version() {
+        let saved = SharedState::default();
+        saved.params.set(ParamId::Channels, 2.0);
+        saved.params.set(ParamId::ExternalSidechain, 1.0);
+        let bytes = PluginState::from_runtime(&saved.params)
+            .to_bytes(crate::compressor::state::STATE_HEADER_PREFIX)
+            .expect("state should save");
+
+        let restored = SharedState::default();
+        let previous_version = restored.params_version();
+        assert!(<PluginState as StateHooks<SharedState>>::load(
+            &restored, &bytes
+        ));
+        assert_eq!(restored.channels.load(Ordering::Acquire), 2);
+        assert!(restored.params.get_bool(ParamId::ExternalSidechain));
+        assert!(restored.params_version() > previous_version);
     }
 }

@@ -285,7 +285,11 @@ impl DelayLine {
     fn process(&mut self, x: f32) -> f32 {
         let len = self.buffer.len();
         let read = (self.write + len - self.delay) % len;
-        let y = self.buffer[read];
+        let y = if self.delay == 0 {
+            x
+        } else {
+            self.buffer[read]
+        };
         self.buffer[self.write] = x;
         self.write = (self.write + 1) % len;
         y
@@ -637,6 +641,26 @@ impl Compressor {
     }
 
     pub fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32]) {
+        self.process_stereo_detector(left, right, None, None);
+    }
+
+    pub fn process_stereo_with_sidechain(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        sidechain_left: &[f32],
+        sidechain_right: &[f32],
+    ) {
+        self.process_stereo_detector(left, right, Some(sidechain_left), Some(sidechain_right));
+    }
+
+    fn process_stereo_detector(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        sidechain_left: Option<&[f32]>,
+        sidechain_right: Option<&[f32]>,
+    ) {
         if self.bypass {
             return;
         }
@@ -645,8 +669,14 @@ impl Compressor {
         for i in 0..frames {
             let in_l = left[i] * self.input_gain_lin;
             let in_r = right[i] * self.input_gain_lin;
+            let detector_l =
+                sidechain_left.map_or(left[i], |samples| samples[i]) * self.input_gain_lin;
+            let detector_r =
+                sidechain_right.map_or(right[i], |samples| samples[i]) * self.input_gain_lin;
 
-            let (det_l, det_r) = self.detector_split.split(in_l, in_r, self.band_count);
+            let (det_l, det_r) = self
+                .detector_split
+                .split(detector_l, detector_r, self.band_count);
 
             let delayed_l = self.lookahead_l.process(in_l);
             let delayed_r = self.lookahead_r.process(in_r);
@@ -686,14 +716,28 @@ impl Compressor {
     }
 
     pub fn process_mono(&mut self, buffer: &mut [f32]) {
+        self.process_mono_detector(buffer, None);
+    }
+
+    pub fn process_mono_with_sidechain(&mut self, buffer: &mut [f32], sidechain: &[f32]) {
+        self.process_mono_detector(buffer, Some(sidechain));
+    }
+
+    fn process_mono_detector(&mut self, buffer: &mut [f32], sidechain: Option<&[f32]>) {
         if self.bypass {
             return;
         }
 
-        for sample in buffer.iter_mut() {
+        for (index, sample) in buffer.iter_mut().enumerate() {
             let mut l = *sample;
             let mut r = *sample;
-            self.process_stereo(std::slice::from_mut(&mut l), std::slice::from_mut(&mut r));
+            let sc = sidechain.map_or(*sample, |samples| samples[index]);
+            self.process_stereo_with_sidechain(
+                std::slice::from_mut(&mut l),
+                std::slice::from_mut(&mut r),
+                std::slice::from_ref(&sc),
+                std::slice::from_ref(&sc),
+            );
             *sample = 0.5 * (l + r);
         }
     }
@@ -804,5 +848,33 @@ mod tests {
     fn expand_positive_range_boosts_above_threshold() {
         close(compute_gr_db(-6.0, -12.0, 6.0, 2.0, 0.0, 1), 6.0);
         close(compute_gr_db(-18.0, -12.0, 6.0, 2.0, 0.0, 1), 0.0);
+    }
+
+    #[test]
+    fn external_sidechain_controls_gain_without_replacing_audio() {
+        let mut compressor = Compressor::new(48_000.0);
+        compressor.set_sc_mode(0);
+        compressor.set_band_threshold_db(0, -40.0);
+        compressor.set_band_ratio(0, 20.0);
+        compressor.set_band_range_db(0, -24.0);
+        compressor.set_band_attack_ms(0, 0.0);
+        compressor.set_band_release_ms(0, 100.0);
+
+        let mut left = vec![0.25; 128];
+        let mut right = vec![0.25; 128];
+        let sidechain = vec![1.0; 128];
+        compressor.process_stereo_with_sidechain(&mut left, &mut right, &sidechain, &sidechain);
+        assert!(
+            left[127] > 0.0,
+            "sidechain replaced the main audio: {}",
+            left[127]
+        );
+        assert!(
+            right[127] > 0.0,
+            "sidechain replaced the main audio: {}",
+            right[127]
+        );
+        assert!(left[127] < 0.1, "sidechain did not duck the main audio");
+        assert!(right[127] < 0.1, "sidechain did not duck the main audio");
     }
 }

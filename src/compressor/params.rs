@@ -64,6 +64,7 @@ crate::define_params! {
         B6Knee = 56,
         B6Makeup = 57,
         B6Range = 58,
+        ExternalSidechain = 59,
     }
     pub const PARAMS: [ParamDef] = [
         {
@@ -655,6 +656,16 @@ crate::define_params! {
             default: -12.0,
             step: 0.1,
             flags: AUTOMATABLE,
+        }
+        {
+            id: ParamId::ExternalSidechain,
+            name: "External Sidechain",
+            module: "Sidechain",
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            step: 1.0,
+            flags: BOOL_FLAGS,
         }
     ];
 }
