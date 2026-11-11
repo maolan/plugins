@@ -11,6 +11,7 @@ use maolan_clap::ffi::{
     clap_plugin_entry, clap_plugin_factory,
 };
 
+pub mod bitcrusher;
 pub mod chorus;
 pub mod common;
 pub mod compressor;
@@ -32,6 +33,7 @@ pub mod saturator;
 pub mod simd;
 pub mod stereo;
 pub mod synth;
+pub mod transient;
 pub mod tuner;
 pub mod vocoder;
 pub mod vumeter;
@@ -45,7 +47,7 @@ struct PluginApi {
     create: CreateFn,
 }
 
-static PLUGINS: [PluginApi; 23] = [
+static PLUGINS: [PluginApi; 25] = [
     PluginApi {
         descriptor: eq::clap_descriptor_ptr,
         create: eq::clap_create_plugin,
@@ -135,6 +137,14 @@ static PLUGINS: [PluginApi; 23] = [
         create: vocoder::clap_create_plugin,
     },
     PluginApi {
+        descriptor: transient::clap_descriptor_ptr,
+        create: transient::clap_create_plugin,
+    },
+    PluginApi {
+        descriptor: bitcrusher::clap_descriptor_ptr,
+        create: bitcrusher::clap_create_plugin,
+    },
+    PluginApi {
         descriptor: random::clap_descriptor_ptr,
         create: random::clap_create_plugin,
     },
@@ -217,3 +227,26 @@ pub static clap_entry: clap_plugin_entry = clap_plugin_entry {
     deinit: Some(entry_deinit),
     get_factory: Some(entry_get_factory),
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn factory_exports_unique_descriptors_including_new_effects() {
+        assert_eq!(unsafe { factory_get_plugin_count(null()) }, 25);
+        let mut ids = HashSet::new();
+        for index in 0..PLUGINS.len() as u32 {
+            let descriptor = unsafe { factory_get_plugin_descriptor(null(), index) };
+            assert!(!descriptor.is_null());
+            let id = unsafe { CStr::from_ptr((*descriptor).id) }
+                .to_str()
+                .expect("plugin ID should be UTF-8")
+                .to_string();
+            assert!(ids.insert(id), "duplicate plugin ID at index {index}");
+        }
+        assert!(ids.contains("rs.maolan.transient"));
+        assert!(ids.contains("rs.maolan.bitcrusher"));
+    }
+}

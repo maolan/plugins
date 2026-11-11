@@ -557,6 +557,9 @@ fn view(state: &State) -> Element<'_, Message> {
 
     let sidechain_controls = row![
         text("Sidechain").size(16),
+        checkbox(b(ParamId::ExternalSidechain))
+            .label("External")
+            .on_toggle(|v| Message::SetBoolParam(ParamId::ExternalSidechain, v)),
         maolan_baseview::iced::widget::radio("Peak", 0u8, Some(sc_mode as u8), Message::SetScMode),
         maolan_baseview::iced::widget::radio("RMS", 1u8, Some(sc_mode as u8), Message::SetScMode),
         checkbox(b(ParamId::Bypass))
