@@ -188,6 +188,16 @@ impl SampleEditState {
                         gain *= 10.0f32.powf(delta_db / 20.0);
                     }
                 }
+                AudioEditAction::Normalize {
+                    start_sample,
+                    length_samples,
+                    peak,
+                } => {
+                    let end = start_sample.saturating_add(length_samples).min(frames);
+                    if frame >= start_sample && frame < end && peak.is_finite() && peak > 0.0 {
+                        gain *= (1.0 / peak).min(64.0);
+                    }
+                }
                 AudioEditAction::ReplaceWithSilence {
                     start_sample,
                     length_samples,
