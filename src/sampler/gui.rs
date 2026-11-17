@@ -236,6 +236,7 @@ pub enum ZoneEditField {
     StartOffset,
     OffsetRandom,
     EndOffset,
+    DelayRandom,
     SeqLength,
     SeqPosition,
     OffBy,
@@ -2028,6 +2029,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             }
                             ZoneEditField::EndOffset => {
                                 zone.end_offset = value.max(0.0).round() as usize;
+                            }
+                            ZoneEditField::DelayRandom => {
+                                zone.delay_random = value.clamp(0.0, 0.999999);
                             }
                             ZoneEditField::SeqLength => {
                                 zone.seq_length = value.max(0.0).round() as u32;
@@ -4691,6 +4695,27 @@ fn zone_knob<'a>(
     knob_field(label, knob, value_text)
 }
 
+fn delay_random_to_knob(value: f32) -> f32 {
+    ((value.clamp(0.0, 0.999999) / 0.999999 * (9.0_f32.exp() - 1.0) + 1.0).ln() / 9.0)
+        .clamp(0.0, 1.0)
+}
+
+fn delay_random_from_knob(position: f32) -> f32 {
+    (((9.0 * position.clamp(0.0, 1.0)).exp() - 1.0) / (9.0_f32.exp() - 1.0)) * 0.999999
+}
+
+fn delay_random_knob(value: f32) -> Element<'static, Message> {
+    let knob = ArchSlider::new(0.0..=1.0, delay_random_to_knob(value), |position| {
+        Message::SetEditingZoneValue(ZoneEditField::DelayRandom, delay_random_from_knob(position))
+    })
+    .step(0.001)
+    .width(Length::Fixed(41.0))
+    .height(Length::Fixed(41.0))
+    .fill_from_start();
+
+    knob_field("Delay", knob, format!("{:.3}", value * 1000.0))
+}
+
 fn zone_range_knob<'a>(
     label: &'static str,
     low: f32,
@@ -5084,6 +5109,7 @@ fn editing_zone_controls<'a>(
         ZoneEditField::OffsetRandom,
         zone.offset_random.to_string(),
     );
+    let delay_random = delay_random_knob(zone.delay_random);
     let end = zone_knob(
         "End",
         zone.end_offset as f32,
@@ -5096,17 +5122,12 @@ fn editing_zone_controls<'a>(
             zone.end_offset.to_string()
         },
     );
-    let trigger = row![
-        labeled_toggler(
-            "Trigger",
-            ZonePlayModeOption::all().to_vec(),
-            play_mode,
-            Message::SetEditingZonePlayMode,
-        ),
-        reverse_toggler(zone.reverse),
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center);
+    let trigger = labeled_toggler(
+        "Trigger",
+        ZonePlayModeOption::all().to_vec(),
+        play_mode,
+        Message::SetEditingZonePlayMode,
+    );
 
     let fades = row![
         zone_range_knob(
@@ -5225,17 +5246,20 @@ fn editing_zone_controls<'a>(
             ]
             .spacing(8)
             .align_y(Alignment::Start),
-            row![{
-                let names = state.shared.output_names.load();
-                let options = output_bus_options(&names, zone.output);
-                let selected = options
-                    .iter()
-                    .find(|option| option.index == zone.output as usize)
-                    .cloned();
-                output_bus_picker("Output", options, selected, |option| {
-                    Message::SetEditingZoneValue(ZoneEditField::Output, option.index as f32)
-                })
-            }]
+            row![
+                {
+                    let names = state.shared.output_names.load();
+                    let options = output_bus_options(&names, zone.output);
+                    let selected = options
+                        .iter()
+                        .find(|option| option.index == zone.output as usize)
+                        .cloned();
+                    output_bus_picker("Output", options, selected, |option| {
+                        Message::SetEditingZoneValue(ZoneEditField::Output, option.index as f32)
+                    })
+                },
+                trigger,
+            ]
             .spacing(8)
             .align_y(Alignment::Start),
         ]
@@ -5290,7 +5314,7 @@ fn editing_zone_controls<'a>(
             row![amp_key, vel_track, tune, offset]
                 .spacing(8)
                 .align_y(Alignment::Start),
-            row![offset_r, end, trigger]
+            row![offset_r, end, delay_random, reverse_toggler(zone.reverse)]
                 .spacing(8)
                 .align_y(Alignment::Start),
         ]
