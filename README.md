@@ -12,6 +12,20 @@ theme.
 cargo build --release
 ```
 
+## Install
+
+The build produces a single library containing all plugins. Install it as
+`Maolan.clap` in a directory scanned by your CLAP host, for example:
+
+```bash
+# Linux / FreeBSD, per-user
+cp target/release/libmaolan_plugins.so ~/.clap/Maolan.clap
+```
+
+System-wide locations such as `/usr/lib/clap` also work. On macOS the built
+library is `libmaolan_plugins.dylib`; on Windows it is `maolan_plugins.dll`
+and belongs in `%COMMONPROGRAMFILES%\CLAP`.
+
 ## Platform Support
 
 Linux, FreeBSD, macOS, and Windows are supported.
@@ -27,4 +41,11 @@ and those can not be swapped easily. On top of that, once there's an option for 
 variations: that makes 50 plugins to choose from in a plugin browser. That being said, if LV2 gets
 support for changing channel number, it will be implemented, but only then.
 
-[List of plugins](https://doc.maolan.rs/plugins.html)
+## Plugins
+
+- Instruments: Drums, Kick, Random, Sampler, Synth
+- Effects: Bitcrusher, Chorus, Compressor, DeEsser, Delay, Flanger, Formant,
+  Gate, Limiter, Modeler, Parametric EQ, Phaser, Reverb, Saturator, Stereo,
+  Transient, Tuner, Vocoder, VU Meter, Wah
+
+[Plugin documentation](https://doc.maolan.rs/plugins.html)
