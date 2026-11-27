@@ -33,7 +33,7 @@ macro_rules! mode {
     };
 }
 
-const SETTINGS: [ModeSettings; 22] = [
+const SETTINGS: [ModeSettings; 20] = [
     mode!(
         1.00, 0.85, 1.00, 1.00, 1.00, 1.00, 0.35, 0.65, 1.0, 0.55, false
     ),
@@ -93,12 +93,6 @@ const SETTINGS: [ModeSettings; 22] = [
     ),
     mode!(
         1.70, 0.90, 1.85, 0.65, 0.60, 0.90, 0.26, 0.76, 1.0, 0.64, false
-    ),
-    mode!(
-        0.68, 0.76, 0.75, 1.60, 0.55, 0.35, 0.48, 0.62, 1.5, 0.45, false
-    ),
-    mode!(
-        1.05, 0.88, 1.10, 1.25, 0.85, 0.75, 0.32, 0.68, 1.2, 0.72, false
     ),
 ];
 

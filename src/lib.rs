@@ -36,7 +36,7 @@ pub mod synth;
 pub mod transient;
 pub mod tuner;
 pub mod vocoder;
-pub mod vumeter;
+pub mod volume;
 pub mod wah;
 
 type DescriptorFn = unsafe fn() -> *const clap_plugin_descriptor;
@@ -97,8 +97,8 @@ static PLUGINS: [PluginApi; 25] = [
         create: kick::clap_create_plugin,
     },
     PluginApi {
-        descriptor: vumeter::clap_descriptor_ptr,
-        create: vumeter::clap_create_plugin,
+        descriptor: volume::clap_descriptor_ptr,
+        create: volume::clap_create_plugin,
     },
     PluginApi {
         descriptor: synth::clap_descriptor_ptr,

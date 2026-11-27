@@ -12,7 +12,7 @@ fn controls(mode: usize) -> [f64; ParamId::COUNT] {
 
 #[test]
 fn all_algorithm_modes_produce_finite_tails() {
-    for mode in 0..22 {
+    for mode in 0..20 {
         let mut dsp = Reverb::new(48000.0);
         let mut left = vec![0.0; 48000];
         let mut right = left.clone();
@@ -32,7 +32,7 @@ fn all_algorithm_modes_produce_finite_tails() {
 
 #[test]
 fn algorithm_render_is_independent_of_host_block_size() {
-    for mode in 0..22 {
+    for mode in 0..20 {
         let values = controls(mode);
         let mut whole = Reverb::new(48000.0);
         let mut split = Reverb::new(48000.0);
@@ -72,7 +72,7 @@ fn algorithm_modes_handle_control_extremes_and_rate_changes() {
     let mut dsp = Reverb::default();
     for rate in [8000.0, 44100.0, 96000.0, 192000.0, 384000.0] {
         dsp.set_sample_rate(rate);
-        for mode in 0..22 {
+        for mode in 0..20 {
             for maximum in [false, true] {
                 dsp.reset();
                 let mut values = PARAMS.map(|p| if maximum { p.max } else { p.min });

@@ -34,8 +34,9 @@ use maolan_clap::{
 use parking_lot::Mutex;
 use portable_atomic::{AtomicF32, AtomicF64};
 
+use maolan_widgets::consts::FADER_MIN_DB;
+
 use crate::common::copy_str_to_array;
-use crate::common::ui::FADER_MIN_DB;
 use crate::common::{bus, fft};
 use crate::kick::{
     dsp::oscillator::Oscillator,

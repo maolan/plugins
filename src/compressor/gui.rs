@@ -6,6 +6,9 @@ use std::{
 };
 
 use maolan_widgets::knob::Knob;
+use maolan_widgets::vertical_slider::{VerticalSlider, vertical_slider};
+use maolan_widgets::vertical_ticks::vertical_ticks;
+use maolan_widgets::vu_meter::vu_meter;
 
 use crate::common::{
     bus,
@@ -14,7 +17,6 @@ use crate::common::{
         DEFAULT_SPECTRUM_BINS, SPECTRUM_FLOOR_DB, SpectralAnalyzerWidget, SpectrumMarker,
         SpectrumThresholdCurve, display_range_bounds,
     },
-    ui::{VerticalSlider, vertical_slider, vertical_ticks, vu_meter},
 };
 
 use maolan_baseview::iced::{

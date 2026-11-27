@@ -1,10 +1,12 @@
 use maolan_widgets::knob::Knob;
+use maolan_widgets::vertical_slider::{VerticalSlider, vertical_slider};
+use maolan_widgets::vertical_ticks::vertical_ticks;
+use maolan_widgets::vu_meter::vu_meter;
 
 use crate::common::{
     bus,
     preset::{self, PresetProvider, PresetUi},
     spectrum::{db_to_y, display_range_bounds, freq_to_x, x_to_freq, y_to_db},
-    ui::{VerticalSlider, vertical_slider, vertical_ticks, vu_meter},
 };
 use crate::eq::dsp::{self, Biquad};
 use crate::eq::params::{PARAMS, ParamId, ParamIdExt};

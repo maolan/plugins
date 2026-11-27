@@ -19,12 +19,13 @@ use maolan_clap::ffi::CLAP_WINDOW_API_WIN32;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_widgets::arch_slider::arch_slider;
+use maolan_widgets::consts::{FADER_MAX_DB, FADER_MIN_DB};
 use maolan_widgets::meters::meters;
+use maolan_widgets::vertical_slider::{VerticalSlider, vertical_slider};
 
 use maolan_widgets::knob::Knob;
 
 use crate::common::preset::{self, PresetProvider, PresetUi};
-use crate::common::ui::{FADER_MAX_DB, FADER_MIN_DB, VerticalSlider, vertical_slider};
 #[cfg(any(
     target_os = "windows",
     target_os = "macos",

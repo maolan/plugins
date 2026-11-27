@@ -46,6 +46,6 @@ support for changing channel number, it will be implemented, but only then.
 - Instruments: Drums, Kick, Random, Sampler, Synth
 - Effects: Bitcrusher, Chorus, Compressor, DeEsser, Delay, Flanger, Formant,
   Gate, Limiter, Modeler, Parametric EQ, Phaser, Reverb, Saturator, Stereo,
-  Transient, Tuner, Vocoder, VU Meter, Wah
+  Transient, Tuner, Vocoder, Volume, Wah
 
 [Plugin documentation](https://doc.maolan.rs/plugins.html)
