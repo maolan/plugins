@@ -13,9 +13,14 @@ use maolan_clap::ffi::CLAP_WINDOW_API_X11;
 use maolan_baseview::iced::{
     Alignment, Element, Length, Task, Theme,
     alignment::{Horizontal, Vertical},
-    widget::{Column, column, container, row, text},
+    widget::{Column, Space, column, container, row, text},
 };
-use maolan_widgets::meters;
+use maolan_widgets::{
+    meters,
+    multi_toggler::horizontal_multi_toggler,
+    pan_slider::{ReadoutPosition, pan_slider},
+    vertical_slider::{VerticalSlider, vertical_slider},
+};
 #[cfg(any(
     target_os = "windows",
     target_os = "macos",
@@ -25,10 +30,11 @@ use maolan_widgets::meters;
 use raw_window_handle::RawWindowHandle;
 use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
-use crate::vumeter::plugin::SharedState;
+use crate::volume::params::{PARAMS, ParamId};
+use crate::volume::plugin::SharedState;
 
-pub const EDITOR_WIDTH: u32 = 500;
-pub const EDITOR_HEIGHT: u32 = 250;
+pub const EDITOR_WIDTH: u32 = 560;
+pub const EDITOR_HEIGHT: u32 = 310;
 
 pub fn preferred_api() -> &'static CStr {
     #[cfg(target_os = "windows")]
@@ -84,15 +90,74 @@ impl HasWindowHandle for ParentWindowHandle {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum Message {
+    SetVolume(f32),
+    ReleaseVolume,
+    SetPan(f32),
+    ReleasePan,
+    SetChannels(usize),
+    Poll,
+}
+
 struct State {
     shared: Arc<SharedState>,
+    volume_gesture_active: bool,
+    pan_gesture_active: bool,
 }
 
-fn init(shared: Arc<SharedState>) -> (State, Task<()>) {
-    (State { shared }, Task::none())
+fn init(shared: Arc<SharedState>) -> (State, Task<Message>) {
+    (
+        State {
+            shared,
+            volume_gesture_active: false,
+            pan_gesture_active: false,
+        },
+        Task::none(),
+    )
 }
 
-fn update(_state: &mut State, _message: ()) -> Task<()> {
+fn update(state: &mut State, message: Message) -> Task<Message> {
+    match message {
+        Message::SetVolume(value) => {
+            if !state.volume_gesture_active {
+                state.volume_gesture_active = true;
+                state.shared.mark_gesture_begin_pending(ParamId::Volume);
+            }
+            state
+                .shared
+                .set_param_outbound_only(ParamId::Volume, value as f64);
+        }
+        Message::ReleaseVolume => {
+            if state.volume_gesture_active {
+                state.volume_gesture_active = false;
+                state.shared.mark_gesture_end_pending(ParamId::Volume);
+            }
+        }
+        Message::SetPan(value) => {
+            if !state.pan_gesture_active {
+                state.pan_gesture_active = true;
+                state.shared.mark_gesture_begin_pending(ParamId::Pan);
+            }
+            state
+                .shared
+                .set_param_outbound_only(ParamId::Pan, value as f64);
+        }
+        Message::ReleasePan => {
+            if state.pan_gesture_active {
+                state.pan_gesture_active = false;
+                state.shared.mark_gesture_end_pending(ParamId::Pan);
+            }
+        }
+        Message::SetChannels(index) => {
+            state.shared.mark_gesture_begin_pending(ParamId::Channels);
+            state
+                .shared
+                .set_param_outbound_only(ParamId::Channels, (index + 1) as f64);
+            state.shared.mark_gesture_end_pending(ParamId::Channels);
+        }
+        Message::Poll => {}
+    }
     Task::none()
 }
 
@@ -131,11 +196,16 @@ struct MeterReadouts {
     lufs_integrated: f64,
 }
 
-fn side_column<'a>(title: &'a str, levels: [f32; 2], readouts: MeterReadouts) -> Column<'a, ()> {
+fn side_column<'a>(
+    title: &'a str,
+    channels: usize,
+    levels: [f32; 2],
+    readouts: MeterReadouts,
+) -> Column<'a, Message> {
     let meter_h = 100.0;
     column![
         text(title).size(13),
-        container(meters::meters(2, &levels, meter_h))
+        container(meters::meters(channels, &levels, meter_h))
             .height(Length::Fixed(meter_h))
             .width(Length::Shrink),
         row![
@@ -162,7 +232,7 @@ fn side_column<'a>(title: &'a str, levels: [f32; 2], readouts: MeterReadouts) ->
     .align_x(Alignment::Center)
 }
 
-fn view(state: &State) -> Element<'_, ()> {
+fn view(state: &State) -> Element<'_, Message> {
     let in_readouts = MeterReadouts {
         rms_l: state.shared.in_l_rms.load(Ordering::Relaxed),
         rms_r: state.shared.in_r_rms.load(Ordering::Relaxed),
@@ -185,11 +255,52 @@ fn view(state: &State) -> Element<'_, ()> {
     let in_levels = [db(in_readouts.rms_l), db(in_readouts.rms_r)];
     let out_levels = [db(out_readouts.rms_l), db(out_readouts.rms_r)];
 
-    let input_col = side_column("Input", in_levels, in_readouts);
-    let output_col = side_column("Output", out_levels, out_readouts);
+    let channels = state.shared.channels() as usize;
+    let input_col = side_column("Input", channels, in_levels, in_readouts);
+    let output_col = side_column("Output", channels, out_levels, out_readouts);
+    let volume = state.shared.params.get(ParamId::Volume) as f32;
+    let volume_text = if volume <= PARAMS[0].min as f32 {
+        "-inf dB".to_string()
+    } else {
+        format!("{volume:.1} dB")
+    };
+    let pan = state.shared.params.get(ParamId::Pan) as f32;
+    let pan_control: Element<'_, Message> = if channels == 2 {
+        pan_slider(
+            pan,
+            Message::SetPan,
+            Message::ReleasePan,
+            Some(ReadoutPosition::Top),
+        )
+    } else {
+        Space::new().height(Length::Fixed(12.0)).into()
+    };
+    let volume_control = column![
+        pan_control,
+        vertical_slider(
+            VerticalSlider {
+                value: volume,
+                range: PARAMS[0].min as f32..=PARAMS[0].max as f32,
+                default: PARAMS[0].default as f32,
+                step: PARAMS[0].step as f32,
+                value_text: volume_text,
+            },
+            Message::SetVolume,
+            Message::ReleaseVolume,
+        ),
+        horizontal_multi_toggler(
+            ["Mono", "Stereo"],
+            channels.saturating_sub(1),
+            Message::SetChannels,
+        )
+    ]
+    .spacing(6)
+    .align_x(Horizontal::Center)
+    .width(Length::Fixed(140.0))
+    .height(Length::Fixed(210.0));
 
     container(
-        row![input_col, output_col]
+        row![input_col, volume_control, output_col]
             .spacing(24)
             .align_y(Alignment::Center),
     )
@@ -207,7 +318,7 @@ fn theme(_state: &State) -> Theme {
 
 fn build_app(shared: Arc<SharedState>) -> impl maolan_baseview::iced::Program {
     maolan_baseview::iced::application(move || init(shared.clone()), update, view)
-        .subscription(|_state| maolan_baseview::iced::poll_events())
+        .subscription(|_state| maolan_baseview::iced::poll_events().map(|_| Message::Poll))
         .theme(theme)
         .run()
 }
@@ -218,7 +329,7 @@ impl crate::common::gui_bridge::GuiApp<super::plugin::SharedState> for App {
     type Parent = ParentWindowHandle;
 
     fn title() -> String {
-        String::from("Maolan VU")
+        String::from("Maolan Volume")
     }
 
     fn size() -> (u32, u32) {
@@ -251,7 +362,7 @@ impl crate::common::gui_bridge::GuiApp<super::plugin::SharedState> for App {
         window: &maolan_clap::ffi::clap_window,
         api: &CStr,
     ) -> Option<Self::Parent> {
-        crate::vumeter::gui::parent_from_window(window, api)
+        crate::volume::gui::parent_from_window(window, api)
     }
 
     fn build_app(

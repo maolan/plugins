@@ -25,12 +25,11 @@ use raw_window_handle::RawWindowHandle;
 use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
 use maolan_widgets::knob::Knob;
+use maolan_widgets::vertical_slider::{VerticalSlider, vertical_slider};
+use maolan_widgets::vu_meter::vu_meter;
 
 use crate::{
-    common::{
-        preset::{self, PresetProvider, PresetUi},
-        ui::{VerticalSlider, vertical_slider, vu_meter},
-    },
+    common::preset::{self, PresetProvider, PresetUi},
     flanger::{
         params::{FRACTION_NAMES, LFO_TYPE_NAMES, LFO2_TYPE_NAMES, PARAMS, PERIOD_NAMES, ParamId},
         plugin::SharedState,

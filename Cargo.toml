@@ -26,7 +26,7 @@ pitch-detection = "0.3.0"
 symphonia = { version = "0.6.1", features = ["aac", "alac", "flac", "isomp4", "mp3", "ogg", "vorbis", "wav"] }
 maolan-baseview = { version = "0.1.2", features = ["canvas"] }
 maolan-editor = { version = "0.1.6", default-features = false, features = ["embedded"] }
-maolan-widgets = "0.1.5"
+maolan-widgets = "0.1.7"
 parking_lot = "0.13.0"
 portable-atomic = { version = "1.15.0", features = ["float"] }
 quick-xml = { version = "0.42.0", features = ["serialize"] }

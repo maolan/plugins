@@ -236,7 +236,7 @@ crate::define_params! {
             name: "Mode",
             module: "Reverb",
             min: 0.0,
-            max: 21.0,
+            max: 19.0,
             default: 0.0,
             step: 1.0,
             flags: STEPPED_BOOL | CLAP_PARAM_IS_ENUM,
@@ -267,7 +267,7 @@ crate::define_params! {
 const AUTOMATABLE: u32 = CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_REQUIRES_PROCESS;
 const STEPPED_BOOL: u32 = AUTOMATABLE | CLAP_PARAM_IS_STEPPED;
 
-pub const MODES: [&str; 22] = [
+pub const MODES: [&str; 20] = [
     "Concert Hall",
     "Plate",
     "Room",
@@ -288,8 +288,6 @@ pub const MODES: [&str; 22] = [
     "Chaotic Neutral",
     "Cathedral",
     "Palace",
-    "Chamber1979",
-    "Hall1984",
 ];
 pub const COLORS: [&str; 1] = ["NOW"];
 

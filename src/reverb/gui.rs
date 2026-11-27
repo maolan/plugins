@@ -21,12 +21,10 @@ use raw_window_handle::RawWindowHandle;
 use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
 use maolan_widgets::knob::Knob;
+use maolan_widgets::panel::panel;
 
 use crate::{
-    common::{
-        preset::{self, PresetProvider, PresetUi},
-        ui::panel,
-    },
+    common::preset::{self, PresetProvider, PresetUi},
     reverb::{
         params::{MODES, PARAMS, ParamId, value_text},
         plugin::SharedState,

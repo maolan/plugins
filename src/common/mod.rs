@@ -41,7 +41,6 @@ pub mod state;
 pub mod true_peak;
 pub mod tuning;
 pub mod twist;
-pub mod ui;
 pub mod unison;
 pub mod voice;
 pub mod waveform;
